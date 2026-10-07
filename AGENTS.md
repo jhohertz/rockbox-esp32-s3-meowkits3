@@ -148,6 +148,14 @@ Practical facts about that toolchain:
 - Xtensa LX7, dual core. Rockbox is single-core in practice; `CURRENT_CORE`
   exists in `firmware/asm/corelock.c` for SMP.
 - No MMU. `firmware/target/*/mmu-*.c` is optional; do not assume one.
+- **ABI**: build with `-mabi=call0`. The windowed ABI keeps live values in
+  register windows, and the esp32s3 core config has no `mtsr`/`mfsr`, so the
+  window base cannot be set — a context switch cannot be done under it.
+  But the prebuilt toolchain's libgcc is built for the windowed ABI only, so
+  `-lgcc` under call0 mixes ABIs (`ld` warns, and helpers such as `__divdi3`
+  clobber a4-a11). Either build a call0 libgcc or supply the helpers Rockbox
+  needs itself, the way `lib/arm_support` does for cores without a hardware
+  divide. `CORE_LIBS` are searched before `-lgcc`, so a Rockbox library wins.
 - Cache: the toolchain's esp32s3 core config exposes single-precision FP
   opcodes (`madd.s`, `mul.s`, `ufloat.s`). Verify against the silicon before
   relying on them; Rockbox otherwise assumes soft float.
