@@ -629,6 +629,17 @@ mipsr2elcc () {
  gccchoice="9.5.0"
 }
 
+xtensacc () {
+ prefixtools xtensa-esp32s3-elf-
+ # The windowed ABI keeps live values in register windows, which a context
+ # switch and setjmp() cannot save. call0 keeps the state to a4-a11 plus sp
+ # and a0, so build with it.
+ GCCOPTS="$CCOPTS -mabi=call0 -mlongcalls"
+ GCCOPTS="$GCCOPTS -ffunction-sections"
+ GCCOPTIMIZE="-fomit-frame-pointer"
+ endian="little"
+}
+
 arm1176jzlinuxcc () {
  GCCOPTS=`echo $CCOPTS | sed -e s/-ffreestanding// -e s/-nostdlib//`
  # Although the ARM1176JZ-S supports unaligned accesses, those seems to disabled

@@ -11,6 +11,9 @@ STARTUP(target/arm/pp/crt0-pp.o)
 #elif defined(CPU_ARM)
 OUTPUT_FORMAT(elf32-littlearm)
 STARTUP(target/arm/crt0.o)
+#elif defined(CPU_XTENSA)
+OUTPUT_FORMAT(elf32-xtensa-le)
+STARTUP(target/xtensa/crt0.o)
 #else
 #error "Unknown CPU"
 #endif

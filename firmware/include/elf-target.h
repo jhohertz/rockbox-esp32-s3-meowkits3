@@ -34,6 +34,8 @@
 # define TARGET_ELF_MACHINE     EM_MIPS
 #elif defined(CPU_COLDFIRE)
 # define TARGET_ELF_MACHINE     EM_68K
+#elif defined(CPU_XTENSA)
+# define TARGET_ELF_MACHINE     EM_XTENSA
 #else
 # error "Unknown CPU architecture!"
 #endif

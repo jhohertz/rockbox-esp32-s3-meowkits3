@@ -66,6 +66,8 @@ struct regs
   #include "m68k/thread.h"
 #elif defined(CPU_MIPS)
   #include "mips/thread.h"
+#elif defined(CPU_XTENSA)
+  #include "xtensa/thread.h"
 #endif
 
 #endif

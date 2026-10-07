@@ -260,6 +260,9 @@ static inline void cpu_boost_unlock(void)
  */
 #if defined(CPU_ARM) || defined(CPU_MIPS)
     #define MIN_STACK_ALIGN 8
+#elif defined(CPU_XTENSA)
+    /* The Xtensa ABI keeps the stack pointer on a 16-byte boundary. */
+    #define MIN_STACK_ALIGN 16
 #endif
 
 #ifndef MIN_STACK_ALIGN
