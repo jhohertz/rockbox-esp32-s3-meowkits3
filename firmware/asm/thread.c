@@ -13,6 +13,8 @@
   #include "m68k/thread.c"
 #elif defined(CPU_MIPS)
   #include "mips/thread.c"
+#elif defined(CPU_XTENSA)
+  #include "xtensa/thread.c"
 #else
   /* Nothing? OK, give up */
   #error Missing thread impl

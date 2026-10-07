@@ -734,6 +734,10 @@ Lyre prototype 1 */
 #define CPU_MIPS ARCH_VERSION /* 32, 64 */
 #endif
 
+#if ARCH == ARCH_XTENSA
+#define CPU_XTENSA
+#endif
+
 #endif /*__PCTOOL__*/
 
 /* now set any CONFIG_ defines correctly if they are not used,

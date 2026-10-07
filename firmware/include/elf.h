@@ -71,6 +71,7 @@
 #define EM_68K          4
 #define EM_MIPS         8
 #define EM_ARM          40
+#define EM_XTENSA       188
 
 /*
  * Special value for e_phnum when the real number of

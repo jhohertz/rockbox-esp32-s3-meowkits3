@@ -36,6 +36,11 @@
 #endif
 #endif
 
+#ifdef CPU_XTENSA
+/* a4-a11, sp and the return address */
+#define _JBLEN 10
+#endif
+
 #ifdef _JBLEN
 #ifdef _JBTYPE
 typedef _JBTYPE jmp_buf[_JBLEN];
