@@ -12,4 +12,8 @@ m68k/setjmp.S
 mips/setjmp.S
 #endif
 
+#ifdef CPU_XTENSA
+xtensa/setjmp.S
+#endif
+
 #endif
