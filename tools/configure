@@ -634,6 +634,11 @@ xtensacc () {
  # The windowed ABI keeps live values in register windows, which a context
  # switch and setjmp() cannot save. call0 keeps the state to a4-a11 plus sp
  # and a0, so build with it.
+ #
+ # Note the consequence: the prebuilt toolchain's libgcc is built for the
+ # windowed ABI only, so linking -lgcc under call0 mixes ABIs and ld warns
+ # about it. Either build a call0 libgcc or supply the helpers Rockbox needs
+ # itself, as lib/arm_support does for cores without a hardware divide.
  GCCOPTS="$CCOPTS -mabi=call0 -mlongcalls"
  GCCOPTS="$GCCOPTS -ffunction-sections"
  GCCOPTIMIZE="-fomit-frame-pointer"
