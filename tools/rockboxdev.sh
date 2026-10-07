@@ -64,6 +64,15 @@ if [ -z $LINUX_MIRROR ] ; then
     LINUX_MIRROR=https://www.kernel.org/pub/linux
 fi
 
+if [ -z $ESP_MIRROR ] ; then
+    ESP_MIRROR=https://github.com/espressif/crosstool-NG/releases/download
+fi
+
+# Release tag of the Espressif Xtensa toolchain to install (see
+# build_xtensa_toolchain below, which explains why this one is not built from
+# GNU sources). Override with RBDEV_ESP_TOOLCHAIN or --esp-toolchain=.
+esp_tag="${RBDEV_ESP_TOOLCHAIN:-esp-14.2.0_20260121}"
+
 # These are the tools this script requires and depends upon.
 reqtools="gcc g++ xz bzip2 gzip $make patch makeinfo automake libtool autoconf flex bison"
 
@@ -306,6 +315,113 @@ run_cmd() {
         echo "ROCKBOXDEV: an error occured, please see $logfile"
         exit 1
     fi
+}
+
+# Map the build host to the host part of Espressif's prebuilt toolchain names.
+# Espressif publishes one archive per host triple, e.g.
+#   xtensa-esp-elf-<tag>-x86_64-linux-gnu.tar.xz
+esp_host() {
+    harch=`uname -m`
+    hos=`uname -s`
+
+    case "$hos" in
+        Linux)
+            case "$harch" in
+                x86_64|amd64)  echo "x86_64-linux-gnu" ;;
+                aarch64|arm64) echo "aarch64-linux-gnu" ;;
+                armv7l|arm)    echo "arm-linux-gnueabihf" ;;
+                i386|i686)     echo "i586-linux-gnu" ;;
+            esac
+            ;;
+        Darwin)
+            case "$harch" in
+                x86_64)        echo "x86_64-apple-darwin" ;;
+                arm64|aarch64) echo "aarch64-apple-darwin" ;;
+            esac
+            ;;
+    esac
+}
+
+# Install a prebuilt Espressif Xtensa toolchain.
+#
+# Xtensa is the one architecture here that cannot be built from GNU sources:
+# upstream GCC has no Xtensa target at all, and GNU binutils only knows the
+# "FSF" reference core, which is not any ESP32 core. Real ESP32 cores are
+# Tensilica/Cadence configurations, available either as proprietary config
+# overlays or as the runtime-loadable dynconfig plugins that Espressif ships in
+# these archives. Building from source would need Espressif's GCC fork plus
+# those overlays, so installing the archive is the only workable path.
+#
+# The archive is self-contained and relocatable. The per-core tools are thin
+# wrappers that locate the toolchain root relative to the executable and pass
+# "-mdynconfig=xtensa_<core>.so" to the real gcc/as/ld, so the tree must stay
+# intact and the tools must be exposed through symlinks rather than copied out
+# of it into $prefix/bin.
+#
+# $1 core (esp32, esp32s2, esp32s3, ...)
+# $2 release tag
+build_xtensa_toolchain () {
+    core="$1"
+    tag="$2"
+
+    host=`esp_host`
+    if [ -z "$host" ]; then
+        echo "ROCKBOXDEV: no prebuilt Xtensa toolchain for $(uname -s)/$(uname -m)"
+        echo "ROCKBOXDEV: see $ESP_MIRROR"
+        exit 1
+    fi
+
+    stepname=${RESTART_STEP:-xtensa}
+    if ! check_restart "$stepname"; then
+        echo "ROCKBOXDEV: Skipping step '$stepname' as requested per RBDEV_RESTART"
+        return
+    fi
+    echo "ROCKBOXDEV: Starting step '$stepname'"
+
+    logfile="$builddir/build-xtensa.log"
+    echo "ROCKBOXDEV: logging to $logfile"
+    rm -f "$logfile"
+
+    if test ! -d "$builddir"; then
+        mkdir -p "$builddir"
+    elif test ! -w "$builddir"; then
+        echo "ROCKBOXDEV: No write permission for $builddir"
+        exit
+    fi
+
+    file="xtensa-esp-elf-$tag-$host.tar.xz"
+    getfile_ex "$file" "$file" "$ESP_MIRROR/$tag"
+
+    # extract() assumes the archive and the directory it creates share a name,
+    # which is not the case for these release archives
+    if [ -d "$builddir/xtensa-esp-elf" ]; then
+        echo "ROCKBOXDEV: Skipping extraction of xtensa-esp-elf: already done"
+    else
+        echo "ROCKBOXDEV: extracting xtensa-esp-elf"
+        run_cmd "$logfile" tar xJf "$dlwhere/$file" -C "$builddir"
+    fi
+
+    if [ -d "$prefix/xtensa-esp-elf" ]; then
+        echo "ROCKBOXDEV: Skipping install of xtensa-esp-elf: already installed"
+    else
+        echo "ROCKBOXDEV: install xtensa-esp-elf"
+        run_cmd "$logfile" cp -a "$builddir/xtensa-esp-elf" "$prefix/"
+    fi
+
+    echo "ROCKBOXDEV: link tools into $prefix/bin"
+    run_cmd "$logfile" mkdir -p "$prefix/bin"
+    for tool in "$prefix/xtensa-esp-elf/bin"/*; do
+        run_cmd "$logfile" ln -sf "$prefix/xtensa-esp-elf/bin/$(basename "$tool")" \
+            "$prefix/bin/$(basename "$tool")"
+    done
+
+    # Sanity check: the wrapper must be able to select the requested core, which
+    # is what makes this toolchain different from a plain xtensa-elf one.
+    if ! "$prefix/bin/xtensa-$core-elf-gcc" -dumpmachine >> "$logfile" 2>&1; then
+        echo "ROCKBOXDEV: installed toolchain cannot build for core '$core'"
+        exit 1
+    fi
+    echo "ROCKBOXDEV: xtensa-$core-elf is ready"
 }
 
 # check if the following should be executed or not, depending on RBDEV_RESTART variable:
@@ -672,6 +788,7 @@ usage () {
     echo "  --prefix=PREFIX     Set install prefix (same as RBDEV_PREFIX env var)"
     echo "  --dlwhere=DIR       Set download directory (same as RBDEV_DOWNLOAD env var)"
     echo "  --builddir=DIR      Set build directory (same as RBDEV_BUILD env var)"
+    echo "  --esp-toolchain=TAG Espressif Xtensa release tag to install (same as RBDEV_ESP_TOOLCHAIN env var)"
     echo "  --makeflags=FLAGS   Set make flags (same as MAKEFLAGS env var)"
     exit 1
 }
@@ -708,6 +825,10 @@ case $i in
         ;;
     --makeflags=*)
         export MAKEFLAGS="${i#*=}" # export so it's available in make
+        shift
+        ;;
+    --esp-toolchain=*)
+        esp_tag="${i#*=}"
         shift
         ;;
     *)
@@ -781,6 +902,7 @@ if [ -z "$RBDEV_TARGET" ]; then
     echo "i   - mips     (Jz47xx/x1000 based players)"
     echo "x   - arm-linux  (Generic Linux ARM: Samsung ypr0, Linux-based Sony NWZ)"
     echo "y   - mips-linux  (Generic Linux MIPS: eg the many HiBy-OS targets)"
+    echo "e   - xtensa      (ESP32 family, e.g. ESP32-S3-WROOM-1-N16R8; installs the Espressif prebuilt toolchain)"
     echo "separate multiple targets with spaces"
     echo "(Example: \"m a i\" will build m68k, arm, and mips)"
     echo ""
@@ -916,6 +1038,13 @@ do
 	    prefix="/usr" buildtool "dbus" "$dbus_ver" \
                "--host=$target --with-sysroot=$prefix/$target/sysroot --includedir=/usr/include --enable-abstract-sockets ac_cv_lib_expat_XML_ParserCreate_MM=yes --disable-systemd --disable-launchd --enable-x11-autolaunch=no --with-x=no -disable-selinux --disable-apparmor --disable-doxygen-docs " "" "install DESTDIR=$prefix/$target/sysroot "
 
+            ;;
+        [Ee])
+            # Xtensa is multilib: one toolchain covers all ESP32 cores, and the
+            # core is picked by the dynconfig plugin the wrapper passes as
+            # -mdynconfig=. Rockbox's configure picks the tool by prefix, so use
+            # the per-core name (xtensa-esp32s3-elf-) for the build.
+            build_xtensa_toolchain "esp32s3" "$esp_tag"
             ;;
         *)
             echo "ROCKBOXDEV: Unsupported architecture option: $arch"
