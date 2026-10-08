@@ -670,6 +670,8 @@ target/xtensa/pca9557.c
 target/xtensa/i2s-xtensa.c
 target/xtensa/es8311.c
 target/xtensa/audiohw-xtensa.c
+target/xtensa/button-xtensa.c
+target/xtensa/backlight-xtensa.c
 #ifdef HAVE_LCD_BITMAP
 target/xtensa/spi-xtensa.c
 target/xtensa/st7789.c
