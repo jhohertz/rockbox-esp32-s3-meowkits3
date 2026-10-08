@@ -70,6 +70,7 @@ static inline float fval(uint32_t u)
 #define DMANT_MASK ((1ULL << 52) - 1)
 #define DHID       (1ULL << 52)
 #define DINF       (0x7FFULL << 52)
+#define DNAN       ((0x7FFULL << 52) | (1ULL << 51))
 
 static inline int dexp(uint64_t u)  { return (int)((u >> 52) & 0x7FF); }
 static inline int dsign(uint64_t u) { return (int)(u >> 63); }
@@ -77,6 +78,7 @@ static int msb64(uint64_t m);
 
 static int msb64(uint64_t m)
 {
+    if (!m) return -1;
     int p = 63;
     while (!(m & (1ULL << 63))) { m <<= 1; p--; }
     return p;
@@ -105,17 +107,24 @@ static double dpack(int sign, int exp, uint64_t mant, int lost_hi, int lost_any)
 {
     if (mant == 0) return dval((uint64_t)sign << 63);
 
+    if (exp <= 0) {
+        int sh = 1 - exp;
+        if (sh > 53) return dval((uint64_t)sign << 63);
+        /* The bits about to be shifted out sit above the originally lost ones,
+         * so the whole lost part (including its own round bit) is now sticky. */
+        int r = (int)((mant >> (sh - 1)) & 1);
+        int s = ((mant & ((1ULL << (sh - 1)) - 1)) != 0) || lost_hi || lost_any;
+        uint64_t kept = mant >> sh;
+        if (r && (s || (kept & 1))) kept++;
+        return dval(((uint64_t)sign << 63) | kept);
+    }
+
     if (lost_hi && (lost_any || (mant & 1))) {
         mant++;
         if (mant >> 53) { mant >>= 1; exp++; }
     }
 
     if (exp > 2046) return dval(((uint64_t)sign << 63) | DINF);
-    if (exp <= 0) {
-        int sh = 1 - exp;
-        if (sh > 53) return dval((uint64_t)sign << 63);
-        return dval(((uint64_t)sign << 63) | (mant >> sh));
-    }
     return dval(((uint64_t)sign << 63) | ((uint64_t)exp << 52) |
                 (mant & DMANT_MASK));
 }
@@ -128,7 +137,7 @@ static double dadd(uint64_t ba, uint64_t bb)
         if (ba & DMANT_MASK) return dval(ba);            /* a is NaN */
         if (eb == 0x7FF) {
             if (bb & DMANT_MASK) return dval(bb);        /* b is NaN */
-            if (dsign(ba) != dsign(bb)) return dval(DINF | DHID);
+            if (dsign(ba) != dsign(bb)) return dval(DNAN);
         }
         return dval(ba);
     }
@@ -144,50 +153,73 @@ static double dadd(uint64_t ba, uint64_t bb)
     if (ma == 0) return dval(bb);
     if (mb == 0) return dval(ba);
 
-    int ha = 0, aa = 0, hb = 0, ab = 0;
+    int exp = ea2 > eb2 ? ea2 : eb2;
+    int d = exp - (ea2 < eb2 ? ea2 : eb2);   /* how far the smaller one shifts */
 
-    if (ea2 < eb2) {
-        int d = eb2 - ea2;
-        if (d > 53) { ma = 0; ha = 1; }
-        else if (d) {
-            ha = (int)((ma >> (d - 1)) & 1);
-            aa = (int)((ma & ((1ULL << (d - 1)) - 1)) != 0);
-            ma >>= d;
-        }
-    } else if (eb2 < ea2) {
-        int d = ea2 - eb2;
-        if (d > 53) { mb = 0; hb = 1; }
-        else if (d) {
-            hb = (int)((mb >> (d - 1)) & 1);
-            ab = (int)((mb & ((1ULL << (d - 1)) - 1)) != 0);
-            mb >>= d;
-        }
+    /* L holds the bits that fall off the end, as an integer of d bits. Keeping
+     * them as a value rather than as round/sticky flags is what makes the
+     * borrow in the subtraction case work. */
+    uint64_t L = 0;
+    int bigshift = 0;                 /* d > 53: nothing of L can reach the mantissa */
+    if (d > 53) {
+        L = ea2 < eb2 ? ma : mb;
+        if (ea2 < eb2) ma = 0; else mb = 0;
+        bigshift = 1;
+    } else if (d) {
+        if (ea2 < eb2) { L = ma & ((1ULL << d) - 1); ma >>= d; }
+        else { L = mb & ((1ULL << d) - 1); mb >>= d; }
     }
 
-    int exp = ea2 < eb2 ? eb2 : ea2;
+    uint64_t mant;
+    int lowner = d ? (ea2 < eb2 ? 1 : 2) : 0;   /* which operand L came from */
 
     if (sa == sb) {
-        uint64_t sum = ma + mb;
-        int hi = ha | hb, any = aa | ab;
-        if (sum >> 53) {
-            hi = (int)(sum & 1) | hi;
-            sum >>= 1;
-            exp++;
-        }
-        return dpack(sa, exp, sum, hi, any);
+        mant = ma + mb;
+    } else {
+        /* Which operand is the minuend. A tie in the kept mantissas is broken
+         * by the lost part, which belongs to lowner. */
+        int minuend;
+        if (ma > mb) minuend = 1;
+        else if (ma < mb) minuend = 2;
+        else minuend = L ? lowner : 0;
+
+        if (minuend == 0) return dval((uint64_t)sa << 63);
+        mant = (minuend == 1) ? ma - mb : mb - ma;
+        sa = (minuend == 1) ? sa : sb;
+
+        /* L is added if it belongs to the minuend, subtracted otherwise. */
+        if (L && !bigshift && lowner != minuend) { mant--; L = (1ULL << d) - L; }
     }
 
-    /* Opposite signs: subtract the smaller mantissa from the larger. */
-    if (ma < mb) {
-        uint64_t t = ma; ma = mb; mb = t;
-        int s = sa; sa = sb; sb = s;
-        int h = ha; ha = hb; hb = h;
-        int a2 = aa; aa = ab; ab = a2;
+    if (mant == 0 && L == 0) return dval((uint64_t)sa << 63);
+
+    int round, sticky;
+
+    if (mant >> 53) {
+        /* Two 53-bit mantissas can sum to a 54-bit value. The bit shifted out
+         * becomes the rounding bit and the lost part drops below it. */
+        round = (int)(mant & 1);
+        sticky = (L != 0);
+        mant >>= 1;
+        exp++;
+    } else {
+        /* Normalise. Shifting the mantissa left pulls bits out of the lost
+         * part, so the mantissa is not just the integer part of the result. */
+        while (mant < DHID) {
+            if (d && L && !bigshift) {
+                mant = (mant << 1) | (int)((L >> (d - 1)) & 1);
+                L = (L << 1) & ((1ULL << d) - 1);
+            } else {
+                mant <<= 1;
+            }
+            exp--;
+        }
+        if (bigshift) { round = 0; sticky = (L != 0); }
+        else { round = d ? (int)((L >> (d - 1)) & 1) : 0;
+               sticky = d ? (int)((L & ((1ULL << (d - 1)) - 1)) != 0) : 0; }
     }
-    uint64_t diff = ma - mb;
-    if (diff == 0) return dval(0);
-    while (!(diff & DHID)) { diff <<= 1; exp--; }
-    return dpack(sa, exp, diff, ha | hb, aa | ab);
+
+    return dpack(sa, exp, mant, round, sticky);
 }
 
 double __adddf3(double a, double b) { return dadd(dbits(a), dbits(b)); }
@@ -216,11 +248,13 @@ double __muldf3(double a, double b)
     if (ea == 0x7FF) {
         if (ua & DMANT_MASK) return dval(ua);
         if (eb == 0x7FF && (ub & DMANT_MASK)) return dval(ub);
-        if (eb == 0x7FF && dsign(ua) != dsign(ub)) return dval(DINF | DHID);
+        if (!(ub & DMANT_MASK) && eb == 0 && ub == 0) return dval(DNAN);  /* inf * 0 */
+        if (eb == 0x7FF && dsign(ua) != dsign(ub)) return dval(DNAN);
         return dval(((uint64_t)(dsign(ua) ^ dsign(ub)) << 63) | DINF);
     }
     if (eb == 0x7FF) {
         if (ub & DMANT_MASK) return dval(ub);
+        if (ua == 0) return dval(DNAN);                                   /* 0 * inf */
         return dval(((uint64_t)(dsign(ua) ^ dsign(ub)) << 63) | DINF);
     }
 
@@ -233,12 +267,14 @@ double __muldf3(double a, double b)
     uint64_t hi, lo;
     mul53(ma, mb, &hi, &lo);
 
-    /* hi holds the top of the 106-bit product; normalise it to 53 bits and
-     * treat all of lo as lost. */
-    int sh = 52 - msb64(hi);
-    uint64_t mant = hi << sh;
-    int lost_hi = (int)((lo >> 63) & 1);
-    int lost_any = (int)((lo & ((1ULL << 63) - 1)) != 0);
+    /* hi holds the top of the 106-bit product. Normalise to 53 bits: the low
+     * bits of the mantissa come from the top of lo, not from zeros. */
+    int q = msb64(hi);
+    int sh = 52 - q;
+    uint64_t mant = (hi << sh) | (sh ? (lo >> (64 - sh)) : 0);
+    uint64_t lost = lo & ((1ULL << (q + 12)) - 1);
+    int lost_hi = (int)((lost >> (q + 11)) & 1);
+    int lost_any = (lost & ((1ULL << (q + 11)) - 1)) != 0;
 
     return dpack(sa ^ sb, ea2 + eb2 - 1011 - sh, mant, lost_hi, lost_any);
 }
@@ -251,10 +287,13 @@ double __divdf3(double a, double b)
     if (ea == 0x7FF) {
         if (ua & DMANT_MASK) return dval(ua);
         if (eb == 0x7FF && (ub & DMANT_MASK)) return dval(ub);
-        return dval(DINF | DHID);                       /* inf / inf */
+        return dval(DNAN);                       /* inf / inf */
     }
-    if (eb == 0x7FF) return dval((dsign(ua) ^ dsign(ub)) ? (1ULL << 63) : 0);
-    if (ub & DMANT_MASK) return dval(ub);
+    if (eb == 0x7FF) {
+        if (ub & DMANT_MASK) return dval(ub);                     /* b is NaN */
+        if (ea == 0x7FF) return dval(DNAN);                /* inf / inf */
+        return dval((uint64_t)(dsign(ua) ^ dsign(ub)) << 63);     /* finite / inf */
+    }
 
     int sa, sb, ea2, eb2;
     uint64_t ma, mb;
@@ -271,6 +310,21 @@ double __divdf3(double a, double b)
     for (int i = 52; i >= 0; i--) {
         if (r >= mb) { q |= 1ULL << i; r -= mb; }
         if (i) r <<= 1;
+    }
+
+    int E = exp + 1023;
+    if (E <= 0) {
+        /* Subnormal result: round at the precision that actually survives.
+         * The dropped part is low/2^sh + r/(mb*2^sh), so the round condition is
+         * low + r/mb > 2^(sh-1). Since r < mb and low is an integer, low below
+         * half can never reach half, so only low > half or an exact tie matters. */
+        int sh = 1 - E;
+        if (sh > 53) return dval((uint64_t)(sa ^ sb) << 63);
+        uint64_t kept = q >> sh;
+        uint64_t half = 1ULL << (sh - 1);
+        uint64_t low = q & ((1ULL << sh) - 1);
+        if (low > half || (low == half && (r != 0 || (kept & 1)))) kept++;
+        return dval((uint64_t)(sa ^ sb) << 63 | kept);
     }
 
     /* r/mb is what was dropped: round if it is more than half an ulp, or
@@ -293,13 +347,18 @@ static int dcmp(uint64_t a, uint64_t b)
     int sa = dsign(a), sb = dsign(b);
     if (sa != sb) return sa > sb ? -1 : 1;
     if (a == b) return 0;
-    return a > b ? 1 : -1;      /* same sign: bit order is value order */
+    /* Bit order matches value order for positives, but is reversed for
+     * negatives: -1.0 has a smaller bit pattern than -2.0 yet is greater. */
+    if (sa) return a > b ? -1 : 1;
+    return a > b ? 1 : -1;
 }
 
-int __ltdf2(double a, double b) { return dcmp(dbits(a), dbits(b)) < 0; }
-int __gtdf2(double a, double b) { return dcmp(dbits(a), dbits(b)) > 0; }
-int __ledf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r < 0 || r == 0; }
-int __gedf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r > 0 || r == 0; }
+/* Every unordered comparison is false, so dcmp's "unordered" must not be read
+ * as "greater". */
+int __ltdf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r == -1; }
+int __gtdf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r == 1; }
+int __ledf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r == -1 || r == 0; }
+int __gedf2(double a, double b) { int r = dcmp(dbits(a), dbits(b)); return r == 1 || r == 0; }
 
 /* ---- conversions ---- */
 
@@ -310,10 +369,9 @@ double __extendsfdf2(float f)
     uint32_t m = u & 0x7FFFFF;
 
     if (e == 0xFF) return dval(((uint64_t)s << 63) | DINF | (m ? ((uint64_t)m << 29) : 0));
-    if (m == 0) return dval((uint64_t)s << 63);
-
-    int k = 0;
     if (e == 0) {
+        if (m == 0) return dval((uint64_t)s << 63);        /* true zero */
+        int k = 0;
         while (!(m & 0x800000)) { m <<= 1; k++; }
         return dpack(s, 897 - k, (uint64_t)m << 29, 0, 0);
     }
@@ -327,7 +385,7 @@ float __truncdfsf2(double d)
     uint64_t m = u & DMANT_MASK;
 
     if (e == 0x7FF) return fval(((uint32_t)s << 31) | (0xFFu << 23) |
-                                (m ? (uint32_t)(m >> 29) : 0x800000u));
+                                (m ? (uint32_t)(m >> 29) : 0));
     if (e == 0) {
         if (m == 0) return fval((uint32_t)s << 31);
         int k = 0;
@@ -344,7 +402,7 @@ float __truncdfsf2(double d)
     int hi = (int)((m >> 28) & 1);
     int any = (int)((m & ((1ULL << 28) - 1)) != 0);
     if (hi && (any || (fm & 1))) fm++;
-    if (fm >> 23) { fm >>= 1; fe++; if (fe > 254) return fval(((uint32_t)s << 31) | (0xFFu << 23)); }
+    if (fm >> 24) { fm >>= 1; fe++; if (fe > 254) return fval(((uint32_t)s << 31) | (0xFFu << 23)); }
 
     if (fe <= 0) {
         int sh = 1 - fe;
@@ -401,7 +459,7 @@ float __floatdisf(int64_t v)
     int hi = (int)((m >> (p - 24)) & 1);
     int any = (int)((m & ((1ULL << (p - 24)) - 1)) != 0);
     if (hi && (any || (fm & 1))) fm++;
-    if (fm >> 23) { fm >>= 1; e++; if (e > 254) return fval(((uint32_t)s << 31) | (0xFFu << 23)); }
+    if (fm >> 24) { fm >>= 1; e++; if (e > 254) return fval(((uint32_t)s << 31) | (0xFFu << 23)); }
     return fval(((uint32_t)s << 31) | ((uint32_t)e << 23) | (fm & 0x7FFFFF));
 }
 
@@ -417,7 +475,8 @@ static int64_t to_int(uint64_t u, int wide)
     if (sh < 0) return 0;
     if (sh > 62) return 0;
 
-    uint64_t v = m >> (52 - sh);
+    /* sh can be larger than the mantissa width, so the shift can go either way. */
+    uint64_t v = (sh >= 52) ? (m << (sh - 52)) : (m >> (52 - sh));
     if (!wide && sh > 30) return 0;
     return (int64_t)(s ? -(int64_t)v : v);
 }
@@ -438,7 +497,7 @@ int64_t __fixsfdi(float f)
     if (sh < 0) return 0;
     if (sh > 62) return 0;
 
-    uint64_t v = mm >> (23 - sh);
+    uint64_t v = (sh >= 23) ? (mm << (sh - 23)) : (mm >> (23 - sh));
     return (int64_t)(s ? -(int64_t)v : v);
 }
 
@@ -452,15 +511,20 @@ float __divsf3(float a, float b)
     if (ea == 0xFF) {
         if (ua & 0x7FFFFF) return fval(ua);
         if (eb == 0xFF && (ub & 0x7FFFFF)) return fval(ub);
-        if (eb == 0xFF && sa != sb) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23) | 0x800000u);
+        if (eb == 0xFF && sa != sb) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23) | (1u << 22));
         return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23));
     }
-    if (eb == 0xFF) return fval((sa ^ sb) ? ((uint32_t)1 << 31) : 0);
-    if (ub & 0x7FFFFF) return fval(ub);
+    if (eb == 0xFF) {
+        if (ub & 0x7FFFFF) return fval(ub);                       /* b is NaN */
+        if (ea == 0xFF) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23) | (1u << 22));
+        return fval((sa ^ sb) ? ((uint32_t)1 << 31) : 0);         /* finite / inf */
+    }
 
     uint32_t ma = ua & 0x7FFFFF, mb = ub & 0x7FFFFF;
+    if (ea) ma |= 0x800000;                 /* the hidden bit */
+    if (eb) mb |= 0x800000;
     if (ma == 0) return fval((uint32_t)(sa ^ sb) << 31);
-    if (mb == 0) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23) | 0x800000u);
+    if (mb == 0) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23) | (1u << 22));
 
     if (ea == 0) {
         int k = 0;
@@ -483,17 +547,22 @@ float __divsf3(float a, float b)
         if (i) r <<= 1;
     }
 
+    int E = exp + 127;
+    if (E <= 0) {
+        int sh = 1 - E;
+        if (sh > 24) return fval((uint32_t)(sa ^ sb) << 31);
+        uint32_t kept = q >> sh;
+        uint32_t half = 1u << (sh - 1);
+        uint32_t low = q & ((1u << sh) - 1);
+        if (low > half || (low == half && (r != 0 || (kept & 1)))) kept++;
+        return fval((uint32_t)(sa ^ sb) << 31 | kept);
+    }
+
     uint32_t twice = r << 1;
     if (twice > mb || (twice == mb && (q & 1))) q++;
 
     if (q >> 24) { q >>= 1; exp++; }
 
-    int E = exp + 127;
-    if (E > 254) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23));
-    if (E <= 0) {
-        int sh = 1 - E;
-        if (sh > 24) return fval((uint32_t)(sa ^ sb) << 31);
-        return fval(((uint32_t)(sa ^ sb) << 31) | (q >> sh));
-    }
-    return fval(((uint32_t)(sa ^ sb) << 31) | ((uint32_t)E << 23) | (q & 0x7FFFFF));
+    if (exp + 127 > 254) return fval(((uint32_t)(sa ^ sb) << 31) | (0xFFu << 23));
+    return fval(((uint32_t)(sa ^ sb) << 31) | ((uint32_t)(exp + 127) << 23) | (q & 0x7FFFFF));
 }
