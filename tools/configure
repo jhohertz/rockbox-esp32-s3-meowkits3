@@ -632,8 +632,13 @@ mipsr2elcc () {
 xtensacc () {
  prefixtools xtensa-esp32s3-elf-
  # The windowed ABI keeps live values in register windows, which a context
- # switch and setjmp() cannot save. call0 keeps the state to a4-a11 plus sp
+ # switch and setjmp() cannot save. call0 keeps the state to a12-a15 plus sp
  # and a0, so build with it.
+ #
+ # (The Xtensa options documentation says a12-a15 are caller-saved under call0.
+ # GCC's own implementation disagrees: CALL_REALLY_USED_REGISTERS marks them as
+ # windowed-only, and xtensa_conditional_register_usage clears them for call0,
+ # so they are callee-saved. The code is what matters.)
  #
  # Note the consequence: the prebuilt toolchain's libgcc is built for the
  # windowed ABI only, so linking -lgcc under call0 mixes ABIs and ld warns
@@ -4290,6 +4295,30 @@ fi
     t_cpu="hosted"
     t_manufacturer="game_console"
     t_model="psp"
+    ;;
+
+   133|meowkit-esp32s3)
+    target_id=126
+    modelname="meowkits3"
+    target="MEOWKIT_ESP32S3"
+    # memory= is the amount of RAM the target has, and here that is the 8 MB of
+    # PSRAM rather than the 337 KB static region. It sizes the audiobuffer and the
+    # disk cache, so the value is right, but it does not mean what it means on every
+    # other target.
+    memory=8 # always
+    xtensacc
+    tool="$rootdir/tools/esptool elf2image"
+    bmp2rb_mono="$rootdir/tools/bmp2rb -f 0"
+    bmp2rb_native="$rootdir/tools/bmp2rb -f 4"
+    bmp2rb_remotemono="$rootdir/tools/bmp2rb -f 0"
+    bmp2rb_remotenative="$rootdir/tools/bmp2rb -f 0"
+    output="rockbox.esp32s3"
+    appextra="app: ascii"
+    plugins="no"
+    # architecture, manufacturer and model for the target-tree build
+    t_cpu="xtensa"
+    t_manufacturer="espressif"
+    t_model="esp32s3"
     ;;
 
 
