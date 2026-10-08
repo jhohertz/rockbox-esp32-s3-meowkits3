@@ -46,9 +46,9 @@ void system_init(void)
 {
     cpu_frequency = CPU_FREQ;             /* 240 MHz */
 
-    /* Peripheral clock gating. These default to 0 for the blocks Rockbox uses, so
-     * the bootloader has not enabled them and every register write below would be
-     * ignored without this. */
+    /* Peripheral clock gating. The timer groups default to enabled but GDMA does not
+     * (its bit is 0 in PERIP_CLK_EN1), so the writes are made unconditional rather
+     * than assumed. Setting a bit that is already set costs nothing. */
     wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | (1 << 15)); /* TIMERGROUP1 */
     wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | (1 << 13)); /* TIMERGROUP0 */
     wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1 << 6));  /* GDMA */
