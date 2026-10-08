@@ -37,8 +37,8 @@
 #endif
 
 #ifdef CPU_XTENSA
-/* a4-a11, sp and the return address */
-#define _JBLEN 10
+/* a12-a15, sp and the return address */
+#define _JBLEN 6
 #endif
 
 #ifdef _JBLEN
