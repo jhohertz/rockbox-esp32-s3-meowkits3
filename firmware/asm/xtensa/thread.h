@@ -19,14 +19,15 @@
  ****************************************************************************/
 
 /*
- * Xtensa under the call0 ABI: a4-a11 are callee-saved, a1 is the stack
- * pointer and a0 holds the return address. The windowed ABI would also have
- * to save the live register windows, so Rockbox builds Xtensa targets with
+ * Xtensa under the call0 ABI. GCC treats a12-a15 as callee-saved (see
+ * CALL_REALLY_USED_REGISTERS and xtensa_conditional_register_usage), a1 is the
+ * stack pointer and a0 holds the return address. The windowed ABI would also
+ * have to save the live register windows, so Rockbox builds Xtensa targets with
  * -mabi=call0 and this layout stays small.
  */
 struct regs
 {
-    uint32_t r[8];  /* a4-a11 */
+    uint32_t r[4];  /* a12-a15 */
     uint32_t sp;    /* a1 */
     uint32_t ra;    /* a0 */
     uint32_t start; /* thread start address, or NULL when started */
