@@ -1212,6 +1212,11 @@ Lyre prototype 1 */
 /* JZ47xx: core only */
 #elif (CONFIG_CPU == JZ4732 || CONFIG_CPU == JZ4760B) && !defined(PLUGIN) && !defined(CODEC)
 # define USE_IRAM
+
+/* Xtensa: the vector table and its handler have to be on the instruction bus, and
+ * the jump from the table to the handler cannot reach the flash cache window. */
+#elif defined(CPU_XTENSA) && !defined(PLUGIN) && !defined(CODEC)
+# define USE_IRAM
 #endif
 
 #endif /* (CONFIG_PLATFORM & PLATFORM_NATIVE) */

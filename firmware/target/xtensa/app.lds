@@ -115,10 +115,28 @@ SECTIONS
     ASSERT(AUDIOBUFSIZE + FRAMEBUFFER_SIZE <= MEMORYSIZE * 0x100000,
            "audiobuffer plus framebuffer exceed PSRAM")
 
+    /* VECBASE has to be a physical address the core can fetch from, so the vector
+     * table lives here, on the instruction-bus view of internal SRAM, and cannot be
+     * in the flash cache window. It is aligned to 1024 because the table spans
+     * offsets 0x000 to 0x400.
+     *
+     * The handler is in .icode rather than in .text because the `j` in the vector
+     * table has an 18-bit signed range and cannot reach the flash window 1.6 MB away.
+     */
     .iram :
     {
         _iramstart = .;
-        *(.icode)
+        /* ld evaluates ASSERT at the end of the enclosing section rather than at the
+         * point where it is written, so an alignment check here would test the wrong
+         * thing. IRAMORIG is a multiple of 1024 and the ALIGN below puts the table on
+         * a boundary, which is what VECBASE needs. */
+        . = ALIGN(1024);
+        KEEP(*(.vector))
+        /* ICODE_ATTR functions keep their literals inside .icode when compiled with
+         * -mtext-section-literals, so the l32r in the handler reaches them. The
+         * literal still has to come before the use, so it is placed first. */
+        KEEP(*(.icode.literal*))
+        KEEP(*(.icode))
         *(.irodata)
         *(.ibss)
         . = ALIGN(0x4);

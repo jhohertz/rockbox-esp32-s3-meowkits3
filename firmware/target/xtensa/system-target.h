@@ -46,6 +46,23 @@ static inline int set_irq_level(int level)
     return (int)old;
 }
 
+/* Masking by level is only half of it: a slot also has to be unmasked in INTENABLE.
+ * Levels cannot be programmed on this core config, so the slot has to already be the
+ * level you want (see firmware/include/xtensa.h). */
+static inline unsigned int get_intenable(void)
+{
+    unsigned int v;
+
+    asm volatile ("rsr %0, intenable" : "=r"(v));
+    return v;
+}
+
+static inline void set_intenable(unsigned int mask)
+{
+    asm volatile ("wsr %0, intenable" : : "r"(mask));
+    asm volatile ("rsync");
+}
+
 static inline void enable_irq(void)
 {
     unsigned int ps;
