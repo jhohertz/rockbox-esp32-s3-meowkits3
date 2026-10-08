@@ -317,6 +317,7 @@ Lyre prototype 1 */
 #define I2C_IMX233  17
 #define I2C_RK27XX  18
 #define I2C_X1000   19
+#define I2C_XTENSA  20 /* Bit-banged on GPIO, not a peripheral */
 
 /* CONFIG_LED */
 #define LED_REAL     1 /* SW controlled LED (Archos recorders, player) */

@@ -663,6 +663,14 @@ target/coldfire/ata-as-coldfire.S
 
 target/xtensa/crt0.S
 target/xtensa/mmu-xtensa.c
+#if CONFIG_I2C == I2C_XTENSA
+target/xtensa/i2c-xtensa.c
+target/xtensa/pca9557.c
+#endif
+#if CONFIG_LCD == LCD_BITMAP
+target/xtensa/spi-xtensa.c
+target/xtensa/st7789.c
+#endif
 
 #elif defined(CPU_PP) || (defined(CPU_ARM) && (CONFIG_PLATFORM & PLATFORM_NATIVE))
 /* CPU_PP => CPU_ARM, CPU_ARM !=> CPU_PP */
