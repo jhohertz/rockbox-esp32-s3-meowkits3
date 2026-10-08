@@ -67,7 +67,9 @@ struct gdma_desc {
 static volatile struct gdma_desc desc[2];
 static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1];
 
-static int cur;                 /* descriptor the DMA is working on */
+/* volatile because sink_play runs on the mixer thread and dma_callback on the
+ * polling thread, and they hand cur between each other. */
+static volatile int cur;          /* descriptor the DMA is working on */
 static volatile int locked;
 static volatile bool playing;
 static volatile bool pending;
