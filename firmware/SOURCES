@@ -667,9 +667,13 @@ target/xtensa/mmu-xtensa.c
 target/xtensa/i2c-xtensa.c
 target/xtensa/pca9557.c
 #endif
-#if CONFIG_LCD == LCD_BITMAP
+#ifdef HAVE_LCD_BITMAP
 target/xtensa/spi-xtensa.c
 target/xtensa/st7789.c
+target/xtensa/lcd-xtensa.c
+drivers/lcd-memframe.c
+/* The ARM asm version is not available for this core, so use the portable C one. */
+asm/lcd-as-memframe.c
 #endif
 
 #elif defined(CPU_PP) || (defined(CPU_ARM) && (CONFIG_PLATFORM & PLATFORM_NATIVE))

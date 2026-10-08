@@ -84,6 +84,7 @@
 #define X1600        1600
 #define STM32H743   32743
 #define N10480H     10480
+#define ESP32S3      323
 #define TACHYON     4000
 
 /* platforms
@@ -139,6 +140,7 @@
 #define SONY_NWZ_PAD       57
 #define CREATIVE_ZEN_PAD   58
 #define CREATIVE_ZENV_PAD  59
+#define ESP32S3_PAD        60
 #define IHIFI_PAD          60
 #define SAMSUNG_YPR1_PAD   61
 #define SAMSUNG_YH92X_PAD  62
@@ -602,6 +604,8 @@ Lyre prototype 1 */
 #include "config/sonypsp.h"
 #elif defined(HIBY_R1_NATIVE)
 #include "config/hibyr1native.h"
+#elif defined(MEOWKIT_ESP32S3)
+#include "config/meowkits3.h"
 #else
 #error "unknown hardware platform!"
 #endif

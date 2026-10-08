@@ -10,6 +10,11 @@
 
 #include <stdint.h>
 
+/* The esp32s3 core config has no byte-swap instruction (tested: 'swap' is not a
+ * valid opcode), so the generic C byte-swaps in firmware/libc/include/endian.h are
+ * used. Same as the jz47xx target. */
+#define NEED_GENERIC_BYTESWAPS
+
 #define nop asm volatile ("nop")
 
 /*

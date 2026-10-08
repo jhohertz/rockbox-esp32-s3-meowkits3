@@ -88,14 +88,14 @@ SECTIONS
         audiobufend = .;
     } > DROM
 
-    /* The LCD driver must place its framebuffer here rather than in a static array:
-     * .bss lives in the 337 KB static DRAM region, which cannot hold 300 KB of
-     * framebuffer plus everything else. */
+    /* The framebuffer arrives here through IRAM_LCDFRAMEBUFFER, a section attribute in
+     * the target config, because .bss lives in the 337 KB static DRAM region which
+     * cannot hold 150 KB of framebuffer plus everything else. */
     .framebuffer (NOLOAD) :
     {
         . = ALIGN(0x4);
         lcd_framebuffer = .;
-        . = . + FRAMEBUFFER_SIZE;
+        *(.framebuffer*)
     } > DROM
 
     /* Not a location check: the window starts at 0x3C000020 and the audiobuffer is
