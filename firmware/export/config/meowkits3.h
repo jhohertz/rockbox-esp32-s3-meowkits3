@@ -2,7 +2,7 @@
  * This config file is for the MeowKit ESP32-S3 (Xtensa LX7).
  *
  * Only the parts that are actually implemented are enabled. Drivers still missing:
- * I2S/PCM, SDMMC, touchscreen, buttons, PMU, RTC.
+ * SDMMC, touchscreen, buttons, PMU, RTC.
  */
 
 /* For Rolo and boot loader */

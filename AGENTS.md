@@ -294,6 +294,32 @@ verifies the expander answers before relying on it (5 retries), then asserts res
 waits 20 ms, releases, waits 120 ms (ST7789 needs ~120 ms after release), then
 selects the LCD.
 
+### No interrupt handler can be installed on this core config
+
+This is the reason the audio path is polled rather than signalled.
+
+Tested against the esp32s3 dynconfig (`xtensa_esp32s3.so`):
+
+| | |
+|---|---|
+| `wsr.excb` | **not a valid opcode** — no exception base register |
+| `wsr.intbase` | **not a valid opcode** — no per-level interrupt base |
+| `enableint` / `disint` | **not available** |
+| `wsr.vecbase` | available, but the level-1 vector offset is not published anywhere in the toolchain |
+| `wsr.intenable` | available |
+| memory-mapped priority registers | none in `INTERRUPT_CORE0` |
+| `XCHAL_NUM_INTLEVELS` | 6, `XCHAL_NUM_INTERRUPTS` 32, `XCHAL_NUM_EXTINTERRUPTS` 26 |
+| Tensilica `esprv_int_set_type/priority` | proprietary, not in the toolchain |
+
+Windowed-ABI context switching is also impossible: the esp32s3 dynconfig has no REGB
+option, so `mtsr`/`mfsr`/`spills`/`spillw` are unavailable. That is a second reason the
+call0 ABI is the only workable one.
+
+Consequence: DMA completion is detected by a helper thread polling the descriptor owner
+bit. The latency is bounded by the scheduler tick (HZ = 100 → 10 ms), which is longer
+than one mixer frame above ~25 kHz, so the spin is sized to a full frame period at the
+current rate and the thread yields only when the DMA is already starved.
+
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
 The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
@@ -445,3 +471,9 @@ unique number (currently max 125 in `configure`, max `MODEL_NUMBER` 132 in
   infers the target from the directory name.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- Anything the DMA writes back must be `volatile`. A descriptor's owner bit changes
+  through a store the compiler cannot see, so an empty spin loop on it gets folded into
+  a single test and the driver never notices the buffer being handed back. Check the
+  disassembly, not just the source.
+- `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
+  63, and the GPSPI signals are 101-103.
