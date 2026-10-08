@@ -663,6 +663,7 @@ target/coldfire/ata-as-coldfire.S
 
 target/xtensa/crt0.S
 target/xtensa/mmu-xtensa.c
+target/xtensa/rom_cache.S
 target/xtensa/vectors.S
 target/xtensa/irq-xtensa.c
 target/xtensa/system-xtensa.c
