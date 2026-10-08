@@ -22,6 +22,7 @@
  */
 #define XT_SRC_TIMERG0          48
 #define XT_SRC_TIMERG1          49
+#define XT_SRC_GDMA_OUT_CH0     71
 
 /*
  * Levels cannot be programmed on this core config: there are no level or
@@ -31,9 +32,18 @@
  *
  * Level 1 slots on the esp32s3 core config: 0-10, 12, 13, 17, 18.
  * Slot 0 is reserved for the WiFi MAC and slot 4 for the WiFi baseband,
- * so slot 1 is the lowest one free for Rockbox.
+ * so 1 and 2 are the lowest ones free for Rockbox.
  */
 #define XT_SLOT_TIMERG1         1
+#define XT_SLOT_GDMA_OUT_CH0    2
+
+/*
+ * The vector table has to be a physical address the core can fetch from, so it goes
+ * in internal RAM on the instruction-bus view. The j in the table has an 18-bit
+ * signed range, so the handler and the dispatch have to sit right after it - hence a
+ * dedicated section placed by app.lds, not the general .icode.
+ */
+#define VEC_ATTR __attribute__((section(".icode.irq")))
 
 /*
  * Timer group registers, per timer n: block at base + 0x24 * n.

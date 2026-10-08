@@ -56,6 +56,11 @@ _vector_table:
     .size _vector_table, . - _vector_table
 
 /*
+ * Kept in the same section as the table so that the call0 below is inside the 18-bit
+ * range of the j that reaches it. -mlongcalls does not help hand-written asm.
+ */
+
+/*
  * The handler runs on the interrupted thread's stack. a0 and a2-a15 have to be
  * saved because the C dispatch is free to clobber them: under call0 a0 and a2-a11
  * are caller-saved and a12-a15 are callee-saved, but a handler is not a call from
@@ -80,7 +85,7 @@ _vector_table:
 #define FR_A15  56
 #define FR_SIZE 80
 
-    .section .icode,"ax",@progbits
+    .section .vector,"ax",@progbits
     .align 4
     .global xt_level1_handler
     .type xt_level1_handler, @function
