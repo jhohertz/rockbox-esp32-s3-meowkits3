@@ -46,7 +46,12 @@ STARTUP(target/xtensa/crt0.o)
 #define DROMORIG 0x3C000020
 #define DROMSIZE (0x2000000 - 0x20)
 
-#define AUDIOBUFSIZE (MEMORYSIZE * 0x100000)
+/* MEMORYSIZE is the PSRAM size on this target. On every existing Rockbox target
+ * MEMORYSIZE is one contiguous region that the audiobuffer lives in; here the
+ * audiobuffer and the framebuffer share PSRAM, so they have to be split explicitly.
+ * 240*320*2 bytes per buffer, double buffered. */
+#define FRAMEBUFFER_SIZE (240 * 320 * 2 * 2)
+#define AUDIOBUFSIZE (MEMORYSIZE * 0x100000 - FRAMEBUFFER_SIZE)
 #define MIN_STACK_SIZE 0x1000
 
 MEMORY
@@ -82,6 +87,24 @@ SECTIONS
         . = ALIGN(0x4);
         audiobufend = .;
     } > DROM
+
+    /* The LCD driver must place its framebuffer here rather than in a static array:
+     * .bss lives in the 337 KB static DRAM region, which cannot hold 300 KB of
+     * framebuffer plus everything else. */
+    .framebuffer (NOLOAD) :
+    {
+        . = ALIGN(0x4);
+        lcd_framebuffer = .;
+        . = . + FRAMEBUFFER_SIZE;
+    } > DROM
+
+    /* Not a location check: the window starts at 0x3C000020 and the audiobuffer is
+     * aligned up to a page boundary, so a full MEMORYSIZE worth of content cannot fit
+     * in the window even though the physical pages do. What is actually checkable is
+     * the physical page budget. rodata occupies flash pages in the same window, so the
+     * full 8 MB is not available to the audiobuffer and the framebuffer. */
+    ASSERT(AUDIOBUFSIZE + FRAMEBUFFER_SIZE <= MEMORYSIZE * 0x100000,
+           "audiobuffer plus framebuffer exceed PSRAM")
 
     .iram :
     {
