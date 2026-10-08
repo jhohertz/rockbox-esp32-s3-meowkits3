@@ -16,22 +16,17 @@
  * pull-ups on SDA/SCL are required for this driver to work.
  ****************************************************************************/
 #include "config.h"
+#include "system.h"
 #include "i2c.h"
 #include "gpio-xtensa.h"
 
 #define I2C_SDA 1
 #define I2C_SCL 2
 
-/* ~100 kHz: half-period 5 us. At 240 MHz a loop iteration is roughly 4 cycles,
- * so ~300 iterations. I2C tolerates a slow clock, so this is deliberately
- * conservative rather than cycle-exact. */
-#define I2C_DELAY_ITERS 300
-
+/* ~100 kHz: half-period 5 us. */
 static void i2c_delay(void)
 {
-    for (int i = 0; i < I2C_DELAY_ITERS; i++) {
-        asm volatile ("" ::: "memory");
-    }
+    udelay(5);
 }
 
 static void sda_out(int value)
@@ -56,11 +51,40 @@ static void scl_out(int value)
     gpio_write_pin(I2C_SCL, value);
 }
 
+/*
+ * Bus recovery, per the I2C spec and as the reference firmware does it: if a slave
+ * is holding SDA low because it was interrupted mid-transaction, clock nine pulses
+ * on SCL so it can finish, then generate a STOP.
+ *
+ * The reference does not send a STOP afterwards; it is part of the spec and is
+ * harmless, so it is included here.
+ */
+void i2c_bus_recovery(void)
+{
+    sda_in();
+    scl_out(1);
+    i2c_delay();
+
+    for (int i = 0; i < 9; i++) {
+        scl_out(0);
+        i2c_delay();
+        scl_out(1);
+        i2c_delay();
+
+        if (sda_read())
+            break;   /* slave released the bus */
+    }
+
+    i2c_stop();
+}
+
 void i2c_init(void)
 {
     /* Idle bus: lines released. */
     sda_in();
     scl_out(1);
+
+    i2c_bus_recovery();
 }
 
 void i2c_begin(void)

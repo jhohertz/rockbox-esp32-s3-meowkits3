@@ -1,4 +1,5 @@
 #include "config.h"
+#include "system.h"   /* mdelay */
 #include "i2c.h"
 #include "pca9557.h"
 
@@ -35,11 +36,25 @@ int pca9557_read(int pin)
     return (v >> pin) & 1;
 }
 
+/* The reference firmware verifies the expander actually answers before relying on it,
+ * and retries with a bus recovery if not. i2c_init() performs the recovery, so the
+ * retry uses only the shared I2C API rather than a target-local symbol. */
 void pca9557_init(void)
 {
     unsigned char v;
+    int ok = 0;
 
-    if (!read_reg(PCA9557_REG_CONFIG, &v))
+    for (int attempt = 0; attempt < 5; attempt++) {
+        if (read_reg(PCA9557_REG_CONFIG, &v)) {
+            ok = 1;
+            break;
+        }
+
+        i2c_init();   /* bus recovery */
+        mdelay(100);
+    }
+
+    if (!ok)
         return;
 
     config_reg = v;
