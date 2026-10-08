@@ -9,6 +9,7 @@
 #define SYSTEM_TARGET_H
 
 #include <stdint.h>
+#include "rom_cache.h"
 
 extern long cpu_frequency;   /* set by system_init */
 
@@ -123,21 +124,31 @@ static inline void mdelay(unsigned ms)
 }
 
 /*
- * Cache maintenance is left to the bootloader's configuration. The external data
- * cache is write-through by default, so there is nothing to commit. If the
- * bootloader is configured write-back (CONFIG_SPIRAM_CACHE_WRITEBACK), these
- * become real work and have to call the ROM cache functions, because Rockbox
- * cannot link against ESP-IDF.
+ * Cache maintenance has to go through the ROM. This core config has no cache
+ * instructions - probeD, flushD, lockD, rdtag, wttag, rinvalidate and
+ * binvalidate are all invalid opcodes on the esp32s3 dynconfig - so there is no
+ * way to flush or invalidate a line from Rockbox itself. The ROM functions are
+ * reached by absolute address through xt_rom_call().
  *
- * These are also what a DMA path would need if its buffers live in PSRAM: the DMA
- * bypasses the cache, so the CPU's dirty lines have to be committed before the DMA
- * reads and the DMA's writes have to be invalidated before the CPU reads. ESP-IDF
- * calls esp_cache_msync() for exactly this. The simplest way to avoid the whole
- * problem is to keep DMA buffers in internal SRAM, which is ESP-IDF's default
- * guidance as well.
+ * Internal SRAM (0x3FC88000-0x3FD00000, which is exactly SOC_DMA_LOW/SOC_DMA_HIGH)
+ * is served by the L1 D-cache, so anything a DMA touches there needs maintenance:
+ * commit before the DMA reads, invalidate before the CPU reads back. ESP-IDF does
+ * the same thing with esp_cache_msync(), including on every SDHOST descriptor.
  */
-static inline void commit_dcache(void) {}
-static inline void commit_discard_dcache(void) {}
-static inline void commit_discard_idcache(void) {}
+static inline void commit_dcache(void)
+{
+    xt_rom_call(ROM_CACHE_WRITEBACK_ALL, 0, 0);
+}
+
+static inline void commit_discard_dcache(void)
+{
+    xt_rom_call(ROM_CACHE_WRITEBACK_ALL, 0, 0);
+    xt_rom_call(ROM_CACHE_INVALIDATE_DCACHE_ALL, 0, 0);
+}
+
+static inline void commit_discard_idcache(void)
+{
+    commit_discard_dcache();
+}
 
 #endif /* SYSTEM_TARGET_H */
