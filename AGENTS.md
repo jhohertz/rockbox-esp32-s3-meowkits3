@@ -148,16 +148,40 @@ Practical facts about that toolchain:
 - Xtensa LX7, dual core. Rockbox is single-core in practice; `CURRENT_CORE`
   exists in `firmware/asm/corelock.c` for SMP.
 - No MMU. `firmware/target/*/mmu-*.c` is optional; do not assume one.
-- **ABI**: build with `-mabi=call0`. The windowed ABI keeps live values in
-  register windows, and the esp32s3 core config has no `mtsr`/`mfsr`, so the
-  window base cannot be set — a context switch cannot be done under it.
-  But the prebuilt toolchain's libgcc is windowed in every multilib, so `-lgcc`
-  under call0 mixes ABIs. GCC's call0 code keeps live values in a12-a15 across
-  calls, and a windowed helper is free to clobber them; it also returns with
-  `retw`, which needs a window rotation a call0 call never sets up. ld warns
-  about exactly this. `lib/xtensa_support` supplies the helpers Rockbox needs,
-  written with 32-bit operations only so they do not call libgcc again.
-  `CORE_LIBS` are searched before `-lgcc`, so the Rockbox archive wins.
+- **ABI**: build with `-mabi=call0`. Note that the toolchain's *default* for this
+  core is windowed (`-mabi` unset gives `entry a1, 32` and defines
+  `__XTENSA_WINDOWED_ABI__`), so call0 is a deliberate override.
+
+  The reason is not that the window base cannot be set — `rsr.windowbase` and
+  `wsr.windowbase` **are** valid on this core config. The reason is that the core
+  config has **no REGB option**, verified against the dynconfig itself, not just
+  the assembler: `mtsr`, `mfsr`, `spills`, `spillw`, `refill`, `sregs`, `callinc`,
+  `ubase`, `preg`, `acx`, `wob`, `save1..5` have no opcode tables in
+  `xtensa_esp32s3.so` and the assembler rejects them. That means:
+
+  - a windowed function cannot see its caller's window. Window overlap is 4
+    registers (callee a4-a7 = caller a8-a11); the caller's a0-a3 and a12-a15 are
+    invisible. So `store_context` can only save its own window, which is the
+    thread's window + 4, and `load_context` cannot put the thread back where it
+    left off;
+  - `CALLINC` cannot be read or written, and `retw` needs it to find the caller's
+    window.
+
+  GCC's windowed code itself is fine on this core — it emits manual
+  `s32i.n`/`l32i.n` frame stores instead of `spills`/`refill`, so no window
+  overflow ever happens. It is only the context switch that cannot be written.
+
+  Under call0, live values are in fixed physical registers and the callee-saved
+  set is **a12-a15** (not a4-a11 — see `CALL_REALLY_USED_REGISTERS`,
+  `xtensa_conditional_register_usage` and an empirical disassembly test; the GCC
+  docs contradict the implementation). A context switch is a flat save/restore of
+  a0, a1 and a12-a15.
+
+  The cost: the toolchain's libgcc is windowed in every multilib, so `-lgcc` mixes
+  ABIs. A windowed helper clobbers physical a12-a15 (its a8-a15 map to physical
+  a12-a19) and returns with `retw`. `lib/xtensa_support` supplies the helpers
+  Rockbox needs, written with 32-bit operations only so they do not call libgcc
+  again. `CORE_LIBS` are searched before `-lgcc`, so the Rockbox archive wins.
 
   **Measured scope** (full-tree compile with the xtensa compiler, 2909 sources):
   26 libgcc symbols — 6 integer (`__ashldi3`, `__ashrdi3`, `__lshrdi3`,
@@ -184,6 +208,55 @@ Practical facts about that toolchain:
   `MEMORYSIZE` (MB) in `configure`, which sizes the audiobuffer and plugin buffer.
   PSRAM is cache-backed and slower than internal SRAM — plan the linker script
   around what must live in internal RAM (stack, ISR, framebuffer).
+
+### Reaching the ROM from call0 code
+
+Cache maintenance cannot be done from Rockbox on this core config: there are no
+cache instructions (`probeD`, `flushD`, `lockD`, `rdtag`, `wttag`, `rinvalidate`,
+`binvalidate` are all invalid), and no memory-mapped cache control registers — the
+SVD has no cache struct. So the ROM is the only route, and Rockbox links
+`-nostdlib` and cannot use ESP-IDF. The addresses are fixed and published in
+`components/esp_rom/esp32s3/ld/esp32s3.rom.ld`:
+
+```
+Cache_Get_DCache_Line_Size    0x40001608
+Cache_Invalidate_DCache_Items 0x40001680
+Cache_Clean_Items             0x4000168c
+Cache_WriteBack_Items         0x40001698
+Cache_Op_Addr                 0x400016a4
+Cache_Invalidate_Addr         0x400016b0
+Cache_WriteBack_Addr          0x400016c8
+Cache_Invalidate_DCache_All   0x400016e0
+Cache_WriteBack_All           0x400016f8
+```
+
+They are in the base file, not `esp32s3.rom.version.ld`, so they do not move
+between ROM revisions.
+
+The ROM is windowed, so a call0 caller needs three things:
+
+1. **`CALLINC` = 4.** It cannot be read or written, but `entry` sets it to 4 and
+   call0 code never changes it. `crt0.S` executes one `entry` at startup.
+2. **`WINDOW_BASE` = 0**, so that window 0 is the window call0 code uses and
+   `retw` returns to physical `a0`. `wsr.windowbase` is available.
+3. **`a12-a15` saved around the call**, because a windowed callee at window 4 maps
+   its a8-a15 to physical a12-a19 and clobbers them.
+
+`firmware/target/xtensa/rom_cache.S` is the trampoline that does (3), and
+`rom_cache.h` wraps the addresses. Verified to assemble and link.
+
+What is **not** verified: that `entry` sets `CALLINC = 4` unconditionally on this
+core, and that `rfe` restores correctly when `WINDOW_BASE` is set manually before
+it. Both are ISA behaviour and need a hardware test.
+
+The alternative, if the ROM turns out to be unreachable: keep everything the DMA
+touches out of the D-cache address room. `Cache_Clean_Addr`'s own documentation
+says "If the region is not in DCache addr room, nothing will be done", which tells
+us the D-cache address room is DRAM0 (`0x3FC88000-0x3FD00000`, exactly
+`SOC_DMA_LOW`/`SOC_DMA_HIGH`). RTC fast memory (0x600FE000, 8 KB) and ULP SRAM
+(0x50000000, 8 KB) are outside it. SDHOST descriptors can live there because
+`SDMMC_DSCADDR_REG` is a plain 32-bit register; GDMA cannot, because its descriptor
+address comes from a 20-bit window based at `0x3FC00000`.
 
 ### MeowKit board (the reference hardware)
 
