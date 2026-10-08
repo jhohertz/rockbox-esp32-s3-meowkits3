@@ -205,8 +205,42 @@ From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
 
 Two things that are not obvious from a pin list: **half the control signals live on
 an I²C IO expander** (PCA9557 at 0x19), so a Rockbox target cannot treat the display
-as a plain SPI device; and the audio path is a plain I2S DAC with no DMA codec, which
-is a different shape from every existing Rockbox audio backend.
+as a plain SPI device; and the audio path is an I2S DAC with no codec controller of its
+own, which is a different shape from every existing Rockbox audio backend.
+
+### I2S and GDMA
+
+The I2S peripheral does have a DMA controller — "DMA controller that allows stream
+sampling of data without requiring the CPU to copy each data sample". Without it the
+CPU would have to feed the FIFO at the sample rate, which is not workable.
+
+Verified from `components/soc/esp32s3/register/soc/reg_base.h` and `gdma_channel.h`:
+
+| | |
+|---|---|
+| I2S0 | `0x6000F000` |
+| I2S1 | `0x6002D000` |
+| GDMA | `0x6003F000` |
+| GDMA trigger ids | I2S0 = 3, I2S1 = 4, SPI2 = 0, SPI3 = 1 |
+| GDMA channel stride | IN: `base + 0xC0 * n`; OUT: `base + 0x60 + 0xC0 * n` |
+| I2S registers | `INT_RAW/ST/ENA/CLR`, `RX_CONF`, `TX_CONF`, `RX_CONF1`, `TX_CONF1`, clock mux + divider, TDM ctrl, timing |
+
+The constraint that decides where buffers live: **the GDMA descriptor address register
+is 20 bits** (`GDMA_OUTLINK_ADDR_CH0 : bitpos:[19:0]`, "stores the 20 least significant
+bits of the first outlink descriptor's address"). So the descriptor ring must sit where
+the low 20 bits identify it — internal SRAM. ESP-IDF has `esp_ptr_dma_ext_capable()` for
+external RAM, and warns that link-list items cannot be in PSRAM when MSPI strict
+alignment is required.
+
+Descriptors are a linked list: `size(12) length(12) offset(5) sosf(1) eof(1) owner(1)`,
+then the buffer address, then the next descriptor. The `owner` bit is what lets the
+hardware and software hand buffers back and forth, and RX channels can be configured to
+check it (`in_check_owner`).
+
+Practical consequence for Rockbox: the DMA target cannot be the audiobuffer in the PSRAM
+window without cache maintenance and the non-cached address form. The simple shape is a
+descriptor ring plus a small ping-pong buffer in internal SRAM, filled from the
+audiobuffer — which is a copy step that no existing Rockbox audio backend needs.
 
 Expander pins (registers: 0x00 input, 0x01 output, 0x02 polarity inversion,
 0x03 configuration where 1 = input):
