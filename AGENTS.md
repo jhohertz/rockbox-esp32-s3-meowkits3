@@ -204,10 +204,25 @@ From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
 | USB | Native USB-OTG, fixed pins DP 20 / DN 19. Used as CDC and MSC in stock firmware. |
 
 Two things that are not obvious from a pin list: **half the control signals live on
-an I²C IO expander** (LCD CS, LCD RST, touch RST, flash CS, amp enable), so a
-Rockbox target cannot treat the display as a plain SPI device; and the audio path is
-a plain I2S DAC with no DMA codec, which is a different shape from every existing
-Rockbox audio backend.
+an I²C IO expander** (PCA9557 at 0x19), so a Rockbox target cannot treat the display
+as a plain SPI device; and the audio path is a plain I2S DAC with no DMA codec, which
+is a different shape from every existing Rockbox audio backend.
+
+Expander pins (registers: 0x00 input, 0x01 output, 0x02 polarity inversion,
+0x03 configuration where 1 = input):
+
+| Pin | Function |
+|---|---|
+| IO0 | LCD reset |
+| IO1 | LCD chip select |
+| IO2 | SPI flash chip select |
+| IO3 | NS4150B amp enable (active high, 10K pull-down) |
+| IO6 | Touch reset |
+
+Init order is forced by this: **I²C → PCA9557 → display**. The reference firmware
+verifies the expander answers before relying on it (5 retries), then asserts resets,
+waits 20 ms, releases, waits 120 ms (ST7789 needs ~120 ms after release), then
+selects the LCD.
 
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
@@ -245,6 +260,34 @@ script needs at least three regions (IRAM, DRAM, external) and the two dummy
 sections, and the framebuffer has to be placed deliberately: PSRAM is fine for a
 320×240 double buffer (2 × 150 KB) but it is cache-backed and cannot be touched by
 anything that must work before the cache is enabled.
+
+### Peripheral registers (verified against the SVD, not guessed)
+
+From `components/soc/esp32s3/register/soc/reg_base.h` and the bare-metal reference
+`Chalandi/Baremetal_esp32s3_nosdk`:
+
+```
+GPIO        0x60004000  OUT 0x04  W1TS 0x08  W1TC 0x0C  OUT1 0x10   (pins 32-53)
+                        ENABLE 0x20 W1TS 0x24 W1TC 0x28 ENABLE1 0x2C
+                        IN 0x3C   IN1 0x40
+                        GPIO matrix OUT_SEL: 0x554 + 4*n
+GPSPI2      0x60024000  CMD 0x00 ADDR 0x04 CTRL 0x08 CLOCK 0x0C USER 0x10
+                        USER1 0x14 MS_DLEN 0x1C MISC 0x20 DMA_CONF 0x30
+                        CPU-controlled TX FIFO W0..W11 at 0x98
+I2C master  0x60013000
+```
+
+- **GPIO 32-53 are a separate register group.** A driver that only uses the low group
+  silently ignores pins 40 and 41 — exactly the LCD MOSI and SCLK pins.
+- **GPSPI signal indices are shared by SPI2 and SPI3** (CLK 66, Q/MOSI 67, D/MISO 68).
+  The controller does not drive pins directly; signals must be routed through the GPIO
+  matrix, so `spi_init` has to write `OUT_SEL` for each pin.
+- **ESP32-S3 GPIO has no internal pull-up registers.** They are absent from the SVD and
+  from ESP-IDF's `gpio_reg.h`, and `soc_caps.h` has no `SOC_GPIO_SUPPORT_PULL_UP` for
+  this chip. The reference firmware calls `GPIO_PULLUP_ENABLE`, which cannot be relied
+  on here — external pull-ups on SDA/SCL are required for bit-banged I²C.
+- `rsr.intlevel` / `wsr.intlevel` do not exist on the esp32s3 core config; the level is
+  the low 13 bits of `PS`.
 - Boot: **decided — inherit ESP-IDF's second-stage bootloader.** Rockbox is the
   app image (`app0` at 0x10000), the bootloader stays at 0x0 and is flashed with
   plain `esptool`. `esptool elf2image` is the `tool` in `configure`; nothing about
