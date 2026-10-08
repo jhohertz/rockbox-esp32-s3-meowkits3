@@ -239,15 +239,25 @@ script needs at least three regions (IRAM, DRAM, external) and the two dummy
 sections, and the framebuffer has to be placed deliberately: PSRAM is fine for a
 320×240 double buffer (2 × 150 KB) but it is cache-backed and cannot be touched by
 anything that must work before the cache is enabled.
-- Boot: Rockbox expects a `tool` in `configure` that turns a raw binary into the
-  target's firmware file. For ESP32 that is an ELF→bin objcopy plus whatever the
-  bootloader expects (an ESP image header + checksum, or plain `esptool` flashing).
-  **Rockbox's `crt0.S` assumes it owns the reset vector, and on ESP32-S3 it does
-  not.** The chip boots from ROM; the ROM loader reads an image header from flash and
-  jumps to the app. The toolchain's own bare-metal `crt0.o` is a two-instruction jump
-  into the ROM. So either the firmware is packaged as an ESP image and the entry is the
-  loader's jump target, or it is loaded by JTAG at the reset vector (vector table base
-  + 0x400 = `0x40378400`). Those are two different crt0 files.
+- Boot: **decided — inherit ESP-IDF's second-stage bootloader.** Rockbox is the
+  app image (`app0` at 0x10000), the bootloader stays at 0x0 and is flashed with
+  plain `esptool`. `esptool elf2image` is the `tool` in `configure`; nothing about
+  the flashing workflow changes.
+  What that buys: caches and the SPI-RAM controller are already up when Rockbox is
+  entered. What it does not buy: the loader only maps MMU pages for segments present
+  in the image, and the audiobuffer is NOLOAD, so Rockbox must map its own PSRAM
+  pages at runtime (`mmu-xtensa.c`).
+  `crt0.S` is therefore not a reset vector — the ROM owns the vectors, the entry is
+  jumped to (so `a0` is not a return address and `a1` must be set by hand), and
+  `.bss` is not in the image file.
+- **binutils gotcha (found by testing):** this binutils hits an internal error
+  (`ldlang.c 1074`) when an `l32r` references a linker-script-defined symbol
+  directly. Keeping the literal as a `.word` in the same section as the code avoids
+  it. Also, `jmp` is not a valid mnemonic on the esp32s3 core — use `j`.
+- The dummy section ESP-IDF uses for PSRAM is not needed in Rockbox's script,
+  because `.rodata` and `.audiobuf` are in the same region so the location counter
+  already continues past rodata. ESP-IDF needs it only because PSRAM is a separate
+  region there.
 - `tools/echoplayer/openocd.make` is the model for a debug/flash makefile; OpenOCD
   supports ESP32.
 
