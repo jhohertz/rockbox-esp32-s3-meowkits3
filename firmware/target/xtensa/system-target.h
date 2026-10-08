@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+extern long cpu_frequency;   /* set by system_init */
+
 /* The esp32s3 core config has no byte-swap instruction (tested: 'swap' is not a
  * valid opcode), so the generic C byte-swaps in firmware/libc/include/endian.h are
  * used. Same as the jz47xx target. */
@@ -73,6 +75,34 @@ static inline void restore_irq(int oldlevel)
 static inline void core_sleep(void)
 {
     asm volatile ("waiti 0");
+}
+
+/*
+ * Cycle-count delay, following the jz47xx pattern.
+ *
+ * The loop is two instructions per iteration (bnez + addi.n), but a taken backward
+ * branch costs more than one cycle on this core, so the real delay is somewhat
+ * longer than requested. That is the safe direction for I2C bit-banging, which only
+ * tolerates a slow clock, but it must not be relied on for anything timing-critical.
+ *
+ * It also depends on cpu_frequency being set, which happens in system_init. The core
+ * runs at 240 MHz unless something changes it.
+ */
+static inline void udelay(unsigned us)
+{
+    unsigned i = us * (cpu_frequency / 2000000);
+
+    asm volatile (
+        "1:\n"
+        "bnez %0, 1b\n"
+        "addi %0, %0, -1\n"
+        : "+r"(i)
+    );
+}
+
+static inline void mdelay(unsigned ms)
+{
+    while (ms--) udelay(1000);
 }
 
 /*
