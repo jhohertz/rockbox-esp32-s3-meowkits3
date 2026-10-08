@@ -111,6 +111,13 @@ static inline void mdelay(unsigned ms)
  * bootloader is configured write-back (CONFIG_SPIRAM_CACHE_WRITEBACK), these
  * become real work and have to call the ROM cache functions, because Rockbox
  * cannot link against ESP-IDF.
+ *
+ * These are also what a DMA path would need if its buffers live in PSRAM: the DMA
+ * bypasses the cache, so the CPU's dirty lines have to be committed before the DMA
+ * reads and the DMA's writes have to be invalidated before the CPU reads. ESP-IDF
+ * calls esp_cache_msync() for exactly this. The simplest way to avoid the whole
+ * problem is to keep DMA buffers in internal SRAM, which is ESP-IDF's default
+ * guidance as well.
  */
 static inline void commit_dcache(void) {}
 static inline void commit_discard_dcache(void) {}
