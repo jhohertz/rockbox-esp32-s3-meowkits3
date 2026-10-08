@@ -101,6 +101,10 @@ void lcd_update(void)
 
 void lcd_init_device(void)
 {
+    /* Forced by the hardware: CS and RST are expander outputs, so the expander has
+     * to be reachable before the panel can be reset or selected. */
+    pca9557_init();
+
     gpio_set_direction(PIN_LCD_BL, 1);
 
     st7789_init();
