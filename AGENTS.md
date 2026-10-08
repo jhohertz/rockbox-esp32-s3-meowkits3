@@ -225,22 +225,58 @@ Verified from `components/soc/esp32s3/register/soc/reg_base.h` and `gdma_channel
 | GDMA channel stride | IN: `base + 0xC0 * n`; OUT: `base + 0x60 + 0xC0 * n` |
 | I2S registers | `INT_RAW/ST/ENA/CLR`, `RX_CONF`, `TX_CONF`, `RX_CONF1`, `TX_CONF1`, clock mux + divider, TDM ctrl, timing |
 
-The constraint that decides where buffers live: **the GDMA descriptor address register
-is 20 bits** (`GDMA_OUTLINK_ADDR_CH0 : bitpos:[19:0]`, "stores the 20 least significant
-bits of the first outlink descriptor's address"). So the descriptor ring must sit where
-the low 20 bits identify it — internal SRAM. ESP-IDF has `esp_ptr_dma_ext_capable()` for
-external RAM, and warns that link-list items cannot be in PSRAM when MSPI strict
-alignment is required.
+### Buffers can be in PSRAM; descriptors cannot
 
-Descriptors are a linked list: `size(12) length(12) offset(5) sosf(1) eof(1) owner(1)`,
-then the buffer address, then the next descriptor. The `owner` bit is what lets the
-hardware and software hand buffers back and forth, and RX channels can be configured to
-check it (`in_check_owner`).
+Settled by testing rather than inference.
 
-Practical consequence for Rockbox: the DMA target cannot be the audiobuffer in the PSRAM
-window without cache maintenance and the non-cached address form. The simple shape is a
-descriptor ring plus a small ping-pong buffer in internal SRAM, filled from the
-audiobuffer — which is a copy step that no existing Rockbox audio backend needs.
+**Buffers may live in PSRAM.** `SOC_PSRAM_DMA_CAPABLE = 1` and `GDMA_LL_AHB_PSRAM_CAPABLE = 1`
+for esp32s3, and the I2S driver has a `dma_buffer_in_psram` option. The memory-mapping docs
+state the catch plainly: "PSRAM can also be accessed by EDMA. Data desynchronization may
+happen because hardware does not guarantee the data consistency under such condition. You
+should call `esp_cache_msync()` to synchronize the Cache and the PSRAM." A PSRAM DMA target
+therefore needs write-back before the DMA reads it and invalidation after the DMA writes it.
+
+**Descriptors must be in internal RAM.** ESP-IDF's own I2S documentation says it directly: "DMA
+descriptors remain in internal RAM." The reason is the 20-bit register. Verified by assigning
+addresses to the bitfield and printing what survives: `0x3C010000` (audiobuffer, MMU entry 1)
+becomes `0x00010000`, while `0x3FC88000` (internal SRAM) becomes `0x00088000`. The 20-bit window
+is based at `0x3FC00000`, so internal SRAM maps to offset `0x88000` correctly and a PSRAM address
+loses its high bits. `SOC_NON_CACHEABLE_OFFSET_PSRAM` is not defined for esp32s3, so ESP-IDF's
+`gdma_new_link_list` falls back to internal memory for link items.
+
+The asymmetry: only the *first descriptor's address* comes from the 20-bit register. Inside a
+descriptor, the buffer address and the next-pointer are full 32-bit words read from memory —
+which is why PSRAM buffers work and PSRAM descriptors do not.
+
+Descriptor layout (12 bytes, from `gdma_link_list_item_t`):
+
+| Word | Contents |
+|---|---|
+| 0 | `size:12`, `length:12`, reserved 4, `err_eof:1`, reserved 1, `suc_eof:1`, `owner:1` |
+| 1 | buffer address, full 32-bit |
+| 2 | next descriptor address, full 32-bit |
+
+`GDMA_MAX_BUFFER_SIZE_PER_LINK_ITEM` is 4095, so anything larger needs a chain. The `owner` bit
+hands a descriptor to the hardware; the CPU must check it before reuse, or enable
+`in_check_owner` to have the hardware check it. ESP-IDF writes descriptors through the
+non-cached alias but stores **cached** addresses in `next` ("DMA expects cached addresses in
+`next`"), so the address form matters.
+
+Consequence for Rockbox: the audiobuffer in the PSRAM window can be the DMA target, but only with
+explicit cache maintenance around each transfer and the descriptor ring in internal SRAM.
+Rockbox has no hook for that today — cache maintenance is a no-op in the TAL header, which is
+correct for CPU access but not for a DMA that bypasses the cache.
+
+**Design decision:** keep the descriptor ring and the DMA buffers in internal SRAM. That sidesteps
+cache maintenance entirely and matches ESP-IDF's own guidance ("Most peripheral DMA controllers
+have requirements that sending/receiving buffers should be placed in DRAM and word-aligned"). The
+cost is a copy from the audiobuffer into a ping-pong pair — a step no existing Rockbox audio
+backend needs. A 2 × 4096-sample pair is about 32 KB, which fits inside the 337 KB static region
+alongside .bss.
+
+If we ever want to DMA straight out of the PSRAM audiobuffer, the requirements are: descriptors in
+internal SRAM, cached addresses in the descriptor fields, and commit-before-write / invalidate-
+after-read around every buffer.
 
 Expander pins (registers: 0x00 input, 0x01 output, 0x02 polarity inversion,
 0x03 configuration where 1 = input):
