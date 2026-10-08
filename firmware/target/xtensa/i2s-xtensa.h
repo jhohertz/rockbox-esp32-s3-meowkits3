@@ -40,7 +40,16 @@
 /* GDMA TX channel 0 */
 #define GDMA_TX_CONF0   (GDMA_BASE + 0x60)
 #define GDMA_TX_CONF1   (GDMA_BASE + 0x64)
+#define GDMA_TX_INT_ST  (GDMA_BASE + 0x6C)
+#define GDMA_TX_INT_ENA (GDMA_BASE + 0x70)
 #define GDMA_TX_INT_CLR (GDMA_BASE + 0x74)
+
+/* OUT_DONE (bit 0) fires when the last data pointed by one descriptor has been
+ * transmitted to the peripheral, which is the point at which the buffer is safe to
+ * refill. OUT_EOF (bit 1) fires earlier, when the data has only been read from
+ * memory, so the buffer is still in the FIFO and must not be overwritten yet. */
+#define GDMA_INT_DONE (1u << 0)
+#define GDMA_INT_DSCR_ERR (1u << 2)
 #define GDMA_TX_LINK    (GDMA_BASE + 0x80)
 #define GDMA_TX_PERI_SEL (GDMA_BASE + 0xA8)
 

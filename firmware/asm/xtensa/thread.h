@@ -33,4 +33,9 @@ struct regs
     uint32_t start; /* thread start address, or NULL when started */
 };
 
-#define DEFAULT_STACK_SIZE 0x400 /* Bytes */
+/* The level-1 handler runs on the interrupted thread's stack: 80 bytes for its own
+ * frame, then the dispatch, the GDMA completion path and the mixer chain that the
+ * completion callback drives. That is a few hundred bytes on top of whatever the
+ * thread was already using, so this matches what ARM uses for the same reason rather
+ * than the 0x400 that m68k and mips get away with. */
+#define DEFAULT_STACK_SIZE 0x1000 /* Bytes */

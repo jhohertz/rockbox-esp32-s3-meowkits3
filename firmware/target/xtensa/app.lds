@@ -120,8 +120,12 @@ SECTIONS
      * in the flash cache window. It is aligned to 1024 because the table spans
      * offsets 0x000 to 0x400.
      *
-     * The handler is in .icode rather than in .text because the `j` in the vector
-     * table has an 18-bit signed range and cannot reach the flash window 1.6 MB away.
+     * The handler has to sit right after the table: the `j` in the table has an 18-bit
+     * signed range and cannot reach the flash window 1.6 MB away. C calls are not
+     * limited because xtensacc uses -mlongcalls, which emits callx0 with an absolute
+     * literal rather than a range-limited call8, so the dispatch can reach code in the
+     * flash window. Only the hand-written call0 in the handler is range-limited, which
+     * is why .icode.irq is placed immediately after the table.
      */
     .iram :
     {
@@ -132,6 +136,8 @@ SECTIONS
          * a boundary, which is what VECBASE needs. */
         . = ALIGN(1024);
         KEEP(*(.vector))
+        KEEP(*(.icode.irq.literal*))
+        KEEP(*(.icode.irq))
         /* ICODE_ATTR functions keep their literals inside .icode when compiled with
          * -mtext-section-literals, so the l32r in the handler reaches them. The
          * literal still has to come before the use, so it is placed first. */

@@ -73,6 +73,7 @@ void tick_start(unsigned int interval_in_ms)
     /* Route the group's interrupt to a level-1 slot and unmask that slot. */
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1, XT_SLOT_TIMERG1);
     set_intenable(get_intenable() | (1u << XT_SLOT_TIMERG1));
+    /* tn_int_clr is write-to-clear, and int_ena is the per-timer mask */
 
     if (!tn_program(0, (long)interval_in_ms * TIMER_FREQ / 1000, true))
         return;
@@ -105,17 +106,10 @@ void timer_stop(void)
     wr(TG1(XT_TN_INT_ENA), 1);           /* keep the tick, drop the user timer */
 }
 
-/*
- * Called from the level-1 handler in vectors.S with the pending bitmask. The
- * handler is entered for any level-1 slot, so this has to work out which one.
- *
- * It runs on the interrupted thread's stack, so it must stay small.
- */
-void ICODE_ATTR xt_irq_dispatch(unsigned int pending)
+/* Called from the level-1 dispatch. Runs on the interrupted thread's stack, so it
+ * has to stay small. */
+void ICODE_ATTR timer_irq(void)
 {
-    if (!(pending & (1u << XT_SLOT_TIMERG1)))
-        return;
-
     unsigned int st = rd(TG1(XT_TN_INT_ST));
 
     if (st & 1)
