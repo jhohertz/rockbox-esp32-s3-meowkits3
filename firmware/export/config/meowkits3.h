@@ -22,11 +22,19 @@
 #define LCD_DEPTH  16
 #define LCD_PIXELFORMAT RGB565
 
+#define HAVE_BACKLIGHT
+
 /* The framebuffer cannot live in .bss: the static data region is capped at 337 KB
  * and the framebuffer alone is 150 KB. Put it in PSRAM via the linker. */
 #define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".framebuffer")))
 
 #define CONFIG_STORAGE STORAGE_SD
+
+#define BOOTDIR "/.rockbox"
+
+/* No plugin loader exists for this core, but apps/playlist_viewer.c references
+ * PLUGIN_BUFFER_SIZE unconditionally and every target config defines it. */
+#define PLUGIN_BUFFER_SIZE 0x80000
 
 #define CONFIG_KEYPAD ESP32S3_PAD
 
