@@ -231,6 +231,12 @@ The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
   (`extern_ram_seg` and `drom0_0_seg` are on the same bus). ESP-IDF papers over it
   with a dummy section sized by the rodata already placed there. You cannot map all
   8 MB of PSRAM and all flash rodata at the same time.
+- The window is bank-switched per 64 KB page by a **512-entry table of 16-bit
+  values at `0x600C5000`**: bit 15 target (0 = flash, 1 = PSRAM), bit 14 invalid,
+  bits 0-13 physical page number. **The entry index is the masked address**
+  (`vaddr & 0x1FFFFFF`, not `vaddr - 0x3C000000`), so `0x3C010000` is entry 1, not
+  15361. Getting this wrong makes `mmu_init` return immediately and the audiobuffer
+  reads flash instead of PSRAM.
 - Flash code is executed through the instruction cache window at `0x42000020`.
 - RTC fast memory 8 KB at `0x600FE000`, RTC slow 8 KB at `0x50000000`.
 
