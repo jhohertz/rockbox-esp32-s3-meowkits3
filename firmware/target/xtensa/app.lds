@@ -66,9 +66,18 @@ SECTIONS
 {
     .text :
     {
+        /* -ffunction-sections gives each function its own .literal.<fn> and
+         * .text.<fn>. An l32r can only reach a literal placed before the use, so
+         * every literal section has to come before every text section - the same
+         * ordering ESP-IDF's own linker script uses. With *(.text*) alone the
+         * unmatched .literal.* sections fall to the end of the script and ld
+         * reports "dangerous relocation: l32r: literal placed after use".
+         */
         KEEP(*(.literal))
         KEEP(*(.startup*))
-        *(.text*)
+        KEEP(*(.literal.*))
+        KEEP(*(.text))
+        KEEP(*(.text.*))
     } > IROM
 
     .rodata :
@@ -135,12 +144,28 @@ SECTIONS
         _bssend = .;
     } > DRAM
 
-    /* Stack at the very top of internal DRAM, growing down. It must not meet
-     * .bss, so the static data is capped at DRAMSIZE - MIN_STACK_SIZE. */
-    _stackend = DRAMORIG + DRAMSIZE;
+    /* The kernel's thread code reads stackbegin/stackend as symbols, so they have
+     * to be defined here rather than as a computed value. */
+    .stack (NOLOAD) :
+    {
+        . = ALIGN(0x10);              /* Xtensa ABI keeps the stack on 16 bytes */
+        stackbegin = .;
+        . = . + MIN_STACK_SIZE;
+        stackend = .;
+        /* crt0.S sets a1 from this before the kernel takes over */
+        _stackend = .;
+    } > DRAM
 
-    ASSERT(_bssend <= _stackend - MIN_STACK_SIZE,
-           ".data and .bss leave no room for the stack")
+    /* Plugin and codec loaders do not exist for this core, but apps/plugin.c,
+     * apps/codecs.c and firmware/rolo.c are built unconditionally and reference
+     * these symbols. Point them at the audiobuffer, which is where such a buffer
+     * would have to live anyway. */
+    pluginbuf = audiobuffer;
+    codecbuf  = audiobuffer;
+    loadaddress = audiobuffer;
+
+    ASSERT(stackend <= DRAMORIG + DRAMSIZE,
+           ".data, .bss and the stack do not fit in the static DRAM region")
     ASSERT(IRAMSIZE <= 0x8000, "IRAM alias would overlap DRAM")
 
     /DISCARD/ :
