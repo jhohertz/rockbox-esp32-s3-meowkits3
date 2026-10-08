@@ -220,6 +220,8 @@ struct sound_settings_info
 #include "es9018.h"
 #elif defined(HAVE_ES9218)
 #include "es9218.h"
+#elif defined(HAVE_ES8311)
+#include "es8311.h"
 #elif (CONFIG_PLATFORM & PLATFORM_ANDROID)
 #include "android_codec.h"
 #elif ((CONFIG_PLATFORM & (PLATFORM_SDL | PLATFORM_GAME_CONSOLE)) | defined(RG_NANO))
