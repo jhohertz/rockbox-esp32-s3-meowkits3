@@ -117,3 +117,12 @@ void lcd_backlight(bool on)
     /* Active low. */
     gpio_write_pin(PIN_LCD_BL, on ? 0 : 1);
 }
+
+/* The panel's physical size is not documented in the reference firmware, so the
+ * pixel density is unknown. lcd.h only falls back to this function when LCD_DPI
+ * is not defined; callers use it for line spacing and touch calibration, and 0
+ * gives the default behaviour for both. */
+int lcd_get_dpi(void)
+{
+    return 0;
+}
