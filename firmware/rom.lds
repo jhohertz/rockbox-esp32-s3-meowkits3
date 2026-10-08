@@ -47,6 +47,25 @@ STARTUP(target/xtensa/crt0.o)
 #define FLASHSIZE 256K - ROM_START
 #endif
 
+#ifdef CPU_XTENSA
+/* ESP32-S3. Rockbox's bootloader image is not flashed on this target: the chip is
+ * entered through ESP-IDF's second-stage bootloader. The makefile still builds
+ * rombox.elf, so the map here has to be the real one rather than the default
+ * fallback above, otherwise the artifact is garbage even though nothing uses it.
+ *
+ * DRAMSIZE is capped at 0x54700 regardless of MEMORYSIZE, because that is the
+ * maximum static data the data-bus view of the SRAM can hold. The audiobuffer lives
+ * in PSRAM, which is why app.lds is the script that actually matters. */
+#undef DRAMORIG
+#undef IRAMSIZE
+#define DRAMORIG 0x3FC88000
+#define IRAMORIG 0x40378000
+#define IRAMSIZE 0x8000
+#define FLASHORIG 0x3C000020
+#define FLASHSIZE 0x2000000 - 0x20
+#define XTENSA_DRAM_CAP 0x54700
+#endif
+
 #ifdef CODECSIZE
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGINSIZE - CODECSIZE
 /* Where the codec buffer ends, and the plugin buffer starts */
@@ -55,6 +74,12 @@ STARTUP(target/xtensa/crt0.o)
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGINSIZE
 /* Where the audio buffer ends, and the plugin buffer starts */
 #define ENDADDR ENDAUDIOADDR
+#endif
+
+#ifdef CPU_XTENSA
+/* MEMORYSIZE is the PSRAM size on this target, not the static-data region. */
+#undef DRAMSIZE
+#define DRAMSIZE XTENSA_DRAM_CAP
 #endif
 
 /* End of the audio buffer, where the codec/plugin buffer starts */
