@@ -32,12 +32,27 @@
 #define GPIO_IN           (DR_REG_GPIO_BASE + 0x3C)
 #define GPIO_IN1          (DR_REG_GPIO_BASE + 0x40)
 
-/* GPIO matrix: one 32-bit slot per pin, OUT_SEL = signal index. */
+/* GPIO matrix: one 32-bit slot per pin.
+ *   [8:0]   func_sel  - signal index, default 0x100 (SIG_GPIO_OUT_IDX = no signal)
+ *   [9]     inv_sel
+ *   [10]    oen_sel   - 1: output enable comes from the GPIO_ENABLE bit for this pin
+ *   [11]    oen_inv_sel
+ * func_sel is 9 bits, not 6: the GPSPI signals are 101-103, which a 6-bit mask
+ * turns into 5-7. See components/soc/esp32s3/register/soc/gpio_struct.h.
+ */
 #define GPIO_FUNC_OUT_SEL(n) (DR_REG_GPIO_BASE + 0x554 + 4u * (n))
+#define GPIO_OEN_FROM_ENABLE (1u << 10)
 
-/* GPSPI signal indices (soc/gpio_sig_map.h). SPI2 and SPI3 share them. */
-#define SIG_SPI_CLK_OUT  66
-#define SIG_SPI_Q_OUT    67   /* MOSI */
+/* Signal indices from soc/gpio_sig_map.h */
+#define SIG_FSPICLK_OUT  101   /* GPSPI2 clock */
+#define SIG_FSPIQ_OUT    102   /* GPSPI2 MOSI */
+#define SIG_FSPID_OUT    103   /* GPSPI2 MISO */
+
+/* I2S1 outputs */
+#define SIG_I2S1_MCLK_OUT 21
+#define SIG_I2S1O_BCK_OUT 28
+#define SIG_I2S1O_WS_OUT  29
+#define SIG_I2S1O_SD_OUT  30
 
 static inline uint32_t gpio_read(uint32_t reg)
 {
@@ -76,7 +91,7 @@ static inline int gpio_read_pin(int pin)
 /* Route a peripheral signal to a pin through the GPIO matrix. */
 static inline void gpio_matrix_out(int pin, int signal)
 {
-    gpio_write(GPIO_FUNC_OUT_SEL(pin), (uint32_t)signal & 0x3F);
+    gpio_write(GPIO_FUNC_OUT_SEL(pin), ((uint32_t)signal & 0x1FF) | GPIO_OEN_FROM_ENABLE);
 }
 
 #endif /* GPIO_XTENSA_H */
