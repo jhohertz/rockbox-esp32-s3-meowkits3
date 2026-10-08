@@ -9,8 +9,8 @@ void spi_init(void)
 {
     /* Route the controller signals to the pins through the GPIO matrix. DC is a
      * plain GPIO, not a controller signal. */
-    gpio_matrix_out(PIN_LCD_SCLK, SIG_SPI_CLK_OUT);
-    gpio_matrix_out(PIN_LCD_MOSI, SIG_SPI_Q_OUT);
+    gpio_matrix_out(PIN_LCD_SCLK, SIG_FSPICLK_OUT);
+    gpio_matrix_out(PIN_LCD_MOSI, SIG_FSPIQ_OUT);
 
     gpio_set_direction(PIN_LCD_SCLK, 1);
     gpio_set_direction(PIN_LCD_MOSI, 1);
