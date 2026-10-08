@@ -177,16 +177,77 @@ Practical facts about that toolchain:
   time, and libgcc compiles one `-DL_*` per object (`L_addsubdf3`, `L_cmpdf2`,
   `L_cmpsf2`, not `L_adddf3`). It covers 24 of the 26; `__divdi3`/`__moddi3`
   come from the generic `libgcc2.c`, not the xtensa asm.
-- Cache: the toolchain's esp32s3 core config exposes single-precision FP
+- - Cache: the toolchain's esp32s3 core config exposes single-precision FP
   opcodes (`madd.s`, `mul.s`, `ufloat.s`). Verify against the silicon before
   relying on them; Rockbox otherwise assumes soft float.
 - `N16R8` = 16 MB flash + 8 MB PSRAM. Rockbox's memory model is
   `MEMORYSIZE` (MB) in `configure`, which sizes the audiobuffer and plugin buffer.
   PSRAM is cache-backed and slower than internal SRAM — plan the linker script
   around what must live in internal RAM (stack, ISR, framebuffer).
+
+### MeowKit board (the reference hardware)
+
+From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
+
+| Block | Detail |
+|---|---|
+| Display | ST7789 IPS **320×240**, SPI (MOSI 40, SCLK 41, DC 39), PWM backlight GPIO 42. CS and RST are **not GPIOs** — they go through a PCA9557 I²C IO expander. |
+| Touch | FT6336 capacitive, I²C 0x38, INT not connected. |
+| Audio out | ES8311 DAC over I2S (MCLK 15, BCLK 14, WS 13, DOUT 16) → NS4150B class-D amp → 1 W speaker. 44100 Hz, 16-bit. Amp enable is PCA9557 IO3. |
+| Audio in | ES7210 ADC, I2S DIN GPIO 3, I²C 0x41, MEMS mic. |
+| Storage | SD card, **SDMMC 1-bit** (CLK 47, CMD 48, D0 21). 16 MB SPI flash for firmware only. |
+| Input | Buttons A (GPIO 6), B (GPIO 4), 5-way joystick (UP 12, DOWN 18, LEFT 17, RIGHT 8). All **active-low with internal pull-ups**, 80–100 ms debounce. |
+| Power | AXP173 PMU, I²C 0x34, Li-ion 1400 mAh, USB-C charging. IRQ on GPIO 43, active low. |
+| RTC | PCF8563, I²C 0x51. |
+| IMU | BMI270 6-axis + BMM150 magnetometer, I²C 0x68. |
+| Misc | WS2812B single LED (GPIO 38), IR TX 7 / RX 5 at 38 kHz. |
+| USB | Native USB-OTG, fixed pins DP 20 / DN 19. Used as CDC and MSC in stock firmware. |
+
+Two things that are not obvious from a pin list: **half the control signals live on
+an I²C IO expander** (LCD CS, LCD RST, touch RST, flash CS, amp enable), so a
+Rockbox target cannot treat the display as a plain SPI device; and the audio path is
+a plain I2S DAC with no DMA codec, which is a different shape from every existing
+Rockbox audio backend.
+
+### Memory map (from the toolchain's own linker scripts, not guessed)
+
+The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
+`components/esp_system/ld/esp32s3/memory.ld.in`. The important part is that
+**instruction and data buses see the same physical SRAM at different addresses**:
+
+```
+0x40370000  IRAM / I-cache (instruction bus, word-aligned only)
+0x40378000  D/IRAM shared region, instruction view
+0x3FC88000  D/IRAM shared region, data view      <- same physical RAM
+0x3FD00000  DRAM / D-cache end
+```
+
+- Static `.data`/`.bss` is capped at `I_D_SRAM_SIZE = 0x54700` (**337 KB**), not the
+  full 512 KB. The rest is heap only, and only after the app starts.
+- A linker script must insert a dummy section to skip the overlap between
+  `iram0_0_seg` and `dram0_0_seg` — Rockbox's `rom.lds` assumes one contiguous
+  region and cannot express this.
+- **PSRAM and flash rodata share the same 32 MB window** at `0x3C000020`
+  (`extern_ram_seg` and `drom0_0_seg` are on the same bus). ESP-IDF papers over it
+  with a dummy section sized by the rodata already placed there. You cannot map all
+  8 MB of PSRAM and all flash rodata at the same time.
+- Flash code is executed through the instruction cache window at `0x42000020`.
+- RTC fast memory 8 KB at `0x600FE000`, RTC slow 8 KB at `0x50000000`.
+
+Rockbox's single-region `rom.lds` model does not survive this. The xtensa linker
+script needs at least three regions (IRAM, DRAM, external) and the two dummy
+sections, and the framebuffer has to be placed deliberately: PSRAM is fine for a
+320×240 double buffer (2 × 150 KB) but it is cache-backed and cannot be touched by
+anything that must work before the cache is enabled.
 - Boot: Rockbox expects a `tool` in `configure` that turns a raw binary into the
   target's firmware file. For ESP32 that is an ELF→bin objcopy plus whatever the
   bootloader expects (an ESP image header + checksum, or plain `esptool` flashing).
+  **Rockbox's `crt0.S` assumes it owns the reset vector, and on ESP32-S3 it does
+  not.** The chip boots from ROM; the ROM loader reads an image header from flash and
+  jumps to the app. The toolchain's own bare-metal `crt0.o` is a two-instruction jump
+  into the ROM. So either the firmware is packaged as an ESP image and the entry is the
+  loader's jump target, or it is loaded by JTAG at the reset vector (vector table base
+  + 0x400 = `0x40378400`). Those are two different crt0 files.
 - `tools/echoplayer/openocd.make` is the model for a debug/flash makefile; OpenOCD
   supports ESP32.
 
