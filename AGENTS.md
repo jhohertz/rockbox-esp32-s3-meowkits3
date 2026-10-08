@@ -155,10 +155,28 @@ Practical facts about that toolchain:
   under call0 mixes ABIs. GCC's call0 code keeps live values in a12-a15 across
   calls, and a windowed helper is free to clobber them; it also returns with
   `retw`, which needs a window rotation a call0 call never sets up. ld warns
-  about exactly this. `lib/xtensa_support` supplies the integer helpers Rockbox
-  needs, written with 32-bit operations only so they do not call libgcc again.
-  `CORE_LIBS` are searched before `-lgcc`, so the Rockbox archive wins. The
-  soft-float helpers are still windowed and are not covered.
+  about exactly this. `lib/xtensa_support` supplies the helpers Rockbox needs,
+  written with 32-bit operations only so they do not call libgcc again.
+  `CORE_LIBS` are searched before `-lgcc`, so the Rockbox archive wins.
+
+  **Measured scope** (full-tree compile with the xtensa compiler, 2909 sources):
+  26 libgcc symbols — 6 integer (`__ashldi3`, `__ashrdi3`, `__lshrdi3`,
+  `__divdi3`, `__moddi3`, `__bswapsi2`) and 20 float. No `long double`, no
+  exceptions/unwinding, no overflow builtins; the only builtin that maps to a
+  helper is `__builtin_ctzll` in `vuprintf.c`. That is the whole problem.
+
+  No other Rockbox arch reimplements this. Every target links `-lgcc`; only
+  ARM7TDMI has an archive (`lib/arm_support`), and only for 32-bit division,
+  `clz` and `popcount`, because that core has no hardware divide. Nothing in
+  the tree reimplements 64-bit division or soft float.
+
+  The alternative worth keeping open: GCC's own xtensa libgcc sources
+  (`lib1funcs.S`, `ieee754-df.S`, `ieee754-sf.S`) assemble correctly with the
+  prebuilt compiler under `-mabi=call0` — verified, they emit `ret.n`, not
+  `retw`. That needs `xtensa-config-builtin.h`, which is generated at GCC build
+  time, and libgcc compiles one `-DL_*` per object (`L_addsubdf3`, `L_cmpdf2`,
+  `L_cmpsf2`, not `L_adddf3`). It covers 24 of the 26; `__divdi3`/`__moddi3`
+  come from the generic `libgcc2.c`, not the xtensa asm.
 - Cache: the toolchain's esp32s3 core config exposes single-precision FP
   opcodes (`madd.s`, `mul.s`, `ufloat.s`). Verify against the silicon before
   relying on them; Rockbox otherwise assumes soft float.
