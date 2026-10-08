@@ -334,12 +334,22 @@ Windowed-ABI context switching is also impossible: the esp32s3 dynconfig has no 
 option, so `mtsr`/`mfsr`/`spills`/`spillw` are unavailable. That is a second reason the
 call0 ABI is the only workable one.
 
-The audio path currently polls the descriptor owner bit from a helper thread instead of
-using an interrupt. That was written before VECBASE was known to work; it is still a valid
-design, but it is no longer forced. The latency of the poll is bounded by the scheduler tick
-(HZ = 100 → 10 ms), which is longer than one mixer frame above ~25 kHz, so the spin is sized
-to a full frame period at the current rate and the thread yields only when the DMA is already
-starved.
+**`-mlongcalls` is what makes an ISR in internal SRAM able to call anything.** The vector
+table must be a physical address the core can fetch from, so it is in internal SRAM, 1.6 MB
+from the flash cache window where the rest of the code lives. GCC's `call8` has a 128 KB
+range, so a plain call from the handler to the mixer fails at link time with
+`dangerous relocation: call0: call target out of range`. `-mlongcalls` (already in
+`xtensacc()`) emits `l32r` + `callx0` with an absolute address instead, which has no range
+limit. It does not help hand-written asm, so the handler itself has to sit next to the table.
+
+The audio path uses the GDMA interrupt. `OUT_DONE` (bit 0) fires when the last data of a
+descriptor has actually been transmitted, which is when the buffer is safe to overwrite;
+`OUT_EOF` (bit 1) fires earlier, when the data has only been read from memory and is still in
+the FIFO, so using EOF would let the CPU overwrite audio that is still being played.
+
+The handler runs on the interrupted thread's stack, so `DEFAULT_STACK_SIZE` for xtensa is
+0x1000 rather than the 0x400 that m68k and mips use — same reason ARM sizes its stacks
+larger.
 
 The same applies to the kernel tick. Tested which core registers do exist:
 

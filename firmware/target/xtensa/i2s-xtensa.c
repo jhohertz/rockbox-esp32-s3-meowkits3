@@ -3,11 +3,15 @@
  *
  * Two things shape this driver:
  *
- * 1. DMA completion is *polled* by a helper thread rather than signalled. This is a
- *    choice, not a necessity: a handler can be installed on this core by setting
- *    VECBASE and unmasking a slot in INTENABLE (see AGENTS.md), but the polled version
- *    does not depend on the vector table being in place and does not have to fit inside
- *    the interrupt stack.
+ * 1. DMA completion is signalled by the GDMA OUT_DONE interrupt. OUT_DONE fires when
+ *    the last data of a descriptor has actually been transmitted to the peripheral,
+ *    which is the point at which the buffer is safe to overwrite. OUT_EOF fires
+ *    earlier, when the data has only been read from memory and is still sitting in the
+ *    FIFO, so using EOF would let the CPU overwrite audio that is still being played.
+ *
+ *    The mixer's completion callback is called from the handler, which is the same
+ *    arrangement every other Rockbox audio target uses. sink_lock/sink_unlock mask the
+ *    interrupt so the callback is never entered while the mixer is busy elsewhere.
  *
  * 2. GDMA's descriptor address register is 20 bits wide, so descriptors have to
  *    sit inside the 0x3FC00000 window. That is where .bss is placed, so the
@@ -20,6 +24,7 @@
 #include "system.h"
 #include "string.h"
 
+#include "xtensa.h"
 #include "i2s-xtensa.h"
 #include "gpio-xtensa.h"
 #include "es8311.h"
@@ -61,18 +66,20 @@ struct gdma_desc {
 /* Plain .bss: app.lds places it at DRAMORIG = 0x3FC88000, which is inside the
  * 20-bit window GDMA can address.
  *
- * volatile: the DMA writes the descriptor back after it transmits the buffer,
- * so the owner bit changes outside anything this function does. Without the
- * qualifier GCC folds the spin loop into a single test and never notices. */
+ * volatile: the DMA writes the descriptor back after it transmits the buffer, so the
+ * owner bit changes through a store the compiler cannot see. The handler reads it to
+ * decide whether a half is free, and without the qualifier that test can be hoisted.
+ *
+ * cur is not volatile: it is only touched by the handler and by sink_play, and the
+ * interrupt mask means the handler cannot run while sink_play is inside the lock. */
 static volatile struct gdma_desc desc[2];
 static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1];
 
-/* volatile because sink_play runs on the mixer thread and dma_callback on the
- * polling thread, and they hand cur between each other. */
-static volatile int cur;          /* descriptor the DMA is working on */
-static volatile int locked;
-static volatile bool playing;
-static volatile bool pending;
+/* cur is the half that is free to write. When DONE fires, the half that just
+ * finished transmitting is cur ^ 1, so the mixer's next frame goes into cur. */
+static int cur;
+static int locked;
+static bool playing;
 
 static int div_integ, div_num, div_denom;
 
@@ -153,6 +160,13 @@ static void gdma_init(void)
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
 
+    /* Route the channel's interrupt to a level-1 slot and unmask the slot. The
+     * per-event mask in GDMA_TX_INT_ENA is what sink_lock/sink_unlock toggle. */
+    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_GDMA_OUT_CH0, XT_SLOT_GDMA_OUT_CH0);
+    set_intenable(get_intenable() | (1u << XT_SLOT_GDMA_OUT_CH0));
+
+    /* DONE and DSCR_ERR. sink_lock/sink_unlock toggle the DONE bit from here on. */
+    wr(GDMA_TX_INT_ENA, GDMA_INT_DONE | GDMA_INT_DSCR_ERR);
     wr(GDMA_TX_INT_CLR, 0xFF);
 
     desc[0].buffer = (uint32_t)(unsigned long)dma_buf[0];
@@ -211,90 +225,70 @@ static void stop_tx(void)
     wr(I2S_TX_CONF, rd(I2S_TX_CONF) & ~TX_CONF_START);
 }
 
-static void dma_callback(void)
+/* cur is the half that is free to write. The DMA mounts a descriptor only when the
+ * owner bit says it owns it, so the half it is about to need must already be armed
+ * when the current one finishes - which is why every write advances cur. */
+static void write_desc(const void *addr, size_t size)
 {
-    if (locked) {
-        pending = playing;
-        return;
-    }
-
-    const void *addr;
-    size_t size;
-
-    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
-        return;
-
     if (size > GDMA_MAX_DESC_LEN)
         size = GDMA_MAX_DESC_LEN;
 
     memcpy(dma_buf[cur], addr, size);
     arm(cur, size);
     cur ^= 1;
+}
 
+static void refill(void)
+{
+    const void *addr;
+    size_t size;
+
+    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
+        return;
+
+    write_desc(addr, size);
     pcm_play_dma_status_callback(PCM_DMAST_STARTED);
 }
 
-/* Polling latency is bounded by the scheduler tick (HZ = 100, so 10 ms), which is
- * longer than one mixer frame at any rate above ~25 kHz. The spin therefore covers
- * a whole frame period at the configured rate: while the DMA is transmitting, the
- * thread sees the completion inside the spin and refills before the next frame is
- * needed. The yield only happens when the DMA has already been idle for a full
- * frame, so it cannot itself cause an underrun.
- *
- * This is the cost of not being able to install an exception handler on this core
- * config: the completion is detected by a thread that burns CPU instead of by an
- * ISR that costs nothing.
- */
-static unsigned spin_limit(void)
+/* Runs on the interrupted thread's stack, so it has to stay small. The handler in
+ * vectors.S has already saved a0 and a12-a15; this is the C part of the frame. */
+void ICODE_ATTR gdma_irq(void)
 {
-    struct pcm_sink *s = pcm_get_current_sink();
-    unsigned long rate = s->configured_freq;
+    unsigned int st = rd(GDMA_TX_INT_ST);
 
-    if (!rate)
-        rate = hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+    if (st & GDMA_INT_DONE)
+        refill();
 
-    /* bytes per frame / bytes per second = seconds per frame, times the core
-     * frequency, divided by roughly 3 cycles per spin iteration */
-    unsigned long long cyc = (unsigned long long)(MIX_FRAME_SAMPLES * SLOT_NUM * SLOT_BITS / 8)
-                             * (unsigned long long)cpu_frequency / (4u * rate);
-    unsigned n = (unsigned)(cyc / 3u);
-
-    return n ? n : 1;
-}
-
-static void dma_thread(void)
-{
-    while (playing) {
-        if (desc[cur].dw0 & DESC_OWNER) {          /* still owned by DMA: not done */
-            unsigned spins = spin_limit();
-            while (spins-- && (desc[cur].dw0 & DESC_OWNER))
-                ;
-            if (desc[cur].dw0 & DESC_OWNER) {
-                sleep(0);
-                continue;
-            }
-        }
-        dma_callback();
+    if (st & GDMA_INT_DSCR_ERR)
+    {
+        /* Owner error or a bad descriptor word. The ring is broken, so stop the
+         * channel, point it back at the start and begin again. */
+        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));      /* link.stop */
+        wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+        cur = 0;
     }
+
+    /* Clear only what fired. int_clr is write-to-clear. */
+    wr(GDMA_TX_INT_CLR, st);
 }
 
-static void sink_lock(void)   { ++locked; }
+/* Mask the event rather than the slot, so a completion that happens while the mixer
+ * is busy is not lost: int_raw stays set and fires as soon as the mask is lifted. */
+static void sink_lock(void)
+{
+    if (locked++ == 0)
+        wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DONE);
+}
 
 static void sink_unlock(void)
 {
-    if (--locked == 0 && pending) {
-        pending = false;
-        dma_callback();
-    }
+    if (--locked == 0)
+        wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
 }
 
 static void sink_play(const void *addr, size_t size)
 {
-    if (size > GDMA_MAX_DESC_LEN)
-        size = GDMA_MAX_DESC_LEN;
-
-    memcpy(dma_buf[cur], addr, size);
-    arm(cur, size);
+    write_desc(addr, size);
 
     if (!playing) {
         playing = true;
@@ -317,17 +311,10 @@ static void sink_set_freq(uint16_t freq)
 
 static void sink_init(void)
 {
-    static unsigned char thread_stack[2048];
-
     i2s_init();
 
     audiohw_preinit();
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
-
-    /* Highest priority: this thread stands in for an interrupt handler, and a
-     * late completion means an audible gap. */
-    create_thread(dma_thread, thread_stack, sizeof(thread_stack), 0,
-                  "i2s" IF_PRIO(, PRIORITY_REALTIME) IF_COP(, CPU));
 }
 
 struct pcm_sink builtin_pcm_sink = {

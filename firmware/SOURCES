@@ -664,6 +664,7 @@ target/coldfire/ata-as-coldfire.S
 target/xtensa/crt0.S
 target/xtensa/mmu-xtensa.c
 target/xtensa/vectors.S
+target/xtensa/irq-xtensa.c
 target/xtensa/system-xtensa.c
 target/xtensa/timer-xtensa.c
 #if CONFIG_I2C == I2C_XTENSA
