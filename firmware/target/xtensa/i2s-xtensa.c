@@ -3,11 +3,11 @@
  *
  * Two things shape this driver:
  *
- * 1. The esp32s3 core config as shipped by the toolchain cannot install an
- *    exception handler. `wsr.excb` and `wsr.intbase` are not valid opcodes, and
- *    `enableint`/`disint` are not either, so there is no way to reach a level-1
- *    interrupt vector. The DMA completion therefore has to be *polled* by a
- *    helper thread instead of signalled.
+ * 1. DMA completion is *polled* by a helper thread rather than signalled. This is a
+ *    choice, not a necessity: a handler can be installed on this core by setting
+ *    VECBASE and unmasking a slot in INTENABLE (see AGENTS.md), but the polled version
+ *    does not depend on the vector table being in place and does not have to fit inside
+ *    the interrupt stack.
  *
  * 2. GDMA's descriptor address register is 20 bits wide, so descriptors have to
  *    sit inside the 0x3FC00000 window. That is where .bss is placed, so the

@@ -294,31 +294,52 @@ verifies the expander answers before relying on it (5 retries), then asserts res
 waits 20 ms, releases, waits 120 ms (ST7789 needs ~120 ms after release), then
 selects the LCD.
 
-### No interrupt handler can be installed on this core config
+### Interrupts: no INTBASE, but VECBASE works
 
-This is the reason the audio path is polled rather than signalled.
-
-Tested against the esp32s3 dynconfig (`xtensa_esp32s3.so`):
+There is no interrupt vector table in the usual sense. Tested against the esp32s3
+dynconfig (`xtensa_esp32s3.so`):
 
 | | |
 |---|---|
 | `wsr.excb` | **not a valid opcode** — no exception base register |
 | `wsr.intbase` | **not a valid opcode** — no per-level interrupt base |
 | `enableint` / `disint` | **not available** |
-| `wsr.vecbase` | available, but the level-1 vector offset is not published anywhere in the toolchain |
-| `wsr.intenable` | available |
+| `wsr.vecbase` | **available** — `XCHAL_HAVE_VECBASE 1`, so the vectors are relocatable |
+| `wsr.intenable`, `wsr.intclear`, `wsr.intset` | available |
+| `rsr.interrupt` | available — the pending bitmask over all 32 slots |
+| `rsr.intlevel` / `wsr.intlevel` | **not valid opcodes** — the level is the low 13 bits of PS |
+| `rfe`, `rfi n` | available |
 | memory-mapped priority registers | none in `INTERRUPT_CORE0` |
-| `XCHAL_NUM_INTLEVELS` | 6, `XCHAL_NUM_INTERRUPTS` 32, `XCHAL_NUM_EXTINTERRUPTS` 26 |
-| Tensilica `esprv_int_set_type/priority` | proprietary, not in the toolchain |
+
+So a handler is installed by setting VECBASE to a table and unmasking a slot in
+INTENABLE. Two consequences of the missing level registers:
+
+1. **Levels cannot be programmed.** The level of each slot is fixed by the core config.
+   Level-1 slots are 0-10, 12, 13, 17, 18; slot 0 is reserved for the WiFi MAC and slot 4
+   for the WiFi baseband. A handler can only be entered for a slot that is already level 1.
+2. **Level 1 has no vector of its own.** It is reached through the exception vectors: the
+   kernel vector at VECBASE+0x300 and the user vector at VECBASE+0x340, chosen by PS.UM.
+   Offset 0x000 is the window vector, shared with level 1 in the usual XEA2 layout — under
+   call0 nothing can spill, so that vector is unreachable.
+
+`rsr.eps1` and `rsr.sregs` are not valid either, even though `rfe` works: the saved PS and
+window base live in internal state the assembler calls `sysregs`, which only `rfe` can read.
+(`rsr.eps2` through `rsr.eps7` do exist.)
+
+The vector table must be a physical address the core can fetch from, so it goes in internal
+SRAM on the instruction-bus view, not in the flash cache window. And the `j` in the table has
+an 18-bit signed range, so the handler has to be in the same region.
 
 Windowed-ABI context switching is also impossible: the esp32s3 dynconfig has no REGB
 option, so `mtsr`/`mfsr`/`spills`/`spillw` are unavailable. That is a second reason the
 call0 ABI is the only workable one.
 
-Consequence: DMA completion is detected by a helper thread polling the descriptor owner
-bit. The latency is bounded by the scheduler tick (HZ = 100 → 10 ms), which is longer
-than one mixer frame above ~25 kHz, so the spin is sized to a full frame period at the
-current rate and the thread yields only when the DMA is already starved.
+The audio path currently polls the descriptor owner bit from a helper thread instead of
+using an interrupt. That was written before VECBASE was known to work; it is still a valid
+design, but it is no longer forced. The latency of the poll is bounded by the scheduler tick
+(HZ = 100 → 10 ms), which is longer than one mixer frame above ~25 kHz, so the spin is sized
+to a full frame period at the current rate and the thread yields only when the DMA is already
+starved.
 
 The same applies to the kernel tick. Tested which core registers do exist:
 
