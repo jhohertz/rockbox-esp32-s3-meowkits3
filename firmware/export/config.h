@@ -83,6 +83,7 @@
 #define X1000        1000
 #define STM32H743   32743
 #define N10480H     10480
+#define ESP32S3      323
 
 /* platforms
  * bit fields to allow PLATFORM_HOSTED to be OR'ed e.g. with a
@@ -137,6 +138,7 @@
 #define SONY_NWZ_PAD       57
 #define CREATIVE_ZEN_PAD   58
 #define CREATIVE_ZENV_PAD  59
+#define ESP32S3_PAD        60
 #define IHIFI_PAD          60
 #define SAMSUNG_YPR1_PAD   61
 #define SAMSUNG_YH92X_PAD  62
@@ -592,6 +594,8 @@ Lyre prototype 1 */
 #include "config/hibyr1.h"
 #elif defined(HIDIZS_AP80MAX)
 #include "config/hidizsap80max.h"
+#elif defined(MEOWKIT_ESP32S3)
+#include "config/meowkits3.h"
 #else
 #error "unknown hardware platform!"
 #endif
