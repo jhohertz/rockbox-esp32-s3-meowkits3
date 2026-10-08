@@ -320,6 +320,22 @@ bit. The latency is bounded by the scheduler tick (HZ = 100 → 10 ms), which is
 than one mixer frame above ~25 kHz, so the spin is sized to a full frame period at the
 current rate and the thread yields only when the DMA is already starved.
 
+The same applies to the kernel tick. Tested which core registers do exist:
+
+| | |
+|---|---|
+| `rsr.ccount`, `wsr.ccount`, `wsr.ccompare0` | valid — the core timer is reachable |
+| `rsr.intlevel`, `wsr.intlevel` | **not valid opcodes** |
+| `ssrf` | **not valid** |
+
+So the core timer can be read but its interrupt cannot be taken. `tick_start()` is a
+per-target function, and every existing implementation arms a hardware timer and enables
+its interrupt. For Xtensa it has to be a polling thread instead.
+
+Note that `XCHAL_HAVE_WINDOWED` is 1 and `XCHAL_NUM_AREGS` is 64 for this core — the
+hardware has register windows. What is missing is the REGB option, so `mtsr`/`mfsr` and
+the spill/reflect macros are unavailable and windowed context switching cannot be written.
+
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
 The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
