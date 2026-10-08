@@ -645,7 +645,7 @@ xtensacc () {
  # about it. Either build a call0 libgcc or supply the helpers Rockbox needs
  # itself, as lib/arm_support does for cores without a hardware divide.
  GCCOPTS="$CCOPTS -mabi=call0 -mlongcalls"
- GCCOPTS="$GCCOPTS -ffunction-sections"
+ GCCOPTS="$GCCOPTS -ffunction-sections -mtext-section-literals"
  GCCOPTIMIZE="-fomit-frame-pointer"
  endian="little"
 }
