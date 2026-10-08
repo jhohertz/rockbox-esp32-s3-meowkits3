@@ -32,3 +32,14 @@
 
 /* I2C is bit-banged on GPIO 1/2, not a peripheral. */
 #define CONFIG_I2C I2C_XTENSA
+
+/* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
+ * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */
+#define HW_SAMPR_CAPS SAMPR_CAP_ALL_96
+
+#define HAVE_ES8311
+
+/* One volume register for both channels, so the codec has mono volume. The
+ * AUDIOHW_SETTING itself lives in es8311.h, which audiohw.h includes after
+ * defining the macro. */
+#define AUDIOHW_CAPS MONO_VOL_CAP
