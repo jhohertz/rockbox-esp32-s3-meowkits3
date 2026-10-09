@@ -447,17 +447,29 @@ The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
 **instruction and data buses see the same physical SRAM at different addresses**:
 
 ```
-0x40370000  IRAM / I-cache (instruction bus, word-aligned only)
+0x40370000  IRAM / I-cache (instruction bus only)
 0x40378000  D/IRAM shared region, instruction view
 0x3FC88000  D/IRAM shared region, data view      <- same physical RAM
+0x3FCF0000  end of the data view
 0x3FD00000  DRAM / D-cache end
 ```
 
-- Static `.data`/`.bss` is capped at `I_D_SRAM_SIZE = 0x54700` (**337 KB**), not the
+The bus offset is a constant `0x6F0000`: subtract it from an instruction-bus
+address to get the data-bus address of the same bytes. This is the single most
+important thing to get right in a linker script. Putting `.iram` at `0x40378000`
+and `.data` at `0x3FC88000` looks like two disjoint regions and is in fact the
+same memory.
+
+- Static `.data`/`.bss` is capped at `I_D_SRAM_SIZE = 0x53700` (**337 KB**), not the
   full 512 KB. The rest is heap only, and only after the app starts.
-- A linker script must insert a dummy section to skip the overlap between
-  `iram0_0_seg` and `dram0_0_seg` — Rockbox's `rom.lds` assumes one contiguous
-  region and cannot express this.
+- ESP-IDF's `iram0_0_seg` and `dram0_0_seg` overlap by design, and
+  `sections.ld.in` contains a `.dram0.dummy (NOLOAD)` section whose only purpose is
+  to advance the location counter: *"This section is required to skip .iram0.text
+  area because iram0_0_seg and dram0_0_seg reflect the same address space on
+  different buses."* Rockbox's `rom.lds` assumes one contiguous region, so the
+  xtensa script reserves the instruction region up front and starts `DRAMORIG` at
+  its alias. The reserve is a constant rather than `SIZEOF(.iram)` because plugins
+  are linked separately and cannot see where the firmware's code ends.
 - **PSRAM and flash rodata share the same 32 MB window** at `0x3C000020`
   (`extern_ram_seg` and `drom0_0_seg` are on the same bus). ESP-IDF papers over it
   with a dummy section sized by the rodata already placed there. You cannot map all
