@@ -10,6 +10,8 @@ OUTPUT_FORMAT(elf32-m68k)
 OUTPUT_FORMAT(elf32-littlearm)
 #elif defined(CPU_MIPS)
 OUTPUT_FORMAT(elf32-littlemips)
+#elif defined(CPU_XTENSA)
+OUTPUT_FORMAT(elf32-xtensa-le)
 #else
 /* We can have an #error here we don't use this file when build sims! */
 #error Unknown CPU architecture
@@ -130,6 +132,20 @@ OUTPUT_FORMAT(elf32-littlemips)
 #define DRAMORIG CACHED_DRAM_ADDR
 #define DRAMSIZE (DRAM_SIZE - PLUGIN_BUFFER_SIZE - CODEC_SIZE - FRAME_SIZE - TTB_SIZE)
 
+#elif defined(CPU_XTENSA)
+/* ESP32-S3. Codecs and plugins live at the top of the PSRAM part of the external
+ * data-cache window, which is exactly where target/xtensa/app.lds places codecbuf:
+ * DROMORIG + MEMORYSIZE*0x100000 - PLUGIN_BUFFER_SIZE - CODEC_SIZE. The two scripts
+ * have to produce the same number or apps/codecs.c rejects the loaded codec.
+ *
+ * IRAM here is the instruction-bus view of internal SRAM; it is not the same address
+ * range as DRAM, so USE_IRAM is satisfied without the aliasing that other targets
+ * have to worry about. */
+#define DRAMORIG 0x3C000020
+#define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGIN_BUFFER_SIZE - CODEC_SIZE
+#define IRAMORIG 0x40378000
+#define IRAMSIZE 0x8000
+
 #elif CONFIG_CPU == STM32H743
 #define DRAMORIG STM32_SDRAM1_BASE
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGIN_BUFFER_SIZE - CODEC_SIZE
@@ -185,6 +201,15 @@ SECTIONS
 
     .text :
     {
+#ifdef CPU_XTENSA
+        /* -mtext-section-literals gives every function its own .literal.<fn>
+         * pool. An l32r can only reach a literal placed before the use, so all of
+         * the pools have to precede the code that references them; leaving them to
+         * the end of the script produces "dangerous relocation: l32r: literal
+         * placed after use". */
+        KEEP(*(.literal))
+        KEEP(*(.literal.*))
+#endif
         *(.text*)
 #ifdef CPU_ARM
         *(.glue_7)
