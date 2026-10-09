@@ -120,6 +120,18 @@ static void calc_div(unsigned long exp_freq)
     }
 }
 
+static void set_raw_div(unsigned integ, unsigned x, unsigned y, unsigned z, unsigned yn1)
+{
+    wr(I2S_TX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
+                         (CLKM_CONF_CLK_SEL_XTAL << 27) | integ);
+    wr(I2S_TX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
+
+    /* tx_update latches the APB writes into the I2S clock domain */
+    wr(I2S_TX_CONF, TX_CONF_UPDATE);
+    while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
+        ;
+}
+
 /* i2s_ll_tx_set_mclk's mapping from (integer, num/den) to the four registers. */
 static void program_div(void)
 {
@@ -128,14 +140,12 @@ static void program_div(void)
     unsigned x = z ? div_denom / z - 1 : 0;
     unsigned y = z ? div_denom % z : 0;
 
-    wr(I2S_TX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
-                         (CLKM_CONF_CLK_SEL_XTAL << 27) | div_integ);
-    wr(I2S_TX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
-
-    /* tx_update latches the APB writes into the I2S clock domain */
-    wr(I2S_TX_CONF, TX_CONF_UPDATE);
-    while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
-        ;
+    /* ESP-IDF writes this coefficient pair before the real one. The divider
+     * latches inaccurately when the ratio jumps from a low sample rate to a high
+     * one, and an intermediate value that no rate could produce resets the state.
+     */
+    set_raw_div(7, 317, 7, 3, 0);
+    set_raw_div(div_integ, x, y, z, yn1);
 }
 
 void i2s_set_frequency(unsigned long rate)
@@ -201,11 +211,14 @@ void i2s_init(void)
     gpio_set_direction(PIN_I2S_WS,   1);
     gpio_set_direction(PIN_I2S_DOUT, 1);
 
-    /* TX_CONF1: BCLK divider, 16-bit channel, Phillips standard */
+    /* TX_CONF1: BCLK divider, 16-bit channel, Phillips standard. Every "bits" and
+     * "div" field here is stored as value-minus-one, so the divider that yields
+     * BCLK = MCLK/8 is written as 7.
+     */
     wr(I2S_TX_CONF1, ((SLOT_BITS - 1) << 13) |          /* tx_bits_mod */
                      ((SLOT_BITS - 1) << 24) |           /* tx_tdm_chan_bits */
                      ((SLOT_BITS - 1) << 18) |           /* tx_half_sample_bits */
-                     (I2S_BCLK_DIV << 7) |               /* tx_bclk_div_num */
+                     ((I2S_BCLK_DIV - 1) << 7) |         /* tx_bclk_div_num */
                      (1u << 29));                        /* tx_msb_shift */
 
     /* Standard mode runs through the TDM path with two slots. The reset defaults
