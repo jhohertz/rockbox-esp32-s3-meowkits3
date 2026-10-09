@@ -357,12 +357,19 @@ explicit cache maintenance around each transfer and the descriptor ring in inter
 Rockbox has no hook for that today — cache maintenance is a no-op in the TAL header, which is
 correct for CPU access but not for a DMA that bypasses the cache.
 
-**Design decision:** keep the descriptor ring and the DMA buffers in internal SRAM. That sidesteps
-cache maintenance entirely and matches ESP-IDF's own guidance ("Most peripheral DMA controllers
-have requirements that sending/receiving buffers should be placed in DRAM and word-aligned"). The
-cost is a copy from the audiobuffer into a ping-pong pair — a step no existing Rockbox audio
-backend needs. A 2 × 4096-sample pair is about 32 KB, which fits inside the 337 KB static region
-alongside .bss.
+**Design decision:** keep the descriptor ring and the DMA buffers in internal SRAM. That is what
+ESP-IDF does, and it keeps the 20-bit register happy, but it does **not** sidestep cache
+maintenance: DRAM0 (`0x3FC88000-0x3FD00000`) is exactly the D-cache address room, and the DMA
+reads through it rather than around it. The cost is a copy from the audiobuffer into a ping-pong
+pair — a step no existing Rockbox audio backend needs. A 2 × 4096-sample pair is about 32 KB,
+which fits inside the 337 KB static region alongside .bss.
+
+ESP-IDF's SDHOST code calls `esp_cache_msync()` on every descriptor it arms and on every
+buffer it hands over (`components/sdmmc/sdmmc_transaction.c`), with the descriptor calls
+guarded by `SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE`. That define is absent for esp32, esp32s2,
+esp32c3 and esp32s3 alike, which is a discrepancy worth noting rather than trusting: the ROM
+functions themselves say they do nothing "if the region is not in DCache addr room", so doing
+the maintenance is safe whichever way the silicon behaves. Rockbox does it.
 
 If we ever want to DMA straight out of the PSRAM audiobuffer, the requirements are: descriptors in
 internal SRAM, cached addresses in the descriptor fields, and commit-before-write / invalidate-
