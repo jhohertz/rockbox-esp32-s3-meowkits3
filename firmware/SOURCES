@@ -954,6 +954,7 @@ drivers/i2c.c
 /* target code */
 
 /* LCD driver */
+#if defined(CONFIG_LCD)
 #if   CONFIG_LCD == LCD_SSD1303
 target/arm/as3525/lcd-ssd1303.c
 #elif CONFIG_LCD == LCD_SSD1815
@@ -985,6 +986,7 @@ target/arm/rk27xx/ihifi2/lcd-ihifi800.c
 #elif CONFIG_LCD == LCD_IPOD6GNANO3G4G
 target/arm/s5l8702/lcd-s5l8702.c
 target/arm/s5l8702/lcd-asm-s5l8702.S
+#endif /* CONFIG_LCD */
 #endif
 
 /* USB Stack */

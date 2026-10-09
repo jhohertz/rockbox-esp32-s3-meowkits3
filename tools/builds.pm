@@ -200,6 +200,11 @@ $releasenotes="/wiki/ReleaseNotes400";
         name => 'iriver H320/340',
         status => 3,
     },
+    'meowkits3' => {
+        name => 'MeowKit ESP32-S3',
+        status => 1,
+        ram => 8,
+    },
     'mrobe100' => {
         name => 'Olympus M-Robe 100',
         status => 3,
