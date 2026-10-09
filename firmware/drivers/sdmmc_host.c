@@ -136,7 +136,9 @@ void sdmmc_host_init(struct sdmmc_host *host,
             host->drive = i;
             host->ops = ops;
             host->controller = controller;
+#ifdef HAVE_HOTSWAP
             host->present = !config->is_removable;
+#endif
             host->enabled = true;
             mutex_init(&host->lock);
 
