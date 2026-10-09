@@ -2,8 +2,8 @@
  * ESP32-S3 external data cache MMU.
  *
  * The 32 MB window at 0x3C000000 is shared by flash rodata and PSRAM. It is
- * bank-switched per 64 KB page by a 512-entry table of 16-bit values at
- * 0x600C5000:
+ * bank-switched per 64 KB page by a 512-entry table of 32-bit values at
+ * 0x600C5000 (DR_REG_MMU_TABLE):
  *
  *   bit 15   target: 0 = flash, 1 = PSRAM
  *   bit 14   invalid
@@ -20,6 +20,8 @@
  ****************************************************************************/
 #include <stdint.h>
 #include "config.h"
+#include "system.h"
+#include "rom_cache.h"
 
 #ifdef CPU_XTENSA
 
@@ -50,7 +52,7 @@ static inline int mmu_index(unsigned int vaddr)
 
 void mmu_init(void)
 {
-    volatile unsigned short *table = (volatile unsigned short *)MMU_TABLE_BASE;
+    volatile uint32_t *table = (volatile uint32_t *)MMU_TABLE_BASE;
 
     /* Cast through an integer rather than arithmetic on the linker arrays: they
      * have unknown size, so `audiobufend - 1` trips -Warray-bounds. */
@@ -65,6 +67,12 @@ void mmu_init(void)
         }
         /* Already valid means the bootloader mapped it (rodata). Leave it. */
     }
+
+    /* A page that was invalid before now points at PSRAM, and any line the cache
+     * kept for that range is stale. ESP-IDF does the same thing after every
+     * esp_mmu_map(). */
+    discard_dcache_range((const void *)audiobuffer,
+                         (unsigned int)((uintptr_t)psramend - (uintptr_t)audiobuffer));
 }
 
 #endif /* CPU_XTENSA */
