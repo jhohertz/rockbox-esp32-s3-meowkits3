@@ -205,6 +205,7 @@ def write_image(out, entry, segments, flash_mode, flash_size_freq):
     out.seek(1)
     out.write(struct.pack("B", total))
     out.seek(0)
+    return total
 
 
 def main(argv):
@@ -227,10 +228,10 @@ def main(argv):
     output = args.output or args.input + ".bin"
 
     with open(output, "wb") as f:
-        write_image(f, entry, segments, FLASH_MODES[args.flash_mode],
+        written = write_image(f, entry, segments, FLASH_MODES[args.flash_mode],
                     FLASH_SIZES[args.flash_size] + FLASH_FREQS[args.flash_freq])
 
-    print("wrote %s: %d segments, entry 0x%08x" % (output, len(segments), entry))
+    print("wrote %s: %d segments, entry 0x%08x" % (output, written, entry))
     return 0
 
 
