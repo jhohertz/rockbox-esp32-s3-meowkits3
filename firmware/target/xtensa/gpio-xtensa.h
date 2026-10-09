@@ -43,7 +43,28 @@
 #define GPIO_FUNC_OUT_SEL(n) (DR_REG_GPIO_BASE + 0x554 + 4u * (n))
 #define GPIO_OEN_FROM_ENABLE (1u << 10)
 
+/* GPIO matrix input selection: one 32-bit slot per SIGNAL, not per pin.
+ *   [5:0] in_sel - which GPIO feeds this signal
+ *   [6]   inv_sel
+ *   [7]   sel    - 1: take the input from the matrix rather than bypassing it
+ * Offsets from ESP-IDF's gpio_reg.h (GPIO_FUNC0_IN_SEL_CFG_REG = base + 0x154).
+ */
+#define GPIO_FUNC_IN_SEL(n) (DR_REG_GPIO_BASE + 0x154 + 4u * (n))
+#define GPIO_IN_FROM_MATRIX (1u << 7)
+
+/* IO MUX: MCU_SEL is bits 14:12 and picks the pad function. GPIO1 and GPIO2
+ * default to UART0 RX/TX, so a driver that wants them as plain GPIO has to write
+ * 0 here. GPIO0 is at base + 0x04, one word per pin.
+ */
+#define DR_REG_IO_MUX_BASE 0x60009000
+#define IO_MUX_PIN(n) (DR_REG_IO_MUX_BASE + 0x04 + 4u * (n))
+#define IO_MUX_MCU_SEL (1u << 12)   /* MCU_SEL: 0 = GPIO function */
+#define IO_MUX_FUN_IE  (1u << 9)    /* input enable of the pad */
+
 /* Signal indices from soc/gpio_sig_map.h */
+#define SIG_I2C0_SCL     89
+#define SIG_I2C0_SDA     90
+
 #define SIG_FSPICLK_OUT  101   /* GPSPI2 clock */
 #define SIG_FSPIQ_OUT    102   /* GPSPI2 MOSI */
 #define SIG_FSPID_OUT    103   /* GPSPI2 MISO */
@@ -93,5 +114,19 @@ static inline void gpio_matrix_out(int pin, int signal)
 {
     gpio_write(GPIO_FUNC_OUT_SEL(pin), ((uint32_t)signal & 0x1FF) | GPIO_OEN_FROM_ENABLE);
 }
+
+/* Route a pin's input to a peripheral signal. The slot is indexed by signal. */
+static inline void gpio_matrix_in(int pin, int signal)
+{
+    gpio_write(GPIO_FUNC_IN_SEL(signal), ((uint32_t)pin & 0x3F) | GPIO_IN_FROM_MATRIX);
+}
+
+/* Pick the GPIO function for a pad, which is not the default for every pin. */
+static inline void io_mux_select_gpio(int pin)
+{
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUN_IE);
+}
+
 
 #endif /* GPIO_XTENSA_H */
