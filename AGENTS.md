@@ -566,7 +566,7 @@ Sequence, in order, with the values ESP-IDF uses:
 | Step | Register | Value |
 |---|---|---|
 | core clock | `SPI_MEM_CORE_CLK_SEL_REG(0)` +0xEC | 2 = 160 MHz (shared by SPI0/SPI1) |
-| flash clock | `SPI_MEM_CLOCK_REG(0)` +0x14 | div 2 = 80 MHz, the module's rated QSPI speed |
+| flash clock | `SPI_MEM_CLOCK_REG(0)` +0x14 | div 8 = 20 MHz during bring-up, div 2 = 80 MHz afterwards |
 | bring-up clock | `SPI_MEM_CLOCK_REG(1)` +0x14 | div 8 = 20 MHz |
 | CS1 pad | IO MUX +0x6C (`PERIPHS_IO_MUX_SPICS1_U`) | MCU_SEL = 0 (`FUNC_SPICS1_SPICS1`), FUN_DRV = 3 |
 | clock pad drive | `SPI_MEM_DATE_REG(0)` +0x3FC | `SPICLK_PAD_DRV_CTL_EN` (bit 4), FMEM/SMEM FUN_DRV = 3 |
@@ -587,6 +587,12 @@ register write `0xC0C0`. Command phase 16 bits, address phase 32 bits, read dumm
 bits (`2*(10-1)`), write dummy 8 bits (`2*(5-1)`), register dummy 8 bits. The dummy
 cyclelen fields are stored as *bits minus one* because octal transfers 8 bits per
 cycle.
+
+The flash clock is slowed to 20 MHz for the duration of the bring-up and restored to
+80 MHz afterwards. SPI0 and SPI1 share the flash read FSM - ESP-IDF's
+`mspi_timing_enter_low_speed_mode()` says so outright, and slows both instances
+rather than just SPI1. Programming octal phases on SPI1 while SPI0 is still at 80
+MHz is the exact situation that comment is warning about.
 
 Two things worth knowing:
 

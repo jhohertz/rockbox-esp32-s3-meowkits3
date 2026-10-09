@@ -240,9 +240,13 @@ bool psram_present(void)
 
 bool psram_init(void)
 {
-    /* SPI0 and SPI1 share the core clock selection. */
+    /* SPI0 and SPI1 share the core clock selection, and they also share the flash
+     * read FSM: ESP-IDF's own comment on mspi_timing_enter_low_speed_mode() warns
+     * that slowing SPI1 alone breaks SPI0 if SPI0 is still running fast. So the
+     * flash path is slowed for the duration of the bring-up and restored at the
+     * end, rather than left at its final speed while SPI1 talks octal. */
     wr(SPI_CORE_CLK_SEL(0), 2);                /* 160 MHz */
-    set_spi_clock(0, FLASH_DIV);
+    set_spi_clock(0, BRINGUP_DIV);
     set_spi_clock(1, BRINGUP_DIV);
 
     init_psram_pins();
@@ -309,6 +313,7 @@ bool psram_init(void)
                         SCMD_SADDR_OCT | SCMD_SDOUT_OCT | SCMD_SDIN_OCT);
 
     set_psram_clock(PSRAM_DIV);
+    set_spi_clock(0, FLASH_DIV);
 
     s_psram_present = true;
     return true;
