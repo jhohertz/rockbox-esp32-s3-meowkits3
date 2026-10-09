@@ -298,6 +298,18 @@ an I²C IO expander** (PCA9557 at 0x19), so a Rockbox target cannot treat the di
 as a plain SPI device; and the audio path is an I2S DAC with no codec controller of its
 own, which is a different shape from every existing Rockbox audio backend.
 
+Three more that the reference firmware makes clear but a pin list does not:
+
+- **The panel's GRAM is 240×320 and it is driven as 320×240.** LovyanGFX is configured
+  with `panel_width 240`, `panel_height 320` and `offset_rotation 3`; the rotation table
+  then swaps the dimensions. `LCD_WIDTH`/`LCD_HEIGHT` must match the used orientation,
+  not the panel's native one.
+- **The backlight is active low.** `initBacklight()` writes duty 512 (full HIGH) to turn
+  it *off*, and `setBrightness(255)` writes 0.
+- **GPSPI's clock does not come from the 240 MHz CPU clock.** `CLK_GATE` bit 2 selects
+  PLL_CLK_80M, cleared gives XTAL (40 MHz), and `CLK_EQU_SYSCLK` uses that source
+  undivided. The reference driver runs the display at 80 MHz.
+
 ### I2S and GDMA
 
 The I2S peripheral does have a DMA controller — "DMA controller that allows stream
