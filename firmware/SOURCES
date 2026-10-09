@@ -500,6 +500,8 @@ drivers/rtc/rtc_d2.c
 drivers/rtc/rtc_imx233.c
 #elif (CONFIG_RTC == RTC_STM32H743)
 drivers/rtc/rtc_stm32h7.c
+#elif (CONFIG_RTC == RTC_PCF8563)
+drivers/rtc/rtc_pcf8563.c
 #endif /* (CONFIG_RTC == RTC_) */
 #endif /* PLATFORM_NATIVE */
 
@@ -667,6 +669,7 @@ target/xtensa/rom_cache.S
 target/xtensa/vectors.S
 target/xtensa/irq-xtensa.c
 target/xtensa/system-xtensa.c
+target/xtensa/power-xtensa.c
 target/xtensa/timer-xtensa.c
 #if CONFIG_I2C == I2C_XTENSA
 target/xtensa/i2c-xtensa.c
@@ -682,6 +685,9 @@ target/xtensa/debug-xtensa.c
 target/xtensa/usb-xtensa.c
 #ifdef HAVE_SDMMC_HOST
 target/xtensa/sdmmc-xtensa.c
+#endif
+#ifdef HAVE_AXP173
+drivers/axp173.c
 #endif
 #ifdef HAVE_LCD_BITMAP
 target/xtensa/spi-xtensa.c
