@@ -501,7 +501,16 @@ I2C master  0x60013000
 - **ESP32-S3 GPIO has no internal pull-up registers.** They are absent from the SVD and
   from ESP-IDF's `gpio_reg.h`, and `soc_caps.h` has no `SOC_GPIO_SUPPORT_PULL_UP` for
   this chip. The reference firmware calls `GPIO_PULLUP_ENABLE`, which cannot be relied
-  on here — external pull-ups on SDA/SCL are required for bit-banged I²C.
+  on here. The schematic has 10KΩ pull-ups on SDA/SCL (R30/R31 to EXP_3V3), so those
+  are load-bearing for the I²C peripheral.
+- **The GPIO matrix input slots are indexed by signal, not by pin** (`IN_SEL` array at
+  `GPIO_BASE + 0x154`, one word per signal, field `in_sel` is the GPIO number and bit 7
+  selects the matrix). The output slots are indexed by pin (`OUT_SEL` at `GPIO_BASE +
+  0x554`). A driver that only writes the output half leaves the controller unable to see
+  the bus.
+- **GPIO1 and GPIO2 default to UART0 RX/TX** through the IO MUX (`MCU_SEL`, bits 14:12,
+  at `IO_MUX_BASE + 0x04 + 4*pin`). A driver that uses them as I²C has to write 0 there
+  first.
 - `rsr.intlevel` / `wsr.intlevel` do not exist on the esp32s3 core config; the level is
   the low 13 bits of `PS`.
 - Boot: **decided — inherit ESP-IDF's second-stage bootloader.** Rockbox is the
@@ -527,6 +536,47 @@ I2C master  0x60013000
   supports ESP32.
 
 ---
+
+### The I2C master peripheral is a command-list machine
+
+I2C0 is at `0x60013000` (`I2C_EXT0_CLK_EN` is bit 7 of `SYSTEM_PERIP_CLK_EN0` at
+`0x600C0018`). Signals: SCL = 89, SDA = 90. The command registers are 8 slots at
+`base + 0x58`, each 14 bits: `byte_num[7:0]`, `ack_check_en[8]`, `ack_exp[9]`,
+`ack_val[10]`, `op_code[13:11]`, plus `DONE` at bit 31 which hardware sets when a
+command has executed and software must clear before writing a new one.
+
+`op_code`: 6 = RSTART, 1 = WRITE, 3 = READ, 2 = STOP, 4 = END.
+
+The CMD_Controller reads the slots in order and **stops at STOP or END**. That is
+the whole shape of the device: you program a transaction, latch it with
+`CONF_UPGATE` (bit 11 of `CTR`, because the registers are in the APB domain and the
+controller in the asynchronous `I2C_SCLK` domain), trigger with `TRANS_START` (bit
+5), and wait for `TRANS_COMPLETE` (bit 7 of `INT_RAW`) or `NACK` (bit 10).
+
+Consequences worth remembering:
+
+- In master mode the slave address and the R/W bit are **part of TX RAM**, not a
+  separate register, so `byte_num` counts them. A write of N data bytes with a
+  register address is `byte_num = N + 2`.
+- A read is split so the master ACKs every byte but the last: `READ(N-1)` with
+  `ack_val = 0`, then `READ(1)` with `ack_val = 1`. ESP-IDF errors out if a READ
+  immediately before STOP has `ack_val = 0`.
+- `byte_num` is ignored for RSTART, STOP and END, so a lone RSTART is legal — but a
+  command still cannot be executed on its own, so Rockbox's byte-at-a-time API
+  (`i2c_start`/`i2c_outb`/`i2c_inb`/`i2c_getack`) cannot be implemented on this
+  hardware. `i2c_inb()` cannot return a byte and `i2c_getack()` cannot report an ACK
+  until the whole list has run. The transaction-level API maps cleanly, and that is
+  all this target uses.
+- TX and RX RAM are 32 × 8 bits, each byte occupying a whole word at `base + 0x100`
+  and `base + 0x180`. Double addressing requires non-FIFO access, so use direct
+  addressing (`NONFIFO_EN`, bit 10 of `FIFO_CONF`).
+- The I2C module clock is **XTAL (40 MHz)** when `SCLK_SEL` is 0, not APB_CLK, so the
+  timing registers are XTAL cycles and have nothing to do with `cpu_frequency`. At
+  100 kHz that gives `clkm_div = 1`, half-cycle 200, `scl_wait_high` 98,
+  `scl_high` 102, `sda_hold` 50, `sda_sample` 100.
+- Bus recovery is built in: `SCL_RST_SLV_NUM` / `SCL_RST_SLV_EN` in `SCL_SP_CONF`
+  (base + 0x80) generate N SCL pulses while idle, which is exactly the nine-pulse
+  recovery the spec asks for.
 
 ## 6. Simulator
 
