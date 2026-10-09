@@ -38,13 +38,12 @@
 #include "pcm_sampr.h"
 #include "pcm_mixer.h"
 
-/* MeowKit wiring (bsp/config.h) */
-#define PIN_I2S_MCLK 15
-#define PIN_I2S_BCLK 14
-#define PIN_I2S_WS   13
-#define PIN_I2S_DOUT 16
+#ifdef HAVE_RECORDING
+#include "es7210.h"
+#endif
 
-/* MCLK, SLOT_BITS, SLOT_NUM and I2S_BCLK_DIV come from i2s-xtensa.h. */
+/* MCLK, SLOT_BITS, SLOT_NUM, I2S_BCLK_DIV, the pin map and the descriptor layout
+ * all come from i2s-xtensa.h. */
 
 /* XTAL is the clock source. APLL would be more accurate but needs the clock
  * tree, which Rockbox does not own. */
@@ -54,16 +53,6 @@
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
-
-struct gdma_desc {
-    uint32_t dw0;      /* size[11:0], length[23:12], err_eof[28], suc_eof[30], owner[31] */
-    uint32_t buffer;
-    uint32_t next;
-};
-
-/* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA sends. */
-#define DESC_SUC_EOF (1u << 30)
-#define DESC_OWNER   (1u << 31)
 
 /* Ring of two descriptors, one per half of the ping-pong pair. */
 /* Plain .bss: app.lds places it at DRAMORIG = 0x3FC88000, which is inside the
@@ -86,6 +75,10 @@ static int locked;
 static bool playing;
 
 static int div_integ, div_num, div_denom;
+
+#ifdef HAVE_RECORDING
+static void program_rx_div(void);
+#endif
 
 /* Best rational approximation of freq_error / exp_freq with denominator < max.
  * Ported from ESP-IDF's hal_utils_calc_clk_div_frac_accurate. */
@@ -145,10 +138,12 @@ static void program_div(void)
     unsigned y = z ? div_denom % z : 0;
 
     /* ESP-IDF's workaround for the divider latching inaccurately when the ratio
-     * jumps: switch to a small division (2, x=0, y=1, z=0, yn1=0) first, then to
-     * the target coefficients, then to the target integer part.
+     * jumps from a low sample rate to a high one: write a coefficient set that no
+     * real division could produce, then the target. (7, 317, 7, 3, 0) is the value
+     * ESP-IDF uses; it corresponds to a division of 7 + 3/3 * (317 + 1) which is
+     * not reachable from any integer/numerator/denominator triple.
      */
-    set_raw_div(2, 0, 1, 0, 0);
+    set_raw_div(7, 317, 7, 3, 0);
     set_raw_div(div_integ, x, y, z, yn1);
 }
 
@@ -157,6 +152,13 @@ void i2s_set_frequency(unsigned long rate)
     calc_div(rate * MCLK_MULTIPLE);
     program_div();
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
+
+    /* The ADC is clocked from the same MCLK the transmitter drives out, so it
+     * has to be reprogrammed whenever the rate changes. */
+#ifdef HAVE_RECORDING
+    program_rx_div();
+    es7210_set_frequency(rate);
+#endif
 }
 
 static void arm(int i, unsigned long len)
@@ -241,7 +243,76 @@ void i2s_init(void)
         ;
 
     gdma_init();
+
+#ifdef HAVE_RECORDING
+    i2s_rx_init();
+#endif
 }
+
+#ifdef HAVE_RECORDING
+/*
+ * The receiver half of the bus. It lives on I2S0 because the ESP32-S3 signal map
+ * gives a single data signal per port (I2S1I_SD_IN and I2S1O_SD_OUT are both 30),
+ * so a second data line has to come from the other port.
+ *
+ * The receiver runs in slave mode and is fed the transmitter's BCLK and WS back
+ * through the GPIO matrix, which keeps the ADC's frames and the DAC's frames in
+ * lock-up rather than two free-running dividers that merely agree on frequency.
+ */
+static void program_rx_div(void)
+{
+    unsigned yn1 = div_num * 2 > div_denom;
+    unsigned z = yn1 ? div_denom - div_num : div_num;
+    unsigned x = z ? div_denom / z - 1 : 0;
+    unsigned y = z ? div_denom % z : 0;
+
+    wr(I2S0_RX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
+                          (CLKM_CONF_CLK_SEL_XTAL << 27) | div_integ);
+    wr(I2S0_RX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
+    wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
+    while (rd(I2S0_RX_CONF) & RX_CONF_UPDATE)
+        ;
+}
+
+void i2s_rx_init(void)
+{
+    wr(SYSTEM_PERIP_CLK_EN0, rd(SYSTEM_PERIP_CLK_EN0) | CLK_EN_I2S0);
+
+    /* A pad can drive a matrix input while still being driven as an output, so
+     * pins 13 and 14 do double duty: the transmitter drives them and the receiver
+     * reads them back. */
+    gpio_input_enable(PIN_I2S_DIN, 1);
+    gpio_input_enable(PIN_I2S_WS, 1);
+    gpio_input_enable(PIN_I2S_BCLK, 1);
+
+    gpio_matrix_in(PIN_I2S_DIN,  SIG_I2S0I_SD_IN);
+    gpio_matrix_in(PIN_I2S_WS,   SIG_I2S0I_WS_IN);
+    gpio_matrix_in(PIN_I2S_BCLK, SIG_I2S0I_BCK_IN);
+
+    wr(I2S0_RX_CONF1, ((SLOT_BITS - 1) << 13) |       /* rx_bits_mod */
+                      ((SLOT_BITS - 1) << 24) |       /* rx_tdm_chan_bits */
+                      ((SLOT_BITS - 1) << 18) |       /* rx_half_sample_bits */
+                      ((I2S_BCLK_DIV - 1) << 7) |     /* rx_bclk_div_num */
+                      (1u << 29));                    /* rx_msb_shift */
+
+    wr(I2S0_RX_TDM_CTRL, ((SLOT_NUM - 1) << 16) | 0x3);
+
+    /* rx_stop_en, rx_pcm_bypass and rx_left_align are 1 at reset and a bare write
+     * of this register clears them; with rx_pcm_bypass = 0 and rx_pcm_conf = 0 the
+     * data goes through the A-law compressor.
+     */
+    wr(I2S0_RX_CONF, (1u << 19) |                    /* rx_tdm_en */
+                     RX_CONF_SLAVE |
+                     RX_CONF_LEFT_ALIGN |
+                     RX_CONF_STOP_MODE |
+                     RX_CONF_PCM_BYPASS);
+    wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
+    while (rd(I2S0_RX_CONF) & RX_CONF_UPDATE)
+        ;
+
+    program_rx_div();
+}
+#endif /* HAVE_RECORDING */
 
 static void start_tx(void)
 {
@@ -357,6 +428,13 @@ static void sink_init(void)
     i2s_init();
 
     audiohw_preinit();
+
+    /* Reset and configure the ADC before the first rate is programmed, so the
+     * clock registers land on a chip that has actually been reset. */
+#ifdef HAVE_RECORDING
+    es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]);
+#endif
+
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
 }
 

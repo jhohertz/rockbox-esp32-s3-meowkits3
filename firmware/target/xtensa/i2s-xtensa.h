@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#define I2S0_BASE   0x6000F000
 #define I2S1_BASE   0x6002D000
 #define GDMA_BASE   0x6003F000
 #define SYSTEM_BASE 0x600C0000
@@ -18,6 +19,7 @@
  * enable them: Rockbox has to. */
 #define SYSTEM_PERIP_CLK_EN0 (SYSTEM_BASE + 0x18)
 #define SYSTEM_PERIP_CLK_EN1 (SYSTEM_BASE + 0x1C)
+#define CLK_EN_I2S0 (1u << 4)
 #define CLK_EN_I2S1 (1u << 21)
 #define CLK_EN_DMA  (1u << 6)
 
@@ -36,6 +38,49 @@
 #define CLKM_CONF_CLK_EN     (1u << 29)
 #define CLKM_CONF_CLK_ACTIVE (1u << 26)
 #define CLKM_CONF_CLK_SEL_XTAL 0   /* 0: XTAL, 1: APLL, 2: CLK160, 3: I2S_MCLK_in */
+
+/* I2S0, RX side. The receiver runs in slave mode: it takes BCLK and WS from the
+ * GPIO matrix instead of generating them, so the ADC is locked to the frame the
+ * transmitter is already driving out of pins 13/14.
+ */
+#define I2S0_RX_CONF          (I2S0_BASE + 0x20)
+#define I2S0_RX_CONF1         (I2S0_BASE + 0x28)
+#define I2S0_RX_CLKM_CONF     (I2S0_BASE + 0x30)
+#define I2S0_RX_CLKM_DIV_CONF (I2S0_BASE + 0x38)
+#define I2S0_RX_TDM_CTRL      (I2S0_BASE + 0x50)
+
+#define RX_CONF_UPDATE       (1u << 8)
+#define RX_CONF_START        (1u << 2)
+#define RX_CONF_FIFO_RESET   (1u << 1)
+#define RX_CONF_RESET        (1u << 0)
+#define RX_CONF_SLAVE        (1u << 3)   /* clock from the incoming BCLK/WS */
+#define RX_CONF_LEFT_ALIGN   (1u << 15)  /* reset default, must be kept */
+#define RX_CONF_STOP_MODE    (1u << 13)  /* reset default, must be kept */
+#define RX_CONF_PCM_BYPASS   (1u << 12)  /* reset default, must be kept */
+#define RX_CONF_TDM_EN       (1u << 19)
+
+/* GDMA RX channel 0 */
+#define GDMA_RX_CONF0   (GDMA_BASE + 0x00)
+#define GDMA_RX_CONF1   (GDMA_BASE + 0x04)
+#define GDMA_RX_INT_ST  (GDMA_BASE + 0x0C)
+#define GDMA_RX_INT_ENA (GDMA_BASE + 0x10)
+#define GDMA_RX_INT_CLR (GDMA_BASE + 0x14)
+#define GDMA_RX_LINK    (GDMA_BASE + 0x20)
+#define GDMA_RX_PERI_SEL (GDMA_BASE + 0x48)
+
+/* IN_DONE (bit 0) is the last data of a descriptor landing in memory; IN_EOF (bit 1)
+ * fires when the data has merely been read out of the peripheral. */
+#define GDMA_INT_IN_DONE    (1u << 0)
+#define GDMA_INT_IN_EOF     (1u << 1)
+#define GDMA_INT_IN_DSCR_ERR (1u << 3)
+#define GDMA_INT_IN_DSCR_EMPTY (1u << 4)
+
+/* The IN link has auto_ret between addr and stop, which shifts stop and start up by
+ * one relative to the OUT link. */
+#define GDMA_RX_LINK_START  (1u << 22)
+#define GDMA_RX_LINK_STOP   (1u << 21)
+
+#define GDMA_TRIG_I2S0 3
 
 /* GDMA TX channel 0 */
 #define GDMA_TX_CONF0   (GDMA_BASE + 0x60)
@@ -69,10 +114,35 @@
  * is where .bss is placed. The buffer field is a full 32-bit address. */
 #define GDMA_MAX_DESC_LEN 4095
 
+/* A descriptor cannot exceed 4095 bytes, and the DMA moves in whole words, so the
+ * recording chunk is the largest multiple of 4 below the limit: 1023 stereo frames.
+ */
+#define GDMA_RX_CHUNK 4092
+
+/* MeowKit wiring (bsp/config.h). */
+#define PIN_I2S_MCLK 15
+#define PIN_I2S_BCLK 14
+#define PIN_I2S_WS   13
+#define PIN_I2S_DOUT 16
+#define PIN_I2S_DIN  3   /* ES7210 -> I2S0 receive */
+
+struct gdma_desc {
+    uint32_t dw0;      /* size[11:0], length[23:12], err_eof[28], suc_eof[30], owner[31] */
+    uint32_t buffer;
+    uint32_t next;
+};
+
+/* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA moves. */
+#define DESC_SUC_EOF (1u << 30)
+#define DESC_OWNER   (1u << 31)
+
 #define OWNER_CPU 0
 #define OWNER_DMA 1
 
 void i2s_init(void);
 void i2s_set_frequency(unsigned long rate);
+#ifdef HAVE_RECORDING
+void i2s_rx_init(void);
+#endif
 
 #endif /* I2S_XTENSA_H */
