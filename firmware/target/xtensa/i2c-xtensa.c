@@ -157,7 +157,8 @@ static bool build_write(int device, const unsigned char *a, int na,
 {
     begin_list();
 
-    add_cmd(OP_RSTART, 0, 0, 0, 0);
+    if (!add_cmd(OP_RSTART, 0, 0, 0, 0))
+        return false;
     if (!add_tx((unsigned char)((device << 1) & 0xFF)))
         return false;
 
@@ -173,8 +174,13 @@ static bool build_write(int device, const unsigned char *a, int na,
 }
 
 /* A read is split so the master ACKs every byte but the last. */
+/* RX RAM is 32 words, one received byte per word, and byte_num is eight bits. A
+ * longer read would wrap the RAM and report success on garbage. */
 static bool add_read(int count)
 {
+    if (count > RAM_SIZE)
+        return false;
+
     if (count > 1)
         if (!add_cmd(OP_READ, (unsigned)(count - 1), 0, 0, ACK))
             return false;
@@ -186,7 +192,8 @@ static bool build_read(int device, const unsigned char *pre, int npre, int count
 {
     begin_list();
 
-    add_cmd(OP_RSTART, 0, 0, 0, 0);
+    if (!add_cmd(OP_RSTART, 0, 0, 0, 0))
+        return false;
     if (!add_tx((unsigned char)((device << 1) & 0xFF)))
         return false;
 
@@ -200,7 +207,8 @@ static bool build_read(int device, const unsigned char *pre, int npre, int count
     /* Restart, then send the address again with the R bit set. The pointer is
      * already past the bytes the first WRITE consumed, so this byte is the next
      * one in RAM. */
-    add_cmd(OP_RSTART, 0, 0, 0, 0);
+    if (!add_cmd(OP_RSTART, 0, 0, 0, 0))
+        return false;
     if (!add_tx((unsigned char)(((device << 1) & 0xFF) | 1)))
         return false;
     if (!add_cmd(OP_WRITE, 1, 1, ACK, 0))
