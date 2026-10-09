@@ -33,27 +33,34 @@ static const struct button_mapping button_context_standard[]  = {
     /* Select axis: left backs out, right commits. */
     { ACTION_STD_OK,          BUTTON_A|BUTTON_REL,          BUTTON_A },
     { ACTION_STD_OK,          BUTTON_RIGHT,                 BUTTON_NONE },
-    { ACTION_STD_CANCEL,      BUTTON_B,                     BUTTON_NONE },
     { ACTION_STD_CANCEL,      BUTTON_LEFT,                  BUTTON_NONE },
 
-    /* The same four directions from the touch grid. */
+    /* B is the menu key: tap it for the main menu, hold it for the quick
+     * screen. That is what the panel's top-left and bottom-left cells do. */
+    { ACTION_STD_MENU,        BUTTON_B|BUTTON_REL,          BUTTON_B },
+    { ACTION_STD_QUICKSCREEN, BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
+
+    /* The same four directions from the touch grid. keymap-touchscreen.c
+     * claims the left cell on a press and the right one on release; the top and
+     * bottom cells only get here, in the list and tree contexts. */
     { ACTION_STD_PREV,        BUTTON_TOPMIDDLE,             BUTTON_NONE },
     { ACTION_STD_PREVREPEAT,  BUTTON_TOPMIDDLE|BUTTON_REPEAT, BUTTON_NONE },
     { ACTION_STD_NEXT,        BUTTON_BOTTOMMIDDLE,          BUTTON_NONE },
     { ACTION_STD_NEXTREPEAT,  BUTTON_BOTTOMMIDDLE|BUTTON_REPEAT, BUTTON_NONE },
     { ACTION_STD_CANCEL,      BUTTON_MIDLEFT,               BUTTON_NONE },
-    { ACTION_STD_OK,          BUTTON_MIDRIGHT,              BUTTON_NONE },
+    { ACTION_STD_OK,          BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
 
     { ACTION_STD_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
-    { ACTION_STD_MENU,        BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
-    { ACTION_STD_QUICKSCREEN, BUTTON_B|BUTTON_REL,          BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_standard */
 
 static const struct button_mapping button_context_wps[]  = {
-    { ACTION_WPS_PLAY,        BUTTON_A,                     BUTTON_NONE },
-    { ACTION_WPS_PLAY,        BUTTON_A|BUTTON_REPEAT,       BUTTON_NONE },
-    { ACTION_WPS_STOP,        BUTTON_B,                     BUTTON_NONE },
+    /* Both buttons commit on release, so holding one never fires the tap
+     * action first. */
+    { ACTION_WPS_PLAY,        BUTTON_A|BUTTON_REL,          BUTTON_A },
+    { ACTION_WPS_STOP,        BUTTON_B|BUTTON_REL,          BUTTON_B },
+    { ACTION_WPS_MENU,        BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
+    { ACTION_WPS_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
 
     /* There is no volume key on this board, so the wheel axis is volume here,
      * the same as the top and bottom cells of the grid. */
@@ -70,15 +77,12 @@ static const struct button_mapping button_context_wps[]  = {
      * right cells in keymap-touchscreen.c. */
     { ACTION_WPS_SKIPNEXT,    BUTTON_RIGHT|BUTTON_REL,      BUTTON_RIGHT },
     { ACTION_WPS_SKIPPREV,    BUTTON_LEFT|BUTTON_REL,       BUTTON_LEFT },
-    { ACTION_WPS_BROWSE,      BUTTON_A|BUTTON_REL,          BUTTON_A },
-    { ACTION_WPS_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
-    { ACTION_WPS_MENU,        BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_wps */
 
 static const struct button_mapping button_context_yesno[] = {
-    { ACTION_YESNO_ACCEPT,    BUTTON_A,                     BUTTON_NONE },
-    { ACTION_STD_CANCEL,      BUTTON_B,                     BUTTON_NONE },
+    { ACTION_YESNO_ACCEPT,    BUTTON_A|BUTTON_REL,          BUTTON_A },
+    { ACTION_STD_CANCEL,      BUTTON_B|BUTTON_REL,          BUTTON_B },
     LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_STD)
 }; /* button_context_yesno */
 
@@ -93,7 +97,7 @@ static const struct button_mapping button_context_settings[] = {
     { ACTION_STD_PREV,            BUTTON_LEFT,              BUTTON_NONE },
     { ACTION_STD_NEXT,            BUTTON_RIGHT,             BUTTON_NONE },
     { ACTION_STD_OK,              BUTTON_A|BUTTON_REL,      BUTTON_A },
-    { ACTION_STD_CANCEL,          BUTTON_B,                 BUTTON_NONE },
+    { ACTION_STD_CANCEL,          BUTTON_B|BUTTON_REL,      BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_settings */
 
@@ -115,7 +119,7 @@ static const struct button_mapping stick_context_settings_lr_inc[] = {
     { ACTION_STD_PREV,            BUTTON_TOPMIDDLE,           BUTTON_NONE },
     { ACTION_STD_NEXT,            BUTTON_BOTTOMMIDDLE,        BUTTON_NONE },
     { ACTION_STD_OK,              BUTTON_A|BUTTON_REL,        BUTTON_A },
-    { ACTION_STD_CANCEL,          BUTTON_B,                   BUTTON_NONE },
+    { ACTION_STD_CANCEL,          BUTTON_B|BUTTON_REL,        BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* stick_context_settings_lr_inc */
 
