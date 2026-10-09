@@ -366,6 +366,7 @@ Lyre prototype 1 */
 #define RTC_NANO4G   26 /* Dialog Semiconductor D1759 ??? */
 #define RTC_STM32H743 27
 #define RTC_X1600    28 /* Ingenic X1600 */
+#define RTC_PCF8563   28 /* NXP PCF8563 over the generic I2C API */
 
 /* USB On-the-go */
 #define USBOTG_M66591   6591 /* M:Robe 500 */

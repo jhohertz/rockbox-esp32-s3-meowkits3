@@ -2,7 +2,7 @@
  * This config file is for the MeowKit ESP32-S3 (Xtensa LX7).
  *
  * Only the parts that are actually implemented are enabled. Drivers still missing:
- * SDMMC, touchscreen, buttons, PMU, RTC.
+ * touchscreen (FT6336), microphone recording (ES7210), USB.
  */
 
 /* For Rolo and boot loader */
@@ -24,6 +24,12 @@
 #define LCD_PIXELFORMAT RGB565
 
 #define HAVE_BACKLIGHT
+/* GPIO 42 is routed through the GPIO matrix to LEDC channel 7, so the backlight is
+ * a PWM duty rather than a level. The LED is active low. */
+#define HAVE_BACKLIGHT_BRIGHTNESS
+#define MIN_BRIGHTNESS_SETTING     0
+#define MAX_BRIGHTNESS_SETTING     255
+#define DEFAULT_BRIGHTNESS_SETTING 200
 
 /* The framebuffer cannot live in .bss: the static data region is capped at 337 KB
  * and the framebuffer alone is 150 KB. Put it in PSRAM via the linker. */
@@ -45,6 +51,22 @@
 
 #define CONFIG_KEYPAD ESP32S3_PAD
 
+/* PCF8563 on the I2C bus at 0x51. It is powered from the PMU's LDO1, so it keeps
+ * running while the SoC is off. */
+#define CONFIG_RTC RTC_PCF8563
+
+/* AXP173 at 0x34: supplies the board, measures the battery, and owns the power
+ * button. Charging is controlled by the chip; Rockbox only monitors it. */
+#define CONFIG_CHARGING CHARGING_MONITOR
+#define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE)
+#define HAVE_AXP173
+
+#define BATTERY_CAPACITY_DEFAULT 1400 /* mAh, per the board's cell */
+#define BATTERY_CAPACITY_MIN     1400
+#define BATTERY_CAPACITY_MAX     1400
+#define BATTERY_CAPACITY_INC     0
+
+
 /* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA
 
@@ -53,6 +75,10 @@
 #define HW_SAMPR_CAPS SAMPR_CAP_ALL_96
 
 #define HAVE_ES8311
+
+/* The NS4150B amplifier sits between the codec and the speaker and is enabled from
+ * the PCA9557 expander. Without it there is no sound at all. */
+#define HAVE_SPEAKER
 
 /* One volume register for both channels, so the codec has mono volume. The
  * AUDIOHW_SETTING itself lives in es8311.h, which audiohw.h includes after
