@@ -7,7 +7,8 @@
 #
 
 XTENSASUPPORTLIB_DIR := $(ROOTDIR)/lib/xtensa_support
-XTENSASUPPORTLIB_SRC := $(XTENSASUPPORTLIB_DIR)/xtensa_support.c
+XTENSASUPPORTLIB_SRC := $(XTENSASUPPORTLIB_DIR)/xtensa_support.c \
+                       $(XTENSASUPPORTLIB_DIR)/softfloat.c
 XTENSASUPPORTLIB_OBJ := $(call c2obj, $(XTENSASUPPORTLIB_SRC))
 XTENSASUPPORTLIB := $(BUILDDIR)/lib/libxtensa_support.a
 
