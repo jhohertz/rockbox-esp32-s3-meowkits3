@@ -676,6 +676,10 @@ target/xtensa/i2c-xtensa.c
 target/xtensa/pca9557.c
 #endif
 target/xtensa/i2s-xtensa.c
+#ifdef HAVE_RECORDING
+target/xtensa/es7210.c
+target/xtensa/pcm-xtensa.c
+#endif
 target/xtensa/es8311.c
 target/xtensa/audiohw-xtensa.c
 target/xtensa/button-xtensa.c

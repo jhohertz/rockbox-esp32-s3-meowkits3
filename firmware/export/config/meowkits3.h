@@ -2,7 +2,7 @@
  * This config file is for the MeowKit ESP32-S3 (Xtensa LX7).
  *
  * Only the parts that are actually implemented are enabled. Drivers still missing:
- * touchscreen (FT6336), microphone recording (ES7210), USB.
+ * touchscreen (FT6336), USB.
  */
 
 /* For Rolo and boot loader */
@@ -75,6 +75,17 @@
 #define HW_SAMPR_CAPS SAMPR_CAP_ALL_96
 
 #define HAVE_ES8311
+
+/* The ES7210 ADC sits on the same I2S bus as the codec, on the receiver half of a
+ * second I2S port. See firmware/target/xtensa/pcm-xtensa.c. */
+#define HAVE_RECORDING
+
+/* The ES7210 is the only input the board has. */
+#define INPUT_SRC_CAPS SRC_CAP_MIC
+
+/* Recording shares the I2S clock with playback, so the reachable rates are the
+ * same set. */
+#define REC_SAMPR_CAPS HW_SAMPR_CAPS
 
 /* The NS4150B amplifier sits between the codec and the speaker and is enabled from
  * the PCA9557 expander. Without it there is no sound at all. */

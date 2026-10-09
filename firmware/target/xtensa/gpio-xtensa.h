@@ -85,6 +85,12 @@
 #define SIG_I2S1O_WS_OUT  29
 #define SIG_I2S1O_SD_OUT  30
 
+/* I2S0's receiver side has its own signals. They matter because the RX data line
+ * would otherwise share signal 30 with the TX data line on the same port. */
+#define SIG_I2S0I_SD_IN   25
+#define SIG_I2S0I_BCK_IN  26
+#define SIG_I2S0I_WS_IN   27
+
 static inline uint32_t gpio_read(uint32_t reg)
 {
     return *(volatile uint32_t *)reg;
