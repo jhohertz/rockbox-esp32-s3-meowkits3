@@ -219,14 +219,17 @@ static void init_psram_pins(void)
 {
     /* CS1, HD, WP, CLK, Q0-Q3, D0-D3 all live on the IO MUX, so only the pad
      * function and drive strength need touching. ESP-IDF uses the strongest
-     * driver on every one of them. */
+     * driver on every one of them; pads 29 (CS0) and 30 (SPICLK) are in the list
+     * too, though the clock pad's drive is overridden by SPI_MEM_DATE_REG below.
+     */
     wr(IO_MUX_SPICS1, (rd(IO_MUX_SPICS1) & ~((7u << 12) | (3u << 10))) | (3u << 10));
 
     for (int pin = 27; pin <= 37; pin++)
         wr(IO_MUX_PIN(pin), (rd(IO_MUX_PIN(pin)) & ~(3u << 10)) | (3u << 10));
 
     /* The SPI clock pad's drive strength is controlled from the SPI block
-     * itself, not the IO MUX. */
+     * itself, not the IO MUX: enable the override, then set both the Ext_RAM and
+     * flash-side clock pads to the strongest driver. */
     wr(SPI_DATE(0), rd(SPI_DATE(0)) | (1u << 4) | 0x3u | (3u << 2));
 }
 
@@ -300,7 +303,8 @@ bool psram_init(void)
     wr(SPI_CACHE_SCTRL(0), (rd(SPI_CACHE_SCTRL(0)) & ~(0x3Fu << 22)) |
                            ((WR_DUMMY_BITS - 1) << 22));
 
-    wr(SPI_SMEM_DDR(0), (rd(SPI_SMEM_DDR(0)) & ~(DDR_RDAT_SWP | DDR_WDAT_SWP)) | DDR_EN);
+    wr(SPI_SMEM_DDR(0), (rd(SPI_SMEM_DDR(0)) & ~(DDR_RDAT_SWP | DDR_WDAT_SWP)) |
+                        DDR_EN | DDR_VAR_DUMMY);
     wr(SPI_SRAM_CMD(0), rd(SPI_SRAM_CMD(0)) | SCMD_SDUMMY_OUT | SCMD_SCMD_OCT |
                         SCMD_SADDR_OCT | SCMD_SDOUT_OCT | SCMD_SDIN_OCT);
 
