@@ -23,6 +23,7 @@
 void timer_irq(void);
 void gdma_irq(void);
 void sdmmc_irq(void);
+void i2c_irq(void);
 #ifdef HAVE_RECORDING
 void gdma_rx_irq(void);
 #endif
@@ -37,6 +38,9 @@ void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 
     if (pending & (1u << XT_SLOT_SDHOST))
         sdmmc_irq();
+
+    if (pending & (1u << XT_SLOT_I2C0))
+        i2c_irq();
 
 #ifdef HAVE_RECORDING
     if (pending & (1u << XT_SLOT_GDMA_IN_CH0))
