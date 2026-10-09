@@ -51,6 +51,45 @@
 #define XT_SLOT_SDHOST          3
 #define XT_SLOT_GDMA_IN_CH0     5
 #define XT_SLOT_I2C0            8
+#define XT_SLOT_USB             9
+
+/*
+ * USB.
+ *
+ * The SoC has a Synopsys DWC2 OTG core at 0x60080000: full speed only, internal
+ * FS PHY, six endpoints (OTG_NUM_EPS), five IN (OTG_NUM_IN_EPS), 256 words of
+ * FIFO RAM (OTG_DFIFO_DEPTH). Architecture 2 means the core has its own internal
+ * DMA, so a transfer is programmed with an address rather than pushed through
+ * the FIFOs by hand.
+ *
+ * The DWC does not own the pins. A "USB wrap" muxes the internal FSLS PHY between
+ * the DWC and the USB serial jtag block, and that mux only answers to software
+ * when the RTC's usb_conf says so. Both have to be set before the DWC can talk
+ * to a host.
+ */
+#define OTGBASE                 0x60080000     /* for usb-designware.h */
+#define XT_USB_DWC_BASE         OTGBASE
+#define XT_USB_WRAP_BASE        0x60039000
+#define XT_USB_OTG_CONF         (XT_USB_WRAP_BASE + 0x00)
+#define XT_USB_PHY_SEL_EXT      (1u << 2)      /* 1 = external PHY */
+#define XT_USB_PAD_ENABLE       (1u << 18)
+
+#define XT_RTC_USB_CONF         (XT_RTCCNTL_BASE + 0x120)
+#define XT_SW_HW_USB_PHY_SEL    (1u << 20)     /* software overrides the mux */
+#define XT_SW_USB_PHY_SEL       (1u << 19)     /* 1 = FSLS PHY to the USB wrap */
+
+#define XT_PERIP_CLK_EN0        (XT_SYSTEM_BASE + 0x18)
+#define XT_USB_CLK_EN           (1u << 23)
+
+#define XT_SRC_USB              38             /* ETS_USB_INTR_SOURCE, +0x098 */
+
+/*
+ * The L1 data cache works in 32-byte lines. DMA buffers have to be aligned to a
+ * line so that committing or invalidating a range never touches a line belonging
+ * to something else.
+ */
+#define CACHEALIGN_BITS         5
+#define CACHEALIGN_SIZE         (1 << CACHEALIGN_BITS)
 
 /*
  * The vector table has to be a physical address the core can fetch from, so it goes
