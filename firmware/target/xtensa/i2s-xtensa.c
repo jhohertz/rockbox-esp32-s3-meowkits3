@@ -126,8 +126,12 @@ static void set_raw_div(unsigned integ, unsigned x, unsigned y, unsigned z, unsi
                          (CLKM_CONF_CLK_SEL_XTAL << 27) | integ);
     wr(I2S_TX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
 
-    /* tx_update latches the APB writes into the I2S clock domain */
-    wr(I2S_TX_CONF, TX_CONF_UPDATE);
+    /* tx_update latches the APB writes into the I2S clock domain. It has to be a
+     * read-modify-write: a bare write of this register also clears tx_start, and
+     * the tx_stop_en/tx_pcm_bypass/tx_left_align reset defaults that the standard
+     * mode depends on.
+     */
+    wr(I2S_TX_CONF, rd(I2S_TX_CONF) | TX_CONF_UPDATE);
     while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
         ;
 }
@@ -140,11 +144,11 @@ static void program_div(void)
     unsigned x = z ? div_denom / z - 1 : 0;
     unsigned y = z ? div_denom % z : 0;
 
-    /* ESP-IDF writes this coefficient pair before the real one. The divider
-     * latches inaccurately when the ratio jumps from a low sample rate to a high
-     * one, and an intermediate value that no rate could produce resets the state.
+    /* ESP-IDF's workaround for the divider latching inaccurately when the ratio
+     * jumps: switch to a small division (2, x=0, y=1, z=0, yn1=0) first, then to
+     * the target coefficients, then to the target integer part.
      */
-    set_raw_div(7, 317, 7, 3, 0);
+    set_raw_div(2, 0, 1, 0, 0);
     set_raw_div(div_integ, x, y, z, yn1);
 }
 
