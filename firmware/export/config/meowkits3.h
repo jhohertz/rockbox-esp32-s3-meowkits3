@@ -2,7 +2,7 @@
  * This config file is for the MeowKit ESP32-S3 (Xtensa LX7).
  *
  * Only the parts that are actually implemented are enabled. Drivers still missing:
- * touchscreen (FT6336), USB.
+ * USB.
  */
 
 /* For Rolo and boot loader */
@@ -82,6 +82,27 @@
 
 /* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA
+
+/* The peripheral is a command-list machine: a transaction is programmed whole and
+ * executed by the CMD_Controller. That is exactly the shape of an i2c_descriptor,
+ * so the asynchronous layer is the natural fit and the synchronous API is built on
+ * it. One bus is wired to the outside world.
+ */
+#define HAVE_I2C_ASYNC
+
+/* FT6336 capacitive touch at 0x38. Its INT pin is left unconnected on this board,
+ * so the controller is polled from the button tick instead of interrupting.
+ */
+#define HAVE_TOUCHSCREEN
+#define HAVE_FT6x06
+#define FT6x06_NUM_POINTS 2
+#define HAVE_BUTTON_DATA
+
+/* The controller's own axes are the panel's short side first: registers 0x03/0x04
+ * run 0..240 and 0x05/0x06 run 0..320, while the panel is driven as 320x240. The
+ * reference firmware uses display x = 320 - raw_y, display y = raw_x.
+ */
+#define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */
