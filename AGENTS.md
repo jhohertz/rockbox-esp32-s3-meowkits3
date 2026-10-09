@@ -811,20 +811,34 @@ obvious from the datasheet tables:
 - ADC scaling: battery voltage `(hi<<4 | lo&0x0f) * 1.1` mV; charge and discharge
   current `(hi<<5 | lo&0x1f) * 0.5` mA; VBUS voltage `(hi<<4 | lo&0x0f) * 1.7` mV.
   The current registers use five low bits, the voltage registers four.
-- The power button is the chip's PEK input, and it is readable over I2C. REG 0x44
-  bit0 is the long-press IRQ status and bit1 the short-press status; the matching
-  enable bits are in REG 0x40. The status bits **latch** - they are not a level -
-  and writing 1 to a bit clears it. REG 0x36 sets the PEK timings: bits 7:6 the
-  press duration that turns the chip on, bits 5:4 the long-press threshold
-  (1/1.5/2/2.5 s), bits 1:0 how long the chip waits before cutting its own output
-  (4/6/8/10 s). The IRQ output is on GPIO 43, active low.
+- The power button is the chip's PEK input, and it is readable over I2C. The IRQ
+  enables are REG 0x40-0x43 plus 0x4A, and the matching status registers are
+  0x44-0x47 plus 0x4D. **The PEK bits are not in the first pair**: the datasheet's
+  IRQ table puts the short press at REG 0x46 bit1 and the long press at REG 0x46
+  bit0, enabled by REG 0x42 bits 1 and 0. The reference firmware on this board reads
+  0x44 for the PEK status, which is the ACIN/VBUS register - it never sees a press.
+  The status bits **latch** - they are not a level - and writing 1 to a bit clears
+  it. The IRQ pin is an open-drain output pulled high only when *no* status bit is
+  set, so leaving the default enables (0x40 = 0xD8, 0x41 = 0xFF, 0x43 = 0xC1) makes
+  the line low for battery, charge and temperature events nobody acts on, and the
+  cheap GPIO check stops meaning anything.
+  REG 0x36 sets the PEK timings: bits 7:6 the press duration that turns the chip on
+  (128 ms/512 ms/1 s/2 s), bits 5:4 the long-press threshold (1/1.5/2/2.5 s), bit 3
+  "auto power off when the press outlasts the off time", bit 2 the PWROK delay, bits
+  1:0 how long the chip waits before cutting its own output (4/6/8/10 s). Bit 3 is
+  set at reset; a bare write of only the on/off fields clears it and removes the
+  hardware safety net. The IRQ output is on GPIO 43, active low.
+  REG 0x31 bit3 is *not* a PEK enable - it is the sleep-mode PWRON short-press
+  wakeup flag, and it self-clears after being written.
   This matters: a hardware PEK shutdown kills the board without Rockbox getting a
   chance to flush the audiobuffer, save settings or close the card. `button-xtensa.c`
-  therefore reads GPIO 43 (cheap) and only then does the I2C read of REG 0x44; on a
-  press it calls `sys_poweroff()`, which runs the shutdown sequence and reaches
-  `power_off()` - the PMU command - afterwards. `axp173_init()` pushes the hardware
-  cutoff to its maximum (10 s) so Rockbox always wins the race, and clears any status
-  latched before Rockbox started.
+  therefore reads GPIO 43 (cheap) and only then does the I2C read of REG 0x46; on a
+  long press it calls `sys_poweroff()`, which queues SYS_POWEROFF, and the main
+  thread runs `clean_shutdown()` - flush, save settings, close the card - before
+  reaching `power_off()`, the PMU command. `axp173_init()` sets the long-press
+  threshold to 1 s and pushes the hardware cutoff to its maximum (10 s), so Rockbox
+  has nine seconds of margin, and clears every status register so a press before the
+  application started does not shut the player down on the first poll.
   Pad 43 is the UART0 TX pad in the IO MUX, so it has to be switched to the GPIO
   function before `GPIO_IN` can see it.
 - `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply.

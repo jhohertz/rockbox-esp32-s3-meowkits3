@@ -22,8 +22,6 @@
 #define AXP_REG_SHUTDOWN        0x32
 #define AXP_REG_CHARGECTRL      0x33
 #define AXP_REG_TIMING          0x36
-#define AXP_REG_IRQENABLE1      0x40
-#define AXP_REG_IRQSTATUS1      0x44
 #define AXP_REG_ADCENABLE1      0x82
 #define AXP_REG_ADCENABLE2      0x83
 #define AXP_REG_ADCRATE         0x84
@@ -64,21 +62,45 @@
 #define AXP_ADC_BATT_V  (1u << 7)
 #define AXP_ADC_TEMP    (1u << 7)   /* ADCENABLE2 */
 
-/* IRQENABLE1 (0x40) / IRQSTATUS1 (0x44). The status bits latch until written
-   back as 1; they are not a level. */
-#define AXP_IRQ_LONG_PRESS  (1u << 0)
-#define AXP_IRQ_SHORT_PRESS (1u << 1)
-#define AXP_IRQ_ACIN_OFF    (1u << 2)
-#define AXP_IRQ_ACIN_ON     (1u << 3)
-#define AXP_IRQ_VBUS_OFF    (1u << 4)
-#define AXP_IRQ_VBUS_ON     (1u << 5)
-#define AXP_IRQ_BATT_LOW    (1u << 6)
-#define AXP_IRQ_CHG_STAT    (1u << 7)
+/* IRQ enables live in five registers (0x40-0x43 and 0x4A) and the matching
+   status registers are 0x44-0x47 and 0x4D. The PEK key is not in the first pair:
+   its bits are in IRQEN3/IRQST3. The datasheet's status table is explicit -
+   REG46H[1] is the short press and REG46H[0] the long press - and every status
+   bit latches until written back as 1. The IRQ pin is pulled high only when no
+   status bit is set at all, so an event nobody acts on holds the line low.
 
-/* TIMING (0x36): bits 7:6 power-on press duration, bits 1:0 the hold time
-   before the chip cuts its own output. 3 is the longest, 10 s. */
+   Note that the reference firmware on this board reads 0x44 for the PEK status.
+   That register holds the ACIN/VBUS events; the PEK bits are in 0x46.
+*/
+#define AXP_REG_IRQEN1      0x40
+#define AXP_REG_IRQEN2      0x41
+#define AXP_REG_IRQEN3      0x42
+#define AXP_REG_IRQEN4      0x43
+#define AXP_REG_IRQEN5      0x4A
+#define AXP_REG_IRQST1      0x44
+#define AXP_REG_IRQST2      0x45
+#define AXP_REG_IRQST3      0x46
+#define AXP_REG_IRQST4      0x47
+#define AXP_REG_IRQST5      0x4D
+
+/* IRQEN3 / IRQST3 */
+#define AXP_IRQ_PEK_LONG    (1u << 0)
+#define AXP_IRQ_PEK_SHORT   (1u << 1)
+#define AXP_IRQ_LDO4_LOW    (1u << 3)
+#define AXP_IRQ_DCDC2_LOW   (1u << 4)
+#define AXP_IRQ_DCDC1_LOW   (1u << 5)
+#define AXP_IRQ_CHG_UNDER   (1u << 6)
+#define AXP_IRQ_OVERTEMP    (1u << 7)
+
+/* TIMING (0x36): bits 7:6 the press that powers the chip on, bits 5:4 the
+   long-press threshold, bit 3 "auto power off when the press outlasts the off
+   time", bit 2 the PWROK delay, bits 1:0 the hold time before the chip cuts its
+   own output. 3 is the longest off time, 10 s. */
 #define AXP_PEK_ON_SHIFT    6
+#define AXP_PEK_LONG_SHIFT  4
 #define AXP_PEK_OFF_SHIFT   0
+#define AXP_PEK_AUTOOFF     (1u << 3)
+#define AXP_PEK_PWROK       (1u << 2)   /* PWROK pin delay: 0 = 32 ms, 1 = 64 ms */
 
 #define AXP_ADC_RATE_25HZ  0
 #define AXP_ADC_RATE_50HZ  1
