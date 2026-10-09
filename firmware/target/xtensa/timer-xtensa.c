@@ -121,6 +121,15 @@ void ICODE_ATTR timer_irq(void)
             pfn_timer();
     }
 
+    /* tn_alarm_en is self-clearing: it goes to 0 when the alarm fires. Autoreload
+     * reloads the counter but does not re-arm the comparison, so without this the
+     * tick would happen exactly once.
+     */
+    if (st & 1)
+        wr(TG1(XT_TN_CONFIG(0)), rd(TG1(XT_TN_CONFIG(0))) | XT_TN_ALARM_EN);
+    if (st & 2)
+        wr(TG1(XT_TN_CONFIG(1)), rd(TG1(XT_TN_CONFIG(1))) | XT_TN_ALARM_EN);
+
     /* Clear only what fired. tn_int_clr is write-to-clear. */
     wr(TG1(XT_TN_INT_CLR), st);
 }
