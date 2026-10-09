@@ -13,6 +13,22 @@
 
 extern long cpu_frequency;   /* set by system_init */
 
+/*
+ * Frequency ladder.
+ *
+ * All three points are taps of the BBPLL, so nothing but the core moves when the
+ * CPU is clocked down: AHB/APB, which is GDMA's clock, is a fixed 80 MHz whenever
+ * CPU_CLK comes from the PLL; MSPI (flash and PSRAM) takes its core clock from the
+ * PLL tap selected by CORE_CLK_SEL; GPSPI2 (the display) uses PLL_CLK_80M; and I2S,
+ * I2C and the timer groups are clocked from XTAL.
+ *
+ * XTAL (40 MHz) is deliberately not in the ladder: it would drop APB to 40 MHz and
+ * invalidate the MSPI core clock selection that psram-xtensa.c programs.
+ */
+#define CPUFREQ_MAX     240000000
+#define CPUFREQ_NORMAL  160000000
+#define CPUFREQ_DEFAULT  80000000
+
 /* The esp32s3 core config has no byte-swap instruction (tested: 'swap' is not a
  * valid opcode), so the generic C byte-swaps in firmware/libc/include/endian.h are
  * used. Same as the jz47xx target. */

@@ -88,6 +88,42 @@
 #define XT_TN_EN                (1 << 31)
 
 /*
+ * CPU clock tree.
+ *
+ * CPU_CLK is muxed from XTAL (40 MHz), the BBPLL (480 or 320 MHz) or RC_FAST
+ * (20 MHz). PRE_DIV_CNT divides the XTAL and RC_FAST paths only; on the PLL
+ * path the frequency is CPUPERIOD_SEL, which with a 480 MHz BBPLL gives
+ *   0 -> 80 MHz, 1 -> 160 MHz, 2 -> 240 MHz.
+ *
+ * Register bases and bit positions are from
+ * components/soc/esp32s3/include/soc/system_reg.h, cross-checked against
+ * components/hal/esp32s3/include/hal/clk_tree_ll.h.
+ */
+#define XT_SYS_CLK_CONF         (XT_SYSTEM_BASE + 0x60)
+#define XT_SYS_PRE_DIV_MASK     0x3FF           /* bits [9:0], stores divider - 1 */
+#define XT_SYS_CLK_SEL_SHIFT    10              /* bits [11:10] */
+#define XT_SYS_CLK_SEL_XTAL     0
+#define XT_SYS_CLK_SEL_PLL      1
+#define XT_SYS_CLK_SEL_RC_FAST  2
+
+#define XT_SYS_CPU_PER_CONF     (XT_SYSTEM_BASE + 0x10)
+#define XT_CPU_PERIOD_MASK      0x3             /* bits [1:0] */
+#define XT_CPU_PERIOD_80M       0
+#define XT_CPU_PERIOD_160M      1
+#define XT_CPU_PERIOD_240M      2
+#define XT_PLL_FREQ_SEL         (1u << 2)       /* 1 = 480 MHz, 0 = 320 MHz */
+
+/*
+ * RTC_CNTL_DATE_REG bits [18:13] are the LDO slaves powered down; the rest of the
+ * register is the RTC date and has to be preserved. ESP-IDF writes
+ * DEFAULT_LDO_SLAVE (0x7) >> (frequency / 80), i.e. 0 slaves off at 240 MHz, 1 at
+ * 160 MHz and 3 at 80 MHz.
+ */
+#define XT_RTC_DATE_REG         (XT_RTCCNTL_BASE + 0x1FC)
+#define XT_LDO_SLAVE_MASK       0x3F
+#define XT_LDO_SLAVE_SHIFT      13
+
+/*
  * The timer group counter is 54 bits on ESP32-S3, not 64: tnhi is 22 bits.
  *
  * The counter can be driven from APB_CLK or from XTAL_CLK. APB_CLK depends on

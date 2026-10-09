@@ -14,6 +14,10 @@
 /* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz. */
 #define CPU_FREQ 240000000
 
+/* The core can be clocked down to 160 or 80 MHz without touching any peripheral:
+ * see set_cpu_frequency() in firmware/target/xtensa/system-xtensa.c. */
+#define HAVE_ADJUSTABLE_CPU_FREQ
+
 /* LCD: ST7789. The panel's GRAM is 240x320, but the reference firmware drives it
  * rotated 90 degrees (LovyanGFX offset_rotation = 3), so it is used as 320x240. */
 #define HAVE_LCD_COLOR
