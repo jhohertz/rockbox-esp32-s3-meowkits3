@@ -9,9 +9,12 @@ STARTUP(target/xtensa/crt0.o)
  * ESP32-S3 layout. Three things here come from the silicon, not from taste:
  *
  *  1. The instruction bus and the data bus see the same physical SRAM at
- *     different addresses. IRAM 0x40378000 aliases DRAM 0x3FC80000, so IRAM is
- *     kept entirely below DRAMORIG and the two regions cannot collide. If
- *     IRAMSIZE ever grows past 0x8000 the ASSERT below fires.
+ *     different addresses: 0x40378000 on the instruction bus is 0x3FC88000 on the
+ *     data bus (offset 0x6F0000). Code in .iram and data in .data/.bss therefore
+ *     share memory. DRAMORIG is the alias of the end of the instruction region,
+ *     which is reserved up front rather than computed from SIZEOF(.iram), because
+ *     plugins are linked by a separate script that cannot see where the firmware's
+ *     code ends.
  *  2. PSRAM and flash rodata share one 32 MB window on the external data cache.
  *     They are bank-switched per 64 KB page by the cache MMU. Because .rodata and
  *     .audiobuf are both in DROM here, the location counter already continues
@@ -25,15 +28,16 @@ STARTUP(target/xtensa/crt0.o)
  * configured the SPI-RAM controller and enabled both caches.
  */
 
-/* Internal SRAM, data-bus view. Static .data/.bss is capped at 337 KB, not the
- * full 512 KB — the rest is heap, and only after the app starts. */
-#define DRAMORIG 0x3FC88000
-#define DRAMSIZE 0x54700
-
-/* Internal SRAM, instruction-bus view. Must stay <= 0x8000 so that its alias
- * (0x3FC80000) ends exactly where DRAM begins. */
+/* Internal SRAM, data-bus view. The instruction bus sees the same physical memory
+ * at IRAMORIG (offset 0x6F0000), so DRAMORIG has to be the alias of the end of the
+ * whole instruction region: firmware .iram plus the reserve for plugins, which are
+ * linked by a separate script that cannot see where the firmware's code ends.
+ * 0x3FCF0000 is the top of the data-bus view. */
 #define IRAMORIG 0x40378000
-#define IRAMSIZE 0x8000
+#define IRAMSIZE 0x9000
+#define PLUGIN_IRAMORIG 0x40381000
+#define DRAMORIG 0x3FC99000
+#define DRAMSIZE 0x57000
 
 /* Flash instruction-cache window. The +0x20 is not cosmetic: the cache MMU
  * requires paddr % 64KB == vaddr % 64KB, and the image file header (0x18) plus
@@ -209,8 +213,11 @@ SECTIONS
     } > CODECP
 
     ASSERT(stackend <= DRAMORIG + DRAMSIZE,
-           ".data, .bss and the stack do not fit in the static DRAM region")
-    ASSERT(IRAMSIZE <= 0x8000, "IRAM alias would overlap DRAM")
+           ".iram, .data, .bss and the stack do not fit in internal SRAM")
+    ASSERT(_iramend <= IRAMORIG + IRAMSIZE,
+           ".iram overflows the region reserved for firmware code")
+    ASSERT(PLUGIN_IRAMORIG + 0x8000 <= DRAMORIG + 0x6F0000,
+           "plugin IRAM aliases into the firmware data region")
 
     /DISCARD/ :
     {

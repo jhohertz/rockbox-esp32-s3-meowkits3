@@ -138,12 +138,13 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  * DROMORIG + MEMORYSIZE*0x100000 - PLUGIN_BUFFER_SIZE - CODEC_SIZE. The two scripts
  * have to produce the same number or apps/codecs.c rejects the loaded codec.
  *
- * IRAM here is the instruction-bus view of internal SRAM; it is not the same address
- * range as DRAM, so USE_IRAM is satisfied without the aliasing that other targets
- * have to worry about. */
+ * IRAM here is the instruction-bus view of internal SRAM. It has to sit in the
+ * gap app.lds leaves between the firmware's .iram and the firmware's data region,
+ * because .data/.bss alias the same physical memory from the data bus: 0x40378000
+ * is 0x3FC88000. */
 #define DRAMORIG 0x3C000020
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGIN_BUFFER_SIZE - CODEC_SIZE
-#define IRAMORIG 0x40378000
+#define IRAMORIG 0x40381000
 #define IRAMSIZE 0x8000
 
 #elif CONFIG_CPU == STM32H743

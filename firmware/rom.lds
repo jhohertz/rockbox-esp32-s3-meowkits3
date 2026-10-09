@@ -53,17 +53,16 @@ STARTUP(target/xtensa/crt0.o)
  * rombox.elf, so the map here has to be the real one rather than the default
  * fallback above, otherwise the artifact is garbage even though nothing uses it.
  *
- * DRAMSIZE is capped at 0x54700 regardless of MEMORYSIZE, because that is the
- * maximum static data the data-bus view of the SRAM can hold. The audiobuffer lives
- * in PSRAM, which is why app.lds is the script that actually matters. */
+ * DRAMSIZE is the data-bus view of internal SRAM and is unrelated to MEMORYSIZE,
+ * which is the PSRAM size. The audiobuffer lives in PSRAM, which is why app.lds is
+ * the script that actually matters. */
 #undef DRAMORIG
 #undef IRAMSIZE
-#define DRAMORIG 0x3FC88000
+#define DRAMORIG 0x3FC99000
 #define IRAMORIG 0x40378000
-#define IRAMSIZE 0x8000
+#define IRAMSIZE 0x9000
 #define FLASHORIG 0x3C000020
 #define FLASHSIZE 0x2000000 - 0x20
-#define XTENSA_DRAM_CAP 0x54700
 #endif
 
 #ifdef CODECSIZE
@@ -77,9 +76,10 @@ STARTUP(target/xtensa/crt0.o)
 #endif
 
 #ifdef CPU_XTENSA
-/* MEMORYSIZE is the PSRAM size on this target, not the static-data region. */
+/* DRAMSIZE above is derived from MEMORYSIZE, which on this target is the PSRAM
+ * size. The static data region is internal SRAM, so it is unrelated. */
 #undef DRAMSIZE
-#define DRAMSIZE XTENSA_DRAM_CAP
+#define DRAMSIZE 0x57000
 #endif
 
 /* End of the audio buffer, where the codec/plugin buffer starts */
