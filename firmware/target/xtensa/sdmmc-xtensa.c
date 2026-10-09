@@ -507,6 +507,11 @@ static const struct sdmmc_host_config sdmmc_config INITDATA_ATTR = {
 
 void sdmmc_host_target_init(void)
 {
+    /* The SDHOST block is clock-gated and the gate defaults to off. Nothing in
+     * the register ladder works until it is on.
+     */
+    wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1u << 7));
+
     /* Route the three lines through the GPIO matrix. CLK is driven by the
      * controller; CMD and D0 are bidirectional, so both halves have to be
      * connected. */

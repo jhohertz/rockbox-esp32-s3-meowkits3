@@ -20,11 +20,18 @@
  * Interrupt matrix: one 5-bit register per peripheral interrupt source,
  * at base + 4 * source_id. The value is the core interrupt slot the source
  * is routed to.
+ *
+ * The source ids are the ETS_*_INTR_SOURCE enum values, and they are not the
+ * obvious ones: TIMERG1 timer 0 is 53, not 48 or 49 (48/49 are the legacy
+ * systimer slots). Cross-checked against INTERRUPT_CORE0_TG1_T0_INT_MAP_REG at
+ * base + 0x0D4, which is 4 * 53.
  */
-#define XT_SRC_TIMERG0          48
-#define XT_SRC_TIMERG1          49
-#define XT_SRC_GDMA_OUT_CH0     71
-#define XT_SRC_SDIO_HOST        30
+#define XT_SRC_TIMERG0_T0       50
+#define XT_SRC_TIMERG0_T1       51
+#define XT_SRC_TIMERG1_T0       53
+#define XT_SRC_TIMERG1_T1       54
+#define XT_SRC_GDMA_OUT_CH0     71   /* base + 0x11C */
+#define XT_SRC_SDIO_HOST        30   /* base + 0x078 */
 
 /*
  * Levels cannot be programmed on this core config: there are no level or
