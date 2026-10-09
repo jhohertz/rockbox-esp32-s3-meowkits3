@@ -70,8 +70,11 @@ void tick_start(unsigned int interval_in_ms)
     wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | (1 << 15)); /* TIMERGROUP1 */
     wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1 << 6));  /* DMA */
 
-    /* Route the group's interrupt to a level-1 slot and unmask that slot. */
-    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1, XT_SLOT_TIMERG1);
+    /* Each timer in the group has its own matrix entry, so both have to be routed
+     * to the same slot. The slot has to be one that is already level 1.
+     */
+    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T0, XT_SLOT_TIMERG1);
+    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T1, XT_SLOT_TIMERG1);
     set_intenable(get_intenable() | (1u << XT_SLOT_TIMERG1));
     /* tn_int_clr is write-to-clear, and int_ena is the per-timer mask */
 
