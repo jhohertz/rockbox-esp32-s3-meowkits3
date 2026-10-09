@@ -37,7 +37,8 @@ extern char _vector_table[];
 #define RWDT_FEED      0xAC
 #define RWDT_WPROTECT  0xB0
 #define RWDT_EN_BIT    (1u << 31)
-#define RWDT_KEY       0x100u            /* written to re-enable write protection */
+#define RWDT_KEY       0x8F1D312Au       /* RTC_CNTL_SWD_WKEY_VALUE, written to
+                                         * re-enable write protection */
 
 /* RTC_CNTL_OPTIONS0: bit 5 is a write-only software reset of the PRO CPU. */
 #define SW_PROCPU_RST  (1u << 5)
