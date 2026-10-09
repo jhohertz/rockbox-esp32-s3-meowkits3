@@ -192,7 +192,8 @@ static void set_clock(uint32_t clock)
      * clk_sel at bit 23 (0 = XTAL). phase_dout = 1 gives the card clock a 90 degree
      * delay, which is what the SD spec wants for the data hold time in SDR12/SDR25;
      * the command register has to set USE_HOLD for it to apply, which we always do.
-     * phase_din and phase_core stay at 0. */
+     * phase_din and phase_core stay at 0.
+     */
     wr(SDMMC_CLK, 1u | ((host_div / 2 - 1) << 9) | ((host_div - 1) << 13)
                   | ((host_div - 1) << 17));
 
@@ -200,8 +201,11 @@ static void set_clock(uint32_t clock)
     wr(SDMMC_CLKDIV, card_div);
     wr(SDMMC_CLKENA, 1u | (1u << 16)); /* clock enabled, low-power gating on */
 
-    /* Data timeout is measured in card output clocks; ESP-IDF uses 100 ms worth. */
-    wr(SDMMC_TMOUT, 255u | ((freq_hz / 10u) << 8));
+    /* The timeout is counted in card output clocks, so it has to be derived from
+     * the clock we actually generated, not from the rate sdmmc_host asked for:
+     * the "25 MHz" slot is really 20 MHz here. ESP-IDF uses 100 ms.
+     */
+    wr(SDMMC_TMOUT, 255u | ((XT_XTAL_FREQ / (host_div * (card_div ? 2u * card_div : 1u)) / 10u) << 8));
 }
 
 static void arm_descriptors(struct sdmmc_ctl *ctl, void *buf, uint32_t bytes)
