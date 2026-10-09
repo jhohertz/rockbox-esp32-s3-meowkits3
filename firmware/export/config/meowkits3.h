@@ -1,8 +1,7 @@
 /*
  * This config file is for the MeowKit ESP32-S3 (Xtensa LX7).
  *
- * Only the parts that are actually implemented are enabled. Drivers still missing:
- * USB.
+ * Only the parts that are actually implemented are enabled.
  */
 
 /* For Rolo and boot loader */
@@ -107,6 +106,29 @@
  * reference firmware uses display x = 320 - raw_y, display y = raw_x.
  */
 #define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
+
+/*
+ * USB: the SoC's Synopsys DWC2 OTG core. Full speed only; the chip has no VBUS
+ * sense line, so insertion is detected from the PMU (see usb-xtensa.c).
+ *
+ * The FIFO RAM is 256 words and there are six endpoints, so USB_NUM_ENDPOINTS is
+ * the hardware limit rather than a choice.
+ *
+ * The transfer buffers are static and in internal SRAM: the DWC's DMA is an
+ * internal AHB master, while the core allocator's pool is the audiobuffer, which
+ * on this target is PSRAM. Internal SRAM is the scarce resource - the static
+ * region is 337 KB and everything else already lives in it - so the buffers are
+ * sized down to 6 KB per direction, leaving just under 2 KB of headroom.
+ */
+#define CONFIG_USBOTG USBOTG_DESIGNWARE
+#define HAVE_USBSTACK
+#define USB_NUM_ENDPOINTS 6
+#define USB_DW_FORCE_DEVICE_MODE
+#define USB_VENDOR_ID  0x6666 /* "prototype device" VID in folklore */
+#define USB_PRODUCT_ID 0xEC02
+#define USB_DEVBSS_ATTR __attribute__((aligned(32)))
+#define USB_READ_BUFFER_SIZE  (6 * 1024)
+#define USB_WRITE_BUFFER_SIZE (6 * 1024)
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */

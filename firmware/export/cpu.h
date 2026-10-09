@@ -66,7 +66,7 @@
 #include "xtensa.h"
 #endif
 
-#if (CONFIG_PLATFORM & PLATFORM_NATIVE) && (defined(CPU_ARM) || defined(CPU_MIPS))
+#if (CONFIG_PLATFORM & PLATFORM_NATIVE) && (defined(CPU_ARM) || defined(CPU_MIPS) || defined(CPU_XTENSA))
 # define HAVE_CPU_CACHE_ALIGN
 #endif
 

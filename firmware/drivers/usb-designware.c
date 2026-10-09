@@ -78,6 +78,19 @@
 # define USB_DW_PHYSADDR(x)     x
 # define NO_UNCACHED_ADDR       /* TODO: maybe implement this */
 # define POST_DMA_FLUSH
+#elif CONFIG_CPU == ESP32S3
+/*
+ * The DWC's DMA is an AHB master on the internal bus: it can reach internal
+ * SRAM, which is where the buffers live, and internal SRAM addresses are already
+ * physical. There is no uncached alias for it, so the driver has to do the cache
+ * work itself - commit before the DMA reads, invalidate after the DMA writes.
+ * The helpers are in rom_cache.h; the esp32s3 core config has no cache
+ * instructions, so they go through the mask ROM.
+ */
+# include "rom_cache.h"
+# define USB_DW_PHYSADDR(x)     x
+# define NO_UNCACHED_ADDR
+# define POST_DMA_FLUSH
 #elif !defined(USB_DW_ARCH_SLAVE)
 # error "Must define USB_DW_PHYSADDR / USB_DW_UNCACHEDADDR!"
 #endif

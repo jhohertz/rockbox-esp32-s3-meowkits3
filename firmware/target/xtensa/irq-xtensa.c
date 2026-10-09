@@ -27,6 +27,9 @@ void i2c_irq(void);
 #ifdef HAVE_RECORDING
 void gdma_rx_irq(void);
 #endif
+#ifdef HAVE_USBSTACK
+void INT_USB_FUNC(void);
+#endif
 
 void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 {
@@ -45,5 +48,10 @@ void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 #ifdef HAVE_RECORDING
     if (pending & (1u << XT_SLOT_GDMA_IN_CH0))
         gdma_rx_irq();
+#endif
+
+#ifdef HAVE_USBSTACK
+    if (pending & (1u << XT_SLOT_USB))
+        INT_USB_FUNC();
 #endif
 }
