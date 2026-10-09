@@ -179,6 +179,7 @@ static void gdma_init(void)
     desc[1].next   = (uint32_t)(unsigned long)&desc[0];
     desc[0].dw0 = 0;
     desc[1].dw0 = 0;
+    commit_dcache_range((const void *)desc, sizeof(desc));
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
 }
@@ -318,6 +319,15 @@ static void sink_stop(void)
 {
     playing = false;
     stop_tx();
+
+    /* The link register still points at desc[0], so the ring restarts there on the
+     * next play. If the DMA left desc[0] owned by itself, the engine would suspend
+     * on it and nothing would ever come out. Hand both halves back to the CPU.
+     */
+    desc[0].dw0 = 0;
+    desc[1].dw0 = 0;
+    commit_dcache_range((const void *)desc, sizeof(desc));
+    cur = 0;
 }
 
 static void sink_set_freq(uint16_t freq)
