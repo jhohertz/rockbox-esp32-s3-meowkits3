@@ -58,7 +58,6 @@ int key_to_touch(int keyboard_button, unsigned int mouse_coords)
             break;
         case SDLK_KP_8:
         case SDLK_8:
-        case SDLK_UP:
             new_btn = BUTTON_TOPMIDDLE;
             break;
         case SDLK_KP_9:
@@ -68,7 +67,6 @@ int key_to_touch(int keyboard_button, unsigned int mouse_coords)
             break;
         case SDLK_KP_4:
         case SDLK_u:
-        case SDLK_LEFT:
             new_btn = BUTTON_MIDLEFT;
             break;
         case SDLK_KP_5:
@@ -78,7 +76,6 @@ int key_to_touch(int keyboard_button, unsigned int mouse_coords)
             break;
         case SDLK_KP_6:
         case SDLK_o:
-        case SDLK_RIGHT:
             new_btn = BUTTON_MIDRIGHT;
             break;
         case SDLK_KP_1:
@@ -88,7 +85,6 @@ int key_to_touch(int keyboard_button, unsigned int mouse_coords)
             break;
         case SDLK_KP_2:
         case SDLK_k:
-        case SDLK_DOWN:
             new_btn = BUTTON_BOTTOMMIDDLE;
             break;
         case SDLK_KP_3:
@@ -96,6 +92,25 @@ int key_to_touch(int keyboard_button, unsigned int mouse_coords)
         case SDLK_PAGEDOWN:
             new_btn = BUTTON_BOTTOMRIGHT;
             break;
+
+        /* Every cell of the grid already has a number and a letter key. The
+         * arrows are only borrowed for targets whose keypad has no direction
+         * keys; where the board has a four-way joystick, key_to_button() is
+         * never reached if the grid claims the arrows first. */
+#if CONFIG_KEYPAD != ESP32S3_PAD
+        case SDLK_UP:
+            new_btn = BUTTON_TOPMIDDLE;
+            break;
+        case SDLK_LEFT:
+            new_btn = BUTTON_MIDLEFT;
+            break;
+        case SDLK_RIGHT:
+            new_btn = BUTTON_MIDRIGHT;
+            break;
+        case SDLK_DOWN:
+            new_btn = BUTTON_BOTTOMMIDDLE;
+            break;
+#endif
 #endif
     }
     return new_btn;
