@@ -10,7 +10,10 @@
 #define CMD_NOP     0x00
 #define CMD_INVOFF  0x20
 #define CMD_INVON   0x21
+#define CMD_SLPIN   0x10
 #define CMD_SLPOUT  0x11
+#define CMD_DISPOFF 0x28
+#define CMD_DISPON  0x29
 #define CMD_IDMOFF  0x38
 #define CMD_DISPON  0x29
 #define CMD_COLMOD  0x3A
@@ -109,4 +112,25 @@ void st7789_init(void)
     cmd(CMD_MADCTL, (const uint8_t[]){MADCTL_VALUE}, 1);
     cmd(CMD_INVON, 0, 0);
     cmd(CMD_DISPON, 0, 0);
+}
+
+void st7789_display_off(void)
+{
+    cmd(CMD_DISPOFF, 0, 0);
+}
+
+void st7789_display_on(void)
+{
+    cmd(CMD_DISPON, 0, 0);
+}
+
+void st7789_sleep(void)
+{
+    cmd(CMD_SLPIN, 0, 0);
+}
+
+void st7789_wake(void)
+{
+    cmd(CMD_SLPOUT, 0, 0);
+    delay_ms(130);
 }

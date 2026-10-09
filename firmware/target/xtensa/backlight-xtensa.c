@@ -15,6 +15,7 @@
 #include "config.h"
 
 #include "system.h"
+#include "lcd.h"
 #include "backlight-target.h"
 #include "xtensa.h"
 #include "gpio-xtensa.h"
@@ -68,12 +69,17 @@ bool backlight_hw_init(void)
 
 void backlight_hw_on(void)
 {
+    /* Wake the panel before light is applied, otherwise the backlight comes up
+     * onto a panel that is still coming out of sleep and the first frame is lost.
+     */
+    lcd_enable(true);
     backlight_hw_brightness(MAX_BRIGHTNESS_SETTING);
 }
 
 void backlight_hw_off(void)
 {
     set_duty(0);
+    lcd_enable(false);
 }
 
 void backlight_hw_brightness(int brightness)

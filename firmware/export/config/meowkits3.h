@@ -25,6 +25,17 @@
 /* 320x240 across a 2.0" diagonal is 400 pixels diagonal, i.e. 200 dpi. */
 #define LCD_DPI    200
 
+/* Three display power states. The backlight dominates the panel, but the panel
+ * keeps driving its gates as long as it is enabled, so DISPOFF follows the
+ * backlight and SLPIN is reached only after the backlight has been off for a
+ * while. Rockbox asks for both: lcd_enable() is the shallow state the backlight
+ * driver uses, lcd_sleep() the deeper one the timeout reaches.
+ */
+#define HAVE_LCD_ENABLE
+#define HAVE_LCD_SLEEP
+#define LCD_SLEEP_TIMEOUT (2*HZ)
+#define HAVE_LCD_SHUTDOWN
+
 #define HAVE_BACKLIGHT
 /* GPIO 42 is routed through the GPIO matrix to LEDC channel 7, so the backlight is
  * a PWM duty rather than a level. The LED is active low. */
