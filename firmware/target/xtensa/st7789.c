@@ -1,4 +1,5 @@
 #include "config.h"
+#include "system.h"
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
@@ -19,14 +20,12 @@
 /* rotation 3 -> MAD_MY|MAD_ML, plus MAD_BGR since rgb_order is false */
 #define MADCTL_VALUE  0x98
 
-/* Approximate busy delay. At 240 MHz an iteration is a few cycles; this is
- * deliberately generous because the panel only needs a lower bound on the reset
- * and sleep-out timings. A precise delay needs a hardware timer. */
+/* The panel only needs a lower bound on the reset and sleep-out timings, so a
+ * generous delay is fine; udelay() is bounded by the core clock rather than by
+ * how many cycles the compiler happens to put in the loop body. */
 static void delay_ms(int ms)
 {
-    for (int i = 0; i < ms * 60000; i++) {
-        asm volatile ("" ::: "memory");
-    }
+    udelay(ms * 1000);
 }
 
 static void cs(int select)

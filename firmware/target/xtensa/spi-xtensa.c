@@ -1,4 +1,27 @@
+/***************************************************************************
+ * GPSPI2 master, polled, for the ST7789 panel.
+ *
+ * Three things are easy to get wrong on this peripheral:
+ *
+ * 1. The clock does not come from the 240 MHz CPU clock. The master clock
+ *    source is selected in CLK_GATE: bit 2 chooses PLL_CLK_80M, cleared gives
+ *    XTAL (40 MHz). CLK_EQU_SYSCLK in the CLOCK register makes spi_clk equal
+ *    that source directly, which is the fastest setting available.
+ *
+ * 2. GPSPI has no "general read/write" mode bit. DMA mode is off unless
+ *    dma_tx_ena/dma_rx_ena are set, so the CPU-controlled 16-word buffer at
+ *    0x98 is the normal path.
+ *
+ * 3. The buffer is a little-endian byte array: the first byte to go out sits
+ *    in bits 0-7 of SPI_W0. Both ESP-IDF's spi_ll_write_buffer_byte() and the
+ *    Arduino ESP32 SPI driver place byte 0 in the low byte.
+ *
+ * The CONF-state registers (USER, CLOCK, CTRL, MS_DLEN) live in the APB domain
+ * and have to be latched into the SPI clock domain with CMD.UPDATE before
+ * CMD.USR starts the transfer.
+ ****************************************************************************/
 #include "config.h"
+#include "xtensa.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
 
@@ -7,8 +30,11 @@ static inline void wr(uint32_t reg, uint32_t v) { *(volatile uint32_t *)reg = v;
 
 void spi_init(void)
 {
-    /* Route the controller signals to the pins through the GPIO matrix. DC is a
-     * plain GPIO, not a controller signal. */
+    wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | SYSTEM_SPI2_CLK_EN);
+    wr(SPI_CLK_GATE, SPI_CLK_EN | SPI_MST_CLK_ACTIVE | SPI_MST_CLK_SEL);
+
+    /* GPSPI does not drive its own pins; the signals have to be routed through
+     * the GPIO matrix. DC is a plain GPIO, not a controller signal. */
     gpio_matrix_out(PIN_LCD_SCLK, SIG_FSPICLK_OUT);
     gpio_matrix_out(PIN_LCD_MOSI, SIG_FSPIQ_OUT);
 
@@ -16,46 +42,48 @@ void spi_init(void)
     gpio_set_direction(PIN_LCD_MOSI, 1);
     gpio_set_direction(PIN_LCD_DC, 1);
 
-    /* CPU-controlled FIFO mode. */
-    wr(SPI_DMA_CONF, SPI_GRL_MODE);
+    wr(SPI_DMA_CONF, 0);
 
-    /* Write-only master transfer, MSB first. */
+    /* Write-only master transfer. WR_BIT_ORDER = 0, RD_BIT_ORDER = 0. */
+    wr(SPI_CTRL, 0);
     wr(SPI_USER, SPI_USR_MOSI);
-    wr(SPI_CTRL, 0);                 /* WR_BIT_ORDER = 0 -> MSB first */
+    wr(SPI_USER1, 0);
 
-    /* 80 MHz from a 240 MHz system clock: 240 / (pre+1) / (cnt_N+1) = 240/1/3.
-     * CLKCNT_L must equal CLKCNT_N, and CLKCNT_H = floor((N+1)/2 - 1). */
-    wr(SPI_CLOCK, (0u << 31) | (0u << 18) | (2u << 12) | (1u << 6) | 2u);
+    /* spi_clk = the 80 MHz source, undivided. */
+    wr(SPI_CLOCK, SPI_CLK_EQU_SYSCLK);
 
-    /* Full 12-word FIFO per transfer. MS_DLEN is (bits - 1). */
-    wr(SPI_MS_DLEN, 32 * 12 - 1);
+    wr(SPI_MS_DLEN, SPI_BUF_BYTES * 8 - 1);
+    wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_UPDATE);
 }
 
 void spi_write(const unsigned char *data, int len)
 {
     while (len > 0) {
-        int words = len > 48 ? 12 : (len + 3) / 4;
+        int words = (len + 3) / 4;
+        if (words > SPI_BUF_WORDS)
+            words = SPI_BUF_WORDS;
 
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < SPI_BUF_WORDS; i++) {
             uint32_t w = 0;
 
             if (i < words) {
-                /* MSB first within each word, so assemble 4 bytes big-endian. */
                 for (int b = 0; b < 4; b++) {
                     int idx = i * 4 + b;
-                    w = (w << 8) | (idx < len ? data[idx] : 0);
+                    if (idx < len)
+                        w |= (uint32_t)data[idx] << (8 * b);
                 }
             }
 
             wr(SPI_W0 + 4 * (unsigned)i, w);
         }
 
-        wr(SPI_MS_DLEN, 32 * words - 1);
-        wr(SPI_CMD, SPI_CMD_UPDATE);
-        wr(SPI_CMD, SPI_CMD_UPDATE | SPI_CMD_USR);
+        wr(SPI_MS_DLEN, words * 8 - 1);
+        wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_UPDATE);
+        wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_USR);
 
-        /* USR clears itself when the transfer completes. */
-        while (rd(SPI_CMD) & SPI_CMD_USR) { }
+        /* USR is self-clearing: it drops when the transfer completes. */
+        while (rd(SPI_CMD) & SPI_CMD_USR)
+            ;
 
         len -= words * 4;
         if (len < 0)
