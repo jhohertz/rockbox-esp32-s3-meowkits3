@@ -121,23 +121,40 @@ void axp173_init(void)
     axp173_write_reg(AXP_REG_ADCENABLE2, AXP_ADC_TEMP);
     axp173_write_reg(AXP_REG_ADCRATE, AXP_ADC_RATE_25HZ);
 
-    /* PEK timings. The chip shuts its own outputs off after a hold of the
-     * power-off time, with no warning to the application, so that is pushed to
-     * the maximum the chip offers. Rockbox's own shutdown - flush the audio
-     * buffer, save settings, close the card - is driven by the long-press IRQ,
-     * which fires well before the cutoff.
+    /* PEK timings. A 1 s hold powers the chip on, the long-press IRQ fires at
+     * 1 s, and the chip's own cutoff is pushed to the longest it offers, 10 s.
+     * That leaves Rockbox nine seconds to flush the audiobuffer, save settings
+     * and close the card before the rails drop.
+     *
+     * Bit 3 must stay set: it is what makes the chip actually cut its outputs
+     * when a press outlasts the off time. The reset value has it set, and a
+     * bare write of only the on/off fields would clear it, leaving no hardware
+     * safety net for a hung application.
      */
     axp173_write_reg(AXP_REG_TIMING, (2u << AXP_PEK_ON_SHIFT) |
+                                     AXP_PEK_AUTOOFF |
+                                     AXP_PEK_PWROK |
                                      (3u << AXP_PEK_OFF_SHIFT));
 
-    /* Only the PEK IRQs: the status line is polled, and enabling the rest would
-     * make it toggle for events nobody acts on. */
-    axp173_write_reg(AXP_REG_IRQENABLE1,
-                     AXP_IRQ_LONG_PRESS | AXP_IRQ_SHORT_PRESS);
+    /* Only the PEK long press is worth an interrupt. The IRQ pin goes low when
+     * *any* enabled event is latched, so leaving the ACIN, VBUS, battery and
+     * temperature IRQs enabled - they are enabled by default - would make the
+     * pin low for events nobody acts on and defeat the cheap GPIO check that
+     * gates the I2C read.
+     */
+    axp173_write_reg(AXP_REG_IRQEN1, 0);
+    axp173_write_reg(AXP_REG_IRQEN2, 0);
+    axp173_write_reg(AXP_REG_IRQEN3, AXP_IRQ_PEK_LONG);
+    axp173_write_reg(AXP_REG_IRQEN4, 0);
+    axp173_write_reg(AXP_REG_IRQEN5, 0);
 
-    /* A press before Rockbox started must not shut the player down on its first
-     * button poll. */
-    axp173_write_reg(AXP_REG_IRQSTATUS1, 0xff);
+    /* A press, or an event, before Rockbox started must not shut the player down
+     * on its first button poll. */
+    axp173_write_reg(AXP_REG_IRQST1, 0xff);
+    axp173_write_reg(AXP_REG_IRQST2, 0xff);
+    axp173_write_reg(AXP_REG_IRQST3, 0xff);
+    axp173_write_reg(AXP_REG_IRQST4, 0xff);
+    axp173_write_reg(AXP_REG_IRQST5, 0xff);
 }
 
 int axp173_battery_voltage(void)
@@ -195,15 +212,14 @@ unsigned int axp173_input_status(void)
 
 bool axp173_power_key_pressed(void)
 {
-    int st = axp173_read_reg(AXP_REG_IRQSTATUS1);
-    unsigned int pek = AXP_IRQ_LONG_PRESS | AXP_IRQ_SHORT_PRESS;
+    int st = axp173_read_reg(AXP_REG_IRQST3);
 
     if (st < 0)
         return false;
 
-    if ((unsigned int)st & pek) {
+    if ((unsigned int)st & AXP_IRQ_PEK_LONG) {
         /* Status bits are write-1-to-clear. */
-        axp173_write_reg(AXP_REG_IRQSTATUS1, (unsigned char)(st & pek));
+        axp173_write_reg(AXP_REG_IRQST3, AXP_IRQ_PEK_LONG);
         return true;
     }
 
