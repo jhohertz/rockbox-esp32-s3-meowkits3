@@ -60,6 +60,10 @@ static void audio_cpu_boost(bool state)
 } /* audio_cpu_boost */
 #endif /* AUDIO_CPU_BOOST */
 
+/* Without input sources there is nothing to select, and audio_input_mux() is not
+ * implemented by the target. audio_path.c is still built for HAVE_SPEAKER targets,
+ * so the source selection has to be conditional rather than implicit. */
+#if INPUT_SRC_CAPS != 0
 /**
  * Selects an audio source for recording or playback
  * powers/unpowers related devices and sets up monitoring.
@@ -124,6 +128,7 @@ int audio_get_spdif_sample_rate(void)
                                  SAMPR_NUM_FREQ, false);
 } /* audio_get_spdif_sample_rate */
 #endif /* HAVE_SPDIF_IN */
+#endif /* INPUT_SRC_CAPS != 0 */
 
 #else /* PLATFORM_HOSTED */
 
