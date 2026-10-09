@@ -217,8 +217,13 @@ static void arm_descriptors(struct sdmmc_ctl *ctl, void *buf, uint32_t bytes)
 
         /* The IDMAC rounds the size up to a whole word; the ring is closed so the
          * engine suspends on the first descriptor it has already retired rather
-         * than walking off the end of the array. */
-        ctl->desc[i].flags = DESC_OWNER | DESC_CHAIN | DESC_END_RING
+         * than walking off the end of the array.
+         *
+         * end_of_ring is deliberately not set. ESP-IDF never sets it either: the
+         * chain is walked through DES3, and the engine stops when it reaches a
+         * descriptor whose owner bit is still 0.
+         */
+        ctl->desc[i].flags = DESC_OWNER | DESC_CHAIN
                              | (i == 0 ? DESC_FIRST : 0)
                              | (i == n - 1 ? DESC_LAST : 0);
         ctl->desc[i].size = (chunk + 3) & ~3u;
