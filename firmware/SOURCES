@@ -677,6 +677,9 @@ target/xtensa/es8311.c
 target/xtensa/audiohw-xtensa.c
 target/xtensa/button-xtensa.c
 target/xtensa/backlight-xtensa.c
+target/xtensa/adc-xtensa.c
+target/xtensa/debug-xtensa.c
+target/xtensa/usb-xtensa.c
 #ifdef HAVE_SDMMC_HOST
 target/xtensa/sdmmc-xtensa.c
 #endif
