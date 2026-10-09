@@ -549,11 +549,18 @@ I2C master  0x60013000
 - **GPSPI signal indices are shared by SPI2 and SPI3** (CLK 66, Q/MOSI 67, D/MISO 68).
   The controller does not drive pins directly; signals must be routed through the GPIO
   matrix, so `spi_init` has to write `OUT_SEL` for each pin.
-- **ESP32-S3 GPIO has no internal pull-up registers.** They are absent from the SVD and
-  from ESP-IDF's `gpio_reg.h`, and `soc_caps.h` has no `SOC_GPIO_SUPPORT_PULL_UP` for
-  this chip. The reference firmware calls `GPIO_PULLUP_ENABLE`, which cannot be relied
-  on here. The schematic has 10KΩ pull-ups on SDA/SCL (R30/R31 to EXP_3V3), so those
-  are load-bearing for the I²C peripheral.
+- **Pull-ups are in the IO MUX, not the GPIO block.** Searching `gpio_reg.h` or
+  `gpio_struct.h` for a pull-up bit finds nothing, and `soc_caps.h` has no
+  `SOC_GPIO_SUPPORT_PULL_UP`, which is why it is easy to conclude the chip has none.
+  It does: `FUN_PU` is bit 8 and `FUN_PD` bit 7 of the per-pad IO MUX register at
+  `IO_MUX_BASE (0x60009000) + 0x04 + 4*pin`, which `gpio_ll_pullup_en()` writes. Pads
+  30-53 have no IO MUX entry, so only GPIO 0-29 can be pulled up or down. The
+  schematic also has 10KΩ pull-ups on SDA/SCL (R30/R31 to EXP_3V3), which are
+  load-bearing for the I²C peripheral.
+- **Input enable is a separate bit.** `GPIO_ENABLE` only gates the output driver; a
+  pad with `FUN_IE` (bit 9 of its IO MUX register) clear does not feed `GPIO_IN` at
+  all. GPIO17 and GPIO18 default to DAC outputs, so a driver using them as buttons
+  has to write `MCU_SEL` as well.
 - **The GPIO matrix input slots are indexed by signal, not by pin** (`IN_SEL` array at
   `GPIO_BASE + 0x154`, one word per signal, field `in_sel` is the GPIO number and bit 7
   selects the matrix). The output slots are indexed by pin (`OUT_SEL` at `GPIO_BASE +
@@ -668,7 +675,8 @@ Things that are not obvious from the register list:
 - Signals for slot 0 are CLK 172, CMD 178, D0 180 — and CMD/D0 are bidirectional, so
   both the matrix input and output slots have to be connected. Writing only the
   output half leaves the controller blind.
-- ESP32-S3 has no GPIO pull-up registers, and `SDMMC_BUS_WIDTH_4BIT` is unusable
+- The SD lines have clamp diodes but no external pull-ups, and pads 30-53 have no IO
+  MUX entry, so a pull-up cannot be enabled on them; `SDMMC_BUS_WIDTH_4BIT` is unusable
   because only D0 is wired. The drive is therefore non-removable: `is_removable =
   false`, no `sdmmc_poll`, and a missing card shows up as a command timeout.
 
