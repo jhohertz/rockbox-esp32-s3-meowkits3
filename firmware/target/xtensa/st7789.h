@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define LCD_WIDTH   240
-#define LCD_HEIGHT  320
+/* Panel dimensions come from config.h (LCD_WIDTH/LCD_HEIGHT); the driver does not
+ * need its own copy. */
 
 void st7789_init(void);
 void st7789_write_command(uint8_t cmd);

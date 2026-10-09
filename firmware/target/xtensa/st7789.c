@@ -17,8 +17,11 @@
 #define CMD_MADCTL  0x36
 
 #define COLMOD_RGB565 0x55
-/* rotation 3 -> MAD_MY|MAD_ML, plus MAD_BGR since rgb_order is false */
-#define MADCTL_VALUE  0x98
+/* LovyanGFX's rotation table, entry 3 (the panel's offset_rotation), with the
+ * BGR bit set because rgb_order is false:
+ *   MAD_MV(0x20) | MAD_MY(0x80) | MAD_ML(0x10) | MAD_BGR(0x08) = 0xB8
+ * The GRAM is 240x320; this is what makes it behave as a 320x240 panel. */
+#define MADCTL_VALUE  0xB8
 
 /* The panel only needs a lower bound on the reset and sleep-out timings, so a
  * generous delay is fine; udelay() is bounded by the core clock rather than by
