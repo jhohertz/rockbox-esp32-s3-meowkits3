@@ -114,11 +114,3 @@ void lcd_init_device(void)
  * the GPIO matrix, so a plain GPIO write has no effect on the pin; backlight-xtensa.c
  * owns the PWM. */
 
-/* The panel's physical size is not documented in the reference firmware, so the
- * pixel density is unknown. lcd.h only falls back to this function when LCD_DPI
- * is not defined; callers use it for line spacing and touch calibration, and 0
- * gives the default behaviour for both. */
-int lcd_get_dpi(void)
-{
-    return 0;
-}
