@@ -34,6 +34,7 @@
 #define XT_SRC_GDMA_OUT_CH0     71   /* base + 0x11C */
 #define XT_SRC_GDMA_IN_CH0      66   /* base + 0x108 */
 #define XT_SRC_SDIO_HOST        30   /* base + 0x078 */
+#define XT_SRC_I2C0             42   /* base + 0x108; ETS_I2C_EXT0_INTR_SOURCE */
 
 /*
  * Levels cannot be programmed on this core config: there are no level or
@@ -49,6 +50,7 @@
 #define XT_SLOT_GDMA_OUT_CH0    2
 #define XT_SLOT_SDHOST          3
 #define XT_SLOT_GDMA_IN_CH0     5
+#define XT_SLOT_I2C0            8
 
 /*
  * The vector table has to be a physical address the core can fetch from, so it goes
