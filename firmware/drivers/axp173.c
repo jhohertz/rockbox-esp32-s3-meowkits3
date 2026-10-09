@@ -120,6 +120,24 @@ void axp173_init(void)
                      AXP_ADC_BATT_V | AXP_ADC_BATT_C | AXP_ADC_VBUS_V);
     axp173_write_reg(AXP_REG_ADCENABLE2, AXP_ADC_TEMP);
     axp173_write_reg(AXP_REG_ADCRATE, AXP_ADC_RATE_25HZ);
+
+    /* PEK timings. The chip shuts its own outputs off after a hold of the
+     * power-off time, with no warning to the application, so that is pushed to
+     * the maximum the chip offers. Rockbox's own shutdown - flush the audio
+     * buffer, save settings, close the card - is driven by the long-press IRQ,
+     * which fires well before the cutoff.
+     */
+    axp173_write_reg(AXP_REG_TIMING, (2u << AXP_PEK_ON_SHIFT) |
+                                     (3u << AXP_PEK_OFF_SHIFT));
+
+    /* Only the PEK IRQs: the status line is polled, and enabling the rest would
+     * make it toggle for events nobody acts on. */
+    axp173_write_reg(AXP_REG_IRQENABLE1,
+                     AXP_IRQ_LONG_PRESS | AXP_IRQ_SHORT_PRESS);
+
+    /* A press before Rockbox started must not shut the player down on its first
+     * button poll. */
+    axp173_write_reg(AXP_REG_IRQSTATUS1, 0xff);
 }
 
 int axp173_battery_voltage(void)
@@ -173,6 +191,23 @@ unsigned int axp173_input_status(void)
         status |= POWER_INPUT_MAIN | POWER_INPUT_MAIN_CHARGER;
 
     return status;
+}
+
+bool axp173_power_key_pressed(void)
+{
+    int st = axp173_read_reg(AXP_REG_IRQSTATUS1);
+    unsigned int pek = AXP_IRQ_LONG_PRESS | AXP_IRQ_SHORT_PRESS;
+
+    if (st < 0)
+        return false;
+
+    if ((unsigned int)st & pek) {
+        /* Status bits are write-1-to-clear. */
+        axp173_write_reg(AXP_REG_IRQSTATUS1, (unsigned char)(st & pek));
+        return true;
+    }
+
+    return false;
 }
 
 void axp173_power_off(void)
