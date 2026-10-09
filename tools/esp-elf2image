@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""
+esp-elf2image - turn a Rockbox ELF into an ESP32 "v1" firmware image.
+
+The image is what ESP-IDF's second-stage bootloader expects: a 24-byte header,
+a table of (load address, length) pairs, then the segment data. Segments that
+live in a flash-mapped window (IROM/DROM) have to sit in the file at an offset
+that matches their address modulo the 64 KB MMU page size, otherwise the
+bootloader maps the wrong physical flash page onto the virtual address. Every
+segment, padding included, is covered by the trailing checksum byte.
+
+Usage: esp-elf2image input.elf [output] [--flash-mode dio] [--flash-size 16MB]
+"""
+
+import argparse
+import struct
+import sys
+
+IMAGE_MAGIC = 0xE9
+CHECKSUM_MAGIC = 0xEF
+SEG_HEADER_LEN = 8
+MMU_PAGE = 0x10000
+
+# ESP32-S3. The chip id goes in the extended header and the bootloader uses it
+# to reject images built for a different SoC.
+CHIP_ID = 9
+
+IROM_START, IROM_END = 0x42000000, 0x44000000
+DROM_START, DROM_END = 0x3C000000, 0x3E000000
+
+FLASH_MODES = {"qio": 0, "qout": 1, "dio": 2, "dout": 3}
+FLASH_SIZES = {"1MB": 0, "2MB": 16, "4MB": 32, "8MB": 48,
+               "16MB": 64, "32MB": 80, "64MB": 96, "128MB": 112}
+FLASH_FREQS = {"40m": 0, "26m": 1, "20m": 2, "80m": 15}
+
+ELF_MAGIC = b"\x7fELF"
+EM_XTENSA = 0x5E
+
+PROGBITS = 1
+
+
+class Segment:
+    def __init__(self, addr, data):
+        self.addr = addr
+        self.data = data
+
+    def __repr__(self):
+        return "0x%08x len 0x%05x" % (self.addr, len(self.data))
+
+
+def pad4(data):
+    n = (-len(data)) & 3
+    return data + b"\x00" * n
+
+
+def read_elf(path):
+    with open(path, "rb") as f:
+        blob = f.read()
+
+    if blob[:4] != ELF_MAGIC:
+        raise ValueError("%s is not an ELF file" % path)
+
+    # ELF32 header: e_machine at 18, e_entry at 24, e_shoff at 32,
+    # e_shentsize at 46, e_shnum at 48, e_shstrndx at 50.
+    machine = struct.unpack_from("<H", blob, 18)[0]
+    entry = struct.unpack_from("<I", blob, 24)[0]
+    shoff = struct.unpack_from("<I", blob, 32)[0]
+    shentsize = struct.unpack_from("<H", blob, 46)[0]
+    shnum = struct.unpack_from("<H", blob, 48)[0]
+    shstrndx = struct.unpack_from("<H", blob, 50)[0]
+
+    if machine != EM_XTENSA:
+        raise ValueError("%s is not an Xtensa ELF (e_machine = 0x%04x)"
+                         % (path, machine))
+    if shentsize != 0x28:
+        raise ValueError("%s has unexpected section header size 0x%x"
+                         % (path, shentsize))
+
+    strtab_off = shoff + shstrndx * shentsize
+    _, _, _, strtab_fileoff, strtab_size = struct.unpack(
+        "<5L", blob[strtab_off + 4:strtab_off + 24])
+
+    segments = []
+    for i in range(shnum):
+        hdr = blob[shoff + i * shentsize: shoff + i * shentsize + 24]
+        _, sec_type, _, lma, fileoff, size = struct.unpack("<6L", hdr)
+        if sec_type != PROGBITS or lma == 0 or size == 0:
+            continue
+        data = blob[fileoff:fileoff + size]
+        if lma != 0:
+            data = pad4(data)
+        segments.append(Segment(lma, data))
+
+    return entry, segments
+
+
+def memory_type(addr):
+    if IROM_START <= addr < IROM_END:
+        return "irom"
+    if DROM_START <= addr < DROM_END:
+        return "drom"
+    return "ram"
+
+
+def is_flash(addr):
+    return memory_type(addr) != "ram"
+
+
+def merge_adjacent(segments):
+    """Merge sections that are contiguous and in the same memory region."""
+    merged = []
+    for seg in segments:
+        if merged and merged[-1].addr + len(merged[-1].data) == seg.addr \
+                and memory_type(merged[-1].addr) == memory_type(seg.addr):
+            merged[-1].data += seg.data
+        else:
+            merged.append(seg)
+    return merged
+
+
+def checksum(data, state):
+    for b in data:
+        state ^= b
+    return state
+
+
+def align16(f):
+    # esptool puts the checksum in the last byte so that the image length is a
+    # multiple of 16; the bootloader relies on that when reading it back.
+    n = 15 - (f.tell() % 16)
+    f.write(b"\x00" * n)
+
+
+def write_image(out, entry, segments, flash_mode, flash_size_freq):
+    flash = sorted((s for s in segments if is_flash(s.addr)), key=lambda s: s.addr)
+    ram = sorted((s for s in segments if not is_flash(s.addr)), key=lambda s: s.addr)
+
+    for s in flash:
+        for o in flash:
+            if s is not o and s.addr // MMU_PAGE == o.addr // MMU_PAGE:
+                raise ValueError(
+                    "segments at 0x%08x and 0x%08x land in the same MMU page; "
+                    "merge them in the linker script" % (s.addr, o.addr))
+
+    out.write(struct.pack("<BBBBI", IMAGE_MAGIC, 0, flash_mode,
+                          flash_size_freq, entry))
+    # Extended header: wp_pin, then three drive-level pairs, chip id,
+    # revision bounds, four reserved bytes, digest flag.
+    out.write(struct.pack("<BBBBHBHHBBBBB", 0xEE, 0, 0, 0, CHIP_ID, 0, 0, 0xFFFF,
+                          0, 0, 0, 0, 0))
+
+    total = 0
+    sum_ = CHECKSUM_MAGIC
+
+    def put(seg):
+        nonlocal total, sum_
+        out.write(struct.pack("<II", seg.addr, len(seg.data)))
+        out.write(seg.data)
+        total += 1
+        # Every segment, padding included, feeds the checksum. The ROM
+        # bootloader verifies it before handing control to the second stage.
+        sum_ = checksum(seg.data, sum_)
+
+    while flash:
+        seg = flash[0]
+        # After the 8-byte segment header the payload must start at an offset
+        # congruent to the segment address modulo the MMU page size. The padding
+        # is itself a segment, so it carries its own 8-byte header; that is why
+        # SEG_HEADER_LEN is subtracted twice.
+        align_past = (seg.addr % MMU_PAGE) - SEG_HEADER_LEN
+        pad = (MMU_PAGE - (out.tell() % MMU_PAGE)) + align_past
+        if pad == 0 or pad == MMU_PAGE:
+            pad = 0
+        else:
+            pad -= SEG_HEADER_LEN
+            if pad < 0:
+                pad += MMU_PAGE
+
+        if pad:
+            if ram and pad > SEG_HEADER_LEN:
+                # Use the head of a RAM segment as the padding instead of
+                # burning a page of zeros; the bootloader loads it normally.
+                head = ram[0]
+                tail = Segment(head.addr + pad, head.data[pad:])
+                head.data = head.data[:pad]
+                put(head)
+                if not tail.data:
+                    ram.pop(0)
+                else:
+                    ram[0] = tail
+            else:
+                put(Segment(0, b"\x00" * pad))
+        else:
+            put(seg)
+            flash.pop(0)
+
+    for seg in ram:
+        put(seg)
+
+    align16(out)
+    out.write(struct.pack("B", sum_))
+
+    # The segment count in the header is written last, because the padding
+    # segments are only known now. The header itself is not checksummed.
+    out.seek(1)
+    out.write(struct.pack("B", total))
+    out.seek(0)
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("input", help="rockbox.elf")
+    ap.add_argument("output", nargs="?", help="output image (default <input>.bin)")
+    ap.add_argument("--flash-mode", default="dio", choices=sorted(FLASH_MODES))
+    ap.add_argument("--flash-size", default="16MB", choices=sorted(FLASH_SIZES))
+    ap.add_argument("--flash-freq", default="40m", choices=sorted(FLASH_FREQS))
+    args = ap.parse_args(argv)
+
+    try:
+        entry, segments = read_elf(args.input)
+    except (OSError, ValueError) as e:
+        print("esp-elf2image: %s" % e, file=sys.stderr)
+        return 1
+
+    segments = merge_adjacent(segments)
+    output = args.output or args.input + ".bin"
+
+    with open(output, "wb") as f:
+        write_image(f, entry, segments, FLASH_MODES[args.flash_mode],
+                    FLASH_SIZES[args.flash_size] + FLASH_FREQS[args.flash_freq])
+
+    print("wrote %s: %d segments, entry 0x%08x" % (output, len(segments), entry))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
