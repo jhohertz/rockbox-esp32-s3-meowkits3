@@ -553,10 +553,13 @@ I2C master  0x60013000
   `gpio_struct.h` for a pull-up bit finds nothing, and `soc_caps.h` has no
   `SOC_GPIO_SUPPORT_PULL_UP`, which is why it is easy to conclude the chip has none.
   It does: `FUN_PU` is bit 8 and `FUN_PD` bit 7 of the per-pad IO MUX register at
-  `IO_MUX_BASE (0x60009000) + 0x04 + 4*pin`, which `gpio_ll_pullup_en()` writes. Pads
-  30-53 have no IO MUX entry, so only GPIO 0-29 can be pulled up or down. The
-  schematic also has 10KΩ pull-ups on SDA/SCL (R30/R31 to EXP_3V3), which are
-  load-bearing for the I²C peripheral.
+  `IO_MUX_BASE (0x60009000) + 0x04 + 4*pin`, which `gpio_ll_pullup_en()` writes.
+  `SOC_GPIO_PIN_COUNT` is 49, so GPIO 0-48 all have an IO MUX entry; GPIO 49-53 are
+  the internal SPI-flash pads and have none. The schematic also has 10KΩ pull-ups on
+  SDA/SCL (R30/R31 to EXP_3V3), which are load-bearing for the I²C peripheral.
+- **`OUT_SEL` reset value 0x100 is not "disconnected".** `SIG_GPIO_OUT_IDX` is 256,
+  and the TRM says `s=256: output of GPIO[n] equals GPIO_OUT_REG[n]`. So a plain
+  `gpio_write_pin()` needs no matrix routing at all; only peripheral signals do.
 - **Input enable is a separate bit.** `GPIO_ENABLE` only gates the output driver; a
   pad with `FUN_IE` (bit 9 of its IO MUX register) clear does not feed `GPIO_IN` at
   all. GPIO17 and GPIO18 default to DAC outputs, so a driver using them as buttons
@@ -675,10 +678,13 @@ Things that are not obvious from the register list:
 - Signals for slot 0 are CLK 172, CMD 178, D0 180 — and CMD/D0 are bidirectional, so
   both the matrix input and output slots have to be connected. Writing only the
   output half leaves the controller blind.
-- The SD lines have clamp diodes but no external pull-ups, and pads 30-53 have no IO
-  MUX entry, so a pull-up cannot be enabled on them; `SDMMC_BUS_WIDTH_4BIT` is unusable
-  because only D0 is wired. The drive is therefore non-removable: `is_removable =
-  false`, no `sdmmc_poll`, and a missing card shows up as a command timeout.
+- The SD lines have clamp diodes but no external pull-ups. The board's CLK (47), CMD
+  (48) and D0 (21) are all within `SOC_GPIO_PIN_COUNT`, so the IO MUX `FUN_PU` bit can
+  be set on them; the controller also has an internal CMD pull-up
+  (`SDHOST_CCMD_OD_PULLUP_EN_N`, signal 176, reset default 1). `SDMMC_BUS_WIDTH_4BIT`
+  is unusable because only D0 is wired. The drive is therefore non-removable:
+  `is_removable = false`, no `sdmmc_poll`, and a missing card shows up as a command
+  timeout.
 
 ### Codecs, plugins and the image format
 
