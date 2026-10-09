@@ -2,12 +2,17 @@
 """
 esp-elf2image - turn a Rockbox ELF into an ESP32 "v1" firmware image.
 
-The image is what ESP-IDF's second-stage bootloader expects: a 24-byte header,
-a table of (load address, length) pairs, then the segment data. Segments that
-live in a flash-mapped window (IROM/DROM) have to sit in the file at an offset
-that matches their address modulo the 64 KB MMU page size, otherwise the
-bootloader maps the wrong physical flash page onto the virtual address. Every
-segment, padding included, is covered by the trailing checksum byte.
+The image is what the mask ROM's loader reads at flash offset 0: a 24-byte
+header, a table of (load address, length) pairs, then the segment data. The
+ROM copies the RAM segments, sets up the flash MMU windows and jumps to the
+entry point, so this format works with or without ESP-IDF's second-stage
+bootloader in front of it.
+
+Segments that live in a flash-mapped window (IROM/DROM) have to sit in the file
+at an offset that matches their address modulo the 64 KB MMU page size,
+otherwise the loader maps the wrong physical flash page onto the virtual
+address. Every segment, padding included, is covered by the trailing checksum
+byte.
 
 Usage: esp-elf2image input.elf [output] [--flash-mode dio] [--flash-size 16MB]
 """
@@ -29,6 +34,8 @@ IROM_START, IROM_END = 0x42000000, 0x44000000
 DROM_START, DROM_END = 0x3C000000, 0x3E000000
 
 FLASH_MODES = {"qio": 0, "qout": 1, "dio": 2, "dout": 3}
+# spi_size_freq is two nibbles: the size index (1MB=0 .. 128MB=7) in bits 4-7
+# and the SPI speed in bits 0-3. 15 is the 80 MHz setting, not an enum value.
 FLASH_SIZES = {"1MB": 0, "2MB": 16, "4MB": 32, "8MB": 48,
                "16MB": 64, "32MB": 80, "64MB": 96, "128MB": 112}
 FLASH_FREQS = {"40m": 0, "26m": 1, "20m": 2, "80m": 15}
@@ -215,7 +222,7 @@ def main(argv):
     ap.add_argument("output", nargs="?", help="output image (default <input>.bin)")
     ap.add_argument("--flash-mode", default="dio", choices=sorted(FLASH_MODES))
     ap.add_argument("--flash-size", default="16MB", choices=sorted(FLASH_SIZES))
-    ap.add_argument("--flash-freq", default="40m", choices=sorted(FLASH_FREQS))
+    ap.add_argument("--flash-freq", default="80m", choices=sorted(FLASH_FREQS))
     args = ap.parse_args(argv)
 
     try:
