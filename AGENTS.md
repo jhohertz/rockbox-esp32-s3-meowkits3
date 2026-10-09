@@ -314,7 +314,7 @@ Mapping the board against what Rockbox already has:
 
 | Board block | Rockbox support | Status |
 |---|---|---|
-| ST7789 display | `HAVE_LCD_BITMAP` | done |
+| ST7789 display | `HAVE_LCD_BITMAP`, `HAVE_LCD_ENABLE`, `HAVE_LCD_SLEEP`, `HAVE_LCD_SHUTDOWN` | done |
 | PCA9557 expander | (target-internal) | done |
 | ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done |
 | SD card | `STORAGE_SD` via `sdmmc_host.c` | done |
@@ -327,6 +327,30 @@ Mapping the board against what Rockbox already has:
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | **open**: neither the ROM nor ESP-IDF's bootloader does it; the app must |
 | USB-OTG | `usbstack` | open: the chip has a Synopsys DWC-OTG block (`soc/usb_reg.h`, registers at `SOC_DPORT_USB_BASE`, device side at +0xb00), but there is no `usb_hw` layer for this core. `usb-xtensa.c` is a stub. Not needed for charging (AXP173 reports VBUS) or storage (SD) |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
+
+### Display power states
+
+Rockbox asks a target for three levels, and they are not interchangeable:
+
+| Hook | Called by | Meaning |
+|---|---|---|
+| `lcd_enable(bool)` | `backlight_hw_on()`/`backlight_hw_off()` in the backlight driver | shallow on/off |
+| `lcd_sleep()` | `backlight.c`, `LCD_SLEEP_TIMEOUT` after the backlight went off | "deeper than `lcd_enable(false)`" |
+| `lcd_shutdown()` | `shutdown_hw()` in `powermgmt.c`, before `power_off()` | final |
+
+`lcd_active()`/`lcd_set_active()` come from `drivers/lcd-memframe.c` and are backed
+by the global `lcd_on`; a target driver that uses them needs `extern bool lcd_on;`.
+The update path must return early when the panel is inactive - the framebuffer keeps
+accumulating and is pushed in full on wake.
+
+For the ST7789 that maps to `0x28 DISPOFF` / `0x29 DISPON` for the shallow state and
+`0x10 SLPIN` / `0x11 SLPOUT` for the deep one. SLPOUT needs the same ~130 ms recovery
+as after a reset. `lcd_awake()` is required by `HAVE_LCD_SLEEP` even if the driver
+never calls it: `backlight.c` calls it on `SYS_POWEROFF`.
+
+There is no "display off while audio plays" hook in Rockbox. The sleep countdown
+starts when the backlight goes off, so the way to get a dark screen while listening is
+the backlight timeout, and the panel follows a moment later.
 
 ### I2S and GDMA
 

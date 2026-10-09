@@ -2,10 +2,15 @@
 #include "system.h"
 #include "lcd.h"
 #include "lcd-target.h"
+#include "backlight.h"          /* lcd_awake() is prototyped there */
+#include "backlight-target.h"
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
 #include "st7789.h"
+
+/* lcd-memframe.c owns the panel-enabled flag; lcd_active() reads it. */
+extern bool lcd_on;
 
 /* Backlight is active low on this board. */
 #define PIN_LCD_BL 42
@@ -78,6 +83,11 @@ void lcd_update_rect(int x, int y, int width, int height)
     int x_end = x + width;
     int y_end = y + height;
 
+    /* The panel is powered down; the framebuffer keeps accumulating and is
+     * pushed in full when the panel comes back. */
+    if (!lcd_active())
+        return;
+
     if (x < 0) { width += x; x = 0; }
     if (y < 0) { height += y; y = 0; }
     if (x_end > LCD_WIDTH) { x_end = LCD_WIDTH; }
@@ -107,7 +117,87 @@ void lcd_init_device(void)
 
     st7789_init();
 
+    lcd_on = true;
     lcd_update();
+}
+
+/* Three power states, matching what Rockbox expects from a target that declares
+ * HAVE_LCD_ENABLE and HAVE_LCD_SLEEP:
+ *
+ *   active  - the panel is driving the framebuffer
+ *   off     - DISPOFF: the driver is still powered, waking costs one command
+ *   asleep  - SLPIN: the gate driving stops; waking needs SLPOUT plus the same
+ *             recovery delay as after a reset
+ *
+ * lcd_enable() is called from the backlight driver, and lcd_sleep() is reached
+ * only after the backlight has been off for LCD_SLEEP_TIMEOUT - it is the deeper
+ * state, which is why Rockbox asks for both.
+ */
+static bool panel_asleep;
+
+static void panel_wake(void)
+{
+    if (!panel_asleep)
+        return;
+
+    st7789_wake();
+    st7789_display_on();
+    panel_asleep = false;
+
+    /* Whether GRAM survives SLPIN is a panel question we cannot answer from the
+     * datasheet alone, so do not rely on it: push the whole frame. lcd_on has to
+     * be set first, because lcd_update() drops the draw when the panel is
+     * inactive.
+     */
+    lcd_on = true;
+    lcd_update();
+}
+
+void lcd_enable(bool enable)
+{
+    if (enable) {
+        panel_wake();
+        if (!lcd_active()) {
+            st7789_display_on();
+            lcd_on = true;
+        }
+    } else {
+        if (lcd_active()) {
+            st7789_display_off();
+            lcd_on = false;
+        }
+    }
+}
+
+void lcd_sleep(void)
+{
+    if (panel_asleep)
+        return;
+
+    st7789_display_off();
+    st7789_sleep();
+    panel_asleep = true;
+    lcd_on = false;
+}
+
+void lcd_awake(void)
+{
+    panel_wake();
+    if (!lcd_active()) {
+        st7789_display_on();
+        lcd_on = true;
+    }
+}
+
+void lcd_shutdown(void)
+{
+    /* The backlight thread locks itself on SYS_POWEROFF so it cannot go out
+     * before the rails drop, so the PWM still has to be killed explicitly here. */
+    backlight_hw_off();
+    st7789_display_off();
+    st7789_sleep();
+    panel_asleep = true;
+    lcd_on = false;
 }
 
 /* The backlight is not written here. GPIO 42 is routed to LEDC channel 7 through
