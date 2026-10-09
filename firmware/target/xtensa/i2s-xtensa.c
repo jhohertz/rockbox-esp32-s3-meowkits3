@@ -207,10 +207,18 @@ void i2s_init(void)
                      (I2S_BCLK_DIV << 7) |               /* tx_bclk_div_num */
                      (1u << 29));                        /* tx_msb_shift */
 
-    /* Standard mode runs through the TDM path with two slots */
+    /* Standard mode runs through the TDM path with two slots. The reset defaults
+     * of tx_stop_en, tx_pcm_bypass and tx_left_align are 1 and a bare write of
+     * this register clears them: with tx_pcm_bypass = 0 and tx_pcm_conf = 0 the
+     * data goes through the A-law compressor.
+     */
     wr(I2S_TX_TDM_CTRL, ((SLOT_NUM - 1) << 16) | 0x3);  /* tot_chan_num, chan mask */
 
-    wr(I2S_TX_CONF, (1u << 19) | (1u << 8));            /* tx_tdm_en, tx_update */
+    wr(I2S_TX_CONF, (1u << 19) |                    /* tx_tdm_en */
+                    (1u << 15) |                    /* tx_left_align */
+                    (1u << 13) |                    /* tx_stop_en */
+                    (1u << 12) |                    /* tx_pcm_bypass */
+                    (1u << 8));                     /* tx_update */
     while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
         ;
 
