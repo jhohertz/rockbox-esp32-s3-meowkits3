@@ -16,9 +16,9 @@
 #define BUTTON_MAIN  (BUTTON_A | BUTTON_B | BUTTON_UP | BUTTON_DOWN | \
                       BUTTON_LEFT | BUTTON_RIGHT)
 
-/* No power button on this board - the PMU owns power. A long press of A is the
- * closest thing to one. */
-#define POWEROFF_BUTTON BUTTON_A
-#define POWEROFF_COUNT  30
+/* No power button among the GPIO keys: the PMU owns power, and its PEK key is
+ * handled in button-xtensa.c by polling the PMU IRQ line. POWEROFF_BUTTON is
+ * only read by firmware/drivers/button.c under HAVE_SW_POWEROFF, which this
+ * target does not define. */
 
 #endif /* _BUTTON_TARGET_H_ */
