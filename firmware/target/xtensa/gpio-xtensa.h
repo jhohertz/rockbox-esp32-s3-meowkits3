@@ -33,7 +33,10 @@
 #define GPIO_IN1          (DR_REG_GPIO_BASE + 0x40)
 
 /* GPIO matrix: one 32-bit slot per pin.
- *   [8:0]   func_sel  - signal index, default 0x100 (SIG_GPIO_OUT_IDX = no signal)
+ *   [8:0]   func_sel  - signal index. 256 (SIG_GPIO_OUT_IDX) is the reset value and
+ *                       means "the pad is driven by GPIO_OUT_REG[n]", so a plain
+ *                       gpio_write_pin() needs no routing at all. Anything else
+ *                       routes that peripheral signal's output to the pad.
  *   [9]     inv_sel
  *   [10]    oen_sel   - 1: output enable comes from the GPIO_ENABLE bit for this pin
  *   [11]    oen_inv_sel
@@ -128,9 +131,16 @@ static inline void gpio_matrix_in(int pin, int signal)
     gpio_write(GPIO_FUNC_IN_SEL(signal), ((uint32_t)pin & 0x3F) | GPIO_IN_FROM_MATRIX);
 }
 
-/* Pick the GPIO function for a pad, which is not the default for every pin. */
+/* ESP32-S3 has 49 general-purpose pads (SOC_GPIO_PIN_COUNT), and every one of them
+ * has an IO MUX entry: FUN_PD/FUN_PU/FUN_IE/FUN_DRV/MCU_SEL at bits 7..14 of
+ * IO_MUX_GPIO0_REG + 4*n. Pull-ups are in the IO MUX, not in the GPIO block - that
+ * is why a search of gpio_reg.h finds nothing.
+ */
 static inline void io_mux_select_gpio(int pin)
 {
+    if (pin > 48)
+        return;
+
     uint32_t r = IO_MUX_PIN(pin);
     gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUN_IE);
 }
@@ -139,19 +149,17 @@ static inline void io_mux_select_gpio(int pin)
  * does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
 static inline void gpio_input_enable(int pin, int enable)
 {
-    if (pin >= 30)
-        return;   /* pads 30-53 have no IO MUX entry; they are matrix-only */
+    if (pin > 48)
+        return;
 
     uint32_t r = IO_MUX_PIN(pin);
     gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_IE)
                          : (gpio_read(r) & ~IO_MUX_FUN_IE));
 }
 
-/* Pull-ups are in the IO MUX, not in the GPIO block - that is why a search of
- * gpio_reg.h finds nothing. */
 static inline void gpio_pullup(int pin, int enable)
 {
-    if (pin >= 30)
+    if (pin > 48)
         return;
 
     uint32_t r = IO_MUX_PIN(pin);
