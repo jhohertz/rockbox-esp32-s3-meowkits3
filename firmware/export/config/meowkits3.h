@@ -30,6 +30,10 @@
 
 #define CONFIG_STORAGE STORAGE_SD
 
+/* One SDHOST slot, wired for 1-bit. There is no card-detect line, so the drive is
+ * not removable: a card has to be present at boot. */
+#define SDMMC_HOST_NUM_SD_CONTROLLERS 1
+
 #define BOOTDIR "/.rockbox"
 
 /* No plugin loader exists for this core, but apps/playlist_viewer.c references
@@ -38,7 +42,7 @@
 
 #define CONFIG_KEYPAD ESP32S3_PAD
 
-/* I2C is bit-banged on GPIO 1/2, not a peripheral. */
+/* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the

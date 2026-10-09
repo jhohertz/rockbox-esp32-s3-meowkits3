@@ -14,6 +14,7 @@
 #define XT_RTCCNTL_BASE         0x60008000      /* RTC, incl. the RTC watchdog */
 #define XT_TIMERGROUP0_BASE     0x6001F000
 #define XT_TIMERGROUP1_BASE     0x60020000
+#define XT_SDMMC_BASE           0x60028000      /* SDHOST (DesignWare MMC) */
 
 /*
  * Interrupt matrix: one 5-bit register per peripheral interrupt source,
@@ -23,6 +24,7 @@
 #define XT_SRC_TIMERG0          48
 #define XT_SRC_TIMERG1          49
 #define XT_SRC_GDMA_OUT_CH0     71
+#define XT_SRC_SDIO_HOST        30
 
 /*
  * Levels cannot be programmed on this core config: there are no level or
@@ -36,6 +38,7 @@
  */
 #define XT_SLOT_TIMERG1         1
 #define XT_SLOT_GDMA_OUT_CH0    2
+#define XT_SLOT_SDHOST          3
 
 /*
  * The vector table has to be a physical address the core can fetch from, so it goes
