@@ -1,5 +1,5 @@
 /***************************************************************************
- * ES8311 codec control over the bit-banged I2C bus.
+ * ES8311 codec control over the hardware I2C master.
  *
  * Register values and the clock-divider mapping are taken from the MeowKit
  * reference firmware (src/bsp/audio/ES8311_Class.cpp), which carries the
@@ -55,30 +55,48 @@ static int read_reg(int reg)
     return val;
 }
 
-/* The codec's internal clock C is MCLK * pre_multi / pre_div. The reference
- * table keeps C at 256 * fs for every rate Rockbox supports, so the divider
- * fields are constant; only pre_multi changes when MCLK is 128 * fs. */
+/* The codec's internal clock is C = MCLK * 2^pre_multi / pre_div, and the bit
+ * clock it produces is BCLK = C / (2 * bclk_div). The datasheet table keeps C at
+ * 256 * rate for every rate Rockbox supports, so the pair (pre_multi, pre_div) is
+ * not a function of the MCLK multiple alone: it has to satisfy that invariant.
+ *
+ * With MCLK = 256 * rate the answer is pre_div = 1, pre_multi = 0, bclk_div = 4,
+ * which is exactly the {11289600, 44100, 1, 0, 1, 1, 0, 0, 0xff, 4, 16, 16} entry
+ * in the reference table.
+ */
 void es8311_set_clock(unsigned long rate, unsigned long mclk)
 {
-    int multiple = (int)(mclk / rate);          /* 256 or 128 */
+    unsigned long target = 256UL * rate;
     int pre_multi = 0;
-    for (int m = multiple; m > 1; m >>= 1)
-        pre_multi++;                            /* log2(multiple) */
+    unsigned long pre_div = 1;
+    bool found = false;
 
-    /* C = MCLK * pre_multi / pre_div. The reference table keeps C at 256 * fs
-     * for every rate Rockbox supports, so osr and bclk_div are constants and
-     * only pre_multi depends on the MCLK multiple. */
-    int bclk = SLOT_BITS * SLOT_NUM * (int)rate;        /* 32 * fs */
-    int bclk_div = 256 / (2 * bclk / (int)rate);        /* 4 */
+    for (int m = 0; m <= 3 && !found; m++) {
+        unsigned long num = mclk * (1u << m);
+        unsigned long d = num / target;
 
-    write_reg(REG_CLK01, 0x30);                          /* MCLK from pin, not inverted */
-    write_reg(REG_CLK02, (0 << 5) | (pre_multi << 3));  /* pre_div = 1 */
-    write_reg(REG_CLK03, (0 << 6) | 16);                /* fs_mode = 0, adc_osr = 16 */
-    write_reg(REG_CLK04, 16);                           /* dac_osr = 16 */
-    write_reg(REG_CLK05, 0);                            /* adc_div = 1, dac_div = 1 */
+        if (num % target == 0 && d >= 1 && d <= 8) {
+            pre_multi = m;
+            pre_div = d;
+            found = true;
+        }
+    }
+
+    unsigned long c = mclk * (1u << pre_multi) / pre_div;
+    unsigned long bclk = (unsigned long)SLOT_BITS * SLOT_NUM * rate;
+    int bclk_div = (int)(c / (2 * bclk));
+
+    if (bclk_div < 1)
+        bclk_div = 1;
+
+    write_reg(REG_CLK01, 0x3F);                                   /* enable every clock, MCLK from the pin, not inverted */
+    write_reg(REG_CLK02, ((pre_div - 1) << 5) | (pre_multi << 3));
+    write_reg(REG_CLK03, 16);                                    /* fs_mode = 0, adc_osr = 16 */
+    write_reg(REG_CLK04, 16);                                    /* dac_osr = 16 */
+    write_reg(REG_CLK05, 0);                                     /* adc_div = 1, dac_div = 1 */
     write_reg(REG_CLK06, bclk_div - 1);
-    write_reg(REG_CLK07, 0);                            /* lrch = 0 */
-    write_reg(REG_CLK08, 255);                          /* lrcl = 255 */
+    write_reg(REG_CLK07, 0);                                     /* lrch = 0 */
+    write_reg(REG_CLK08, 255);                                   /* lrcl = 255 */
 }
 
 void es8311_init(void)
