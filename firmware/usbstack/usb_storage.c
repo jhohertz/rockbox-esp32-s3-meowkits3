@@ -441,9 +441,12 @@ static int usb_storage_get_config_descriptor(unsigned char *dest,int max_packet_
 
     return (dest - orig_dest);
 }
+/* ESP32-S3 belongs here because its DWC DMA is an internal AHB master while the
+ * core allocator's pool is the audiobuffer, which on this target is PSRAM. */
 #if (CONFIG_CPU == IMX31L || defined(CPU_TCC780X) || \
      CONFIG_CPU == S5L8702 || CONFIG_CPU == S5L8701 || CONFIG_CPU == AS3525v2 || \
-     defined(BOOTLOADER) || CONFIG_CPU == DM320) && !defined(CPU_PP502x)
+     defined(BOOTLOADER) || CONFIG_CPU == DM320 || CONFIG_CPU == ESP32S3) && \
+    !defined(CPU_PP502x)
 #define USB_STATIC_ALLOC
 #else
 static int usb_handle = 0;
