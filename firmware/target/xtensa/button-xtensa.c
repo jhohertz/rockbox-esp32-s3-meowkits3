@@ -1,8 +1,9 @@
 /***************************************************************************
  * MeowKit ESP32-S3 GPIO buttons.
  *
- * Six active-low inputs. Rockbox's common button code does the debouncing and
- * repeat handling, so this file only reports the raw levels.
+ * Six active-low GPIO inputs, plus an FT6336 capacitive touch panel on the I2C
+ * bus. Rockbox's common button code does the debouncing and repeat handling, so
+ * this file only reports the raw levels and the touch state.
  ****************************************************************************/
 #include "config.h"
 
@@ -12,6 +13,11 @@
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"
+#endif
+#ifdef HAVE_TOUCHSCREEN
+#include "i2c-async.h"
+#include "ft6x06.h"
+#include "touchscreen.h"
 #endif
 
 #define PIN_BTN_A     6
@@ -55,9 +61,32 @@ void button_init_device(void)
     gpio_pullup(PIN_PMU_IRQ, 1);
     gpio_set_direction(PIN_PMU_IRQ, 0);
 #endif
+
+#ifdef HAVE_TOUCHSCREEN
+    /* The INT pin is not wired, so there is no interrupt to attach: the panel is
+     * read on every button tick instead. ft6x06_irq_handler() is the driver's "a
+     * touch happened, read it" entry point, and it queues with I2C_Q_ONCE, so
+     * calling it unconditionally cannot pile up transactions.
+     */
+    ft6x06_init();
+    ft6x06_enable(true);
+
+    /* 0xFE is the auto-sleep control. Left at its default the controller drops into
+     * idle mode after a few seconds without contact and only comes back when it is
+     * touched, which makes the first touch after an idle period invisible.
+     */
+    i2c_reg_write1(FT6x06_BUS, FT6x06_ADDR, 0xFE, 0x07);
+#endif
 }
 
-int button_read_device(void)
+#ifdef HAVE_TOUCHSCREEN
+void touchscreen_enable_device(bool en)
+{
+    ft6x06_enable(en);
+}
+#endif
+
+int button_read_device(int *data)
 {
     int b = 0;
 
@@ -68,6 +97,29 @@ int button_read_device(void)
     if (!gpio_read_pin(PIN_JOY_DOWN))  b |= BUTTON_DOWN;
     if (!gpio_read_pin(PIN_JOY_LEFT))  b |= BUTTON_LEFT;
     if (!gpio_read_pin(PIN_JOY_RIGHT)) b |= BUTTON_RIGHT;
+
+#ifdef HAVE_TOUCHSCREEN
+    /* The read queued on the previous tick has usually finished by now; the driver's
+     * callback has already filled ft6x06_state. If it has not, the state still holds
+     * the last completed read, which is what a polled panel means in practice.
+     */
+    ft6x06_irq_handler();
+
+    if (touchscreen_get_mode() == TOUCHSCREEN_POINT) {
+        /* Point mode can only carry one coordinate pair per button event. */
+        const struct ft6x06_point *p = &ft6x06_state.points[0];
+
+        if (p->event == FT6x06_EVT_PRESS || p->event == FT6x06_EVT_CONTACT)
+            b |= touchscreen_to_pixels(p->pos_x, p->pos_y, data);
+    } else {
+        for (int i = 0; i < ft6x06_state.nr_points; i++) {
+            const struct ft6x06_point *p = &ft6x06_state.points[i];
+
+            if (p->event == FT6x06_EVT_PRESS || p->event == FT6x06_EVT_CONTACT)
+                b |= touchscreen_to_pixels(p->pos_x, p->pos_y, NULL);
+        }
+    }
+#endif
 
 #ifdef HAVE_AXP173
     /* The PEK power key is the only way to turn the board off, and the chip

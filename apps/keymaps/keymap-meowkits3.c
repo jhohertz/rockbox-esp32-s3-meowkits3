@@ -1,7 +1,10 @@
 /***************************************************************************
  * Button code definitions for the MeowKit ESP32-S3.
  *
- * Six inputs only: A, B and a 4-direction joystick.
+ * Six inputs only: A, B and a 4-direction joystick. The FT6336 touch panel is
+ * reported as a 3x3 grid, and apps/keymaps/keymap-touchscreen.c already maps that
+ * grid; this file only has to handle the physical keys, which is why the entry
+ * point is target_get_context_mapping() rather than get_context_mapping().
  ****************************************************************************/
 
 #include "config.h"
@@ -55,9 +58,9 @@ static const struct button_mapping button_context_yesno[] = {
     LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_STD)
 }; /* button_context_yesno */
 
-const struct button_mapping* get_context_mapping(int context)
+const struct button_mapping* target_get_context_mapping(int context)
 {
-    switch (context)
+    switch (context & ~CONTEXT_LOCKED)
     {
         case CONTEXT_STD:
             return button_context_standard;
