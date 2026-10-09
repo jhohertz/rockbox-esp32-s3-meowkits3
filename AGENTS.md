@@ -578,6 +578,49 @@ Consequences worth remembering:
   (base + 0x80) generate N SCL pulses while idle, which is exactly the nine-pulse
   recovery the spec asks for.
 
+### The SDHOST block is a DesignWare MMC controller with an IDMAC
+
+SDHOST is at `0x60028000` (`SDIO_HOST_CLK_EN` is bit 7 of `PERIP_CLK_EN1`, and it
+defaults to 0). Rockbox already has the SD/MMC protocol layer in
+`firmware/drivers/sdmmc_host.c`; a target only supplies `struct
+sdmmc_controller_ops` plus `sdmmc_host_target_init()`. `sdmmc-x1000-common.c` is
+the closest existing model, because the x1000 MSC is the same IP.
+
+Things that are not obvious from the register list:
+
+- **There is no data port.** Every transfer goes through the IDMAC, so a read or
+  write is a ring of 16-byte descriptors: `DES0` (owner bit 31, card-error 30,
+  end-of-ring 5, chained 4, first 3, last 2), `DES1` (buffer1 size, 13 bits),
+  `DES2` buffer address, `DES3` next descriptor. `SDMMC_DSCADDR_REG` (+0x94) is a
+  plain 32-bit register, so unlike GDMA the descriptor ring can live anywhere — but
+  internal SRAM is still cached, so the ring has to be written back before the DMA
+  reads it and invalidated before the CPU reads the owner bits back.
+- **Completion is the owner bits, not an interrupt.** The IDMAC clears a
+  descriptor's owner bit when it retires it. `RINTSTS` `DATA_OVER` alone only means
+  the card sent the data; the transfer is finished when every descriptor in the
+  ring has been retired.
+- **`INTMASK` is an enable mask, not a mask.** A set bit *unmasks* the interrupt.
+  Getting this backwards silences the controller entirely.
+- **Bit positions in `CTRL` are easy to misread.** `use_internal_dma` is bit 25, not
+  21. In `BMOD`, `enable` is bit 7 and `fb` is bit 1; bit 0 is `sw_reset`. In
+  `STATUS`, `data_busy` is bit 9 — the first four bits are FIFO flags and the next
+  four are the command FSM state.
+- **Two clock divider stages.** The generator (`clock` register at +0x800) divides
+  XTAL or the 160 MHz BBPLL by 1..16; each slot then has `clkdiv.divN`, where 0 is
+  bypass and n is a divide by 2n. `clk_sel = 1` needs the BBPLL powered up, which
+  nothing guarantees when we enter Rockbox from ESP-IDF's bootloader, so XTAL is the
+  only dependable source. From 40 MHz that means 400 kHz exactly (host 10, card 5)
+  and 20 MHz for the "25 MHz" slot; 50 MHz is unreachable, so the target must not
+  advertise `SDMMC_BUS_CLOCK_50MHZ`.
+- `phase_dout = 1` (90 degrees) is what ESP-IDF sets for the card clock, and it only
+  applies to a command whose `use_hold_reg` bit is set.
+- Signals for slot 0 are CLK 172, CMD 178, D0 180 — and CMD/D0 are bidirectional, so
+  both the matrix input and output slots have to be connected. Writing only the
+  output half leaves the controller blind.
+- ESP32-S3 has no GPIO pull-up registers, and `SDMMC_BUS_WIDTH_4BIT` is unusable
+  because only D0 is wired. The drive is therefore non-removable: `is_removable =
+  false`, no `sdmmc_poll`, and a missing card shows up as a command timeout.
+
 ## 6. Simulator
 
 `firmware/target/hosted/sdl` + `uisimulator/`. Sim builds use the **host**

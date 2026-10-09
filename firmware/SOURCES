@@ -677,6 +677,9 @@ target/xtensa/es8311.c
 target/xtensa/audiohw-xtensa.c
 target/xtensa/button-xtensa.c
 target/xtensa/backlight-xtensa.c
+#ifdef HAVE_SDMMC_HOST
+target/xtensa/sdmmc-xtensa.c
+#endif
 #ifdef HAVE_LCD_BITMAP
 target/xtensa/spi-xtensa.c
 target/xtensa/st7789.c
