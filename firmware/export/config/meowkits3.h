@@ -22,6 +22,8 @@
 #define LCD_HEIGHT 240
 #define LCD_DEPTH  16
 #define LCD_PIXELFORMAT RGB565
+/* 320x240 across a 2.0" diagonal is 400 pixels diagonal, i.e. 200 dpi. */
+#define LCD_DPI    200
 
 #define HAVE_BACKLIGHT
 /* GPIO 42 is routed through the GPIO matrix to LEDC channel 7, so the backlight is
