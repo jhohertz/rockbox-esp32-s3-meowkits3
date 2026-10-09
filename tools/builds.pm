@@ -203,6 +203,7 @@ $releasenotes="/wiki/ReleaseNotes400";
         name => 'MeowKit ESP32-S3',
         status => 1,
         ram => 8,
+        sim => 1,
     },
     'mrobe100' => {
         name => 'Olympus M-Robe 100',

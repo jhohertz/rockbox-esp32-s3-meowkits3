@@ -539,6 +539,15 @@
 #define UI_LCD_POSX                 100
 #define UI_LCD_POSY                 100
 
+#elif defined(MEOWKIT_ESP32S3)
+/* The panel is 320x240 and is drawn at 1:1, with the surrounding frame standing in
+ * for the board and the joystick. */
+#define UI_TITLE                    "MeowKit ESP32-S3"
+#define UI_WIDTH                    440
+#define UI_HEIGHT                   420
+#define UI_LCD_POSX                 60
+#define UI_LCD_POSY                 60
+
 #elif defined(SIMULATOR)
 #error no UI defines
 #endif
