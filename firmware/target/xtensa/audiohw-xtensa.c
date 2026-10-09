@@ -11,6 +11,7 @@
 #include "pcm_sampr.h"
 #include "es8311.h"
 #include "i2s-xtensa.h"
+#include "pca9557.h"
 
 void audiohw_preinit(void)
 {
@@ -44,3 +45,14 @@ void audiohw_set_frequency(int fsel)
 {
     i2s_set_frequency(hw_freq_sampr[fsel]);
 }
+
+#ifdef HAVE_SPEAKER
+/* The NS4150B amplifier is enabled by PCA9557 IO3, not by a GPIO: the expander is
+ * the only way to reach it, and it is high-active with a 10K pull-down. Leaving it
+ * low means the DAC produces a signal that never reaches the speaker.
+ */
+void audiohw_enable_speaker(bool on)
+{
+    pca9557_write(IOEXP_PA_EN, on ? 1 : 0);
+}
+#endif /* HAVE_SPEAKER */

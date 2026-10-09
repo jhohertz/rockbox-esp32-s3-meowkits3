@@ -159,9 +159,11 @@ radio/radioart.c
 #endif
 #endif
 
-#if INPUT_SRC_CAPS != 0
+/* audio_path.c also carries audio_enable_speaker(), which a target with a speaker
+ * but no recording or radio still needs. */
+#if INPUT_SRC_CAPS != 0 || defined(HAVE_SPEAKER)
 audio_path.c
-#endif /* INPUT_SRC_CAPS != 0 */
+#endif /* INPUT_SRC_CAPS != 0 || HAVE_SPEAKER */
 audio_thread.c
 pcmbuf.c
 codec_thread.c
