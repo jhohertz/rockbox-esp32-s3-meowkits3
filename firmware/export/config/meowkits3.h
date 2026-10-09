@@ -36,8 +36,10 @@
 
 #define BOOTDIR "/.rockbox"
 
-/* No plugin loader exists for this core, but apps/playlist_viewer.c references
- * PLUGIN_BUFFER_SIZE unconditionally and every target config defines it. */
+/* No plugin loader exists for this core, but apps/plugin.c and apps/codecs.c are
+ * built unconditionally and every target config defines these. Codecs are real:
+ * they are loaded from storage into CODEC_SIZE worth of PSRAM at runtime. */
+#define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000
 
 #define CONFIG_KEYPAD ESP32S3_PAD

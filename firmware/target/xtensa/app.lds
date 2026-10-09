@@ -42,16 +42,24 @@ STARTUP(target/xtensa/crt0.o)
 #define IROMORIG 0x42000020
 #define IROMSIZE (0x800000 - 0x20)
 
-/* Flash data-cache window, shared with PSRAM. */
+/* Flash data-cache window, shared with PSRAM. The window is 32 MB wide; we only
+ * claim MEMORYSIZE worth of it, and the rest is left to whatever the bootloader
+ * mapped for flash rodata. */
 #define DROMORIG 0x3C000020
-#define DROMSIZE (0x2000000 - 0x20)
 
 /* MEMORYSIZE is the PSRAM size on this target. On every existing Rockbox target
  * MEMORYSIZE is one contiguous region that the audiobuffer lives in; here the
- * audiobuffer and the framebuffer share PSRAM, so they have to be split explicitly.
- * 240*320*2 bytes per buffer, double buffered. */
+ * audiobuffer, the framebuffer and the codec/plugin buffers all share PSRAM, so
+ * they have to be split explicitly.
+ *
+ * The codec and plugin buffers sit at the top of the PSRAM part of the window at a
+ * fixed address. apps/plugins/plugin.lds computes CODEC_ORIGIN from MEMORYSIZE,
+ * PLUGIN_BUFFER_SIZE and CODEC_SIZE, and apps/codecs.c rejects a codec whose load
+ * address is not exactly codecbuf, so the two scripts have to agree and the only
+ * way to make them agree is to pin the address. */
 #define FRAMEBUFFER_SIZE (240 * 320 * 2 * 2)
-#define AUDIOBUFSIZE (MEMORYSIZE * 0x100000 - FRAMEBUFFER_SIZE)
+#define CODECP_SIZE (CODEC_SIZE + PLUGIN_BUFFER_SIZE)
+#define CODECBUF_ORIG (DROMORIG + MEMORYSIZE * 0x100000 - CODECP_SIZE)
 #define MIN_STACK_SIZE 0x1000
 
 MEMORY
@@ -59,7 +67,8 @@ MEMORY
     DRAM : ORIGIN = DRAMORIG, LENGTH = DRAMSIZE
     IRAM : ORIGIN = IRAMORIG, LENGTH = IRAMSIZE
     IROM : ORIGIN = IROMORIG, LENGTH = IROMSIZE
-    DROM : ORIGIN = DROMORIG, LENGTH = DROMSIZE
+    DROM : ORIGIN = DROMORIG, LENGTH = MEMORYSIZE * 0x100000 - CODECP_SIZE
+    CODECP : ORIGIN = CODECBUF_ORIG, LENGTH = CODECP_SIZE
 }
 
 SECTIONS
@@ -92,8 +101,16 @@ SECTIONS
     {
         . = ALIGN(0x10000);          /* MMU page size */
         audiobuffer = .;
-        . = . + AUDIOBUFSIZE;
-        . = ALIGN(0x4);
+        /* rodata already took the low part of the window, so the audiobuffer is
+         * whatever is left between it and the framebuffer reservation at the top of
+         * DROM. Sizing it from the location counter is the only way to account for
+         * rodata, whose size is not known until the link is done.
+         *
+         * ORIGIN()/LENGTH() rather than the literal addresses: this binutils treats
+         * an assignment whose expression contains a bare absolute constant as an
+         * absolute section address, and then computes the region usage from that
+         * address instead of from the section size, reporting a spurious overflow. */
+        . = . + LENGTH(DROM) - FRAMEBUFFER_SIZE - (. - ORIGIN(DROM));
         audiobufend = .;
     } > DROM
 
@@ -105,15 +122,12 @@ SECTIONS
         . = ALIGN(0x4);
         lcd_framebuffer = .;
         *(.framebuffer*)
+        . = ALIGN(0x4);
+        framebufferend = .;
     } > DROM
 
-    /* Not a location check: the window starts at 0x3C000020 and the audiobuffer is
-     * aligned up to a page boundary, so a full MEMORYSIZE worth of content cannot fit
-     * in the window even though the physical pages do. What is actually checkable is
-     * the physical page budget. rodata occupies flash pages in the same window, so the
-     * full 8 MB is not available to the audiobuffer and the framebuffer. */
-    ASSERT(AUDIOBUFSIZE + FRAMEBUFFER_SIZE <= MEMORYSIZE * 0x100000,
-           "audiobuffer plus framebuffer exceed PSRAM")
+    ASSERT(framebufferend <= CODECBUF_ORIG,
+           "rodata plus the framebuffer does not fit below the codec buffer")
 
     /* VECBASE has to be a physical address the core can fetch from, so the vector
      * table lives here, on the instruction-bus view of internal SRAM, and cannot be
@@ -180,13 +194,19 @@ SECTIONS
         _stackend = .;
     } > DRAM
 
-    /* Plugin and codec loaders do not exist for this core, but apps/plugin.c,
-     * apps/codecs.c and firmware/rolo.c are built unconditionally and reference
-     * these symbols. Point them at the audiobuffer, which is where such a buffer
-     * would have to live anyway. */
-    pluginbuf = audiobuffer;
-    codecbuf  = audiobuffer;
-    loadaddress = audiobuffer;
+    /* Codecs and plugins are loaded from storage into these buffers. The address is
+     * pinned so it equals the CODEC_ORIGIN/PLUGIN_ORIGIN that plugin.lds puts into
+     * the loaded image header. mmu-xtensa.c maps the MMU pages for this range.
+     * rolo.c wants loadaddress, which is the end of the usable PSRAM. */
+    .codecbuf (NOLOAD) :
+    {
+        codecbuf = .;
+        . = . + CODEC_SIZE;
+        pluginbuf = .;
+        . = . + PLUGIN_BUFFER_SIZE;
+        loadaddress = .;
+        psramend = .;
+    } > CODECP
 
     ASSERT(stackend <= DRAMORIG + DRAMSIZE,
            ".data, .bss and the stack do not fit in the static DRAM region")
