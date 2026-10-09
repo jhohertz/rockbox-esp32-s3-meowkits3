@@ -322,9 +322,9 @@ Mapping the board against what Rockbox already has:
 | Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
 | PCF8563 RTC | `CONFIG_RTC` | done |
 | AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
-| FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | deferred: the driver needs `i2c-async`, and the panel's INT pin is not connected, so it would have to be polled |
+| FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from the button tick, because the INT pin is not connected |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
-| PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | **open**: neither the ROM nor ESP-IDF's bootloader does it; the app must |
+| PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done in `target/xtensa/psram-xtensa.c`, run from `crt0.S` before `mmu_init()`; neither the ROM nor ESP-IDF's bootloader does it |
 | USB-OTG | `usbstack` | open: the chip has a Synopsys DWC-OTG block (`soc/usb_reg.h`, registers at `SOC_DPORT_USB_BASE`, device side at +0xb00), but there is no `usb_hw` layer for this core. `usb-xtensa.c` is a stub. Not needed for charging (AXP173 reports VBUS) or storage (SD) |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
 
@@ -766,6 +766,44 @@ Consequences worth remembering:
 - Bus recovery is built in: `SCL_RST_SLV_NUM` / `SCL_RST_SLV_EN` in `SCL_SP_CONF`
   (base + 0x80) generate N SCL pulses while idle, which is exactly the nine-pulse
   recovery the spec asks for.
+
+### The transaction model is why `i2c-async` fits and the byte API does not
+
+An `i2c_descriptor` is one START ... STOP sequence with an optional write phase
+followed by a read. That is literally what the CMD_Controller executes, so the
+asynchronous layer is a *better* match for this peripheral than the byte-at-a-time
+`i2c_start`/`i2c_outb`/`i2c_inb` API, which cannot be implemented at all: a single
+command cannot be executed on its own.
+
+`firmware/target/xtensa/i2c-xtensa.c` therefore implements `__i2c_async_submit()`
+and `i2c_irq()`, and the synchronous entry points are thin wrappers over
+`i2c_async_queue()` plus a semaphore. There is then exactly one path to the
+hardware and one in-flight transaction, which is what makes it safe for the
+touchscreen to poll the bus every tick while the codec or the PMU is doing
+something else.
+
+Two details that are easy to get wrong:
+
+- **The TX RAM pointer advances.** Each WRITE command consumes `byte_num` bytes
+  from the *current* pointer, not from offset 0. A read-with-register therefore
+  lays out `[addr, reg, addr|1]` consecutively and issues `WRITE(2)`, RSTART,
+  `WRITE(1)`. Writing the second address byte at offset 0 would re-send the first
+  address byte.
+- **`i2c_init()` re-enters.** `pca9557_init()` calls it to recover a wedged bus.
+  The async core and the interrupt routing are set up once behind a static flag,
+  but bus recovery clears `INT_ENA` and it has to be restored on *every* call,
+  otherwise the second `i2c_init()` silently disables the interrupt.
+
+Interrupt source `ETS_I2C_EXT0_INTR_SOURCE` is **42** (not 41; the enum has gaps —
+`LCD_CAM` jumps to 24 and `LEDC` to 35). Rockbox routes it to slot 8, which is
+free: 1 is the tick, 2 the audio GDMA, 3 SDHOST, 5 the recording GDMA, 4 is the
+WiFi baseband and 6/7 are the core timer and the software interrupt.
+
+The FT6336's INT pin is not connected (`CTP_INT_PIN = -1` in the reference
+firmware), so `ft6x06_irq_handler()` is called from `button_read_device()` every
+tick. It queues with `I2C_Q_ONCE`, so the call cannot pile up transactions; the
+effective poll rate is set by how long a transaction takes, about 1.6 ms for the
+14-byte register read.
 
 ### The SDHOST block is a DesignWare MMC controller with an IDMAC
 
