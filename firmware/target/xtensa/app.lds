@@ -61,7 +61,7 @@ STARTUP(target/xtensa/crt0.o)
  * PLUGIN_BUFFER_SIZE and CODEC_SIZE, and apps/codecs.c rejects a codec whose load
  * address is not exactly codecbuf, so the two scripts have to agree and the only
  * way to make them agree is to pin the address. */
-#define FRAMEBUFFER_SIZE (240 * 320 * 2 * 2)
+#define FRAMEBUFFER_SIZE (LCD_WIDTH * LCD_HEIGHT * (LCD_DEPTH / 8))
 #define CODECP_SIZE (CODEC_SIZE + PLUGIN_BUFFER_SIZE)
 #define CODECBUF_ORIG (DROMORIG + MEMORYSIZE * 0x100000 - CODECP_SIZE)
 #define MIN_STACK_SIZE 0x1000

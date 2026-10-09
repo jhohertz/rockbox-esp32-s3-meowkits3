@@ -14,11 +14,12 @@
 /* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz. */
 #define CPU_FREQ 240000000
 
-/* LCD: ST7789, 240x320 portrait, RGB565 over SPI. */
+/* LCD: ST7789. The panel's GRAM is 240x320, but the reference firmware drives it
+ * rotated 90 degrees (LovyanGFX offset_rotation = 3), so it is used as 320x240. */
 #define HAVE_LCD_COLOR
 #define HAVE_LCD_BITMAP
-#define LCD_WIDTH 240
-#define LCD_HEIGHT 320
+#define LCD_WIDTH 320
+#define LCD_HEIGHT 240
 #define LCD_DEPTH  16
 #define LCD_PIXELFORMAT RGB565
 
