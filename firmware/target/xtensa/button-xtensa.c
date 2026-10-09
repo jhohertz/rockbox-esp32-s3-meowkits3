@@ -19,18 +19,23 @@
 
 void button_init_device(void)
 {
-    /* The ESP32-S3 GPIO block has no pull-up or pull-down registers - checked in
-     * the SVD, in ESP-IDF's gpio_reg.h/gpio_struct.h and in soc_caps.h (no
-     * SOC_GPIO_SUPPORT_PULL_UP). Only the USB pads have pull control. So the
-     * pull-up on these six lines has to be external; Rockbox can set direction
-     * and nothing else.
+    static const int pins[] = { PIN_BTN_A, PIN_BTN_B, PIN_JOY_UP,
+                                PIN_JOY_DOWN, PIN_JOY_LEFT, PIN_JOY_RIGHT };
+
+    /* GPIO_ENABLE only turns the output driver on or off. The pad still has to be
+     * given the GPIO function (GPIO17 and GPIO18 default to DAC outputs) and have
+     * its input enable set, otherwise GPIO_IN reads nothing.
+     *
+     * The lines are active low, so they need a pull-up. ESP32-S3 has pull-ups, but
+     * in the IO MUX (FUN_PU, bit 8), not in the GPIO block - a search of
+     * gpio_reg.h/gpio_struct.h finds nothing because they are not there.
      */
-    gpio_set_direction(PIN_BTN_A, 0);
-    gpio_set_direction(PIN_BTN_B, 0);
-    gpio_set_direction(PIN_JOY_UP, 0);
-    gpio_set_direction(PIN_JOY_DOWN, 0);
-    gpio_set_direction(PIN_JOY_LEFT, 0);
-    gpio_set_direction(PIN_JOY_RIGHT, 0);
+    for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        io_mux_select_gpio(pins[i]);
+        gpio_input_enable(pins[i], 1);
+        gpio_pullup(pins[i], 1);
+        gpio_set_direction(pins[i], 0);
+    }
 }
 
 int button_read_device(void)
