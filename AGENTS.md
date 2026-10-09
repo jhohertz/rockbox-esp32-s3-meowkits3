@@ -321,7 +321,7 @@ Mapping the board against what Rockbox already has:
 | Buttons | `CONFIG_KEYPAD` | done |
 | Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
 | PCF8563 RTC | `CONFIG_RTC` | done |
-| AXP173 PMU | `CONFIG_CHARGING`, battery | done |
+| AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | deferred: the driver needs `i2c-async`, and the panel's INT pin is not connected, so it would have to be polled |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | **open**: neither the ROM nor ESP-IDF's bootloader does it; the app must |
@@ -749,13 +749,20 @@ obvious from the datasheet tables:
   The current registers use five low bits, the voltage registers four.
 - The power button is the chip's PEK input, and it is readable over I2C. REG 0x44
   bit0 is the long-press IRQ status and bit1 the short-press status; the matching
-  enable bits are in REG 0x40. Writing 1 to a status bit clears it. REG 0x36 sets
-  the PEK timings: bits 7:6 power-on time, bits 1:0 the long-press threshold
-  (1/1.5/2/2.5 s). The IRQ output is on GPIO 43, active low.
-  This is not mapped yet, and it matters: a hardware PEK shutdown kills the board
-  without Rockbox getting a chance to flush the audiobuffer, save settings or
-  close the card. The clean path is `sys_poweroff()` from `powermgmt.c`, which
-  reaches `power_off()` only after the shutdown sequence has run.
+  enable bits are in REG 0x40. The status bits **latch** - they are not a level -
+  and writing 1 to a bit clears it. REG 0x36 sets the PEK timings: bits 7:6 the
+  press duration that turns the chip on, bits 5:4 the long-press threshold
+  (1/1.5/2/2.5 s), bits 1:0 how long the chip waits before cutting its own output
+  (4/6/8/10 s). The IRQ output is on GPIO 43, active low.
+  This matters: a hardware PEK shutdown kills the board without Rockbox getting a
+  chance to flush the audiobuffer, save settings or close the card. `button-xtensa.c`
+  therefore reads GPIO 43 (cheap) and only then does the I2C read of REG 0x44; on a
+  press it calls `sys_poweroff()`, which runs the shutdown sequence and reaches
+  `power_off()` - the PMU command - afterwards. `axp173_init()` pushes the hardware
+  cutoff to its maximum (10 s) so Rockbox always wins the race, and clears any status
+  latched before Rockbox started.
+  Pad 43 is the UART0 TX pad in the IO MUX, so it has to be switched to the GPIO
+  function before `GPIO_IN` can see it.
 - `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply.
 
 **PCF8563.** Register-compatible with the existing `RTC_E8564` driver, but that
