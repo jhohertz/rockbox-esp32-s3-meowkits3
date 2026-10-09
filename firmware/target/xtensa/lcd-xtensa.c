@@ -105,18 +105,14 @@ void lcd_init_device(void)
      * to be reachable before the panel can be reset or selected. */
     pca9557_init();
 
-    gpio_set_direction(PIN_LCD_BL, 1);
-
     st7789_init();
 
     lcd_update();
 }
 
-void lcd_backlight(bool on)
-{
-    /* Active low. */
-    gpio_write_pin(PIN_LCD_BL, on ? 0 : 1);
-}
+/* The backlight is not written here. GPIO 42 is routed to LEDC channel 7 through
+ * the GPIO matrix, so a plain GPIO write has no effect on the pin; backlight-xtensa.c
+ * owns the PWM. */
 
 /* The panel's physical size is not documented in the reference firmware, so the
  * pixel density is unknown. lcd.h only falls back to this function when LCD_DPI

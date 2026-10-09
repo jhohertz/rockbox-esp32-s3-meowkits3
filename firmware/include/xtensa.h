@@ -15,6 +15,7 @@
 #define XT_TIMERGROUP0_BASE     0x6001F000
 #define XT_TIMERGROUP1_BASE     0x60020000
 #define XT_SDMMC_BASE           0x60028000      /* SDHOST (DesignWare MMC) */
+#define XT_LEDC_BASE            0x60019000      /* LEDC PWM (8 low-speed channels) */
 
 /*
  * Interrupt matrix: one 5-bit register per peripheral interrupt source,
