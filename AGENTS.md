@@ -323,7 +323,7 @@ Mapping the board against what Rockbox already has:
 | PCF8563 RTC | `CONFIG_RTC` | done |
 | AXP173 PMU | `CONFIG_CHARGING`, battery | done |
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | deferred: the driver needs `i2c-async`, and the panel's INT pin is not connected, so it would have to be polled |
-| ES7210 mic | `HAVE_RECORDING` | deferred: needs an I2S RX path and an ES7210 driver |
+| ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
 
 ### I2S and GDMA
@@ -766,6 +766,49 @@ reset and the channel outputs the idle level forever. It has to be pulsed.
 With 9-bit resolution the counter runs 0..511, so a duty of 512 is "always high",
 which for an active-low LED means off. That is the same convention the reference
 firmware uses (`ledcWrite(7, 512)` = off).
+
+### Recording is the receiver half of the same I2S bus
+
+The ES7210 ADC (I2C 0x41) is driven by the same MCLK/BCLK/WS the ES8311 receives, so
+recording does not need a second bus - it needs a receiver.
+
+Two constraints shape the wiring:
+
+- **A port cannot send and receive data at once.** ESP32-S3's signal map gives each
+  port one data signal: `I2S1I_SD_IN` and `I2S1O_SD_OUT` are both 30. The ADC's data
+  therefore has to come in on I2S0, whose own signals are `I2S0I_SD_IN` 25,
+  `I2S0I_BCK_IN` 26, `I2S0I_WS_IN` 27.
+- **The receiver needs a clock.** Rather than run a second divider that merely agrees
+  with the first, I2S0's RX is put in slave mode (`RX_SLAVE_MOD`, bit 3 of RX_CONF) and
+  fed the transmitter's BCLK and WS back through the GPIO matrix IN_SEL, from pins 14
+  and 13. A pad can drive a matrix input while still being driven as an output, so
+  those pins do double duty.
+
+`rx_stop_mode` is two bits, not one: 0 = stop only when `rx_start` is cleared, 1 = also
+stop on `in_suc_eof`, 2 = also stop when the RX FIFO is full. We leave it at 1; with a
+ring of descriptors `in_suc_eof` never happens.
+
+**GDMA receive channel 0** sits at the base of the GDMA block, not at an offset from the
+transmit channel: IN conf0 0x00, conf1 0x04, int_raw 0x08, int_st 0x0C, int_ena 0x10,
+int_clr 0x14, link 0x20, peri_sel 0x48. The OUT channel is at +0x60 with the same internal
+layout. The IN link register has an `auto_ret` bit between the address and `stop`, so
+`stop` is bit 21 and `start` is bit 22 - one higher than the OUT channel's.
+
+`IN_DONE` (bit 0) is the last data of a descriptor landing in memory. `IN_SUC_EOF`
+(bit 1) is the end of the link list, which for a ring never happens.
+
+The descriptor's `err_eof`/`suc_eof` bits are **results** the engine writes back, not
+inputs: `out_eof_mode` (conf0 bit 3) selects which of them gets set when the link list
+ends. Pre-setting `suc_eof` is harmless but meaningless.
+
+**The ES7210 clock is derived, not tabulated.** MCLK is 256 * rate. The ADC's internal
+clock has to be 512 * rate in single-speed mode and 256 * rate in double-speed mode
+(REG08 bit 6), and `LRCK_DIV = MCLK / rate`. That forces `adc_div = 1`, `dll = 1`, and
+`doubler = 1` below 64 kHz, `0` above it. Every entry in the reference firmware's
+table whose MCLK is 256 * rate agrees.
+
+REG00 is a reset **hold**, not a pulse: 0xff holds every block in reset and the chip
+only starts when it is released with 0x41.
 
 ### Codecs, plugins and the image format
 
