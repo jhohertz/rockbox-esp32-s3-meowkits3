@@ -17,12 +17,12 @@
 #define REG_RESET    0x00
 #define REG_CLK01    0x01
 #define REG_CLK02    0x02
-#define REG_CLK03    0x04
-#define REG_CLK04    0x05
-#define REG_CLK05    0x06
-#define REG_CLK06    0x07
-#define REG_CLK07    0x08
-#define REG_CLK08    0x09
+#define REG_CLK03    0x03
+#define REG_CLK04    0x04
+#define REG_CLK05    0x05
+#define REG_CLK06    0x06
+#define REG_CLK07    0x07
+#define REG_CLK08    0x08
 #define REG_SDPIN    0x09
 #define REG_SDPOUT   0x0A
 #define REG_SYS0D    0x0D
@@ -94,8 +94,19 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
     write_reg(REG_CLK03, 16);                                    /* fs_mode = 0, adc_osr = 16 */
     write_reg(REG_CLK04, 16);                                    /* dac_osr = 16 */
     write_reg(REG_CLK05, 0);                                     /* adc_div = 1, dac_div = 1 */
-    write_reg(REG_CLK06, bclk_div - 1);
-    write_reg(REG_CLK07, 0);                                     /* lrch = 0 */
+
+    /* 0x06 is "sclk inverter, bclk divider" and 0x07 is "tri-state, lrck divider".
+     * The reference firmware read-modify-writes both so the bits it does not own
+     * keep their reset values.
+     */
+    int reg06 = read_reg(REG_CLK06);
+    if (reg06 >= 0)
+        write_reg(REG_CLK06, (reg06 & 0xE0) | (bclk_div - 1));
+
+    int reg07 = read_reg(REG_CLK07);
+    if (reg07 >= 0)
+        write_reg(REG_CLK07, reg07 & 0xC0);                      /* lrch = 0 */
+
     write_reg(REG_CLK08, 255);                                   /* lrcl = 255 */
 }
 
