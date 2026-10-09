@@ -60,6 +60,8 @@
 #define IO_MUX_PIN(n) (DR_REG_IO_MUX_BASE + 0x04 + 4u * (n))
 #define IO_MUX_MCU_SEL (1u << 12)   /* MCU_SEL: 0 = GPIO function */
 #define IO_MUX_FUN_IE  (1u << 9)    /* input enable of the pad */
+#define IO_MUX_FUN_PU  (1u << 8)    /* pad pull-up */
+#define IO_MUX_FUN_PD  (1u << 7)    /* pad pull-down */
 
 /* Signal indices from soc/gpio_sig_map.h */
 #define SIG_I2C0_SCL     89
@@ -131,6 +133,30 @@ static inline void io_mux_select_gpio(int pin)
 {
     uint32_t r = IO_MUX_PIN(pin);
     gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUN_IE);
+}
+
+/* GPIO_ENABLE only controls the output driver. A pad whose input enable is clear
+ * does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
+static inline void gpio_input_enable(int pin, int enable)
+{
+    if (pin >= 30)
+        return;   /* pads 30-53 have no IO MUX entry; they are matrix-only */
+
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_IE)
+                         : (gpio_read(r) & ~IO_MUX_FUN_IE));
+}
+
+/* Pull-ups are in the IO MUX, not in the GPIO block - that is why a search of
+ * gpio_reg.h finds nothing. */
+static inline void gpio_pullup(int pin, int enable)
+{
+    if (pin >= 30)
+        return;
+
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_PU)
+                         : (gpio_read(r) & ~IO_MUX_FUN_PU));
 }
 
 
