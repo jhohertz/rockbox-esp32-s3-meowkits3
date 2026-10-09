@@ -310,6 +310,22 @@ Three more that the reference firmware makes clear but a pin list does not:
   PLL_CLK_80M, cleared gives XTAL (40 MHz), and `CLK_EQU_SYSCLK` uses that source
   undivided. The reference driver runs the display at 80 MHz.
 
+Mapping the board against what Rockbox already has:
+
+| Board block | Rockbox support | Status |
+|---|---|---|
+| ST7789 display | `HAVE_LCD_BITMAP` | done |
+| PCA9557 expander | (target-internal) | done |
+| ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done |
+| SD card | `STORAGE_SD` via `sdmmc_host.c` | done |
+| Buttons | `CONFIG_KEYPAD` | done |
+| Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
+| PCF8563 RTC | `CONFIG_RTC` | done |
+| AXP173 PMU | `CONFIG_CHARGING`, battery | done |
+| FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | deferred: the driver needs `i2c-async`, and the panel's INT pin is not connected, so it would have to be polled |
+| ES7210 mic | `HAVE_RECORDING` | deferred: needs an I2S RX path and an ES7210 driver |
+| WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
+
 ### I2S and GDMA
 
 The I2S peripheral does have a DMA controller — "DMA controller that allows stream
@@ -685,6 +701,71 @@ Things that are not obvious from the register list:
   is unusable because only D0 is wired. The drive is therefore non-removable:
   `is_removable = false`, no `sdmmc_poll`, and a missing card shows up as a command
   timeout.
+
+### Power and time live in the PMU, not the SoC
+
+The board has an AXP173 (I2C 0x34) and a PCF8563 (I2C 0x51). Neither is a
+peripheral Rockbox can drive with an arch driver; both are reached through the
+same synchronous `i2c_readmem()`/`i2c_writemem()` API as the codec.
+
+**AXP173.** It is the power supply, not a gauge. Register semantics that are not
+obvious from the datasheet tables:
+
+- Presence detection must use REG 0x12 (output control), not REG 0x00. On pure
+  battery boot REG 0x00 legitimately reads 0x00, which looks like an absent
+  device. REG 0x12 has a power-on default of 0x03 and is never 0xFF.
+- Output enable is REG 0x12: bit0 DCDC1, bit1 LDO4, bit2 LDO2, bit3 LDO3, bit4
+  DCDC2, bit6 EXTEN. Voltages are set in separate registers *before* enabling:
+  DCDC1 0x26 and LDO4 0x27 are 700-3500 mV in 25 mV steps; LDO2/LDO3 share 0x28,
+  1800-3300 mV in 100 mV steps, LDO2 in the high nibble. DCDC2 is 0x23.
+- Four read-modify-writes on 0x12 can lose bits on a loaded bus. Write the final
+  value once.
+- ADC scaling: battery voltage `(hi<<4 | lo&0x0f) * 1.1` mV; charge and discharge
+  current `(hi<<5 | lo&0x1f) * 0.5` mA; VBUS voltage `(hi<<4 | lo&0x0f) * 1.7` mV.
+  The current registers use five low bits, the voltage registers four.
+- The power button is the chip's PEK input. A long press shuts the chip down in
+  hardware; there is no GPIO to poll, and Rockbox has no generic power-button
+  action, so the button is not mapped.
+- `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply.
+
+**PCF8563.** Register-compatible with the existing `RTC_E8564` driver, but that
+one is written against the PP asynchronous I2C layer, so `drivers/rtc/rtc_pcf8563.c`
+is a new driver using the generic API. Bits that matter:
+
+- CTRL1 bit 7 stops the oscillator. A chip left stopped by previous firmware stays
+  stopped, so `rtc_init()` clears it rather than trusting the default.
+- Seconds bit 7 is the voltage-low flag: the chip is saying its timekeeping is not
+  guaranteed. Mask it, do not treat it as data.
+- Hours bit 7 is the 12h AM/PM flag; month bit 7 is the century. Both must be
+  masked.
+- The seven time registers accept a burst write, which is one transaction instead
+  of seven.
+
+**Speaker amplifier.** The NS4150B between the codec and the speaker is enabled by
+PCA9557 IO3, high-active with a 10K pull-down. Nothing in the target drove it, so
+the DAC produced a signal that never reached the speaker. `HAVE_SPEAKER` plus
+`audiohw_enable_speaker()` in `audiohw-xtensa.c` fixes it.
+
+That exposed a gap in Rockbox itself: `audio_enable_speaker()` lives in
+`apps/audio_path.c`, which `apps/SOURCES` only builds when `INPUT_SRC_CAPS != 0`.
+A target with a speaker but no recording or radio therefore references a function
+that is never compiled. `audio_path.c` now guards the input-source selection with
+`#if INPUT_SRC_CAPS != 0` so the file can be built for speaker-only targets.
+
+### Backlight PWM
+
+GPIO 42 is not a plain output: it is routed to LEDC low-speed channel 7 through the
+GPIO matrix (`LEDC_LS_SIG_OUT7_IDX = 80`), and the LED is active low. ESP32-S3 has
+eight low-speed channels at `LEDC_BASE + 0x10*n` (conf0 0x00, hpoint 0x04, duty
+0x08) and four low-speed timers at `+0xa0 + 4*n` (duty_res [3:0], clk_div [21:4],
+pause [22], rst [23], tick_sel [24]).
+
+`rst` is a level, not a self-clearing bit: leaving it set holds the counter in
+reset and the channel outputs the idle level forever. It has to be pulsed.
+
+With 9-bit resolution the counter runs 0..511, so a duty of 512 is "always high",
+which for an active-low LED means off. That is the same convention the reference
+firmware uses (`ledcWrite(7, 512)` = off).
 
 ### Codecs, plugins and the image format
 
