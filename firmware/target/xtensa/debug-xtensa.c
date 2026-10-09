@@ -11,6 +11,7 @@
 #include "kernel.h"
 #include "list.h"
 #include "xtensa.h"
+#include "psram-xtensa.h"
 #include <stdio.h>
 
 /* rsr.prid: [3:0] core revision, [11:8] core variant, [15:12] architecture
@@ -25,12 +26,13 @@ static unsigned int core_prid(void)
 
 static unsigned int mmu_mapped_pages(void)
 {
-    volatile const unsigned short *table =
-        (volatile const unsigned short *)0x600C5000;
+    /* The table has 32-bit entries; bit 14 is the "invalid" flag. */
+    volatile const uint32_t *table =
+        (volatile const uint32_t *)0x600C5000;
     unsigned int n = 0;
 
     for (int i = 0; i < 512; i++)
-        if (!(table[i] & (1 << 14)))
+        if (!(table[i] & (1u << 14)))
             n++;
 
     return n;
@@ -41,6 +43,7 @@ enum
     INFO_CPU,
     INFO_CORE,
     INFO_CACHE,
+    INFO_PSRAM,
     INFO_MMU,
     INFO_COUNT
 };
@@ -62,6 +65,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_CACHE:
         snprintf(buf, bufsz, "D-cache line size: %u bytes",
                  cache_dcache_line_size());
+        break;
+    case INFO_PSRAM:
+        snprintf(buf, bufsz, "PSRAM: %s",
+                 psram_present() ? "responding" : "not responding");
         break;
     case INFO_MMU:
         snprintf(buf, bufsz, "External cache MMU: %u of 512 pages mapped",

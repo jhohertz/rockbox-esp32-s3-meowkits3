@@ -10,11 +10,12 @@
  *   - a1 is whatever the loader left, so we set our own stack;
  *   - .bss is not in the image file, so we must zero it ourselves.
  *
- * The bootloader has already configured the SPI-RAM controller and enabled both
- * caches. It has NOT mapped the MMU pages for Rockbox's audiobuffer, because the
- * audiobuffer is NOLOAD and the loader only maps segments present in the image.
- * That mapping happens at runtime in mmu-xtensa.c, before anything reads the
- * audiobuffer.
+ * The ROM loader sets up the flash side of the MSPI block and the caches, but it
+ * does not initialise the external PSRAM, and it has not mapped the MMU pages for
+ * Rockbox's audiobuffer, framebuffer or codec buffers - those are NOLOAD, so they
+ * are not in the image file. Both happen at runtime here: psram_init() brings the
+ * chip up, mmu_init() maps the pages, and neither may be deferred past the first
+ * read of that window.
  *
  * The literals are written as .word inside .startup rather than as bare
  * `l32r symbol`. This binutils hits an internal error (ldlang.c 1074) when an
@@ -52,6 +53,11 @@ start:
     addi.n  a2, a2, 4
     j       1b
 2:
+
+    /* Bring the PSRAM chip up before mapping it. The ROM loader only sets up the
+     * flash side of the MSPI block; nothing else initialises the external RAM.
+     */
+    call0   psram_init
 
     /* Map the PSRAM pages the audiobuffer occupies before touching it. */
     call0   mmu_init

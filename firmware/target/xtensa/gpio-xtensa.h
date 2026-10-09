@@ -61,7 +61,7 @@
  */
 #define DR_REG_IO_MUX_BASE 0x60009000
 #define IO_MUX_PIN(n) (DR_REG_IO_MUX_BASE + 0x04 + 4u * (n))
-#define IO_MUX_MCU_SEL (1u << 12)   /* MCU_SEL: 0 = GPIO function */
+#define IO_MUX_MCU_SEL (7u << 12)   /* MCU_SEL: 0 = GPIO function */
 #define IO_MUX_FUN_IE  (1u << 9)    /* input enable of the pad */
 #define IO_MUX_FUN_PU  (1u << 8)    /* pad pull-up */
 #define IO_MUX_FUN_PD  (1u << 7)    /* pad pull-down */

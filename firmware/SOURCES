@@ -664,6 +664,7 @@ target/coldfire/ata-as-coldfire.S
 #elif defined(CPU_XTENSA)
 
 target/xtensa/crt0.S
+target/xtensa/psram-xtensa.c
 target/xtensa/mmu-xtensa.c
 target/xtensa/rom_cache.S
 target/xtensa/vectors.S
