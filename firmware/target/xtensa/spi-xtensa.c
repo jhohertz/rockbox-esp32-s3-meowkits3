@@ -63,15 +63,15 @@ void spi_write(const unsigned char *data, int len)
         if (words > SPI_BUF_WORDS)
             words = SPI_BUF_WORDS;
 
-        for (int i = 0; i < SPI_BUF_WORDS; i++) {
+        /* Only the words the transfer will send need loading; MS_DLEN bounds
+         * what the hardware reads from the buffer. */
+        for (int i = 0; i < words; i++) {
             uint32_t w = 0;
 
-            if (i < words) {
-                for (int b = 0; b < 4; b++) {
-                    int idx = i * 4 + b;
-                    if (idx < len)
-                        w |= (uint32_t)data[idx] << (8 * b);
-                }
+            for (int b = 0; b < 4; b++) {
+                int idx = i * 4 + b;
+                if (idx < len)
+                    w |= (uint32_t)data[idx] << (8 * b);
             }
 
             wr(SPI_W0 + 4 * (unsigned)i, w);
