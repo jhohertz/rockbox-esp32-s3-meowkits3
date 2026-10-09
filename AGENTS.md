@@ -179,9 +179,16 @@ Practical facts about that toolchain:
 
   The cost: the toolchain's libgcc is windowed in every multilib, so `-lgcc` mixes
   ABIs. A windowed helper clobbers physical a12-a15 (its a8-a15 map to physical
-  a12-a19) and returns with `retw`. `lib/xtensa_support` supplies the helpers
-  Rockbox needs, written with 32-bit operations only so they do not call libgcc
-  again. `CORE_LIBS` are searched before `-lgcc`, so the Rockbox archive wins.
+  a12-a19) and returns with `retw`. Worse, `entry` rotates the window by CALLINC=4,
+  so a windowed callee reads its arguments from physical a6-a19 while a call0 caller
+  put them in a2-a5: the helper does not merely clobber state, it is handed the wrong
+  operands. `lib/xtensa_support` supplies the helpers Rockbox needs, written with
+  32-bit operations only so they do not call libgcc again. `CORE_LIBS` are searched
+  before `-lgcc`, so the Rockbox archive wins.
+
+  Codecs are a separate link (`lib/rbcodec/codecs/codecs.make`) that does not use
+  `CORE_LIBS`, so `$(XTENSASUPPORTLIB)` has to be added to `CODEC_LIBS` explicitly.
+  After that a full build links without opening libgcc at all.
 
   **Measured scope** (full-tree compile with the xtensa compiler, 2909 sources):
   26 libgcc symbols — 6 integer (`__ashldi3`, `__ashrdi3`, `__lshrdi3`,
@@ -201,7 +208,7 @@ Practical facts about that toolchain:
   time, and libgcc compiles one `-DL_*` per object (`L_addsubdf3`, `L_cmpdf2`,
   `L_cmpsf2`, not `L_adddf3`). It covers 24 of the 26; `__divdi3`/`__moddi3`
   come from the generic `libgcc2.c`, not the xtensa asm.
-- - Cache: the toolchain's esp32s3 core config exposes single-precision FP
+- Cache: the toolchain's esp32s3 core config exposes single-precision FP
   opcodes (`madd.s`, `mul.s`, `ufloat.s`). Verify against the silicon before
   relying on them; Rockbox otherwise assumes soft float.
 - `N16R8` = 16 MB flash + 8 MB PSRAM. Rockbox's memory model is
