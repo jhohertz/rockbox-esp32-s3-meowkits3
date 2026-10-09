@@ -7,7 +7,6 @@
 
 /* Command values and the init list are taken from the reference firmware's
  * LovyanGFX panel driver, not from memory. */
-#define CMD_NOP     0x00
 #define CMD_INVOFF  0x20
 #define CMD_INVON   0x21
 #define CMD_SLPIN   0x10
@@ -15,7 +14,6 @@
 #define CMD_DISPOFF 0x28
 #define CMD_DISPON  0x29
 #define CMD_IDMOFF  0x38
-#define CMD_DISPON  0x29
 #define CMD_COLMOD  0x3A
 #define CMD_MADCTL  0x36
 
