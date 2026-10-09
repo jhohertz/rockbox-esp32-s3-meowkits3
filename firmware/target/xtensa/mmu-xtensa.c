@@ -9,19 +9,20 @@
  *   bit 14   invalid
  *   bits 0-13 physical page number
  *
- * ESP-IDF's second-stage bootloader maps the pages for the segments present in
- * the image, which covers .rodata. It does not map the audiobuffer, the framebuffer
- * or the codec/plugin buffers, because all of them are NOLOAD and therefore not in
- * the image file. So Rockbox has to map its own pages here, before anything reads
+ * The ROM loader maps the pages for the segments present in the image, which
+ * covers .rodata. It does not map the audiobuffer, the framebuffer or the
+ * codec/plugin buffers, because all of them are NOLOAD and therefore not in the
+ * image file. So Rockbox has to map its own pages here, before anything reads
  * them.
  *
- * This deliberately does not touch entries that are already valid: those belong
- * to the rodata mapping the bootloader established.
+ * Mapping a page to PSRAM is only meaningful once the chip has been brought up;
+ * see psram-xtensa.c, which crt0 runs before this.
  ****************************************************************************/
 #include <stdint.h>
 #include "config.h"
 #include "system.h"
 #include "rom_cache.h"
+#include "psram-xtensa.h"
 
 #ifdef CPU_XTENSA
 
@@ -53,6 +54,12 @@ static inline int mmu_index(unsigned int vaddr)
 void mmu_init(void)
 {
     volatile uint32_t *table = (volatile uint32_t *)MMU_TABLE_BASE;
+
+    /* Mapping a page to PSRAM is pointless - and actively wrong - if the chip was
+     * not brought up. psram_init() has already run by the time we get here.
+     */
+    if (!psram_present())
+        return;
 
     /* Cast through an integer rather than arithmetic on the linker arrays: they
      * have unknown size, so `audiobufend - 1` trips -Warray-bounds. */

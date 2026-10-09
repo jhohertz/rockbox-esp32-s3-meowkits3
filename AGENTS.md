@@ -546,6 +546,64 @@ sections, and the framebuffer has to be placed deliberately: PSRAM is fine for a
 320×240 double buffer (2 × 150 KB) but it is cache-backed and cannot be touched by
 anything that must work before the cache is enabled.
 
+### PSRAM bring-up is Rockbox's job
+
+Nothing else does it. The mask ROM loader maps MMU pages for the segments in the
+image and leaves the external RAM alone; ESP-IDF's PSRAM init lives in the
+application (`components/esp_psram/esp32s3/esp_psram_impl_octal.c`), not in the
+bootloader. So `firmware/target/xtensa/psram-xtensa.c` runs from `crt0.S` before
+`mmu_init()`.
+
+The 8 MB octal PSRAM on the WROOM-1-N16R8 module hangs off **SPI1** (`0x60002000`,
+the second MSPI instance, one `0x1000` below SPI0 at `0x60003000`) on CS1, and is
+reached through SPI0's Ext_RAM path once that path's command/address/dummy phases
+are configured for octal mode. Register offsets are from
+`components/soc/esp32s3/register/soc/spi_mem_reg.h`; `REG_SPI_MEM_BASE(i) =
+DR_REG_SPI0_BASE - i*0x1000`.
+
+Sequence, in order, with the values ESP-IDF uses:
+
+| Step | Register | Value |
+|---|---|---|
+| core clock | `SPI_MEM_CORE_CLK_SEL_REG(0)` +0xEC | 2 = 160 MHz (shared by SPI0/SPI1) |
+| flash clock | `SPI_MEM_CLOCK_REG(0)` +0x14 | div 2 = 80 MHz, the module's rated QSPI speed |
+| bring-up clock | `SPI_MEM_CLOCK_REG(1)` +0x14 | div 8 = 20 MHz |
+| CS1 pad | IO MUX +0x6C (`PERIPHS_IO_MUX_SPICS1_U`) | MCU_SEL = 0 (`FUNC_SPICS1_SPICS1`), FUN_DRV = 3 |
+| clock pad drive | `SPI_MEM_DATE_REG(0)` +0x3FC | `SPICLK_PAD_DRV_CTL_EN` (bit 4), FMEM/SMEM FUN_DRV = 3 |
+| CS timing | `SPI_MEM_SPI_SMEM_AC_REG(0)` +0xDC | setup 3, hold 3, hold delay 2, both enable bits |
+| ECC | `SYSCON_SRAM_ACE0_ATTR_REG` (0x60026058) bit 8 | cleared |
+| dummy mode | `SPI_MEM_DDR_REG(1)` +0xE0 | `VAR_DUMMY` set, RDAT_SWP/WDAT_SWP clear |
+| MR0 | OPI `REG_WRITE` to address 0 | `lt=1`, `read_latency=2`, `drive_str=0` = 0x24 |
+| connectivity | OPI write/read at address 0 | must read back what was written |
+| Ext_RAM phases | `SPI_MEM_CACHE_SCTRL_REG(0)` +0x40 | USR_WCMD, USR_RCMD, SCMD_4BYTE, USR_RD/WR_DUMMY, SRAM_OCT |
+| command words | `SRAM_DWR` +0x4C, `SRAM_DRD` +0x48 | bitlen 15 (i.e. 16 bits), `0x8080` / `0x0000` |
+| dummy cycles | CACHE_SCTRL bits [11:6], [27:22] | 17 and 7 (chip dummies are 18 and 8 bits) |
+| DDR | `SPI_MEM_SPI_SMEM_DDR_REG(0)` +0xE4 | `DDR_EN` set, swaps clear |
+| octal phases | `SPI_MEM_SRAM_CMD_REG(0)` +0x44 | SDIN/SDOUT/SADDR/SCMD/SDUMMY_OCT |
+| PSRAM clock | `SPI_MEM_SRAM_CLK_REG(0)` +0x50 | div 4 = 40 MHz |
+
+OPI command words: sync read `0x0000`, sync write `0x8080`, register read `0x4040`,
+register write `0xC0C0`. Command phase 16 bits, address phase 32 bits, read dummy 18
+bits (`2*(10-1)`), write dummy 8 bits (`2*(5-1)`), register dummy 8 bits. The dummy
+cyclelen fields are stored as *bits minus one* because octal transfers 8 bits per
+cycle.
+
+Two things worth knowing:
+
+- **The ROM's `esp_rom_opiflash_exec_cmd` (0x400008b8) is unusable from Rockbox.** It
+  takes thirteen arguments and the ROM is windowed-ABI: a callee entered with
+  CALLINC=4 receives its arguments in physical `a6..a19`, and call0 code can only
+  name `a0..a15`. Programming the transaction directly is shorter and does exactly
+  what the ROM does.
+- **PSRAM clock is deliberately conservative.** ESP-IDF reaches 80 MHz by running a
+  timing-tuning sweep over dummy/delay values. Rockbox has no equivalent, so 40 MHz
+  (~40 MB/s in octal DDR) is used instead. It is far above what audio playback and a
+  320×240 framebuffer need, and it does not depend on tuning we cannot verify.
+
+If `psram_init()` fails, `mmu_init()` returns without mapping anything and the
+audiobuffer, framebuffer and codec buffers stay unmapped. `dbg_hw_info()` reports
+"PSRAM: responding / not responding" so this is visible on the device.
+
 ### Peripheral registers (verified against the SVD, not guessed)
 
 From `components/soc/esp32s3/register/soc/reg_base.h` and the bare-metal reference
