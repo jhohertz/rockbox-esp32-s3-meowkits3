@@ -435,7 +435,7 @@ double __floatdidf(int64_t v)
 {
     if (v == 0) return dval(0);
     int s = v < 0 ? 1 : 0;
-    uint64_t m = (uint64_t)(v < 0 ? (uint64_t)(-v) : v);
+    uint64_t m = (v < 0) ? (uint64_t)(-v) : (uint64_t)v;
     int p = msb64(m);
 
     if (p <= 52) return from_int(m, s, p);
@@ -450,7 +450,7 @@ float __floatdisf(int64_t v)
 {
     if (v == 0) return fval(0);
     int s = v < 0 ? 1 : 0;
-    uint64_t m = (uint64_t)(v < 0 ? (uint64_t)(-v) : v);
+    uint64_t m = (v < 0) ? (uint64_t)(-v) : (uint64_t)v;
     int p = msb64(m);
 
     int e = 127 + p;
@@ -479,7 +479,7 @@ static int64_t to_int(uint64_t u, int wide)
     /* sh can be larger than the mantissa width, so the shift can go either way. */
     uint64_t v = (sh >= 52) ? (m << (sh - 52)) : (m >> (52 - sh));
     if (!wide && sh > 30) return 0;
-    return (int64_t)(s ? -(int64_t)v : v);
+    return s ? -(int64_t)v : (int64_t)v;
 }
 
 int32_t __fixdfsi(double d) { return (int32_t)to_int(dbits(d), 0); }
@@ -500,7 +500,7 @@ int64_t __fixsfdi(float f)
     if (sh > 62) return 0;
 
     uint64_t v = (sh >= 23) ? (mm << (sh - 23)) : (mm >> (23 - sh));
-    return (int64_t)(s ? -(int64_t)v : v);
+    return s ? -(int64_t)v : (int64_t)v;
 }
 
 /* Single-precision division: the esp32s3 core has no div.s. */
