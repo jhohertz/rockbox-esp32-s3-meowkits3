@@ -93,5 +93,7 @@ rg-nano.c
 hiby-r3proii.c
 #elif CONFIG_KEYPAD == HIDIZS_AP80MAX_PAD
 hidizs-ap80max.c
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+meowkits3.c
 #endif
 #endif /* SIMULATOR */
