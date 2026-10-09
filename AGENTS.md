@@ -621,6 +621,39 @@ Things that are not obvious from the register list:
   because only D0 is wired. The drive is therefore non-removable: `is_removable =
   false`, no `sdmmc_poll`, and a missing card shows up as a command timeout.
 
+### Codecs, plugins and the image format
+
+`apps/plugins/plugin.lds` is a second linker script, run per codec and per plugin.
+It needs a `CPU_XTENSA` branch, and `CODEC_ORIGIN` it computes has to equal the
+`codecbuf` symbol in `app.lds`: `apps/codecs.c` rejects a codec whose header
+`load_addr` is not exactly `codecbuf`. The only way to make two scripts agree is to
+pin the address, so `codecbuf` is placed at the top of the PSRAM part of the
+external cache window and plugin.lds derives the same number from `MEMORYSIZE`,
+`PLUGIN_BUFFER_SIZE` and `CODEC_SIZE`.
+
+`tools/esp-elf2image` produces the ESP32 v1 image: 24-byte header, a table of
+(load address, length) pairs, then segment data, then a checksum byte. Two things
+are not obvious from the format description:
+
+- A flash-mapped segment must sit in the file at an offset congruent to its address
+  modulo the 64 KB MMU page size, because the cache MMU requires
+  `paddr % 64KB == vaddr % 64KB`. This is why `IROMORIG`/`DROMORIG` carry the `+0x20`.
+- The checksum covers **every** segment, padding included, not just the RAM ones.
+
+Padding to reach the page boundary is taken from the head of a RAM segment rather
+than written as a page of zeros. Verified byte-for-byte against esptool 4.7.0; the
+only difference is the append-digest flag, which we clear because we do not append
+the SHA-256 that flag promises.
+
+`root.make` packs xtensa from `rockbox.elf`, not `rockbox.bin`: `objcopy -O binary`
+has to span the gap between the two flash windows (0x3C000020 to 0x42000020) and
+produces a 100 MB file of zeros.
+
+**Unverified:** codecs and plugins execute out of PSRAM. The instruction cache only
+covers the IROM window; PSRAM is on the data bus. ESP-IDF supports running from
+PSRAM but it is slower, and whether Rockbox's codec code behaves correctly there is
+a hardware question.
+
 ## 6. Simulator
 
 `firmware/target/hosted/sdl` + `uisimulator/`. Sim builds use the **host**
@@ -664,7 +697,7 @@ Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 
 `tools/builds.pm` drives the build farm and `tools/list_targets.pl` prints the
 target status list; a new target must be added there too. `target_id` is a
-unique number (currently max 125 in `configure`, max `MODEL_NUMBER` 132 in
+unique number (currently max 126 in `configure`, max `MODEL_NUMBER` 132 in
 `config/*.h`) — use the next free one.
 
 ---
@@ -690,3 +723,9 @@ unique number (currently max 125 in `configure`, max `MODEL_NUMBER` 132 in
   disassembly, not just the source.
 - `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
   63, and the GPSPI signals are 101-103.
+- In a linker script, an assignment to `.` whose expression contains a bare absolute
+  constant is treated as an absolute section address, and the region usage is then
+  computed from that address instead of the section size — a spurious overflow of
+  roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
+- Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
+  24 bytes are still name, type, flags, address, offset, size.
