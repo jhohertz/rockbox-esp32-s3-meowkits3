@@ -300,6 +300,7 @@ double __divdf3(double a, double b)
     dsplit(ua, &sa, &ea2, &ma);
     dsplit(ub, &sb, &eb2, &mb);
 
+    if (mb == 0 && ma == 0) return dval(DNAN);   /* 0/0 */
     if (mb == 0) return dval((uint64_t)(sa ^ sb) << 63 | DINF);
     if (ma == 0) return dval((uint64_t)(sa ^ sb) << 63);
 
@@ -483,6 +484,7 @@ static int64_t to_int(uint64_t u, int wide)
 
 int32_t __fixdfsi(double d) { return (int32_t)to_int(dbits(d), 0); }
 int64_t __fixdfdi(double d) { return to_int(dbits(d), 1); }
+uint32_t __fixunsdfsi(double d) { return (uint32_t)to_int(dbits(d), 1); }
 
 int64_t __fixsfdi(float f)
 {
