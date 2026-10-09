@@ -38,13 +38,16 @@ static void write_bytes(const unsigned char *data, int len)
 
 void lcd_write_data(const fb_data *p_bytes, int count)
 {
-    unsigned char buf[48];   /* one GPSPI FIFO fill */
+    /* One GPSPI FIFO fill is 64 bytes, so 32 RGB565 pixels. A full 320x240
+     * frame is 2400 transfers at this size instead of 3200 at 24. */
+    static const int chunk = SPI_BUF_BYTES / 2;
+    unsigned char buf[SPI_BUF_BYTES];
     int i;
 
     cs(1);
 
     while (count > 0) {
-        int n = count > 24 ? 24 : count;
+        int n = count > chunk ? chunk : count;
         int j = 0;
 
         for (i = 0; i < n; i++) {
