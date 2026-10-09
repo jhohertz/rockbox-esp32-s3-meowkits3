@@ -299,8 +299,17 @@ $(BUILDDIR)/rockbox.bin : $(BUILDDIR)/rockbox.elf
 $(BUILDDIR)/rombox.bin : $(BUILDDIR)/rombox.elf
 	$(call PRINTS,OC $(@F))$(call objcopy,$<,$@)
 
+ifeq (arch_xtensa,$(ARCH))
+# An ESP32 image is built from the ELF, not from the objcopy binary: the
+# bootloader needs a segment table, and objcopy would have to span the gap
+# between the two flash windows (0x3C000020 to 0x42000020), which produces a
+# ~100 MB file of zeros.
+$(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.elf $(FLASHFILE) $(MKFIRMWARE_TOOL)
+	$(call PRINTS,PACK $(notdir $@)) $(MKFIRMWARE) $< $@
+else
 $(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE) $(MKFIRMWARE_TOOL)
 	$(call PRINTS,SCRAMBLE $(notdir $@)) $(MKFIRMWARE) $< $@
+endif
 
 $(MAXOUTFILE):
 	$(call PRINTS,Creating $(@F))
