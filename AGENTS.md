@@ -240,21 +240,31 @@ Cache_WriteBack_All           0x400016f8
 They are in the base file, not `esp32s3.rom.version.ld`, so they do not move
 between ROM revisions.
 
-The ROM is windowed, so a call0 caller needs three things:
+The ROM is windowed, so a call0 caller has to make the call look like a normal
+windowed call. Three things are needed:
 
-1. **`CALLINC` = 4.** It cannot be read or written, but `entry` sets it to 4 and
-   call0 code never changes it. `crt0.S` executes one `entry` at startup.
-2. **`WINDOW_BASE` = 0**, so that window 0 is the window call0 code uses and
-   `retw` returns to physical `a0`. `wsr.windowbase` is available.
-3. **`a12-a15` saved around the call**, because a windowed callee at window 4 maps
-   its a8-a15 to physical a12-a19 and clobbers them.
+1. **`CALLINC` = 4.** It cannot be read or written (no REGB option, so
+   `mtsr`/`mfsr` are not valid opcodes), but `callx4` sets it as part of the call,
+   and the callee's `entry` and `retw` both use that same value. Nothing has to be
+   arranged at startup. `callx4` assembles and disassembles correctly on this core
+   (`callx0`=0xc0, `callx4`=0xd0, `callx8`=0xe0, `callx12`=0xf0).
+2. **`WINDOW_BASE` pinned to 0** in `crt0.S`, so that the window call0 code uses is
+   window 0 and the register arithmetic below is absolute rather than relative to
+   whatever the bootloader left.
+3. **`a12-a15` saved around the call.** With the window rotated by 4 the callee can
+   reach physical a4-a19; under call0 only a12-a15 are callee-saved, so those four
+   are the ones that matter. a0-a3 are out of reach of the callee.
 
-`firmware/target/xtensa/rom_cache.S` is the trampoline that does (3), and
-`rom_cache.h` wraps the addresses. Verified to assemble and link.
+Arguments go in the caller's a6 and a7, which become the callee's a2 and a3. That
+is checkable from a disassembly of any windowed call: GCC's `call8` callers put
+their arguments in a10/a11, exactly two registers above the callee's a2/a3.
 
-What is **not** verified: that `entry` sets `CALLINC = 4` unconditionally on this
-core, and that `rfe` restores correctly when `WINDOW_BASE` is set manually before
-it. Both are ISA behaviour and need a hardware test.
+`firmware/target/xtensa/rom_cache.S` is the trampoline, and `rom_cache.h` wraps the
+addresses. Verified to assemble and link.
+
+What is **not** verified: that the ROM's `entry`/`retw` pair behaves as described on
+this core config, and that `rfe` restores correctly when `WINDOW_BASE` is set
+manually before it. Both are ISA behaviour and need a hardware test.
 
 The alternative, if the ROM turns out to be unreachable: keep everything the DMA
 touches out of the D-cache address room. `Cache_Clean_Addr`'s own documentation

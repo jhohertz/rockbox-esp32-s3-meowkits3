@@ -33,19 +33,9 @@
 
     .global start
 start:
-    /* CALLINC has to be 4 for a windowed callee's retw to find the caller's
-     * window, and it cannot be read or written on this core config - there is no
-     * REGB option, so mtsr/mfsr are not valid opcodes. entry sets it to 4, and
-     * call0 code never changes it, so one entry instruction here is enough for
-     * the whole run. It also rotates WINDOW_BASE, which is then pinned to 0 so
-     * that window 0 is the window call0 code uses - see rom_cache.S.
-     *
-     * entry must be the first instruction of the function, so it comes before the
-     * stack is set up. It writes a0 and a1 to the base save area below the stack
-     * the bootloader left us with; a0 is garbage because nothing called us, and
-     * that area is abandoned as soon as a1 is replaced.
+    /* Pin the register window so that a windowed callee's window is a known
+     * rotation away from the one call0 code uses. See rom_cache.S.
      */
-    entry   a1, 16
     movi    a2, 0
     wsr     a2, windowbase
 
