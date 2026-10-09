@@ -22,6 +22,7 @@
 
 void timer_irq(void);
 void gdma_irq(void);
+void sdmmc_irq(void);
 
 void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 {
@@ -30,4 +31,7 @@ void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 
     if (pending & (1u << XT_SLOT_GDMA_OUT_CH0))
         gdma_irq();
+
+    if (pending & (1u << XT_SLOT_SDHOST))
+        sdmmc_irq();
 }
