@@ -15,9 +15,12 @@
  *
  * 2. GDMA's descriptor address register is 20 bits wide, so descriptors have to
  *    sit inside the 0x3FC00000 window. That is where .bss is placed, so the
- *    descriptor ring and the DMA buffers are plain .bss. They are also reached
- *    through the non-cached data bus view, which means no cache maintenance is
- *    needed around the DMA - the CPU's writes are already in memory.
+ *    descriptor ring and the DMA buffers are plain .bss.
+ *
+ *    Internal SRAM is served by the L1 D-cache, and GDMA does not go through it.
+ *    Everything the DMA reads has to be written back first, and anything the DMA
+ *    writes has to be invalidated before the CPU reads it back. ESP-IDF does the
+ *    same thing on every descriptor it hands to a DMA engine.
  ****************************************************************************/
 #include "config.h"
 
@@ -72,8 +75,9 @@ struct gdma_desc {
  *
  * cur is not volatile: it is only touched by the handler and by sink_play, and the
  * interrupt mask means the handler cannot run while sink_play is inside the lock. */
-static volatile struct gdma_desc desc[2];
-static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1];
+static volatile struct gdma_desc desc[2] __attribute__((aligned(4)));
+/* GDMA requires a 4-byte aligned buffer address */
+static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)));
 
 /* cur is the half that is free to write. When DONE fires, the half that just
  * finished transmitting is cur ^ 1, so the mixer's next frame goes into cur. */
@@ -235,6 +239,10 @@ static void write_desc(const void *addr, size_t size)
 
     memcpy(dma_buf[cur], addr, size);
     arm(cur, size);
+    /* GDMA fetches the descriptor and the buffer from memory, not from the
+     * cache, so both have to be committed before the engine can mount them. */
+    commit_dcache_range(dma_buf[cur], size);
+    commit_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
     cur ^= 1;
 }
 
