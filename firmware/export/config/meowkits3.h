@@ -148,6 +148,14 @@
 #define USB_READ_BUFFER_SIZE  (16 * 1024)
 #define USB_WRITE_BUFFER_SIZE (16 * 1024)
 
+/* The board has no accessible UART: UART0's pads are GPIO1 and GPIO2, which the
+ * reference firmware never uses either - its Serial is TinyUSB CDC on the OTG
+ * port. The DWC is therefore the only console, so the CDC class driver is
+ * enabled and logf() feeds it. Its 16 KB ring buffer goes to PSRAM.
+ */
+#define USB_ENABLE_SERIAL
+#define ROCKBOX_HAS_LOGF
+
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */
 #define HW_SAMPR_CAPS SAMPR_CAP_ALL_96
