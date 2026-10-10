@@ -193,6 +193,15 @@ ifeq (echor1,$(MODELNAME))
   include $(ROOTDIR)/tools/echoplayer/openocd.make
 endif
 
+# ESP32 targets have no bootloader stage to write, so flashing is one esptool
+# call on the packed image. The simulator shares the arch but produces a host
+# executable, so the gate is on the artifact rather than on the CPU.
+ifeq (xtensa,$(CPU))
+  ifneq (,$(findstring esp32,$(BINARY)))
+    include $(ROOTDIR)/tools/espflash.make
+  endif
+endif
+
 # One or more subdir makefiles requested --gc-sections?
 ifdef CORE_GCSECTIONS
   # Do not use '--gc-sections' when compiling sdl-sim
