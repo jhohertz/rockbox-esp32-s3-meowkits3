@@ -604,7 +604,10 @@ Sequence, in order, with the values ESP-IDF uses:
 | dummy cycles | CACHE_SCTRL bits [11:6], [27:22] | 17 and 7 (chip dummies are 18 and 8 bits) |
 | DDR | `SPI_MEM_SPI_SMEM_DDR_REG(0)` +0xE4 | `DDR_EN` set, swaps clear |
 | octal phases | `SPI_MEM_SRAM_CMD_REG(0)` +0x44 | SDIN/SDOUT/SADDR/SCMD/SDUMMY_OCT |
-| PSRAM clock | `SPI_MEM_SRAM_CLK_REG(0)` +0x50 | div 4 = 40 MHz |
+| PSRAM clock | `SPI_MEM_SRAM_CLK_REG(0)` +0x50 | div 2 = 80 MHz |
+| input delay | `SPI_MEM_SPI_SMEM_DIN_MODE_REG(0)` +0xC0 | mode 4 in all nine 3-bit fields (DIN0-DIN7, DQS at 24) |
+| input delay cycles | `SPI_MEM_SPI_SMEM_DIN_NUM_REG(0)` +0xC4 | all nine 2-bit fields zero |
+| extra read dummy | `SPI_MEM_SPI_SMEM_TIMING_CALI_REG(0)` +0xBC | `TIMING_CALI` (bit 1) set, `EXTRA_DUMMY_CYCLELEN` (bits 4:2) = 2 |
 
 OPI command words: sync read `0x0000`, sync write `0x8080`, register read `0x4040`,
 register write `0xC0C0`. Command phase 16 bits, address phase 32 bits, read dummy 18
@@ -625,10 +628,14 @@ Two things worth knowing:
   CALLINC=4 receives its arguments in physical `a6..a19`, and call0 code can only
   name `a0..a15`. Programming the transaction directly is shorter and does exactly
   what the ROM does.
-- **PSRAM clock is deliberately conservative.** ESP-IDF reaches 80 MHz by running a
-  timing-tuning sweep over dummy/delay values. Rockbox has no equivalent, so 40 MHz
-  (~40 MB/s in octal DDR) is used instead. It is far above what audio playback and a
-  320×240 framebuffer need, and it does not depend on tuning we cannot verify.
+- **PSRAM runs at 80 MHz without the tuning sweep.** ESP-IDF reaches 80 MHz by
+  sweeping dummy and delay values (`mspi_timing_by_mspi_delay.c`), and Rockbox has
+  no equivalent. What it does instead is copy the entry ESP-IDF *falls back to* when
+  the sweep fails: `mspi_timing_tuning_configs.h` gives core 160 MHz / module 80 MHz
+  DTR a default_config_id of 5, i.e. `spi_din_mode = 4` on every DIN line and on
+  DQS, `spi_din_num = 0`, `extra_dummy_len = 2`. That is a configuration known to
+  work on this silicon, not an estimate of one. The sweep can find better numbers;
+  it cannot make the default wrong.
 
 If `psram_init()` fails, `mmu_init()` returns without mapping anything and the
 audiobuffer, framebuffer and codec buffers stay unmapped. `dbg_hw_info()` reports
