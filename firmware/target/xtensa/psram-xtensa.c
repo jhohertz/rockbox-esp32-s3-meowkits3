@@ -307,10 +307,19 @@ bool psram_init(void)
      * (false, false) amounts to the same thing. */
     wr(SPI_FMEM_DDR(1), rd(SPI_FMEM_DDR(1)) & ~(DDR_WDAT_SWP | DDR_RDAT_SWP));
 
-    /* MR0: fixed latency (lt = 1), read latency 2, drive strength 0. Only the
-     * first 8 bits of the data phase are the mode register. */
+    /* MR0: fixed latency (lt = 1, bit 5), read latency 2 (bits 4:2), drive
+     * strength 0 (bits 1:0). Only the low 16 bits of the data phase are the
+     * mode register. */
     if (!opi_command(OPI_REG_WRITE, CMD_BITS, 0x0, ADDR_BITS, 0,
                      (1u << 5) | (2u << 2), 16, NULL, 0))
+        return false;
+
+    /* MR8: burst length 3, burst type 0. The chip's power-on default is the
+     * same, but ESP-IDF writes it, and relying on a reset value that a previous
+     * firmware image may have changed is the kind of thing that shows up only on
+     * a board that has been flashed before. */
+    if (!opi_command(OPI_REG_WRITE, CMD_BITS, 0x8, ADDR_BITS, 0,
+                     3u, 16, NULL, 0))
         return false;
 
     /* Prove the chip is there before mapping anything. */
