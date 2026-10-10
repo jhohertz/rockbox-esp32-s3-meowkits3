@@ -1285,6 +1285,13 @@ Lyre prototype 1 */
 #define IRAM_LCDFRAMEBUFFER
 #endif
 
+/* Statics a target wants outside its main data region. A target that has a second
+ * memory region defines this as a section attribute and places that section in its
+ * linker script; everywhere else it expands to nothing. */
+#ifndef PSRAM_BSS_ATTR
+#define PSRAM_BSS_ATTR
+#endif
+
 /* Change this if you want to build a single-core firmware for a multicore
  * target for debugging */
 #if defined(BOOTLOADER) || (CONFIG_CPU == PP6100)

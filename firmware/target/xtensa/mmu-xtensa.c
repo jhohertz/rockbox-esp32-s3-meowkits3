@@ -10,9 +10,9 @@
  *   bits 0-13 physical page number
  *
  * The ROM loader maps the pages for the segments present in the image, which
- * covers .rodata. It does not map the audiobuffer, the framebuffer or the
- * codec/plugin buffers, because all of them are NOLOAD and therefore not in the
- * image file. So Rockbox has to map its own pages here, before anything reads
+ * covers .rodata. It does not map .psrambss, the audiobuffer, the framebuffer or
+ * the codec/plugin buffers, because all of them are NOLOAD and therefore not in
+ * the image file. So Rockbox has to map its own pages here, before anything reads
  * them.
  *
  * Mapping a page to PSRAM is only meaningful once the chip has been brought up;
@@ -39,9 +39,10 @@
 /* Physical page numbering of the PSRAM chip: page 0 is its first 64 KB. */
 #define PSRAM_PADDR_BASE    0
 
-/* Defined by the linker script (target/xtensa/app.lds). audiobuffer is the first
- * NOLOAD region in the window; psramend is the end of the last one. */
-extern unsigned char audiobuffer[];
+/* Defined by the linker script (target/xtensa/app.lds). _psrambssstart is the
+ * first NOLOAD region in the window, psramend the last; everything between them is
+ * PSRAM. */
+extern unsigned char _psrambssstart[];
 extern unsigned char psramend[];
 
 /* The MMU indexes by the masked address, not by the address itself: the window
@@ -62,8 +63,8 @@ void mmu_init(void)
         return;
 
     /* Cast through an integer rather than arithmetic on the linker arrays: they
-     * have unknown size, so `audiobufend - 1` trips -Warray-bounds. */
-    int first = mmu_index((unsigned int)(uintptr_t)audiobuffer);
+     * have unknown size, so `psramend - 1` trips -Warray-bounds. */
+    int first = mmu_index((unsigned int)(uintptr_t)_psrambssstart);
     int last  = mmu_index((unsigned int)(uintptr_t)psramend - 1);
 
     if (first < 0 || last >= MMU_ENTRY_NUM) return;   /* window overrun */
@@ -78,8 +79,9 @@ void mmu_init(void)
     /* A page that was invalid before now points at PSRAM, and any line the cache
      * kept for that range is stale. ESP-IDF does the same thing after every
      * esp_mmu_map(). */
-    discard_dcache_range((const void *)audiobuffer,
-                         (unsigned int)((uintptr_t)psramend - (uintptr_t)audiobuffer));
+    discard_dcache_range((const void *)_psrambssstart,
+                         (unsigned int)((uintptr_t)psramend -
+                                       (uintptr_t)_psrambssstart));
 }
 
 #endif /* CPU_XTENSA */

@@ -12,10 +12,10 @@
  *
  * The ROM loader sets up the flash side of the MSPI block and the caches, but it
  * does not initialise the external PSRAM, and it has not mapped the MMU pages for
- * Rockbox's audiobuffer, framebuffer or codec buffers - those are NOLOAD, so they
- * are not in the image file. Both happen at runtime here: psram_init() brings the
- * chip up, mmu_init() maps the pages, and neither may be deferred past the first
- * read of that window.
+ * Rockbox's .psrambss, audiobuffer, framebuffer or codec buffers - all of them are
+ * NOLOAD, so they are not in the image file. Both happen at runtime here:
+ * psram_init() brings the chip up, mmu_init() maps the pages, and neither may be
+ * deferred past the first read of that window.
  *
  * The literals are written as .word inside .startup rather than as bare
  * `l32r symbol`. This binutils hits an internal error (ldlang.c 1074) when an
@@ -31,6 +31,8 @@
 .Lstack:  .word _stackend
 .Lbsslo:  .word _bssstart
 .Lbsshi:  .word _bssend
+.Lpslo:   .word _psrambssstart
+.Lpshi:   .word _psrambssend
 
     .global start
 start:
@@ -59,10 +61,31 @@ start:
      */
     call0   psram_init
 
-    /* Map the PSRAM pages the audiobuffer occupies before touching it. */
+    /* Map the PSRAM pages before touching them. */
     call0   mmu_init
+
+    /* .psrambss lives in the PSRAM window, so it cannot be zeroed until the chip
+     * is up and its pages are mapped. If psram_present() says no, mmu_init()
+     * mapped nothing and every write here would go to an invalid MMU entry; in
+     * that case the audiobuffer and framebuffer are unusable too, so the target
+     * is already broken and there is nothing to preserve.
+     *
+     * psram_present() is not declared here: this is an assembly file, and the
+     * symbol is resolved by the linker from psram-xtensa.c.
+     */
+    call0   psram_present
+    beqz    a0, 4f
+    l32r    a2, .Lpslo
+    l32r    a3, .Lpshi
+    movi    a4, 0
+3:
+    bgeu    a2, a3, 4f
+    s32i    a4, a2, 0
+    addi.n  a2, a2, 4
+    j       3b
+4:
 
     call0   main
     /* main does not return on Rockbox; if it does, spin. */
-3:
-    j       3b
+5:
+    j       5b

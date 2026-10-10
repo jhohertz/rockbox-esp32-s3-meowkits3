@@ -51,6 +51,18 @@
  * and the framebuffer alone is 150 KB. Put it in PSRAM via the linker. */
 #define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".framebuffer")))
 
+/* Likewise the big statics that are only ever touched by the CPU. app.lds places
+ * .psrambss in the PSRAM part of the external cache window, mmu-xtensa.c maps its
+ * pages, and crt0 zeroes it after psram_init() has run. Taking these out of the
+ * 337 KB region is what leaves room for the USB transfer buffers and the GDMA
+ * rings, which have to stay in internal SRAM because DMA cannot reach PSRAM.
+ *
+ * The simulator has no PSRAM, so there the attribute stays empty.
+ */
+#ifndef SIMULATOR
+#define PSRAM_BSS_ATTR __attribute__ ((section(".psrambss")))
+#endif
+
 #define CONFIG_STORAGE STORAGE_SD
 
 /* One SDHOST slot, wired for 1-bit. There is no card-detect line, so the drive is
@@ -112,13 +124,19 @@
  * sense line, so insertion is detected from the PMU (see usb-xtensa.c).
  *
  * The FIFO RAM is 256 words and there are six endpoints, so USB_NUM_ENDPOINTS is
- * the hardware limit rather than a choice.
+ * the hardware limit rather than a choice. That budget is exactly EP0 plus mass
+ * storage bulk IN/OUT, HID interrupt IN and CDC bulk IN/OUT: the CDC notification
+ * endpoint is declared optional and usb_core.c skips it when the pool is
+ * exhausted. Isochronous audio needs two more endpoints, so it only fits when
+ * mass storage is not active - which is what the "usb-dac" setting's charge-only
+ * mode does. Enabling it alongside storage makes the allocator drop audio with a
+ * logf, rather than fail.
  *
  * The transfer buffers are static and in internal SRAM: the DWC's DMA is an
  * internal AHB master, while the core allocator's pool is the audiobuffer, which
  * on this target is PSRAM. Internal SRAM is the scarce resource - the static
- * region is 337 KB and everything else already lives in it - so the buffers are
- * sized down to 6 KB per direction, leaving just under 2 KB of headroom.
+ * region is 337 KB - so the buffers are 16 KB per direction, which is a third of
+ * what a target with a megabyte of static data would use.
  */
 #define CONFIG_USBOTG USBOTG_DESIGNWARE
 #define HAVE_USBSTACK
@@ -127,8 +145,8 @@
 #define USB_VENDOR_ID  0x6666 /* "prototype device" VID in folklore */
 #define USB_PRODUCT_ID 0xEC02
 #define USB_DEVBSS_ATTR __attribute__((aligned(32)))
-#define USB_READ_BUFFER_SIZE  (6 * 1024)
-#define USB_WRITE_BUFFER_SIZE (6 * 1024)
+#define USB_READ_BUFFER_SIZE  (16 * 1024)
+#define USB_WRITE_BUFFER_SIZE (16 * 1024)
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */
