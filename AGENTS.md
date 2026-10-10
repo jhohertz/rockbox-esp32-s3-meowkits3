@@ -257,7 +257,11 @@ windowed call. Three things are needed:
 
 Arguments go in the caller's a6 and a7, which become the callee's a2 and a3. That
 is checkable from a disassembly of any windowed call: GCC's `call8` callers put
-their arguments in a10/a11, exactly two registers above the callee's a2/a3.
+their arguments in a10/a11, exactly two registers above the callee's a2/a3. The
+return value works the same way - the callee's a2 is the caller's a(N+2), so a
+`callx4` callee returns in the caller's **a6**, not a2. A call0 trampoline has to
+copy a6 to a2 before its `ret.n`, otherwise the caller gets whatever a2 held before
+the call (in Rockbox's case, the ROM function address).
 
 `firmware/target/xtensa/rom_cache.S` is the trampoline, and `rom_cache.h` wraps the
 addresses. Verified to assemble and link.
