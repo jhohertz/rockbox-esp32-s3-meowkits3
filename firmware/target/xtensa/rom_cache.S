@@ -19,7 +19,10 @@
  *      Under call0 only a12-a15 are callee-saved, so those are the four that have
  *      to be stashed;
  *
- *   3. arguments land in the callee's a2 and a3, which are the caller's a6 and a7.
+ *   3. arguments land in the callee's a2 and a3, which are the caller's a6 and a7,
+ *      and the return value comes back the same way: the callee's a2 is the
+ *      caller's a6, not the caller's a2. `ret.n` hands the result to C in a2, so
+ *      the trampoline has to copy it.
  *
  * WINDOW_BASE is pinned to 0 in crt0.S so that the window call0 code uses is
  * window 0, which makes the register arithmetic above explicit rather than
@@ -40,6 +43,7 @@ xt_rom_call:                  /* (uint32_t fn, uint32_t arg0, uint32_t arg1) */
     mov     a6, a3            /* callee a2 */
     mov     a7, a4            /* callee a3 */
     callx4  a2                /* a2 is the ROM function */
+    mov     a2, a6            /* callee a2 == caller a6 */
 
     l32i    a12, a1, 0
     l32i    a13, a1, 4
