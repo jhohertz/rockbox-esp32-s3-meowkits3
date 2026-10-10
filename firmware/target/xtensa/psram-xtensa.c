@@ -55,6 +55,9 @@
 #define SPI_W0(i)             (SPI_MEM_BASE(i) + 0x58)
 #define SPI_CORE_CLK_SEL(i)   (SPI_MEM_BASE(i) + 0xEC)
 #define SPI_SMEM_AC(i)        (SPI_MEM_BASE(i) + 0xDC)
+#define SPI_SMEM_CALI(i)      (SPI_MEM_BASE(i) + 0xBC)
+#define SPI_SMEM_DIN_MODE(i)  (SPI_MEM_BASE(i) + 0xC0)
+#define SPI_SMEM_DIN_NUM(i)   (SPI_MEM_BASE(i) + 0xC4)
 #define SPI_FMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE0)
 #define SPI_SMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE4)
 #define SPI_DATE(i)           (SPI_MEM_BASE(i) + 0x3FC)
@@ -131,16 +134,28 @@
 #define SYSCON_SRAM_ACE0    (SYSCON_BASE + 0x58)
 #define SRAM_ECC_ENABLE     (1u << 8)
 
-/* The MSPI core clock is 160 MHz (CORE_CLK_SEL 2), which is what ESP-IDF uses
- * once it has finished tuning. SPI1 runs at 20 MHz while the chip's mode
- * registers are being programmed; the flash path runs at 80 MHz, the maximum the
- * QSPI flash on the module is rated for; the PSRAM data path runs at 40 MHz.
- * ESP-IDF tunes PSRAM up to 80 MHz by sweeping dummy and delay values, which
- * Rockbox cannot do. 40 MHz is comfortably inside the chip's rating and still
- * several times the bandwidth audio playback needs. */
+/* The MSPI core clock is 160 MHz (CORE_CLK_SEL 2), which is what ESP-IDF runs
+ * it at. SPI1 stays at 20 MHz while the chip's mode registers are being
+ * programmed; the flash path and the PSRAM data path both run at 80 MHz, which
+ * is the rating of the octal PSRAM on the module.
+ *
+ * ESP-IDF gets to 80 MHz by sweeping dummy and delay values. Rockbox has no
+ * equivalent sweep, so it uses the configuration ESP-IDF falls back to when the
+ * sweep fails: input delay mode 4 on every DIN line and on DQS, zero delay
+ * cycles, and two extra dummy cycles on the Ext_RAM read path. That is the entry
+ * mspi_timing_tuning_configs.h names as default_config_id for a 160 MHz core
+ * clock with an 80 MHz module clock in DTR mode, so it is a known-good setting
+ * rather than a guess at one. */
 #define FLASH_DIV           2      /* 80 MHz */
 #define BRINGUP_DIV         8      /* 20 MHz */
-#define PSRAM_DIV           4      /* 40 MHz */
+#define PSRAM_DIV           2      /* 80 MHz */
+
+/* DIN_MODE has nine 3-bit fields (DIN0..DIN7, then DQS); DIN_NUM has nine 2-bit
+ * fields. Mode 4 is "delay (num+1) cycles at the HCLK negative edge and one
+ * cycle at the MSPI core clock positive edge". */
+#define DIN_MODE_VALUE      4u
+#define DIN_NUM_VALUE       0u
+#define PSRAM_EXTRA_DUMMY   2u
 
 static bool s_psram_present = false;
 
@@ -161,6 +176,25 @@ static void set_psram_clock(unsigned div)
         wr(SPI_SRAM_CLK(0), 1u << 31);         /* SCLK_EQU_SYSCLK */
     else
         wr(SPI_SRAM_CLK(0), ((div - 1) << 16) | ((div / 2 - 1) << 8) | (div - 1));
+}
+
+/* The input-delay and extra-dummy registers only matter once the Ext_RAM clock
+ * is at its final speed, so this is paired with set_psram_clock(). */
+static void set_psram_timing(void)
+{
+    uint32_t mode = 0;
+    uint32_t num = 0;
+
+    for (int i = 0; i < 9; i++) {
+        mode |= (DIN_MODE_VALUE & 7u) << (3 * i);
+        num  |= (DIN_NUM_VALUE & 3u) << (2 * i);
+    }
+
+    wr(SPI_SMEM_DIN_MODE(0), mode);
+    wr(SPI_SMEM_DIN_NUM(0), num);
+
+    /* bit 1 enables the calibration dummy, bits 4:2 give its length */
+    wr(SPI_SMEM_CALI(0), (1u << 1) | (PSRAM_EXTRA_DUMMY << 2));
 }
 
 /* One octal transaction on SPI1: CMD phase, ADDR phase, DUMMY phase, then
@@ -313,6 +347,7 @@ bool psram_init(void)
                         SCMD_SADDR_OCT | SCMD_SDOUT_OCT | SCMD_SDIN_OCT);
 
     set_psram_clock(PSRAM_DIV);
+    set_psram_timing();
     set_spi_clock(0, FLASH_DIV);
 
     s_psram_present = true;
