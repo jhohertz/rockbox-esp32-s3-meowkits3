@@ -24,8 +24,10 @@ STARTUP(target/xtensa/crt0.o)
  *     That mapping happens at runtime in mmu-xtensa.c, which is why audiobuffer
  *     must start on a 64 KB page boundary.
  *
- * Rockbox is entered by ESP-IDF's second-stage bootloader, which has already
- * configured the SPI-RAM controller and enabled both caches.
+ * Rockbox is entered by the mask ROM loader: it reads the image header at flash
+ * offset 0, copies the RAM segments, maps the flash side of the cache MMU and
+ * jumps to the entry point. It does not bring up the external PSRAM, so that is
+ * crt0's job before mmu_init() runs.
  */
 
 /* Internal SRAM, data-bus view. The instruction bus sees the same physical memory
@@ -74,6 +76,11 @@ MEMORY
     DROM : ORIGIN = DROMORIG, LENGTH = MEMORYSIZE * 0x100000 - CODECP_SIZE
     CODECP : ORIGIN = CODECBUF_ORIG, LENGTH = CODECP_SIZE
 }
+
+/* Exported so dbg_hw_info() can report how much of the static region is left.
+ * Assigning to a named symbol rather than to `.` avoids the binutils behaviour
+ * where an absolute constant in a dot-assignment is read as a section address. */
+dramend = DRAMORIG + DRAMSIZE;
 
 SECTIONS
 {
