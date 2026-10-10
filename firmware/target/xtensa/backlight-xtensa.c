@@ -22,11 +22,15 @@
 #include "xtensa.h"
 #include "gpio-xtensa.h"
 
+/* A low-speed channel is five words wide - conf0, hpoint, duty, conf1,
+ * duty_r - so the stride is 0x14, not 0x10: LSCH7_CONF0 sits at base + 0x8c.
+ * A timer is two words (conf, value), so the timer stride is 0x8.
+ * See ESP-IDF components/soc/esp32s3/register/soc/ledc_reg.h. */
 #define LEDC_CONF             (XT_LEDC_BASE + 0xd0)
-#define LEDC_LSCH_CONF0(ch)   (XT_LEDC_BASE + 0x00 + 0x10 * (ch))
-#define LEDC_LSCH_HPOINT(ch)  (XT_LEDC_BASE + 0x04 + 0x10 * (ch))
-#define LEDC_LSCH_DUTY(ch)    (XT_LEDC_BASE + 0x08 + 0x10 * (ch))
-#define LEDC_LSTIMER_CONF(t)  (XT_LEDC_BASE + 0xa0 + 0x04 * (t))
+#define LEDC_LSCH_CONF0(ch)   (XT_LEDC_BASE + 0x00 + 0x14 * (ch))
+#define LEDC_LSCH_HPOINT(ch)  (XT_LEDC_BASE + 0x04 + 0x14 * (ch))
+#define LEDC_LSCH_DUTY(ch)    (XT_LEDC_BASE + 0x08 + 0x14 * (ch))
+#define LEDC_LSTIMER_CONF(t)  (XT_LEDC_BASE + 0xa0 + 0x08 * (t))
 
 /* apb_clk_sel bits [1:0] of LEDC_CONF: 1 = APB, 2 = RC_FAST, 3 = XTAL. */
 #define LEDC_CLK_XTAL         3u
