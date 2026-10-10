@@ -11,9 +11,11 @@
  * system_init to the table below. It has to be a physical address the core can
  * fetch from, so the table lives in internal SRAM, not in the flash cache window.
  *
- * Window overflow and underflow share offset 0x000 with the level-1 interrupt on
- * this core. Under the call0 ABI GCC never emits a spill or reflect, so nothing
- * can reach that vector and it is a plain trap.
+ * The window vectors occupy 0x000 through 0x17C (overflow/underflow for CALLINC
+ * 4, 8 and 12, with the alloca handler in the gaps) and level 2 starts at 0x180.
+ * Under the call0 ABI GCC never emits a spill or reflect, so no window vector can
+ * be reached; each one is a self-loop trap rather than a run of zeros, so an
+ * unexpected exception stops cleanly instead of executing padding.
  *
  * rfe is available even though rsr.sregs and rsr.eps1 are not: the saved PS and
  * window base live in internal state (the assembler calls it sysregs) that only
@@ -28,7 +30,17 @@
 
 _vector_table:
     .org _vector_table + 0x000
-    j .                               /* window vectors, unreachable under call0 */
+    j .                               /* window overflow  4 */
+    .org _vector_table + 0x040
+    j .                               /* window underflow 4 */
+    .org _vector_table + 0x080
+    j .                               /* window overflow  8 */
+    .org _vector_table + 0x0c0
+    j .                               /* window underflow 8 */
+    .org _vector_table + 0x100
+    j .                               /* window overflow  12 */
+    .org _vector_table + 0x140
+    j .                               /* window underflow 12 */
 
     .org _vector_table + 0x180
     j .                               /* level 2 */
@@ -48,6 +60,8 @@ _vector_table:
     .org _vector_table + 0x340
     j xt_level1_handler               /* level 1, user mode */
 
+    .org _vector_table + 0x380
+    j .                               /* software exception */
     .org _vector_table + 0x3c0
     j .                               /* double exception */
     .org _vector_table + 0x400
