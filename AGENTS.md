@@ -262,9 +262,23 @@ their arguments in a10/a11, exactly two registers above the callee's a2/a3.
 `firmware/target/xtensa/rom_cache.S` is the trampoline, and `rom_cache.h` wraps the
 addresses. Verified to assemble and link.
 
-What is **not** verified: that the ROM's `entry`/`retw` pair behaves as described on
-this core config, and that `rfe` restores correctly when `WINDOW_BASE` is set
-manually before it. Both are ISA behaviour and need a hardware test.
+**Checked against the ROM binary itself** (`esp-rom-elfs`, `esp32s3_rev0_rom.elf`).
+Each published address is a two-instruction trampoline - `l32r a9, <real address>`
+then `jx a9` - so the jump does not change the window; the callee's own `entry` does.
+The real functions are exactly as the trampoline assumes:
+
+| Function | Real address | Entry | Args | Return |
+|---|---|---|---|---|
+| `Cache_Invalidate_Addr` | 0x4004e9ac | `entry a1, 48` | a2 = addr, a3 = size | `retw.n` |
+| `Cache_WriteBack_Addr` | 0x4004ea64 | `entry a1, 48` | a2 = addr, a3 = size | `retw.n` |
+| `Cache_Invalidate_DCache_All` | 0x4004eac4 | `entry a1, 32` | none | `retw.n` |
+
+They dispatch further through `rom_cache_internal_table_ptr` at `0x3fceffc4`, which
+is a `.data.interface.cache` section of the ROM image, not something ESP-IDF sets
+up - so it is initialised by the mask ROM before it jumps to the image.
+
+What is still **not** verified: that `rfe` restores correctly when `WINDOW_BASE` is
+set manually before it. That is ISA behaviour and needs a hardware test.
 
 The alternative, if the ROM turns out to be unreachable: keep everything the DMA
 touches out of the D-cache address room. `Cache_Clean_Addr`'s own documentation
@@ -470,8 +484,26 @@ INTENABLE. Two consequences of the missing level registers:
    for the WiFi baseband. A handler can only be entered for a slot that is already level 1.
 2. **Level 1 has no vector of its own.** It is reached through the exception vectors: the
    kernel vector at VECBASE+0x300 and the user vector at VECBASE+0x340, chosen by PS.UM.
-   Offset 0x000 is the window vector, shared with level 1 in the usual XEA2 layout — under
-   call0 nothing can spill, so that vector is unreachable.
+   Level 1 does **not** share the window vector. The full layout, confirmed against an
+   independent ESP32-S3 bare-metal vector table:
+
+   | Offset | Vector |
+   |---|---|
+   | 0x000–0x17C | window overflow/underflow for CALLINC 4, 8, 12, plus the alloca handler |
+   | 0x180 | level 2 |
+   | 0x1c0 | level 3 |
+   | 0x200 | level 4 |
+   | 0x240 | level 5 |
+   | 0x280 | level 6 / debug |
+   | 0x2c0 | NMI |
+   | 0x300 | kernel exception (level 1 from supervisor mode) |
+   | 0x340 | user exception (level 1 from user mode) |
+   | 0x380 | software exception |
+   | 0x3c0 | double exception |
+   | 0x400 | hardware exception |
+
+   Under call0 nothing can spill, so no window vector can be reached; they are still
+   filled with self-loop traps rather than left as linker padding.
 
 `rsr.eps1` and `rsr.sregs` are not valid either, even though `rfe` works: the saved PS and
 window base live in internal state the assembler calls `sysregs`, which only `rfe` can read.
@@ -812,6 +844,15 @@ tick. It queues with `I2C_Q_ONCE`, so the call cannot pile up transactions; the
 effective poll rate is set by how long a transaction takes, about 1.6 ms for the
 14-byte register read.
 
+The controller's own axes are the panel's short side first: registers 0x03/0x04 run
+0..240 and 0x05/0x06 run 0..320, while the panel is driven as 320x240. The reference
+firmware's `CTP_Class` does exactly the rotation Rockbox's calibration does -
+`CTP_REVERS_XY = 1` swaps the two registers, `CTP_REVERS_XPOS = 1` negates the
+320-wide axis. Net effect: display x = 320 - raw(0x05/0x06), display y =
+raw(0x03/0x04). Rockbox's ft6x06 driver reads POS_X from 0x03/0x04 and POS_Y from
+0x05/0x06, so `DEFAULT_TOUCHSCREEN_CALIBRATION { A=0, B=-1, C=LCD_WIDTH, D=1, E=0,
+F=0 }` reproduces the reference firmware's mapping exactly.
+
 ### The SDHOST block is a DesignWare MMC controller with an IDMAC
 
 SDHOST is at `0x60028000` (`SDIO_HOST_CLK_EN` is bit 7 of `PERIP_CLK_EN1`, and it
@@ -940,9 +981,12 @@ that is never compiled. `audio_path.c` now guards the input-source selection wit
 
 GPIO 42 is not a plain output: it is routed to LEDC low-speed channel 7 through the
 GPIO matrix (`LEDC_LS_SIG_OUT7_IDX = 80`), and the LED is active low. ESP32-S3 has
-eight low-speed channels at `LEDC_BASE + 0x10*n` (conf0 0x00, hpoint 0x04, duty
-0x08) and four low-speed timers at `+0xa0 + 4*n` (duty_res [3:0], clk_div [21:4],
-pause [22], rst [23], tick_sel [24]).
+eight low-speed channels, each **five words wide** (conf0, hpoint, duty, conf1,
+duty_r), so channel *n* starts at `LEDC_BASE + 0x14*n`: LSCH7_CONF0 = 0x8c,
+LSCH7_HPOINT = 0x90, LSCH7_DUTY = 0x94. The four low-speed timers are a conf/value
+pair, so they are at `+0xa0 + 8*n` (conf: duty_res [3:0], clk_div [21:4], pause
+[22], rst [23], tick_sel [24]). A 0x10 channel stride puts channel 7 on channel 5's
+conf1 - the register the driver would write is not the one the channel reads.
 
 `rst` is a level, not a self-clearing bit: leaving it set holds the counter in
 reset and the channel outputs the idle level forever. It has to be pulsed.
