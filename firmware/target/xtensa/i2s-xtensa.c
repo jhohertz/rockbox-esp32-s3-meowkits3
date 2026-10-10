@@ -37,6 +37,7 @@
 #include "kernel.h"
 #include "pcm_sampr.h"
 #include "pcm_mixer.h"
+#include "panic.h"
 
 #ifdef HAVE_RECORDING
 #include "es7210.h"
@@ -329,10 +330,27 @@ static void stop_tx(void)
 /* cur is the half that is free to write. The DMA mounts a descriptor only when the
  * owner bit says it owns it, so the half it is about to need must already be armed
  * when the current one finishes - which is why every write advances cur. */
+/* GDMA's size field is 12 bits, so one descriptor carries at most 4095 bytes.
+ * The mixer's largest frame is MIX_FRAME_SAMPLES samples times 4 bytes times the
+ * high-rate multiplier, and the multiplier only reaches 2 here because
+ * HW_SAMPR_CAPS caps at 96 kHz. That is 2048 bytes, comfortably under the limit.
+ * If the cap ever rises, the ring needs chained descriptors rather than one per
+ * half, not a silent truncation. */
+_Static_assert(MIX_FRAME_SAMPLES * 4 * 2 <= GDMA_MAX_DESC_LEN,
+               "the mixer's largest frame exceeds one GDMA descriptor");
+
 static void write_desc(const void *addr, size_t size)
 {
     if (size > GDMA_MAX_DESC_LEN)
-        size = GDMA_MAX_DESC_LEN;
+    {
+        /* Unreachable by the assertion above. Reaching it means the PCM layer is
+         * handing us something the mixer was never designed to produce, and
+         * quietly dropping the tail would play a corrupted frame rather than
+         * tell us anything.
+         */
+        panicf("i2s: %lu byte DMA frame exceeds a GDMA descriptor",
+               (unsigned long)size);
+    }
 
     memcpy(dma_buf[cur], addr, size);
     arm(cur, size);
