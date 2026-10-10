@@ -1062,7 +1062,15 @@ make bin        # firmware only
 make zip        # full package
 make tools      # host tools only
 make tags
+make flash      # esptool write_flash 0x0 rockbox.esp32s3
+make espverify  # image_info on the packed image, no board needed
 ```
+
+`make flash` and `make espverify` come from `tools/espflash.make`, included from
+`root.make` only when the build output is an ESP image (the simulator shares the
+arch but produces a host executable, so it has no flash goal). Overridable
+variables: `ESPTOOL` (default `esptool`), `ESPPORT` (empty means let esptool
+probe), `ESPCHIP` (derived from the artifact name), `ESPADDR` (default `0x0`).
 
 Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 `RBDEV_BUILD`, `RBDEV_RESTART` (restart a toolchain build at a given step),
