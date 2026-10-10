@@ -749,6 +749,24 @@ I2C master  0x60013000
   `crt0.S` is therefore not a reset vector — the ROM owns the vectors, the entry is
   jumped to (so `a0` is not a return address and `a1` must be set by hand), and
   `.bss` is not in the image file.
+- **The ROM loader maps the data side of the MMU only, so the entry point must be
+  in internal IRAM.** Disassembling `ets_run_flash_bootloader` in
+  `esp32s3_rev0_rom.elf` shows one `Cache_Dbus_MMU_Set` call and no
+  `Cache_Ibus_MMU_Set` call; the only Ibus mapping in the ROM is in
+  `ets_run_direct_boot`. That is why ESP-IDF's own second-stage bootloader is
+  IRAM-only: it is the stage that maps IROM. An image whose entry is in the
+  `0x42000000` window never reaches its first instruction. Rockbox therefore puts
+  `.startup` in `.iram`, and `firmware/target/xtensa/irom-map.c` walks the image
+  header (reachable at linear 0, i.e. `0x3C000000`, because the header is at flash
+  offset 0 = physical page 0) and arms the MMU entries for every flash-mapped
+  segment before anything in `.text` runs.
+- **The MMU's 512 entries index one shared 32 MB linear range.** Entry =
+  `(vaddr & 0x1FFFFFF) >> 16`, value = `(paddr >> 16) | target`, bit 15 = PSRAM,
+  bit 14 = invalid, and `hal/esp32s3/include/hal/mmu_ll.h` asserts that IRAM0 and
+  DRAM0 have the same linear range. So `0x42000000` and `0x3C000000` are entry 0.
+  `IROMORIG` in `app.lds` is `0x42900020` (entry 144) rather than `0x42000020`
+  (entry 0) because DROM plus the codec/plugin buffers claim entries 0..128; with
+  both windows at +0x20 the two mappings overwrite each other.
 - Flashing is one command, not a build step:
   ```sh
   esptool --chip esp32s3 write_flash 0 rockbox.esp32s3
