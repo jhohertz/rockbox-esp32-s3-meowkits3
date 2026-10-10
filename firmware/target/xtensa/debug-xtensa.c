@@ -50,6 +50,10 @@ extern char _stackend[];
 extern char _psrambssstart[], _psrambssend[];
 extern char dramend[];
 
+/* Set by irom-map.c: how many flash segments crt0 armed in the MMU before
+ * jumping into the IROM window. */
+extern int irom_map_status;
+
 static unsigned int mmu_mapped_pages(void)
 {
     /* The table has 32-bit entries; bit 14 is the "invalid" flag. */
@@ -97,6 +101,7 @@ enum
     INFO_CPU,
     INFO_CORE,
     INFO_CACHE,
+    INFO_IROM,
     INFO_PSRAM,
     INFO_MMU,
     INFO_SRAM,
@@ -123,6 +128,18 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_CACHE:
         snprintf(buf, bufsz, "D-cache line size: %u bytes",
                  cache_dcache_line_size());
+        break;
+    case INFO_IROM:
+        /* A negative status means crt0 could not read the image header, which
+         * means the IROM window is whatever the ROM loader left it as - on this
+         * chip that is nothing, so the firmware would not have reached here.
+         */
+        if (irom_map_status < 0)
+            snprintf(buf, bufsz, "IROM MMU mapping: failed (%d)",
+                     irom_map_status);
+        else
+            snprintf(buf, bufsz, "IROM MMU mapping: %d segments armed",
+                     irom_map_status);
         break;
     case INFO_PSRAM:
         snprintf(buf, bufsz, "PSRAM: %s",

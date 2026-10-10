@@ -25,6 +25,11 @@ IMAGE_MAGIC = 0xE9
 CHECKSUM_MAGIC = 0xEF
 SEG_HEADER_LEN = 8
 MMU_PAGE = 0x10000
+# The 512 MMU entries index one 32 MB linear range shared by the instruction and
+# data cache buses, so 0x42000000 and 0x3C000000 are the same entry. Two segments
+# collide when their masked addresses land in the same page, not when their raw
+# addresses do.
+MMU_LINEAR_MASK = 0x1FFFFFF
 
 # ESP32-S3. The chip id goes in the extended header and the bootloader uses it
 # to reject images built for a different SoC.
@@ -144,10 +149,12 @@ def write_image(out, entry, segments, flash_mode, flash_size_freq):
 
     for s in flash:
         for o in flash:
-            if s is not o and s.addr // MMU_PAGE == o.addr // MMU_PAGE:
+            if s is not o and (s.addr & MMU_LINEAR_MASK) // MMU_PAGE \
+                    == (o.addr & MMU_LINEAR_MASK) // MMU_PAGE:
                 raise ValueError(
-                    "segments at 0x%08x and 0x%08x land in the same MMU page; "
-                    "merge them in the linker script" % (s.addr, o.addr))
+                    "segments at 0x%08x and 0x%08x land in the same MMU page "
+                    "(linear 0x%07x); separate them in the linker script"
+                    % (s.addr, o.addr, (s.addr & MMU_LINEAR_MASK) & ~(MMU_PAGE - 1)))
 
     out.write(struct.pack("<BBBBI", IMAGE_MAGIC, 0, flash_mode,
                           flash_size_freq, entry))
