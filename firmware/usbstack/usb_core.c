@@ -594,7 +594,9 @@ static void usb_core_set_serial_function_id(void)
         if(drivers[i]->enabled)
             id |= 1 << i;
 
-    usb_string_iSerial.wString[0] = hex[id];
+    /* USB_NUM_DRIVERS is not capped at 4, so the bitmask can exceed a single
+     * hex digit; mask it so the index stays inside hex[]. */
+    usb_string_iSerial.wString[0] = hex[id & 0xf];
 }
 
 /* synchronize endpoint initialization state to allocation state */
