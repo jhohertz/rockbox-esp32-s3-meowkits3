@@ -597,7 +597,7 @@ Sequence, in order, with the values ESP-IDF uses:
 | CS timing | `SPI_MEM_SPI_SMEM_AC_REG(0)` +0xDC | setup 3, hold 3, hold delay 2, both enable bits |
 | ECC | `SYSCON_SRAM_ACE0_ATTR_REG` (0x60026058) bit 8 | cleared |
 | dummy mode | `SPI_MEM_DDR_REG(1)` +0xE0 | `VAR_DUMMY` set, RDAT_SWP/WDAT_SWP clear |
-| MR0 | OPI `REG_WRITE` to address 0 | `lt=1`, `read_latency=2`, `drive_str=0` = 0x24 |
+| MR0 | OPI `REG_WRITE` to address 0 | `lt=1` (bit 5), `read_latency=2` (bits 4:2), `drive_str=0` = 0x28 |
 | connectivity | OPI write/read at address 0 | must read back what was written |
 | Ext_RAM phases | `SPI_MEM_CACHE_SCTRL_REG(0)` +0x40 | USR_WCMD, USR_RCMD, SCMD_4BYTE, USR_RD/WR_DUMMY, SRAM_OCT |
 | command words | `SRAM_DWR` +0x4C, `SRAM_DRD` +0x48 | bitlen 15 (i.e. 16 bits), `0x8080` / `0x0000` |
