@@ -18,16 +18,23 @@ STARTUP(target/xtensa/crt0.o)
  *  2. PSRAM and flash rodata share one 32 MB window on the external data cache.
  *     They are bank-switched per 64 KB page by the cache MMU. Because .rodata and
  *     .audiobuf are both in DROM here, the location counter already continues
- *     past rodata and no dummy section is needed — ESP-IDF needs one only because
+ *     past rodata and no dummy section is needed - ESP-IDF needs one only because
  *     it puts PSRAM in a separate region.
- *  3. The audiobuffer is NOLOAD, so the image loader does not map its MMU pages.
+ *  3. The MMU has 512 entries indexed by (vaddr & 0x1FFFFFF) >> 16, and that
+ *     linear range is shared by the instruction and data buses: 0x42000000 and
+ *     0x3C000000 are entry 0. IROM therefore cannot start at the same offset as
+ *     DROM, or the two mappings overwrite each other.
+ *  4. The audiobuffer is NOLOAD, so the image loader does not map its MMU pages.
  *     That mapping happens at runtime in mmu-xtensa.c, which is why audiobuffer
  *     must start on a 64 KB page boundary.
  *
  * Rockbox is entered by the mask ROM loader: it reads the image header at flash
- * offset 0, copies the RAM segments, maps the flash side of the cache MMU and
- * jumps to the entry point. It does not bring up the external PSRAM, so that is
- * crt0's job before mmu_init() runs.
+ * offset 0, copies the RAM segments, maps the flash *data* side of the cache MMU
+ * and jumps to the entry point. It does not map the instruction side - ESP-IDF's
+ * second-stage bootloader does that, and it is IRAM-only so that the ROM can reach
+ * it - and it does not bring up the external PSRAM. Both are crt0's job, which is
+ * why .startup is placed in .iram rather than in .text: the entry point has to be
+ * somewhere the ROM can already fetch from.
  */
 
 /* Internal SRAM, data-bus view. The instruction bus sees the same physical memory
@@ -44,8 +51,13 @@ STARTUP(target/xtensa/crt0.o)
 /* Flash instruction-cache window. The +0x20 is not cosmetic: the cache MMU
  * requires paddr % 64KB == vaddr % 64KB, and the image file header (0x18) plus
  * the segment header (0x8) make 0x20 land on a page boundary. esptool reads this
- * out of the program headers, so it has to stay. */
-#define IROMORIG 0x42000020
+ * out of the program headers, so it has to stay.
+ *
+ * The 0x900000 is not cosmetic either. The MMU's 512 entries index one shared
+ * 32 MB linear range, so entry (vaddr & 0x1FFFFFF) >> 16 is the same entry for
+ * 0x42xxxxxx and 0x3Cxxxxxx. DROM plus the codec/plugin buffers claim entries
+ * 0..128, so IROM has to start above them. */
+#define IROMORIG 0x42900020
 #define IROMSIZE (0x800000 - 0x20)
 
 /* Flash data-cache window, shared with PSRAM. The window is 32 MB wide; we only
@@ -94,7 +106,6 @@ SECTIONS
          * reports "dangerous relocation: l32r: literal placed after use".
          */
         KEEP(*(.literal))
-        KEEP(*(.startup*))
         KEEP(*(.literal.*))
         KEEP(*(.text))
         KEEP(*(.text.*))
@@ -162,6 +173,12 @@ SECTIONS
     ASSERT(framebufferend <= CODECBUF_ORIG,
            "rodata plus the framebuffer does not fit below the codec buffer")
 
+    /* The 512 MMU entries index one shared 32 MB linear range, so an IROM page and
+     * a DROM page with the same linear offset are the same entry. */
+    ASSERT(((IROMORIG & 0x1FFFFFF) >> 16) >=
+           ((CODECBUF_ORIG + CODECP_SIZE - DROMORIG) >> 16),
+           "IROM starts inside the MMU pages claimed by DROM")
+
     /* VECBASE has to be a physical address the core can fetch from, so the vector
      * table lives here, on the instruction-bus view of internal SRAM, and cannot be
      * in the flash cache window. It is aligned to 1024 because the table spans
@@ -177,6 +194,10 @@ SECTIONS
     .iram :
     {
         _iramstart = .;
+        /* The entry point. It has to be on the instruction bus in internal SRAM,
+         * because the ROM loader never maps the IROM side of the MMU; crt0 maps it
+         * from here before anything in .text runs. */
+        KEEP(*(.startup*))
         /* ld evaluates ASSERT at the end of the enclosing section rather than at the
          * point where it is written, so an alignment check here would test the wrong
          * thing. IRAMORIG is a multiple of 1024 and the ALIGN below puts the table on
