@@ -66,7 +66,13 @@ static void ft6x06_i2c_callback(int status, i2c_descriptor* desc)
         return;
 
     ft6x06_state.gesture = ft_drv.raw_data[1];
+    /* The register is a four-bit field, so a misbehaving or unexpected panel can
+     * report more points than the driver has storage for. Callers iterate over
+     * nr_points, so it has to be clamped to what was actually parsed.
+     */
     ft6x06_state.nr_points = ft_drv.raw_data[2] & 0xf;
+    if (ft6x06_state.nr_points > FT6x06_NUM_POINTS)
+        ft6x06_state.nr_points = FT6x06_NUM_POINTS;
     for(int i = 0; i < FT6x06_NUM_POINTS; ++i) {
         ft6x06_convert_point(&ft_drv.raw_data[3 + i * BYTES_PER_POINT],
                              &ft6x06_state.points[i]);
