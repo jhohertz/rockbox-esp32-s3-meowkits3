@@ -101,6 +101,28 @@ SECTIONS
         _rodata_end = .;
     } > DROM
 
+    /* Statics that do not need internal SRAM. They are NOLOAD, so they are not in
+     * the image file and crt0 zeroes them; mmu_init() maps the MMU pages they
+     * occupy onto PSRAM before anything reads them. Placing them here costs the
+     * audiobuffer, which is sized from the location counter, so it shrinks
+     * automatically.
+     *
+     * Both ends have to be on a 64 KB boundary, because the MMU maps whole pages.
+     * Without the leading ALIGN the region would begin inside the page that ends
+     * .rodata: the ROM loader has already mapped that page to flash, mmu_init()
+     * skips pages that are already valid, and the first few tens of kilobytes of
+     * the PSRAM region would silently read flash instead of PSRAM. Without the
+     * trailing ALIGN the page numbering to codecbuf would not be contiguous.
+     */
+    .psrambss (NOLOAD) :
+    {
+        . = ALIGN(0x10000);
+        _psrambssstart = .;
+        *(.psrambss*)
+        . = ALIGN(0x10000);
+        _psrambssend = .;
+    } > DROM
+
     .audiobuf (NOLOAD) :
     {
         . = ALIGN(0x10000);          /* MMU page size */

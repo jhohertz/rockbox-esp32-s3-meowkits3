@@ -43,7 +43,7 @@
 #define HEADER_SIZE 4
 #define SUBHEADER_SIZE 6
 
-static unsigned char language_buffer[MAX_LANGUAGE_SIZE];
+static unsigned char language_buffer[MAX_LANGUAGE_SIZE] PSRAM_BSS_ATTR;
 static unsigned char lang_options = 0;
 
 void lang_init(const unsigned char *builtin, unsigned char **dest, int count)
