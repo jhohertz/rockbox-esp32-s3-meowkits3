@@ -16,10 +16,10 @@
  * bootloader is IRAM-only. So .startup is placed in .iram by app.lds, and this
  * file maps the IROM window before the first instruction is fetched from it.
  *
- * Calls out of .iram cannot use `call0`: the call offset is 18 bits signed, and
- * the flash instruction window is 1.6 MB away. Every target here is reached with
- * l32r + callx0. GCC handles this for C code because xtensacc passes -mlongcalls;
- * hand-written assembly has to do it by hand.
+ * Calls out of .iram cannot use a range-limited `call`: the call offset is 18 bits
+ * signed, and the flash instruction window is 1.6 MB away. Every target here is
+ * reached with l32r + callx8. GCC handles this for C code because xtensacc passes
+ * -mlongcalls; hand-written assembly has to do it by hand.
  *
  * The literals are written as .word inside .startup rather than as bare
  * `l32r symbol`. This binutils hits an internal error (ldlang.c 1074) when an
@@ -72,12 +72,11 @@
 
 /* A windowed call into a C function. The first argument goes in the caller's
  * a10 and the second in a11, which is what the callee's entry reads as a2/a3
- * once the window has rotated by 8; the result comes back in a10.
+ * once the window has rotated by 8; the result comes back in the caller's a10.
  *
- * call0 would work for the call itself, but a function entered with CALLINC 0
- * has no base-save area, and the window overflow handler walks the base-save
- * area of every ancestor frame. Entering every C function with CALLINC 8 is
- * what makes that walk valid.
+ * A function entered with CALLINC 0 has no base-save area, and the window
+ * overflow handler walks the base-save area of every ancestor frame. Entering
+ * every C function with CALLINC 8 is what makes that walk valid.
  */
     .global start
 start:
@@ -96,13 +95,27 @@ start:
     /* Own stack. Top of internal DRAM. */
     l32r    a1, .Lstack
 
+    /* Nothing called us, so the register window is whatever the loader left:
+     * a non-zero WINDOWBASE and a WINDOWSTART with bits for windows that were
+     * never created by an `entry`. The overflow handler walks the base-save area
+     * of every ancestor window, and a window that has no frame has nothing to
+     * walk. Pin the window to zero and start from a clean PS so the first call8
+     * opens a real frame, with `start` itself acting as the root.
+     */
+    movi    a2, 0
+    wsr     a2, windowbase
+    wsr     a2, windowstart
+    wsr     a2, ps
+    wsr     a2, sar
+    rsync
+
     /* 'R' - the ROM loader reached the entry point. Each marker below says how
      * far the bring-up got: 'C' after the external cache is up, 'I' after the
      * flash MMU is armed, 'P' after the PSRAM chip is up, 'M' after its pages are
      * mapped, 'G' before main.
      */
-    movi    a3, 'R'
-    call0   putchar_rom
+    movi    a10, 'R'
+    call8   putchar_rom
 
     /* Point the vectors at a trap that records exccause and epc1 before anything
      * else can fault. The ROM's own handler just loops in the debug vector, which
@@ -110,8 +123,8 @@ start:
      */
     l32r    a2, .Ldiagvec
     wsr     a2, vecbase
-    movi    a3, 'V'
-    call0   putchar_rom
+    movi    a10, 'V'
+    call8   putchar_rom
 
 #ifdef ESP_STAGE2_BOOTLOADER
     /* ESP-IDF's second-stage loader has already armed the cache MMU for the
@@ -190,8 +203,8 @@ start:
     movi    a14, 0
     movi    a15, 0
     callx8  a2
-    movi    a3, 'C'
-    call0   putchar_rom
+    movi    a10, 'C'
+    call8   putchar_rom
 #endif
 
 #ifndef ESP_STAGE2_BOOTLOADER
@@ -200,8 +213,8 @@ start:
     mov     a10, a2
     movi    a11, 0
     callx8  a2
-    movi    a3, 'I'
-    call0   putchar_rom
+    movi    a10, 'I'
+    call8   putchar_rom
 
     /* The MMU entries irom_mmu_map just armed are invisible to the cache until
      * the lines that were fetched against the old mapping are thrown away.
@@ -289,7 +302,7 @@ start:
 
     /* Does a plain peripheral read work from .iram? The IO MUX pad for CS1 is the
      * first thing psram_init touches, and the fault lands on that load, so read it
-     * here with hand-written call0 asm and keep the result in the trace.
+     * here with hand-written asm in .startup and keep the result in the trace.
      */
     l32r    a6, .Ltrace
     l32r    a7, .Liomux
@@ -316,20 +329,20 @@ start:
     /* First code fetched from the IROM window. 'K' means the mapping works.
      * The return value is kept in a0 so the panic dump shows it if it does not.
      */
-    movi    a3, 'T'
-    call0   putchar_rom
+    movi    a10, 'T'
+    call8   putchar_rom
     l32r    a2, .Lcanary
     mov     a10, a2
     movi    a11, 0
     callx8  a2
-    movi    a3, 'K'
-    call0   putchar_rom
+    movi    a10, 'K'
+    call8   putchar_rom
 
     /* Bring the PSRAM chip up before mapping it. The ROM loader only sets up the
      * flash side of the MSPI block; nothing else initialises the external RAM.
      */
-    movi    a3, 'P'
-    call0   putchar_rom
+    movi    a10, 'P'
+    call8   putchar_rom
     l32r    a2, .Lpsinit
     mov     a10, a2
     movi    a11, 0
@@ -361,8 +374,8 @@ start:
     s32i    a5, a6, 248
 
     /* Map the PSRAM pages before touching them. */
-    movi    a3, 'M'
-    call0   putchar_rom
+    movi    a10, 'M'
+    call8   putchar_rom
     l32r    a2, .Lmmuinit
     mov     a10, a2
     movi    a11, 0
@@ -404,8 +417,8 @@ start:
     movi    a11, 0
     callx8  a3
 
-    movi    a3, 'G'
-    call0   putchar_rom
+    movi    a10, 'G'
+    call8   putchar_rom
     l32r    a6, .Ltrace
     movi    a4, 'G'
     s32i    a4, a6, 156
@@ -422,29 +435,23 @@ start:
 5:
     j       5b
 
-/* One-character trace through the ROM's ets_write_char_uart, which is built for the
- * windowed ABI. This has to be self-contained: xt_rom_call lives in .text, and
- * at the first call the IROM window is not mapped yet.
+/* One-character trace through the ROM's ets_write_char_uart. This has to be
+ * self-contained: xt_rom_call lives in .text, and at the first call the IROM window
+ * is not mapped yet.
  *
- * callx8 sets CALLINC to 8 as part of the call, so the callee's a2 and a3 are
- * the caller's a10 and a11, and its return value comes back in the caller's a10.
- * Under call0 only a12-a15 are callee-saved, and a window rotated by 8 can
- * reach physical a8-a23, so those four are the ones that need stashing.
+ * It is a real windowed frame, not a leaf. callx8 sets CALLINC to 8, the ROM callee's
+ * entry rotates the window by 8, and the overflow handler then walks the base-save
+ * area of every ancestor frame - so this function has to have one.
  */
     .align 4
-putchar_rom:                      /* a3 = character */
-    addi    a1, a1, -16
-    s32i    a12, a1, 0
-    s32i    a13, a1, 4
-    mov     a10, a3               /* callee a2 */
-    movi    a11, 0                /* callee a3 */
+putchar_rom:                      /* a10 = character, per the windowed ABI */
+    entry   a1, 32                /* a base-save area, so the overflow handler has
+                                   * a frame to walk when the ROM callee rotates */
+    mov     a10, a2               /* our a2 is the caller's a10 */
+    movi    a11, 0                /* the ROM callee's second argument */
     l32r    a2, .Luartput
     callx8  a2
-    mov     a2, a10               /* callee a2 == caller a10 */
-    l32i    a12, a1, 0
-    l32i    a13, a1, 4
-    addi    a1, a1, 16
-    ret.n
+    retw.n
 
 /* Scratch for the bring-up trace, readable with `esptool dump_mem` after a reset:
  * internal SRAM survives a reset, so the values are still there when esptool

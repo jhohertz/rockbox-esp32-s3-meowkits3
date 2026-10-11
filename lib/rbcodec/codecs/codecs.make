@@ -17,14 +17,11 @@ CODECS := $(subst $(RBCODECLIB_DIR),$(RBCODEC_BLD),$(CODECS))
 include $(RBCODECLIB_DIR)/codecs/lib/libcodec.make
 OTHER_INC += -I$(RBCODECLIB_DIR)/codecs/lib
 
-# extra libraries.  libarm_support has the division routines, which are much
+# extra libraries. libarm_support has the division routines, which are much
 # faster than what libgcc may supply; it is empty when not building for ARM.
-# libxtensa_support replaces libgcc entirely: the ESP32 toolchain's libgcc is
-# compiled for the windowed ABI, and Rockbox builds xtensa with -mabi=call0, so
-# letting libgcc in on the codec link mixes ABIs (the linker warns "incompatible
-# Xtensa configuration (ABI does not match)") and the callee would read its
-# arguments from the wrong registers.
-CODEC_LIBS := $(CODECLIB) $(FIXEDPOINTLIB) $(ARMSUPPORTLIB) $(XTENSASUPPORTLIB)
+# Codecs link -lgcc explicitly below, and since xtensa now builds with the
+# toolchain's default windowed ABI, that libgcc is the right one.
+CODEC_LIBS := $(CODECLIB) $(FIXEDPOINTLIB) $(ARMSUPPORTLIB)
 
 # compile flags for codecs
 CODECFLAGS := $(CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \

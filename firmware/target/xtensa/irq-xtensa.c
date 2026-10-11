@@ -6,9 +6,9 @@
  * out.
 
  * This has to be in .icode.irq, placed immediately after the vector table by app.lds:
- * the call0 from the handler is range-limited to 18 bits signed, and the table has to
- * be a physical address the core can fetch from, so it is in internal SRAM. Calls out
- * of the dispatch are not limited because -mlongcalls makes GCC emit callx0 with an
+ * the handler reaches it with a range-limited call8, and the table has to be a
+ * physical address the core can fetch from, so it is in internal SRAM. Calls out
+ * of the dispatch are not limited because -mlongcalls makes GCC emit callx8 with an
  * absolute literal instead of a range-limited call8, so the mixer and the tick tasks
  * can live in the flash cache window 1.6 MB away.
  ****************************************************************************/
