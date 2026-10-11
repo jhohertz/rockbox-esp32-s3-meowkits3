@@ -16,12 +16,11 @@
  * CS1, and is reached through SPI0's Ext_RAM path once that path's command,
  * address and dummy phases are configured for octal mode.
  *
- * The ROM does export esp_rom_opiflash_exec_cmd(), but it takes thirteen
- * arguments. The ROM is windowed-ABI and Rockbox is call0, so a trampoline would
- * have to place arguments in physical registers the caller cannot name: a
- * windowed callee at window+4 receives its arguments in physical a6..a19, and
- * call0 code can only name a0..a15. Programming the transaction directly is
- * shorter and clearer, and the ROM does nothing more than what is below.
+ * The ROM does export esp_rom_opiflash_exec_cmd(). Under the windowed ABI it is now
+ * callable straight from C - the ABI passes the first four arguments in a2-a5 and
+ * the remaining nine on the stack - so the hand-built transaction below is a choice
+ * rather than a necessity. It is kept because it makes each phase visible in the
+ * register dump, and because the ROM's version needs thirteen arguments.
  *
  * Register offsets and bit positions are from
  * components/soc/esp32s3/register/soc/spi_mem_reg.h.
@@ -560,34 +559,6 @@ static void ICODE_ATTR psram_cache_test(void)
  * a device we know is there. Expect 0xe9000103 (the ESP image header).
  */
 static void ICODE_ATTR flash_read_test(int spi);
-/* Run one OPI transaction through the ROM's own command builder, so the register
- * sequence is Espressif's rather than ours. If the ROM can talk to the chip and we
- * cannot, the difference is the bug.
- */
-extern void rom_opi_exec(const uint32_t *args);
-
-static void ICODE_ATTR rom_opi_transaction(int spi, uint32_t cmd, int cmd_bits,
-                                          uint32_t addr, int addr_bits, int dummy_bits,
-                                          uint32_t dout, int dout_bits,
-                                          uint32_t *din, int din_bits)
-{
-    uint32_t args[13];
-
-    args[0] = (uint32_t)spi;
-    args[1] = 7;                        /* ESP_ROM_SPIFLASH_OPI_DTR_MODE */
-    args[2] = cmd;
-    args[3] = (uint32_t)cmd_bits;
-    args[4] = addr;
-    args[5] = (uint32_t)addr_bits;
-    args[6] = (uint32_t)dummy_bits;
-    args[7] = dout_bits ? (uint32_t)&dout : 0;
-    args[8] = (uint32_t)dout_bits;
-    args[9] = din ? (uint32_t)din : 0;
-    args[10] = (uint32_t)din_bits;
-    args[11] = 2;                       /* cs_mask: CS1 */
-    args[12] = 0;
-    rom_opi_exec(args);
-}
 
 static void ICODE_ATTR psram_probe(void)
 {

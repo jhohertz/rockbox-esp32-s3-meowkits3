@@ -555,7 +555,7 @@ dynconfig (`xtensa_esp32s3.so`):
 | `wsr.vecbase` | **available** — `XCHAL_HAVE_VECBASE 1`, so the vectors are relocatable |
 | `wsr.intenable`, `wsr.intclear`, `wsr.intset` | available |
 | `rsr.interrupt` | available — the pending bitmask over all 32 slots |
-| `rsr.intlevel` / `wsr.intlevel` | **not valid opcodes** — the level is the low 13 bits of PS |
+| `rsr.intlevel` / `wsr.intlevel` | **not valid opcodes** — the level is `PS` bits 0-3 (`PS_INTLEVEL_SHIFT 0`, mask `0x0F`, values 0-15) |
 | `rfe`, `rfi n` | available |
 | memory-mapped priority registers | none in `INTERRUPT_CORE0` |
 
@@ -801,7 +801,9 @@ I2C master  0x60013000
   at `IO_MUX_BASE + 0x04 + 4*pin`). A driver that uses them as I²C has to write 0 there
   first.
 - `rsr.intlevel` / `wsr.intlevel` do not exist on the esp32s3 core config; the level is
-  the low 13 bits of `PS`.
+  `PS` bits 0-3 (`PS_INTLEVEL_SHIFT 0`, `PS_INTLEVEL_MASK 0x0F`, 0-15). The rest of PS is
+  EXCM (4), UM (5), RING (6-7), OWB (8-11), CALLINC (16-17), WOE (18) — per
+  `components/xtensa/include/xtensa/corebits.h`.
 - Boot: **the mask ROM loader is enough.** An ESP image flashed at 0x0 is read by
   the ROM, which copies the RAM segments, sets up the flash MMU windows and jumps
   to the entry point. The ROM exports the functions it uses, visible in
