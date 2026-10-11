@@ -65,6 +65,14 @@
 #define SPI_FMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE0)
 #define SPI_SMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE4)
 #define SPI_CLK_GATE(i)       (SPI_MEM_BASE(i) + 0xE8)
+#define SPI_RD_STATUS(i)      (SPI_MEM_BASE(i) + 0x2C)
+#define SPI_INT_RAW(i)        (SPI_MEM_BASE(i) + 0xF8)
+#define SPI_USER(i)           (SPI_MEM_BASE(i) + 0x18)
+#define SPI_USER1(i)          (SPI_MEM_BASE(i) + 0x1C)
+#define SPI_USER2(i)          (SPI_MEM_BASE(i) + 0x20)
+#define SPI_MOSI_DLEN(i)      (SPI_MEM_BASE(i) + 0x24)
+#define SPI_MISO_DLEN(i)      (SPI_MEM_BASE(i) + 0x28)
+#define SPI_W0(i)             (SPI_MEM_BASE(i) + 0x58)
 #define SPI_MEM_INT_RAW(i)    (SPI_MEM_BASE(i) + 0xF8)
 #define SPI_DATE(i)           (SPI_MEM_BASE(i) + 0x3FC)
 
@@ -128,6 +136,8 @@
 
 #define SYSCON_BASE         0x60026000
 #define SYSCON_SRAM_ACE0    (SYSCON_BASE + 0x58)
+#define EXTMEM_DCACHE_CTRL  0x600C4000u
+#define EXTMEM_ICACHE_CTRL  0x600C4060u
 #define SRAM_ECC_ENABLE     (1u << 8)
 
 /* ROM entry points, from components/esp_rom/esp32s3/ld/esp32s3.rom.ld. Each is a
@@ -205,30 +215,6 @@ static void ICODE_ATTR set_psram_timing(void)
     wr(SPI_SMEM_CALI(0), (1u << 1) | (PSRAM_EXTRA_DUMMY << 2));
 }
 
-/*
- * One octal transaction on SPI1, issued the way ESP-IDF issues it: through the
- * ROM. esp_rom_opiflash_exec_cmd() sets the SPI op mode, programs USER/USER1/
- * USER2/MOSI_DLEN/MISO_DLEN/CACHE_FCTRL, copies the MOSI bytes into the TX FIFO,
- * latches with CMD, waits for the FSM to return to idle, and copies the RX FIFO
- * into the miso buffer.
- */
-static void ICODE_ATTR rom_opi_exec(int spi, int mode, uint32_t cmd, int cmd_bits,
-                                    uint32_t addr, int addr_bits, int dummy_bits,
-                                    uint32_t mosi, int mosi_bits,
-                                    uint32_t *miso, int miso_bits,
-                                    uint32_t cs_mask, bool write_erase)
-{
-    typedef void (*exec_t)(int, int, uint32_t, int, uint32_t, int, int,
-                           uint8_t *, int, uint8_t *, int, uint32_t, bool);
-
-    /* The ROM reads the mosi/miso arguments as byte pointers; a uint32_t is fine
-     * because the bit length, not the buffer size, bounds the copy. */
-    ((exec_t)ROM_OPI_EXEC_CMD)(spi, mode, cmd, cmd_bits, addr, addr_bits,
-                               dummy_bits, mosi_bits ? (uint8_t *)&mosi : NULL,
-                               mosi_bits, miso ? (uint8_t *)miso : NULL, miso_bits,
-                               cs_mask, write_erase);
-}
-
 static void ICODE_ATTR init_psram_pins(void)
 {
     /* CS1, HD, WP, CLK, Q0-Q3, D0-D3 all live on the IO MUX, so only the pad
@@ -271,20 +257,102 @@ static void ICODE_ATTR set_psram_cs_timing(void)
                        (2u << AC_CS_HOLD_DELAY_S));
 }
 
-/* Read one PSRAM mode register (MR0, MR2, MR4, MR8) through an MSPI instance. */
-static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
+/* What the MSPI instance actually holds after a user command. The chip either
+ * answers or it does not, and the register file distinguishes "the transaction ran
+ * and the data lines floated" from "the transaction never started".
+ */
+static void ICODE_ATTR trace_spi_state(int spi)
+{
+    boot_trace_hex(rd(SPI_CMD(spi)));
+    boot_trace_hex(rd(SPI_ADDR(spi)));
+    boot_trace_hex(rd(SPI_MISC(spi)));
+    boot_trace_hex(rd(SPI_FSM(spi)));
+    boot_trace_hex(rd(SPI_INT_RAW(spi)));
+    boot_trace_hex(rd(SPI_RD_STATUS(spi)));
+    boot_trace_hex(rd(SPI_USER(spi)));
+    boot_trace_hex(rd(SPI_USER1(spi)));
+    boot_trace_hex(rd(SPI_USER2(spi)));
+    boot_trace_hex(rd(SPI_MOSI_DLEN(spi)));
+    boot_trace_hex(rd(SPI_MISO_DLEN(spi)));
+    boot_trace_hex(rd(SPI_CACHE_FCTRL(spi)));
+}
+
+/*
+ * One octal transaction on an MSPI instance, programmed by hand.
+ *
+ * The ROM wrapper is not used here. Measured on this board, a call through
+ * esp_rom_opiflash_exec_cmd() programs ADDR and MISO_DLEN but leaves USER1 and
+ * USER2 at their reset values - USR_COMMAND_BITLEN stays 7 (8 bits) and
+ * USR_ADDR_BITLEN stays 23 - so the transaction that reaches the chip is not the
+ * one we asked for. Writing the phases explicitly removes that class of bug.
+ *
+ * Phase lengths are all stored as (bit_num - 1). In octal mode the clock moves
+ * eight bits per cycle, so the dummy phase is expressed in cycles.
+ */
+static bool ICODE_ATTR spi_octal_cmd(int spi, uint32_t cmd, int cmd_bits,
+                                     uint32_t addr, int addr_bits, int dummy_bits,
+                                     uint32_t mosi, int mosi_bits,
+                                     uint32_t *miso, int miso_bits, int cs)
+{
+    uint32_t guard = 0;
+    int dummy_cycles;
+
+    dummy_cycles = dummy_bits ? (dummy_bits + 7) / 8 : 0;
+
+    /* The CMD register is self-clearing: a new command cannot be latched while
+     * the previous one is still running.
+     */
+    while (rd(SPI_CMD(spi)) && guard++ < 200000u)
+        ;
+
+    wr(SPI_ADDR(spi), addr);
+    wr(SPI_USER2(spi), ((uint32_t)(cmd_bits - 1) << 28) | (cmd & 0xFFFFu));
+    wr(SPI_USER1(spi), ((uint32_t)(addr_bits - 1) << 26) |
+                       (dummy_cycles ? (uint32_t)(dummy_cycles - 1) : 0u));
+    wr(SPI_MOSI_DLEN(spi), mosi_bits ? (uint32_t)mosi_bits - 1u : 0u);
+    wr(SPI_MISO_DLEN(spi), miso_bits ? (uint32_t)miso_bits - 1u : 0u);
+
+    /* bit0 = CS0_DIS, bit1 = CS1_DIS; both default to 1 (disabled). */
+    wr(SPI_MISC(spi), (rd(SPI_MISC(spi)) & ~3u) |
+                      (cs == 1 ? 1u : 2u));
+
+    /* CS held low through the setup and done states. */
+    wr(SPI_USER(spi), (1u << 31) |                       /* USR_COMMAND */
+                      (1u << 30) |                       /* USR_ADDR */
+                      (dummy_cycles ? (1u << 29) : 0u) | /* USR_DUMMY */
+                      (miso_bits ? (1u << 28) : 0u) |    /* USR_MISO */
+                      (mosi_bits ? (1u << 27) : 0u) |    /* USR_MOSI */
+                      (1u << 7) | (1u << 6));
+
+    for (int i = 0; i < 16; i++)
+        wr(SPI_W0(spi) + 4u * (unsigned)i, 0);
+    if (mosi_bits)
+        wr(SPI_W0(spi), mosi);
+
+    wr(SPI_CMD(spi), 1u << 18);            /* USR: latch the command */
+    guard = 0;
+    while (rd(SPI_CMD(spi)) && guard++ < 400000u)
+        ;
+
+    if (miso)
+        *miso = rd(SPI_W0(spi));
+
+    return guard < 400000u;
+}
+
+/* Read one PSRAM mode register (MR0, MR2, MR4, MR8) through an MSPI instance. */static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
 {
     uint32_t v = 0;
 
-    rom_opi_exec(spi, OPI_DTR_MODE, OPI_REG_READ, CMD_BITS, reg, ADDR_BITS, MR_DUMMY_BITS,
-                 0, 0, &v, 16, (1u << 1), false);
+    spi_octal_cmd(spi, OPI_REG_READ, CMD_BITS, reg, ADDR_BITS, MR_DUMMY_BITS,
+                  0, 0, &v, 16, 1);
     return v;
 }
 
 static void ICODE_ATTR psram_write_mr(int spi, uint32_t reg, uint32_t val)
 {
-    rom_opi_exec(spi, OPI_DTR_MODE, OPI_REG_WRITE, CMD_BITS, reg, ADDR_BITS, 0,
-                 val, 16, NULL, 0, (1u << 1), false);
+    spi_octal_cmd(spi, OPI_REG_WRITE, CMD_BITS, reg, ADDR_BITS, 0,
+                  val, 16, NULL, 0, 1);
 }
 
 /* Write a word at a PSRAM address and read it back. The chip is answering only if
@@ -293,16 +361,19 @@ static void ICODE_ATTR psram_write_mr(int spi, uint32_t reg, uint32_t val)
 static bool ICODE_ATTR psram_connected(int spi)
 {
     uint32_t ref = 0x5a6b7c8du, a = 0, b = 0;
+    bool ran;
 
-    rom_opi_exec(spi, OPI_DTR_MODE, OPI_SYNC_WRITE, CMD_BITS, 0x0, ADDR_BITS, WR_DUMMY_BITS,
-                 ref, 32, NULL, 0, (1u << 1), false);
-    rom_opi_exec(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS, 0x0, ADDR_BITS, RD_DUMMY_BITS,
-                 0, 0, &a, 32, (1u << 1), false);
-    rom_opi_exec(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS, 0x1000, ADDR_BITS, RD_DUMMY_BITS,
-                 0, 0, &b, 32, (1u << 1), false);
+    ran = spi_octal_cmd(spi, OPI_SYNC_WRITE, CMD_BITS, 0x0, ADDR_BITS, WR_DUMMY_BITS,
+                        ref, 32, NULL, 0, 1);
+    boot_trace(ran ? 'w' : 'W');
+    spi_octal_cmd(spi, OPI_SYNC_READ, CMD_BITS, 0x0, ADDR_BITS, RD_DUMMY_BITS,
+                  0, 0, &a, 32, 1);
+    spi_octal_cmd(spi, OPI_SYNC_READ, CMD_BITS, 0x1000, ADDR_BITS, RD_DUMMY_BITS,
+                  0, 0, &b, 32, 1);
 
     boot_trace_hex(a);
     boot_trace_hex(b);
+    trace_spi_state(spi);
 
     return a == ref && b != ref;
 }
@@ -338,6 +409,31 @@ bool ICODE_ATTR psram_present(void)
     return s_psram_present;
 }
 
+static void ICODE_ATTR extmem_cache_resume(void)
+{
+    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) | 1u);
+    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) | 1u);
+}
+
+/* Does SPI1's user-command path reach the physical MSPI pins at all? The flash is
+ * on the same block and the same pins, only on CS0. A plain serial read of a known
+ * flash offset through SPI1 separates "SPI1 user commands work" from "the CS1 side
+ * is unreachable".
+ */
+static uint32_t ICODE_ATTR spi1_flash_probe(uint32_t addr)
+{
+    uint32_t v = 0;
+    uint32_t saved = rd(SPI_CTRL(1));
+
+    /* The flash on this module is quad, so the command/address/data phases have to
+     * run single-line for a plain 0x03 read to be understood.
+     */
+    wr(SPI_CTRL(1), saved & ~((1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 9)));
+    spi_octal_cmd(1, 0x03, 8, addr, 24, 0, 0, 0, &v, 32, 0);
+    wr(SPI_CTRL(1), saved);
+    return v;
+}
+
 bool ICODE_ATTR psram_init(void)
 {
 
@@ -352,6 +448,11 @@ bool ICODE_ATTR psram_init(void)
     wr(SPI_CORE_CLK_SEL(1), 2);
     wr(SPI_CLK_GATE(0), rd(SPI_CLK_GATE(0)) | 1u);
     wr(SPI_CLK_GATE(1), rd(SPI_CLK_GATE(1)) | 1u);
+    /* The CMD/ADDR/DOUT/DIN/DUMMY phases of a user command run in octal only if
+     * SPI1's CTRL says so. The ROM leaves these set after a quad-flash boot on
+     * this module, but the bring-up must not depend on that. */
+    wr(SPI_CTRL(1), rd(SPI_CTRL(1)) |
+                    (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 9));
     set_spi_clock(0, BRINGUP_DIV);
     set_spi_clock(1, BRINGUP_DIV);
     /* Clear any input-delay/extra-dummy tuning left over from a previous image:
@@ -367,6 +468,14 @@ bool ICODE_ATTR psram_init(void)
     init_psram_pins();
     set_psram_cs_timing();
 
+    /* Pad 26 resets to GPIO mode and pads 33..37 to GPIO as well, so the octal
+     * data lines are only connected if these reads come back with MCU_SEL 0 for
+     * 26..32 and 4 for 33..37. Without this the failure is invisible: the chip
+     * looks dead when four of its eight lines are simply not routed.
+     */
+    for (int pin = 26; pin <= 37; pin++)
+        boot_trace_hex(rd(IO_MUX_PIN(pin)) & 0x7FFFu);
+
     /* ECC is off. The chip's own ECC would need the 16-to-17 byte page mode, and
      * the address the MMU hands out would no longer be a plain byte offset. */
     wr(SYSCON_SRAM_ACE0, rd(SYSCON_SRAM_ACE0) & ~SRAM_ECC_ENABLE);
@@ -375,6 +484,18 @@ bool ICODE_ATTR psram_init(void)
      * for the PSRAM's latency. ESP-IDF calls esp_rom_spi_set_dtr_swap_mode(1,
      * false, false) here, which is the reset state, so it is a no-op for us. */
     wr(SPI_FMEM_DDR(1), rd(SPI_FMEM_DDR(1)) | DDR_VAR_DUMMY);
+
+    /* The Ext_RAM caches and SPI1 user commands share the MSPI. The core has a
+     * dedicated interrupt source for it - ETS_SPI_MEM_REJECT_CACHE_INTR_SOURCE (60),
+     * "SPI0 Cache access and SPI1 access rejected" - which means the hardware
+     * arbitrates the two. While the Ext_RAM caches are live a user command reports
+     * completion but the data lines are never driven, so the caches are suspended
+     * for the register bring-up. Everything in this function is ICODE_ATTR and the
+     * ROM sits outside the flash cache window, so nothing here needs the I-cache.
+     */
+    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) & ~1u);
+    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) & ~1u);
+    boot_trace('c');
 
     boot_trace('1');
 
@@ -414,10 +535,12 @@ bool ICODE_ATTR psram_init(void)
         boot_trace_hex(psram_read_mr(spi, 0x0));
         boot_trace_hex(psram_read_mr(spi, 0x2));
         s_psram_present = true;
+        extmem_cache_resume();
         boot_trace('6');
         return true;
     }
 
+    extmem_cache_resume();
     boot_trace('x');
 
     /* Is the transaction machinery working, or is the chip silent? The flash is on
@@ -429,6 +552,11 @@ bool ICODE_ATTR psram_init(void)
     boot_trace_hex(rd(SPI_FSM(1)));
     boot_trace_hex(rd(SPI_MEM_INT_RAW(1)));
     boot_trace_hex(rd(SPI_MEM_INT_RAW(0)));
+    /* The image header lives at flash offset 0x10000 and starts E9 03 02 02, so a
+     * read that returns that is a genuine SPI1 transaction on CS0.
+     */
+    boot_trace_hex(rd(SPI_CTRL(1)));
+    boot_trace_hex(spi1_flash_probe(0x10000));
 
     /* The Ext_RAM cache preload is deliberately not attempted here: enabling it
      * on a chip that has not answered a user command leaves SPI0's Ext_RAM FSM
