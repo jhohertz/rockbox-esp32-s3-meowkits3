@@ -148,8 +148,12 @@
 #define ROM_SPI_SET_DTR_SWAP    0x4000093cu
 #define ROM_CACHE_RESUME_DCACHE 0x4004f480u
 
-/* esp_rom_spiflash_read_mode_t: single, dual, quad, OPI_STR, OPI_DTR. */
-#define OPI_DTR_MODE            4
+/* esp_rom_spiflash_read_mode_t, from components/esp_rom/include/esp32s3/rom/spi_flash.h:
+ * QIO=0, QOUT=1, DIO=2, DOUT=3, FASTRD=4, SLOWRD=5, OPI_STR=6, OPI_DTR=7.
+ * The PSRAM chip only answers in DTR; passing 4 selects DOUT and the whole
+ * transaction runs single-line, which is why the chip looked dead.
+ */
+#define OPI_DTR_MODE            7
 
 /* ESP-IDF reaches 80 MHz on this PSRAM by sweeping dummy and input-delay values.
  * Rockbox has no equivalent sweep, so it uses the configuration ESP-IDF falls back
@@ -158,8 +162,8 @@
  * entry mspi_timing_tuning_configs.h names as default_config_id for a 160 MHz core
  * clock with an 80 MHz module clock in DTR mode, so it is a known-good setting
  * rather than a guess at one. */
-#define FLASH_DIV           2      /* 80 MHz */
-#define BRINGUP_DIV         8      /* 20 MHz */
+#define FLASH_DIV           2      /* 80 MHz from a 160 MHz core clock */
+#define LOW_SPEED_DIV       4      /* 20 MHz from the 80 MHz core clock ESP-IDF uses */
 #define PSRAM_DIV           2      /* 80 MHz */
 
 #define DIN_MODE_VALUE      4u
@@ -392,15 +396,20 @@ static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
 static bool ICODE_ATTR psram_connected(int spi)
 {
     uint32_t ref = 0x5a6b7c8du, a = 0, b = 0;
-    bool ran;
 
-    ran = spi_octal_cmd(spi, OPI_SYNC_WRITE, CMD_BITS, 0x0, ADDR_BITS, WR_DUMMY_BITS,
-                        ref, 32, NULL, 0, 1);
-    boot_trace(ran ? 'w' : 'W');
-    spi_octal_cmd(spi, OPI_SYNC_READ, CMD_BITS, 0x0, ADDR_BITS, RD_DUMMY_BITS,
-                  0, 0, &a, 32, 1);
-    spi_octal_cmd(spi, OPI_SYNC_READ, CMD_BITS, 0x1000, ADDR_BITS, RD_DUMMY_BITS,
-                  0, 0, &b, 32, 1);
+    /* Same ROM call ESP-IDF uses, only with a sync write/read instead of a mode
+     * register access, so a floating data bus cannot masquerade as a response.
+     */
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_WRITE, CMD_BITS,
+                                   0x0, ADDR_BITS, WR_DUMMY_BITS,
+                                   &ref, 32, NULL, 0, 1 << 1, 0);
+    boot_trace('w');
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS,
+                                   0x0, ADDR_BITS, RD_DUMMY_BITS,
+                                   NULL, 0, &a, 32, 1 << 1, 0);
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS,
+                                   0x1000, ADDR_BITS, RD_DUMMY_BITS,
+                                   NULL, 0, &b, 32, 1 << 1, 0);
 
     boot_trace_hex(a);
     boot_trace_hex(b);
@@ -475,8 +484,13 @@ bool ICODE_ATTR psram_init(void)
      * that slowing SPI1 alone breaks SPI0 if SPI0 is still running fast. So the
      * flash path is slowed for the duration of the bring-up and restored at the
      * end, rather than left at its final speed while SPI1 talks octal. */
-    wr(SPI_CORE_CLK_SEL(0), 2);                /* 160 MHz */
-    wr(SPI_CORE_CLK_SEL(1), 2);
+    /* spi_timing_enter_mspi_low_speed_mode(): core clock 80 MHz, module clock 20 MHz
+     * on both instances. ESP-IDF uses 80/4 rather than 160/8 even though both give
+     * 20 MHz; the dummy-phase cycle counts are derived from the module clock, so
+     * matching the source exactly is cheaper than arguing about equivalence.
+     */
+    wr(SPI_CORE_CLK_SEL(0), 0);                /* 80 MHz */
+    wr(SPI_CORE_CLK_SEL(1), 0);
     wr(SPI_CLK_GATE(0), rd(SPI_CLK_GATE(0)) | 1u);
     wr(SPI_CLK_GATE(1), rd(SPI_CLK_GATE(1)) | 1u);
     /* The CMD/ADDR/DOUT/DIN/DUMMY phases of a user command run in octal only if
@@ -484,8 +498,8 @@ bool ICODE_ATTR psram_init(void)
      * this module, but the bring-up must not depend on that. */
     wr(SPI_CTRL(1), rd(SPI_CTRL(1)) |
                     (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 9));
-    set_spi_clock(0, BRINGUP_DIV);
-    set_spi_clock(1, BRINGUP_DIV);
+    set_spi_clock(0, LOW_SPEED_DIV);
+    set_spi_clock(1, LOW_SPEED_DIV);
     /* Clear any input-delay/extra-dummy tuning left over from a previous image:
      * at 20 MHz those registers must be at their 20 MHz values, and ESP-IDF's
      * mspi_timing_enter_low_speed_mode() clears them before touching the chip. */
@@ -547,15 +561,25 @@ bool ICODE_ATTR psram_init(void)
     rom_write_mr(1, 0x8, 3u);
     boot_trace_hex(rom_read_mr(1, 0x0));
     boot_trace_hex(rom_read_mr(1, 0x2));
+    boot_trace_hex(rd(SPI_CTRL(1)));
     trace_spi_state(1);
+
+    /* spi_timing_enter_mspi_high_speed_mode(): back to the clock the target wants
+     * before the Ext_RAM cache phases are programmed. ESP-IDF runs its tuning sweep
+     * between the two modes; Rockbox uses the fallback entry in
+     * mspi_timing_tuning_configs.h instead of the sweep.
+     */
+    wr(SPI_CORE_CLK_SEL(0), 2);                /* 160 MHz */
+    wr(SPI_CORE_CLK_SEL(1), 2);
+    set_spi_clock(0, FLASH_DIV);
+    set_spi_clock(1, FLASH_DIV);
+    set_psram_clock(PSRAM_DIV);
+    set_psram_timing();
+    boot_trace('h');
 
     if (psram_connected(1)) {
         boot_trace('4');
         config_psram_spi_phases();
-        set_psram_clock(PSRAM_DIV);
-        set_psram_timing();
-        set_spi_clock(0, FLASH_DIV);
-        set_spi_clock(1, FLASH_DIV);
 
         /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM
          * D-cache is re-enabled so loads through a PSRAM-mapped MMU page are served
