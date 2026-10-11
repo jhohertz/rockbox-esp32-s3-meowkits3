@@ -24,6 +24,7 @@
 #include "tick.h"
 #include "axp173.h"
 #include "xtensa.h"
+#include "bootlog.h"
 
 /* milliVolt at 0%, 10%, ... 100% */
 unsigned short battery_level_disksafe = 3400;
@@ -64,6 +65,7 @@ void power_init(void)
         tick_add_task(feed_rwdt);
 
     axp173_init();
+    boot_trace('W');                /* PMU responding */
 }
 
 void power_off(void)

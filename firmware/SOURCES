@@ -668,6 +668,7 @@ target/xtensa/irom-map.c
 target/xtensa/psram-xtensa.c
 target/xtensa/mmu-xtensa.c
 target/xtensa/rom_cache.S
+target/xtensa/bootlog.c
 target/xtensa/vectors.S
 target/xtensa/irq-xtensa.c
 target/xtensa/system-xtensa.c

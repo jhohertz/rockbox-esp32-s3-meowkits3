@@ -27,6 +27,7 @@
 #include "usb-designware.h"
 #include "axp173.h"
 #include "xtensa.h"
+#include "bootlog.h"
 
 /*
  * FIFO sizing. The core has 256 words total (OTG_DFIFO_DEPTH), and the driver
@@ -136,6 +137,8 @@ void usb_init_device(void)
 
     create_thread(usb_vbus_monitor, vbus_stack, sizeof(vbus_stack), 0,
                   "usb vbus" IF_PRIO(, PRIORITY_SYSTEM) IF_COP(, CPU));
+
+    boot_trace('U');                /* USB device side started */
 }
 
 void usb_enable(bool on)
