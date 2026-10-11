@@ -72,12 +72,25 @@ void mmu_init(void)
 
     if (first < 0 || last >= MMU_ENTRY_NUM) return;   /* window overrun */
 
+    /* This mapping is authoritative, not conditional. The ROM loader arms an MMU
+     * entry for every flash-mapped segment and rounds the page count up, so entries
+     * just past the end of .rodata still point at flash: entry 8 (0x3c080000) is
+     * armed to flash page 8 although .rodata stops at 0x3c07a1b4. A store through a
+     * flash-mapped Ext_RAM page has no write path in the hardware and stalls the
+     * core, so "already valid" cannot mean "leave it alone" for a range that is
+     * supposed to be PSRAM.
+     *
+     * Safe because the range is bounded on both sides: .rodata occupies entries
+     * 0..7, IROM starts at entry 144, and _psrambssstart..psramend is entries 8..128.
+     */
+    int overridden = 0;
     for (int i = first; i <= last; i++) {
-        if (table[i] & MMU_INVALID) {
-            table[i] = MMU_TARGET_PSRAM | (PSRAM_PADDR_BASE + (i - first));
-        }
-        /* Already valid means the bootloader mapped it (rodata). Leave it. */
+        if (!(table[i] & MMU_INVALID) && !(table[i] & MMU_TARGET_PSRAM))
+            overridden++;
+        table[i] = MMU_TARGET_PSRAM | (PSRAM_PADDR_BASE + (i - first));
     }
+    boot_trace('O');
+    boot_trace_hex(overridden);
 
     /* A page that was invalid before now points at PSRAM, and any line the cache
      * kept for that range is stale. ESP-IDF does the same thing after every
@@ -85,6 +98,50 @@ void mmu_init(void)
     discard_dcache_range((const void *)_psrambssstart,
                          (unsigned int)((uintptr_t)psramend -
                                        (uintptr_t)_psrambssstart));
+
+    /* Prove every MMU entry in the range. One page proves the Ext_RAM path works;
+     * this proves the page numbering is right and that no entry aliases another.
+     * The audiobuffer, framebuffer and codec buffers all live in this span, so a
+     * wrong page here shows up later as audio or display corruption rather than as
+     * a clean fault.
+     *
+     * Each probe writes a value derived from the entry number, commits it out of
+     * the write-back cache, discards the line, and reads it back. The second read
+     * therefore has to come out of the PSRAM chip, and the value identifies which
+     * physical page the entry actually selected.
+     */
+    {
+        int bad = 0, tested = 0;
+
+        for (int i = first; i <= last; i++) {
+            volatile uint32_t *p =
+                (volatile uint32_t *)(MMU_DBUS_VADDR_BASE + (unsigned)i * MMU_PAGE_SIZE);
+            uint32_t pat = 0xC0000000u | (unsigned)i;
+            uint32_t got, saved;
+
+            /* mmu_init runs after crt0 has zeroed .bss, so the probe has to put
+             * the word back when it is done. */
+            saved = *p;
+            *p = pat;
+            commit_dcache_range((const void *)p, 4);
+            discard_dcache_range((const void *)p, 4);
+            got = *p;
+            tested++;
+            if (got != pat) {
+                if (bad < 4) {
+                    boot_trace('!');
+                    boot_trace_hex(i);
+                    boot_trace_hex(got);
+                }
+                bad++;
+            }
+            *p = saved;
+            commit_dcache_range((const void *)p, 4);
+        }
+        boot_trace('V');
+        boot_trace_hex(tested);
+        boot_trace_hex(bad);
+    }
 }
 
 #endif /* CPU_XTENSA */

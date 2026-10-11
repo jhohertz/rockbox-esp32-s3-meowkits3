@@ -8,6 +8,7 @@
 #ifndef BOOTLOG_H
 #define BOOTLOG_H
 
+void usb_cdc_init(void);
 void boot_trace(char c);
 void boot_trace_hex(unsigned int v);
 void boot_trace_raw(unsigned int v);

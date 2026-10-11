@@ -138,6 +138,11 @@
 #define SYSCON_SRAM_ACE0    (SYSCON_BASE + 0x58)
 #define EXTMEM_DCACHE_CTRL  0x600C4000u
 #define EXTMEM_ICACHE_CTRL  0x600C4060u
+#define EXTMEM_CACHE_STATE  0x600C4130u
+#define EXTMEM_DCACHE_PRELOAD_CTRL 0x600C4040u
+#define EXTMEM_DBUS_REJECT_ST      0x600C4100u
+#define EXTMEM_DBUS_REJECT_VADDR   0x600C4104u
+#define EXTMEM_CACHE_MMU_FAULT     0x600C4120u
 #define SRAM_ECC_ENABLE     (1u << 8)
 
 /* ROM entry points, from components/esp_rom/esp32s3/ld/esp32s3.rom.ld. Each is a
@@ -146,7 +151,11 @@
 #define ROM_SPI_SET_OP_MODE     0x400008a0u
 #define ROM_OPI_EXEC_CMD        0x400008b8u
 #define ROM_SPI_SET_DTR_SWAP    0x4000093cu
-#define ROM_CACHE_RESUME_DCACHE 0x4004f480u
+#define ROM_CACHE_RESUME_DCACHE 0x400018c0u
+#define ROM_CACHE_INVALIDATE_D  0x40001680u
+#define ROM_CACHE_START_PRELOAD 0x40001770u
+#define ROM_CACHE_PRELOAD_DONE  0x4000177cu
+#define ROM_CACHE_END_PRELOAD   0x40001788u
 
 /* esp_rom_spiflash_read_mode_t, from components/esp_rom/include/esp32s3/rom/spi_flash.h:
  * QIO=0, QOUT=1, DIO=2, DOUT=3, FASTRD=4, SLOWRD=5, OPI_STR=6, OPI_DTR=7.
@@ -271,22 +280,6 @@ static void ICODE_ATTR set_psram_cs_timing(void)
  * answers or it does not, and the register file distinguishes "the transaction ran
  * and the data lines floated" from "the transaction never started".
  */
-static void ICODE_ATTR trace_spi_state(int spi)
-{
-    boot_trace_hex(rd(SPI_CMD(spi)));
-    boot_trace_hex(rd(SPI_ADDR(spi)));
-    boot_trace_hex(rd(SPI_MISC(spi)));
-    boot_trace_hex(rd(SPI_FSM(spi)));
-    boot_trace_hex(rd(SPI_INT_RAW(spi)));
-    boot_trace_hex(rd(SPI_RD_STATUS(spi)));
-    boot_trace_hex(rd(SPI_USER(spi)));
-    boot_trace_hex(rd(SPI_USER1(spi)));
-    boot_trace_hex(rd(SPI_USER2(spi)));
-    boot_trace_hex(rd(SPI_MOSI_DLEN(spi)));
-    boot_trace_hex(rd(SPI_MISO_DLEN(spi)));
-    boot_trace_hex(rd(SPI_CACHE_FCTRL(spi)));
-}
-
 /*
  * One octal transaction on an MSPI instance, programmed by hand.
  *
@@ -299,57 +292,6 @@ static void ICODE_ATTR trace_spi_state(int spi)
  * Phase lengths are all stored as (bit_num - 1). In octal mode the clock moves
  * eight bits per cycle, so the dummy phase is expressed in cycles.
  */
-static bool ICODE_ATTR spi_octal_cmd(int spi, uint32_t cmd, int cmd_bits,
-                                     uint32_t addr, int addr_bits, int dummy_bits,
-                                     uint32_t mosi, int mosi_bits,
-                                     uint32_t *miso, int miso_bits, int cs)
-{
-    uint32_t guard = 0;
-    int dummy_cycles;
-
-    dummy_cycles = dummy_bits ? (dummy_bits + 7) / 8 : 0;
-
-    /* The CMD register is self-clearing: a new command cannot be latched while
-     * the previous one is still running.
-     */
-    while (rd(SPI_CMD(spi)) && guard++ < 200000u)
-        ;
-
-    wr(SPI_ADDR(spi), addr);
-    wr(SPI_USER2(spi), ((uint32_t)(cmd_bits - 1) << 28) | (cmd & 0xFFFFu));
-    wr(SPI_USER1(spi), ((uint32_t)(addr_bits - 1) << 26) |
-                       (dummy_cycles ? (uint32_t)(dummy_cycles - 1) : 0u));
-    wr(SPI_MOSI_DLEN(spi), mosi_bits ? (uint32_t)mosi_bits - 1u : 0u);
-    wr(SPI_MISO_DLEN(spi), miso_bits ? (uint32_t)miso_bits - 1u : 0u);
-
-    /* bit0 = CS0_DIS, bit1 = CS1_DIS; both default to 1 (disabled). */
-    wr(SPI_MISC(spi), (rd(SPI_MISC(spi)) & ~3u) |
-                      (cs == 1 ? 1u : 2u));
-
-    /* CS held low through the setup and done states. */
-    wr(SPI_USER(spi), (1u << 31) |                       /* USR_COMMAND */
-                      (1u << 30) |                       /* USR_ADDR */
-                      (dummy_cycles ? (1u << 29) : 0u) | /* USR_DUMMY */
-                      (miso_bits ? (1u << 28) : 0u) |    /* USR_MISO */
-                      (mosi_bits ? (1u << 27) : 0u) |    /* USR_MOSI */
-                      (1u << 7) | (1u << 6));
-
-    for (int i = 0; i < 16; i++)
-        wr(SPI_W0(spi) + 4u * (unsigned)i, 0);
-    if (mosi_bits)
-        wr(SPI_W0(spi), mosi);
-
-    wr(SPI_CMD(spi), 1u << 18);            /* USR: latch the command */
-    guard = 0;
-    while (rd(SPI_CMD(spi)) && guard++ < 400000u)
-        ;
-
-    if (miso)
-        *miso = rd(SPI_W0(spi));
-
-    return guard < 400000u;
-}
-
 /* The ROM's own OPI transaction, exactly the call ESP-IDF makes. Under the
  * windowed ABI the first four arguments are in a2-a5 and the remaining nine sit on
  * the stack, so a plain function-pointer call marshals them correctly.
@@ -380,42 +322,89 @@ static void ICODE_ATTR rom_write_mr(int spi, uint32_t reg, uint32_t val)
                                    &val, 16, NULL, 0, 1 << 1, 0);
 }
 
-/* Read one PSRAM mode register (MR0, MR2, MR4, MR8) through an MSPI instance. */
-static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
+/* One 32-bit word into the PSRAM's own address space, through SPI1. */
+static void ICODE_ATTR rom_write_word(int spi, uint32_t addr, uint32_t val)
 {
-    uint32_t v = 0;
-
-    spi_octal_cmd(spi, OPI_REG_READ, CMD_BITS, reg, ADDR_BITS, MR_DUMMY_BITS,
-                  0, 0, &v, 16, 1);
-    return v;
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_WRITE, CMD_BITS,
+                                   addr, ADDR_BITS, WR_DUMMY_BITS,
+                                   &val, 32, NULL, 0, 1 << 1, 0);
 }
 
-/* Write a word at a PSRAM address and read it back. The chip is answering only if
- * the value comes back at that address and not at another one: a floating data bus
- * or a FIFO that echoes the last transaction would pass a single read. */
-static bool ICODE_ATTR psram_connected(int spi)
+/* Identify the chip from its mode registers.
+ *
+ * A mode-register read is self-authenticating in a way a sync read is not. We write
+ * 0x28 to MR0 and get back 0x0d28: the low byte is exactly what we sent, and the
+ * high byte is MR1 - the vendor id - which we never sent. A FIFO echoing the last
+ * transmitted word could not produce it.
+ *
+ * MR1 vendor 0x0D is Apotek, the part OCT_PSRAM_VENDOR_ID names; MR2 bits 2:0 give
+ * the density (3 = 64 Mbit = 8 MB on the WROOM-1-N16R8); MR3 bit 6 is the VCC
+ * selection (1 = 3V, i.e. the AP_3v3 variant).
+ */
+static bool ICODE_ATTR psram_identify(int spi)
 {
-    uint32_t ref = 0x5a6b7c8du, a = 0, b = 0;
+    uint32_t mr01 = rom_read_mr(spi, 0x0);
+    uint32_t mr23 = rom_read_mr(spi, 0x2);
+    uint32_t mr8  = rom_read_mr(spi, 0x8);
+    uint32_t vendor = (mr01 >> 8) & 0x1fu;
+    int density = mr23 & 7;
 
-    /* Same ROM call ESP-IDF uses, only with a sync write/read instead of a mode
-     * register access, so a floating data bus cannot masquerade as a response.
+    boot_trace('i');
+    boot_trace_hex(mr01);
+    boot_trace_hex(mr23);
+    boot_trace_hex(mr8);
+
+    return vendor == 0x0Du && density != 0;
+}
+
+/* The decisive test: does SPI0's Ext_RAM D-cache serve a load from a page the MMU
+ * maps to PSRAM? Everything Rockbox needs - audiobuffer, framebuffer, codecbuf -
+ * is reached that way, so a working SPI1 user command is not enough on its own.
+ *
+ * The preload is used as a probe rather than a direct load because a direct load
+ * on a stalled FSM hangs the CPU with no way to observe it. Cache_Start_DCache_Preload
+ * drives the same FSM asynchronously, so its DONE flag can be polled with a guard.
+ */
+static bool ICODE_ATTR cache_psram_probe(void)
+{
+    const uint32_t pat = 0xB5A7C3D1u;
+    /* Entry 100 is inside the 8 MB PSRAM (128 pages) and above the pages the ROM
+     * loader mapped: the DROM segment is 0x3c000020 + 0x7a194, i.e. entries 0..7.
      */
-    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_WRITE, CMD_BITS,
-                                   0x0, ADDR_BITS, WR_DUMMY_BITS,
-                                   &ref, 32, NULL, 0, 1 << 1, 0);
-    boot_trace('w');
-    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS,
-                                   0x0, ADDR_BITS, RD_DUMMY_BITS,
-                                   NULL, 0, &a, 32, 1 << 1, 0);
-    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS,
-                                   0x1000, ADDR_BITS, RD_DUMMY_BITS,
-                                   NULL, 0, &b, 32, 1 << 1, 0);
+    const int entry = 100;
+    const uint32_t vaddr = FLASH_WINDOW_LOW + (uint32_t)entry * MMU_PAGE;
+    uint32_t guard = 0, got;
 
-    boot_trace_hex(a);
-    boot_trace_hex(b);
-    trace_spi_state(spi);
+    rom_write_word(1, (uint32_t)entry * MMU_PAGE, pat);
 
-    return a == ref && b != ref;
+    *(volatile uint32_t *)(MMU_TABLE_BASE + 4u * (unsigned)entry) =
+        MMU_TARGET_PSRAM | (uint32_t)entry;
+    boot_trace('C');
+    boot_trace_hex(rd(MMU_TABLE_BASE + 4u * (unsigned)entry));
+    boot_trace_hex(vaddr);
+
+    ((void (*)(uint32_t, uint32_t))ROM_CACHE_INVALIDATE_D)(vaddr, MMU_PAGE);
+
+    boot_trace_hex(rd(EXTMEM_CACHE_STATE));
+    boot_trace_hex(rd(EXTMEM_DCACHE_PRELOAD_CTRL));
+    ((void (*)(uint32_t, uint32_t))ROM_CACHE_START_PRELOAD)(vaddr, MMU_PAGE);
+    while (!((int (*)(void))ROM_CACHE_PRELOAD_DONE)() && guard++ < 2000000u)
+        ;
+    boot_trace_hex(rd(EXTMEM_CACHE_STATE));
+    boot_trace_hex(rd(EXTMEM_DCACHE_PRELOAD_CTRL));
+    boot_trace_hex(rd(EXTMEM_DBUS_REJECT_ST));
+    boot_trace_hex(rd(EXTMEM_DBUS_REJECT_VADDR));
+    boot_trace_hex(rd(EXTMEM_CACHE_MMU_FAULT));
+    boot_trace_hex(rd(SPI_FSM(0)));
+    boot_trace_hex(guard);
+    ((void (*)(uint32_t, uint32_t))ROM_CACHE_END_PRELOAD)(vaddr, MMU_PAGE);
+
+    if (guard >= 2000000u)
+        return false;
+
+    got = *(volatile uint32_t *)vaddr;
+    boot_trace_hex(got);
+    return got == pat;
 }
 
 /* SPI0's Ext_RAM cache path: the hardware builds the octal transaction itself from
@@ -460,20 +449,6 @@ static void ICODE_ATTR extmem_cache_resume(void)
  * flash offset through SPI1 separates "SPI1 user commands work" from "the CS1 side
  * is unreachable".
  */
-static uint32_t ICODE_ATTR spi1_flash_probe(uint32_t addr)
-{
-    uint32_t v = 0;
-    uint32_t saved = rd(SPI_CTRL(1));
-
-    /* The flash on this module is quad, so the command/address/data phases have to
-     * run single-line for a plain 0x03 read to be understood.
-     */
-    wr(SPI_CTRL(1), saved & ~((1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 9)));
-    spi_octal_cmd(1, 0x03, 8, addr, 24, 0, 0, 0, &v, 32, 0);
-    wr(SPI_CTRL(1), saved);
-    return v;
-}
-
 bool ICODE_ATTR psram_init(void)
 {
 
@@ -510,23 +485,12 @@ bool ICODE_ATTR psram_init(void)
     wr(SPI_SMEM_CALI(0), rd(SPI_SMEM_CALI(0)) & ~3u);
     wr(SPI_SMEM_CALI(1), rd(SPI_SMEM_CALI(1)) & ~3u);
 
-    /* What the mask ROM left behind, before we touch anything. ESP-IDF's
-     * s_init_psram_pins() only sets pad 26 to SPICS1 and the clock drive strength;
-     * it never routes pads 33..37 to SPIIO4..7/SPIDQS. That is only safe if the
-     * hardware default for those pads is already the SPI function, so the reset
-     * state has to be measured rather than assumed.
+    /* ESP-IDF's s_init_psram_pins() only sets pad 26 to SPICS1 and the clock drive
+     * strength; it never routes pads 33..37 to SPIIO4..7/SPIDQS. Measured on this
+     * board, the mask ROM leaves pads 33..37 at MCU_SEL=0 (GPIO) and pads 29..32 at
+     * MCU_SEL=0 (dedicated SPI), so Rockbox has to route 33..37 itself - which
+     * init_psram_pins() does.
      */
-    for (int pin = 26; pin <= 37; pin++)
-        boot_trace_hex(rd(IO_MUX_PIN(pin)) & 0x7FFFu);
-    boot_trace_hex(rd(SPI_CTRL(1)));
-    boot_trace_hex(rd(SPI_MISC(1)));
-    boot_trace_hex(rd(SPI_CACHE_SCTRL(0)));
-    boot_trace_hex(rd(SPI_SRAM_CMD(0)));
-    boot_trace_hex(rd(SPI_FMEM_DDR(1)));
-    boot_trace_hex(rd(SPI_SMEM_DDR(0)));
-    boot_trace_hex(rd(SPI_CORE_CLK_SEL(1)));
-    boot_trace_hex(rd(SPI_CLOCK(1)));
-
     init_psram_pins();
     set_psram_cs_timing();
 
@@ -554,20 +518,45 @@ bool ICODE_ATTR psram_init(void)
      */
     boot_trace('1');
 
-    /* First pass: the ROM's esp_rom_opiflash_exec_cmd, byte for byte what ESP-IDF
-     * calls. If the chip answers here, no hand-built sequencing is needed at all.
+    /* Bring the chip up at 20 MHz. ESP-IDF's mspi_timing_psram_tuning() then sweeps
+     * dummy and input-delay values to reach 80 MHz; without that sweep the read path
+     * stops returning data. Measured on this board: at 20 MHz MR0 reads back 0x0d28
+     * (the byte we wrote, plus MR1 = 0x0d vendor id we never sent), and after going
+     * to 80 MHz every subsequent read returns the previous value. So identification
+     * and the first cache probe have to happen before the speed change.
      */
     rom_write_mr(1, 0x0, (1u << 5) | (2u << 2));
     rom_write_mr(1, 0x8, 3u);
-    boot_trace_hex(rom_read_mr(1, 0x0));
-    boot_trace_hex(rom_read_mr(1, 0x2));
-    boot_trace_hex(rd(SPI_CTRL(1)));
-    trace_spi_state(1);
 
-    /* spi_timing_enter_mspi_high_speed_mode(): back to the clock the target wants
-     * before the Ext_RAM cache phases are programmed. ESP-IDF runs its tuning sweep
-     * between the two modes; Rockbox uses the fallback entry in
-     * mspi_timing_tuning_configs.h instead of the sweep.
+    if (psram_identify(1)) {
+        boot_trace('4');
+        config_psram_spi_phases();
+
+        /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM
+         * D-cache is re-enabled so loads through a PSRAM-mapped MMU page are served
+         * by the cache rather than rejected. The external-ram doc is explicit that
+         * the two are not separable: "When flash cache is disabled ... the external
+         * RAM also becomes inaccessible. Any read operations from or write operations
+         * to it will lead to an illegal cache access exception." PSRAM is not a
+         * second memory bus; it is the cache's other backing store.
+         */
+        boot_trace('5');
+        { typedef void (*resume_t)(int);
+          ((resume_t)ROM_CACHE_RESUME_DCACHE)(0); }
+
+        boot_trace_hex(rd(EXTMEM_DCACHE_CTRL));
+
+        if (cache_psram_probe()) {
+            s_psram_present = true;
+            boot_trace('6');
+            return true;
+        }
+        boot_trace('!');
+    }
+
+    /* spi_timing_enter_mspi_high_speed_mode(): back to the clock the target wants.
+     * Kept even on the failure path because the flash read FSM is shared and the
+     * boot needs it at full speed.
      */
     wr(SPI_CORE_CLK_SEL(0), 2);                /* 160 MHz */
     wr(SPI_CORE_CLK_SEL(1), 2);
@@ -577,40 +566,8 @@ bool ICODE_ATTR psram_init(void)
     set_psram_timing();
     boot_trace('h');
 
-    if (psram_connected(1)) {
-        boot_trace('4');
-        config_psram_spi_phases();
-
-        /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM
-         * D-cache is re-enabled so loads through a PSRAM-mapped MMU page are served
-         * by the cache rather than rejected. */
-        boot_trace('5');
-        { typedef void (*resume_t)(int);
-          ((resume_t)ROM_CACHE_RESUME_DCACHE)(0); }
-
-        boot_trace_hex(rom_read_mr(1, 0x0));
-        s_psram_present = true;
-        boot_trace('6');
-        return true;
-    }
-
     extmem_cache_resume();
     boot_trace('x');
-
-    /* Is the transaction machinery working, or is the chip silent? The flash is on
-     * the same MSPI block and the same pins, so a successful flash read through the
-     * same ROM call isolates the CS1/PSRAM side from the SPI side.
-     */
-    boot_trace_hex(psram_read_mr(1, 0x0));
-    boot_trace_hex(psram_read_mr(1, 0x2));
-    boot_trace_hex(rd(SPI_FSM(1)));
-    boot_trace_hex(rd(SPI_MEM_INT_RAW(1)));
-    boot_trace_hex(rd(SPI_MEM_INT_RAW(0)));
-    /* The image header lives at flash offset 0x10000 and starts E9 03 02 02, so a
-     * read that returns that is a genuine SPI1 transaction on CS0.
-     */
-    boot_trace_hex(rd(SPI_CTRL(1)));
-    boot_trace_hex(spi1_flash_probe(0x10000));
 
     /* The Ext_RAM cache preload is deliberately not attempted here: enabling it
      * on a chip that has not answered a user command leaves SPI0's Ext_RAM FSM

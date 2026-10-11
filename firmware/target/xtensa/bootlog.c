@@ -17,6 +17,56 @@
 /* DR_REG_UART_BASE for esp32s3; UART_FIFO_REG(0) is the first register. */
 #define UART0_FIFO 0x6000B000u
 
+/* DR_REG_USB_SERIAL_JTAG_BASE for esp32s3. The ESP32-S3 has a hardware USB
+ * device that enumerates as a CDC serial port (/dev/ttyACM0) with no firmware
+ * involvement at all - the mask ROM uses it for download mode, and ESP-IDF uses
+ * it for its console. Writing a byte to EP1_REG and then setting WR_DONE in
+ * EP1_CONF pushes it into the 64-byte Tx FIFO, which the host drains.
+ *
+ * EP1_CONF bit1 (SERIAL_IN_EP_DATA_FREE) is set while the Tx FIFO has room;
+ * it clears after WR_DONE until the host reads the byte.
+ */
+#define USB_JTAG_BASE   0x60038000u
+#define USB_JTAG_EP1    0x60038000u
+#define USB_JTAG_EP1_CONF 0x60038004u
+#define USB_JTAG_MISC_CONF 0x60038044u
+#define USB_JTAG_DATA_FREE 0x2u
+#define USB_JTAG_WR_DONE   0x1u
+
+/* The host may not be reading. A 64-byte FIFO fills in 64 characters and then
+ * DATA_FREE stays clear, so an unbounded wait would hang the bring-up. Bail out
+ * instead: the SRAM mirror is still written, so the log is recoverable via
+ * esptool even when nobody is watching the serial port.
+ */
+static int usb_cdc_ok;
+
+static void usb_cdc_putc(char c)
+{
+    volatile unsigned int *conf = (volatile unsigned int *)USB_JTAG_EP1_CONF;
+    int guard = 200000;
+
+    if (!usb_cdc_ok)
+        return;
+
+    while (!(conf[0] & USB_JTAG_DATA_FREE) && guard > 0)
+        guard--;
+
+    if (guard <= 0) {
+        usb_cdc_ok = 0;   /* host is not draining; stop trying */
+        return;
+    }
+
+    *(volatile unsigned int *)USB_JTAG_EP1 = (unsigned int)(unsigned char)c;
+    conf[0] |= USB_JTAG_WR_DONE;
+}
+
+void ICODE_ATTR usb_cdc_init(void)
+{
+    /* Force the peripheral clock on; it is gated by default. */
+    *(volatile unsigned int *)USB_JTAG_MISC_CONF |= 0x1u;
+    usb_cdc_ok = 1;
+}
+
 /* A mirror of the trace in internal SRAM. The UART is only readable while the
  * chip is running, and the only way to read memory is to put the chip into
  * download mode, which resets it. Internal SRAM survives a reset, so the log is
@@ -44,6 +94,7 @@ void ICODE_ATTR boot_trace(char c)
     boot_log_len = n + 1;
 
     *(volatile unsigned int *)UART0_FIFO = (unsigned int)(unsigned char)c;
+    usb_cdc_putc(c);
 }
 
 void ICODE_ATTR boot_trace_hex(unsigned int v)
