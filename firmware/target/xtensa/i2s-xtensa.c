@@ -56,8 +56,9 @@ static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
 
 /* Ring of two descriptors, one per half of the ping-pong pair. */
-/* Plain .bss: app.lds places it at DRAMORIG = 0x3FC88000, which is inside the
- * 20-bit window GDMA can address.
+/* .srambss, not .bss: GDMA takes the descriptor address from a 20-bit register
+ * based at 0x3FC00000, so a descriptor in the PSRAM window loses its high bits.
+ * app.lds puts .srambss in internal SRAM.
  *
  * volatile: the DMA writes the descriptor back after it transmits the buffer, so the
  * owner bit changes through a store the compiler cannot see. The handler reads it to
@@ -65,9 +66,9 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  *
  * cur is not volatile: it is only touched by the handler and by sink_play, and the
  * interrupt mask means the handler cannot run while sink_play is inside the lock. */
-static volatile struct gdma_desc desc[2] __attribute__((aligned(4)));
+static volatile struct gdma_desc desc[2] __attribute__((aligned(4), section(".srambss")));
 /* GDMA requires a 4-byte aligned buffer address */
-static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)));
+static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4), section(".srambss")));
 
 /* cur is the half that is free to write. When DONE fires, the half that just
  * finished transmitting is cur ^ 1, so the mixer's next frame goes into cur. */
