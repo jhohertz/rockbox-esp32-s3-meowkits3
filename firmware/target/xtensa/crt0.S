@@ -48,6 +48,7 @@
 .Lmmuinit:    .word mmu_init
 .Lpspresent:  .word psram_present
 .Lbtrace:     .word boot_trace
+.Lcdcinit:    .word usb_cdc_init
 .Lmain:       .word main
 /* ROM trampoline for ets_write_char_uart, from
  * components/esp_rom/esp32s3/ld/esp32s3.rom.ld. It is in the base file rather
@@ -118,6 +119,16 @@ start:
     l32i    a4, a2, 0
     and     a4, a4, a3
     s32i    a4, a2, 0
+
+    /* The chip's own USB-Serial/JTAG peripheral enumerates as a CDC serial port
+     * on /dev/ttyACM0 with no firmware involvement, so boot_trace() can print a
+     * live bring-up log there. Its clock is gated by default; force it on before
+     * the first character is emitted.
+     */
+    l32r    a2, .Lcdcinit
+    movi    a10, 0
+    movi    a11, 0
+    callx8  a2
 
     /* Own stack. Top of internal DRAM. */
     l32r    a1, .Lstack
