@@ -246,7 +246,9 @@ static void ICODE_ATTR init_psram_pins(void)
 static void ICODE_ATTR set_psram_cs_timing(void)
 {
     /* SPI0 and SPI1 share the CS setup/hold and CS hold delay registers for
-     * PSRAM, so only SPI0 needs writing. */
+     * PSRAM, so only SPI0 needs writing. Values are ESP-IDF's OCT_PSRAM_CS_*
+     * constants from components/esp_psram/esp32s3/esp_psram_impl_octal.c.
+     */
     wr(SPI_SMEM_AC(0), (rd(SPI_SMEM_AC(0)) &
                         ~((AC_CS_HOLD_TIME_V << AC_CS_HOLD_TIME_S) |
                           (AC_CS_SETUP_TIME_V << AC_CS_SETUP_TIME_S) |
@@ -254,7 +256,11 @@ static void ICODE_ATTR set_psram_cs_timing(void)
                        AC_CS_SETUP | AC_CS_HOLD |
                        (3u << AC_CS_HOLD_TIME_S) |
                        (3u << AC_CS_SETUP_TIME_S) |
-                       (2u << AC_CS_HOLD_DELAY_S));
+                       (2u << AC_CS_HOLD_DELAY_S) |
+                       (3u << 12));  /* ECC_CS_HOLD_TIME = 3 */
+
+    /* ESP-IDF sets ECC_SKIP_PAGE_CORNER even with ECC off. */
+    wr(SPI_SMEM_AC(0), rd(SPI_SMEM_AC(0)) | (1u << 15));
 }
 
 /* What the MSPI instance actually holds after a user command. The chip either
@@ -340,19 +346,44 @@ static bool ICODE_ATTR spi_octal_cmd(int spi, uint32_t cmd, int cmd_bits,
     return guard < 400000u;
 }
 
-/* Read one PSRAM mode register (MR0, MR2, MR4, MR8) through an MSPI instance. */static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
+/* The ROM's own OPI transaction, exactly the call ESP-IDF makes. Under the
+ * windowed ABI the first four arguments are in a2-a5 and the remaining nine sit on
+ * the stack, so a plain function-pointer call marshals them correctly.
+ *
+ * esp_rom_opiflash_exec_cmd(int spi_num, esp_rom_spiflash_read_mode_t mode,
+ *                            uint32_t cmd, int cmd_bit_len, uint32_t addr,
+ *                            int addr_bit_len, int dummy_bits, uint8_t *mosi_data,
+ *                            int mosi_bit_len, uint8_t *miso_data, int miso_bit_len,
+ *                            uint16_t cs_mask, bool is_write_erase_cmd)
+ */
+typedef void (*opi_exec_t)(int, int, uint32_t, int, uint32_t, int, int,
+                           const uint32_t *, int, uint32_t *, int, int, int);
+
+static uint32_t ICODE_ATTR rom_read_mr(int spi, uint32_t reg)
+{
+    uint32_t v = 0;
+
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_REG_READ, CMD_BITS,
+                                   reg, ADDR_BITS, RD_DUMMY_BITS,
+                                   NULL, 0, &v, 16, 1 << 1, 0);
+    return v;
+}
+
+static void ICODE_ATTR rom_write_mr(int spi, uint32_t reg, uint32_t val)
+{
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_REG_WRITE, CMD_BITS,
+                                   reg, ADDR_BITS, 0,
+                                   &val, 16, NULL, 0, 1 << 1, 0);
+}
+
+/* Read one PSRAM mode register (MR0, MR2, MR4, MR8) through an MSPI instance. */
+static uint32_t ICODE_ATTR psram_read_mr(int spi, uint32_t reg)
 {
     uint32_t v = 0;
 
     spi_octal_cmd(spi, OPI_REG_READ, CMD_BITS, reg, ADDR_BITS, MR_DUMMY_BITS,
                   0, 0, &v, 16, 1);
     return v;
-}
-
-static void ICODE_ATTR psram_write_mr(int spi, uint32_t reg, uint32_t val)
-{
-    spi_octal_cmd(spi, OPI_REG_WRITE, CMD_BITS, reg, ADDR_BITS, 0,
-                  val, 16, NULL, 0, 1);
 }
 
 /* Write a word at a PSRAM address and read it back. The chip is answering only if
@@ -465,39 +496,41 @@ bool ICODE_ATTR psram_init(void)
     wr(SPI_SMEM_CALI(0), rd(SPI_SMEM_CALI(0)) & ~3u);
     wr(SPI_SMEM_CALI(1), rd(SPI_SMEM_CALI(1)) & ~3u);
 
-    init_psram_pins();
-    set_psram_cs_timing();
-
-    /* Pad 26 resets to GPIO mode and pads 33..37 to GPIO as well, so the octal
-     * data lines are only connected if these reads come back with MCU_SEL 0 for
-     * 26..32 and 4 for 33..37. Without this the failure is invisible: the chip
-     * looks dead when four of its eight lines are simply not routed.
+    /* What the mask ROM left behind, before we touch anything. ESP-IDF's
+     * s_init_psram_pins() only sets pad 26 to SPICS1 and the clock drive strength;
+     * it never routes pads 33..37 to SPIIO4..7/SPIDQS. That is only safe if the
+     * hardware default for those pads is already the SPI function, so the reset
+     * state has to be measured rather than assumed.
      */
     for (int pin = 26; pin <= 37; pin++)
         boot_trace_hex(rd(IO_MUX_PIN(pin)) & 0x7FFFu);
+    boot_trace_hex(rd(SPI_CTRL(1)));
+    boot_trace_hex(rd(SPI_MISC(1)));
+    boot_trace_hex(rd(SPI_CACHE_SCTRL(0)));
+    boot_trace_hex(rd(SPI_SRAM_CMD(0)));
+    boot_trace_hex(rd(SPI_FMEM_DDR(1)));
+    boot_trace_hex(rd(SPI_SMEM_DDR(0)));
+    boot_trace_hex(rd(SPI_CORE_CLK_SEL(1)));
+    boot_trace_hex(rd(SPI_CLOCK(1)));
+
+    init_psram_pins();
+    set_psram_cs_timing();
 
     /* ECC is off. The chip's own ECC would need the 16-to-17 byte page mode, and
      * the address the MMU hands out would no longer be a plain byte offset. */
     wr(SYSCON_SRAM_ACE0, rd(SYSCON_SRAM_ACE0) & ~SRAM_ECC_ENABLE);
 
-    /* Variable dummy length on SPI1's read path; the fixed default is not right
-     * for the PSRAM's latency. ESP-IDF calls esp_rom_spi_set_dtr_swap_mode(1,
-     * false, false) here, which is the reset state, so it is a no-op for us. */
-    wr(SPI_FMEM_DDR(1), rd(SPI_FMEM_DDR(1)) | DDR_VAR_DUMMY);
-
-    /* The Ext_RAM caches and SPI1 user commands share the MSPI. The core has a
-     * dedicated interrupt source for it - ETS_SPI_MEM_REJECT_CACHE_INTR_SOURCE (60),
-     * "SPI0 Cache access and SPI1 access rejected" - which means the hardware
-     * arbitrates the two. While the Ext_RAM caches are live a user command reports
-     * completion but the data lines are never driven, so the caches are suspended
-     * for the register bring-up. Everything in this function is ICODE_ATTR and the
-     * ROM sits outside the flash cache window, so nothing here needs the I-cache.
+    /* Octal PSRAM is DTR-only (the doc states quad PSRAM is STR, octal is DTR), so
+     * the double-data-rate enable has to be on for the instance that talks to the
+     * chip. ESP-IDF only sets the variable-dummy bit here; Rockbox also makes sure
+     * DDR_EN is set, and clears the DTR swap bits as esp_rom_spi_set_dtr_swap_mode(1,
+     * false, false) does.
      */
-    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) & ~1u);
-    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) & ~1u);
-    boot_trace('c');
+    wr(SPI_FMEM_DDR(1), (rd(SPI_FMEM_DDR(1)) & ~0xCu) | DDR_EN | DDR_VAR_DUMMY);
+    { typedef void (*dtr_t)(int, int, int);
+      ((dtr_t)ROM_SPI_SET_DTR_SWAP)(1, 0, 0); }
 
-    boot_trace('1');
+    boot_trace('c');
 
     /* ESP-IDF drives the PSRAM through SPI1. SPI0 cannot be used for this: its
      * user-command FSM is the same hardware that the instruction and data caches
@@ -505,25 +538,24 @@ bool ICODE_ATTR psram_init(void)
      * path stalled, so every later fetch through the 0x42000000 window returns the
      * 0x0bad0bad "no mapping" sentinel and the boot dies on an IllegalInstruction.
      */
-    for (int spi = 1; spi >= 1; spi--) {
-        boot_trace((char)('0' + spi));
-        /* MR0: fixed latency (lt = 1, bit 5), read latency 2 (bits 4:2), drive
-         * strength 0 (bits 1:0). */
-        psram_write_mr(spi, 0x0, (1u << 5) | (2u << 2));
-        /* MR8: burst length 3 (1024 bytes), burst type 0. The chip's power-on
-         * default is the same, but relying on a reset value that a previous
-         * firmware image may have changed is the kind of thing that shows up only
-         * on a board that has been flashed before. */
-        psram_write_mr(spi, 0x8, 3u);
+    boot_trace('1');
 
-        if (!psram_connected(spi))
-            continue;
+    /* First pass: the ROM's esp_rom_opiflash_exec_cmd, byte for byte what ESP-IDF
+     * calls. If the chip answers here, no hand-built sequencing is needed at all.
+     */
+    rom_write_mr(1, 0x0, (1u << 5) | (2u << 2));
+    rom_write_mr(1, 0x8, 3u);
+    boot_trace_hex(rom_read_mr(1, 0x0));
+    boot_trace_hex(rom_read_mr(1, 0x2));
+    trace_spi_state(1);
 
+    if (psram_connected(1)) {
         boot_trace('4');
         config_psram_spi_phases();
         set_psram_clock(PSRAM_DIV);
         set_psram_timing();
         set_spi_clock(0, FLASH_DIV);
+        set_spi_clock(1, FLASH_DIV);
 
         /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM
          * D-cache is re-enabled so loads through a PSRAM-mapped MMU page are served
@@ -532,10 +564,8 @@ bool ICODE_ATTR psram_init(void)
         { typedef void (*resume_t)(int);
           ((resume_t)ROM_CACHE_RESUME_DCACHE)(0); }
 
-        boot_trace_hex(psram_read_mr(spi, 0x0));
-        boot_trace_hex(psram_read_mr(spi, 0x2));
+        boot_trace_hex(rom_read_mr(1, 0x0));
         s_psram_present = true;
-        extmem_cache_resume();
         boot_trace('6');
         return true;
     }
