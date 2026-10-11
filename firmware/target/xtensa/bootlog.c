@@ -4,18 +4,18 @@
  * There is no other way to see what the target is doing: esptool can only read
  * memory by putting the chip into download mode, which resets it, so a running
  * Rockbox is invisible from the outside. The mask ROM exports
- * ets_write_char_uart, and the ROM is windowed ABI, so every call goes through
- * xt_rom_call() (see rom_cache.S).
+ * ets_write_char_uart, but we do not use it: uart_tx_one_char dispatches through
+ * ets_get_printf_channel, which reads g_usb_print / g_uart_print out of the ROM's
+ * own data section at 0x3fceffb8 - a page in the Ext_RAM cache window that nobody
+ * arms before the application runs, so the ROM's printf faults on a
+ * LoadProhibited. Writing the UART FIFO directly is shorter and safe.
  *
  * This is bring-up scaffolding, not a logging subsystem.
  ****************************************************************************/
 #include "config.h"
 
-#include "rom_cache.h"
-
-/* From components/esp_rom/esp32s3/ld/esp32s3.rom.ld, base file, so it does not
- * move between ROM revisions. */
-#define ROM_WRITE_CHAR 0x40043ce8u
+/* DR_REG_UART_BASE for esp32s3; UART_FIFO_REG(0) is the first register. */
+#define UART0_FIFO 0x6000B000u
 
 /* A mirror of the trace in internal SRAM. The UART is only readable while the
  * chip is running, and the only way to read memory is to put the chip into
@@ -43,7 +43,7 @@ void ICODE_ATTR boot_trace(char c)
     boot_log[n] = (unsigned char)c;
     boot_log_len = n + 1;
 
-    xt_rom_call(ROM_WRITE_CHAR, (unsigned int)c, 0);
+    *(volatile unsigned int *)UART0_FIFO = (unsigned int)(unsigned char)c;
 }
 
 void ICODE_ATTR boot_trace_hex(unsigned int v)

@@ -20,7 +20,13 @@
  * When this is set, the image is flashed at the app partition offset (0x10000) with
  * the bootloader at 0x0 and a partition table at 0x8000.
  */
-#define ESP_STAGE2_BOOTLOADER 1
+#define ESP_STAGE2_BOOTLOADER 0
+
+/* Bring-up test for the windowed-ABI thread switch, run from crt0 before the
+ * kernel is up. See xtensa_thread_selftest() in firmware/asm/xtensa/thread.c.
+ * Remove once the kernel is running real threads.
+ */
+#define XTENSA_THREAD_SELFTEST 0
 
 /* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz. */
 #define CPU_FREQ 240000000

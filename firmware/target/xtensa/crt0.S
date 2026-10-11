@@ -41,6 +41,9 @@
 .Lpshi:       .word _psrambssend
 .Lirommap:    .word irom_mmu_map
 .Lcanary:     .word irom_canary
+#if XTENSA_THREAD_SELFTEST
+.Lthreadtest: .word xtensa_thread_selftest
+#endif
 .Lpsinit:     .word psram_init
 .Lmmuinit:    .word mmu_init
 .Lpspresent:  .word psram_present
@@ -67,6 +70,7 @@
 .Lromphys:    .word irom_phys
 .Lrompages:   .word irom_pages
 .Ltrace:      .word crt0_trace
+.Ltracebase:  .word 0x3FC90000
 .Ldiagvec:    .word diag_vector
 
 
@@ -80,6 +84,29 @@
  */
     .global start
 start:
+    /* Raw liveness marker. 0x3FC90000 is inside internal SRAM but below DRAMORIG,
+     * so no section lives there: neither the .bss/.srambss zeroing nor esptool's
+     * loader stub (0x40378000-0x4037947c) touches it.
+     *   +0  magic 0x51
+     *   +4  number of ring entries
+     *   +8+ ring of stage characters, one per word
+     */
+    movi    a2, 0x3F
+    slli    a2, a2, 24
+    movi    a3, 0xC9
+    slli    a3, a3, 16
+    add     a2, a2, a3              /* a2 = 0x3FC90000 */
+    movi    a3, 0x51
+    s32i    a3, a2, 0
+    movi    a3, 1
+    s32i    a3, a2, 4
+    movi    a3, 'A'
+    s32i    a3, a2, 8
+    memw
+    /* Point the vectors at the recording trap before anything can fault. */
+    l32r    a4, .Ldiagvec
+    wsr     a4, vecbase
+    rsync
     /* The mask ROM arms the main watchdog (TIMG0 WDT) as part of the flash boot
      * sequence. ESP-IDF's second-stage bootloader disables it; we have no second
      * stage, so a program that never feeds it gets TG0WDT_SYS_RST a few seconds
@@ -102,12 +129,47 @@ start:
      * walk. Pin the window to zero and start from a clean PS so the first call8
      * opens a real frame, with `start` itself acting as the root.
      */
+    /* Snapshot PS before and after the pin, so we can tell whether the entry really
+     * is in normal (EXCM=0) mode before the first call.
+     */
+    movi    a4, 0x3F
+    slli    a4, a4, 24
+    movi    a5, 0xC9
+    slli    a5, a5, 16
+    add     a4, a4, a5
+    addi    a4, a4, 0x40
+    rsr     a3, ps
+    s32i    a3, a4, 0
+    rsr     a3, windowbase
+    s32i    a3, a4, 8
+    rsr     a3, windowstart
+    s32i    a3, a4, 12
     movi    a2, 0
-    wsr     a2, windowbase
-    wsr     a2, windowstart
-    wsr     a2, ps
     wsr     a2, sar
     rsync
+    rsr     a3, ps
+    s32i    a3, a4, 4
+    rsr     a3, windowstart
+    s32i    a3, a4, 16
+    memw
+
+    /* 'B' inline: everything up to the window pin ran without faulting. */
+    movi    a2, 0x3F
+    slli    a2, a2, 24
+    movi    a3, 0xC9
+    slli    a3, a3, 16
+    add     a2, a2, a3
+    movi    a3, 2
+    s32i    a3, a2, 4
+    movi    a3, 'B'
+    s32i    a3, a2, 12
+    memw
+
+    /* Does `entry` work at all on this core config? entry_test writes 'T' into
+     * 0x3FC90048 through a real windowed frame.
+     */
+    movi    a10, 'T'
+    call8   entry_test
 
     /* 'R' - the ROM loader reached the entry point. Each marker below says how
      * far the bring-up got: 'C' after the external cache is up, 'I' after the
@@ -115,7 +177,7 @@ start:
      * mapped, 'G' before main.
      */
     movi    a10, 'R'
-    call8   putchar_rom
+    call0   putchar_rom
 
     /* Point the vectors at a trap that records exccause and epc1 before anything
      * else can fault. The ROM's own handler just loops in the debug vector, which
@@ -124,9 +186,9 @@ start:
     l32r    a2, .Ldiagvec
     wsr     a2, vecbase
     movi    a10, 'V'
-    call8   putchar_rom
+    call0   putchar_rom
 
-#ifdef ESP_STAGE2_BOOTLOADER
+#if ESP_STAGE2_BOOTLOADER
     /* ESP-IDF's second-stage loader has already armed the cache MMU for the
      * flash-mapped segments, switched both external caches on and released the
      * instruction bus. Nothing here has to repeat it; the only thing worth doing
@@ -204,17 +266,17 @@ start:
     movi    a15, 0
     callx8  a2
     movi    a10, 'C'
-    call8   putchar_rom
+    call0   putchar_rom
 #endif
 
-#ifndef ESP_STAGE2_BOOTLOADER
+#if !ESP_STAGE2_BOOTLOADER
     /* Map every flash-mapped segment before anything in .text can be executed. */
     l32r    a2, .Lirommap
     mov     a10, a2
     movi    a11, 0
     callx8  a2
     movi    a10, 'I'
-    call8   putchar_rom
+    call0   putchar_rom
 
     /* The MMU entries irom_mmu_map just armed are invisible to the cache until
      * the lines that were fetched against the old mapping are thrown away.
@@ -326,23 +388,64 @@ start:
     j       8b
 9:
 
+    /* Liveness marker: if this value is not in the trace after a flash, the
+     * image is not actually being executed and every other read is stale.
+     */
+    l32r    a6, .Ltrace
+    movi    a4, 0xDEADBEEF
+    s32i    a4, a6, 200
+    memw
+
     /* First code fetched from the IROM window. 'K' means the mapping works.
      * The return value is kept in a0 so the panic dump shows it if it does not.
      */
     movi    a10, 'T'
-    call8   putchar_rom
+    call0   putchar_rom
     l32r    a2, .Lcanary
     mov     a10, a2
     movi    a11, 0
     callx8  a2
     movi    a10, 'K'
-    call8   putchar_rom
+    call0   putchar_rom
+
+#if XTENSA_THREAD_SELFTEST
+    /* Validate the windowed context switch before the PSRAM is touched. Two
+     * bodies ping-pong on two stacks in internal SRAM and switch from six
+     * frames deep, so the spill on save and the refill on unwind are both
+     * exercised. A correct run traces a#00000015 b#00000015 ... eight times and
+     * then z; a broken one takes an exception into the bring-up trap.
+     */
+    movi    a10, 'X'
+    call0   putchar_rom
+    l32r    a6, .Ltrace
+    movi    a4, 0x58585858
+    s32i    a4, a6, 176
+    memw
+    l32r    a3, .Lbtrace
+    movi    a10, 'X'
+    movi    a11, 0
+    callx8  a3
+    l32r    a2, .Lthreadtest
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
+    l32r    a6, .Ltrace
+    movi    a4, 0x78787878
+    s32i    a4, a6, 180
+    memw
+    l32r    a3, .Lbtrace
+    movi    a10, 'x'
+    movi    a11, 0
+    callx8  a3
+    movi    a10, 'x'
+    call0   putchar_rom
+#endif
 
     /* Bring the PSRAM chip up before mapping it. The ROM loader only sets up the
      * flash side of the MSPI block; nothing else initialises the external RAM.
      */
     movi    a10, 'P'
-    call8   putchar_rom
+    call0   putchar_rom
     l32r    a2, .Lpsinit
     mov     a10, a2
     movi    a11, 0
@@ -362,6 +465,11 @@ start:
      * DROM alias of the same MMU page and keep them, so a bad page is visible
      * without a serial connection.
      */
+    movi    a2, 'D'
+    l32r    a3, .Lbtrace
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
     l32r    a6, .Ltrace
     l32r    a7, .Lmmuinit
     movi    a4, 0x60
@@ -374,8 +482,11 @@ start:
     s32i    a5, a6, 248
 
     /* Map the PSRAM pages before touching them. */
-    movi    a10, 'M'
-    call8   putchar_rom
+    movi    a2, 'M'
+    l32r    a3, .Lbtrace
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
     l32r    a2, .Lmmuinit
     mov     a10, a2
     movi    a11, 0
@@ -418,7 +529,7 @@ start:
     callx8  a3
 
     movi    a10, 'G'
-    call8   putchar_rom
+    call0   putchar_rom
     l32r    a6, .Ltrace
     movi    a4, 'G'
     s32i    a4, a6, 156
@@ -444,14 +555,41 @@ start:
  * area of every ancestor frame - so this function has to have one.
  */
     .align 4
-putchar_rom:                      /* a10 = character, per the windowed ABI */
-    entry   a1, 32                /* a base-save area, so the overflow handler has
-                                   * a frame to walk when the ROM callee rotates */
-    mov     a10, a2               /* our a2 is the caller's a10 */
-    movi    a11, 0                /* the ROM callee's second argument */
-    l32r    a2, .Luartput
-    callx8  a2
+entry_test:                       /* a10 = character, windowed ABI */
+    entry   a1, 32
+    mov     a11, a2
+    movi    a2, 0x3F
+    slli    a2, a2, 24
+    movi    a3, 0xC9
+    slli    a3, a3, 16
+    add     a2, a2, a3
+    addi    a2, a2, 0x48
+    s32i    a11, a2, 0
+    memw
     retw.n
+
+    .align 4
+putchar_rom:                      /* a10 = character; a call0 leaf, no frame */
+    mov     a11, a10              /* the character */
+    /* Also record it in a raw ring at 0x3FC90000. That address is inside internal
+     * SRAM but outside every linker region, so nothing zeroes it and esptool's
+     * loader stub (0x40378000-0x4037947c) does not cover it.
+     */
+    l32r    a2, .Ltracebase
+    addi    a2, a2, 0x200         /* marker counter at 0x3FC90200 */
+    l32i    a3, a2, 0             /* count */
+    movi    a4, 32
+    bgeu    a3, a4, 2f
+    addi    a2, a2, -0x100        /* 0x3FC90100 marker array */
+    mov     a4, a3
+    slli    a4, a4, 2
+    add     a2, a2, a4
+    s32i    a11, a2, 0
+    addi    a3, a3, 1
+    addi    a2, a2, 0x100
+    s32i    a3, a2, 0
+2:
+    ret.n
 
 /* Scratch for the bring-up trace, readable with `esptool dump_mem` after a reset:
  * internal SRAM survives a reset, so the values are still there when esptool
@@ -540,6 +678,46 @@ diag_vector:
     .org diag_vector + 0x400
     .align 4
 diag_trap:
+    /* Record the first exception in raw SRAM at 0x3FC90100 and a second one at
+     * 0x3FC90140, so a double exception does not hide the original.
+     */
+    movi    a9, 0x3F
+    slli    a9, a9, 24
+    movi    a10, 0xC9
+    slli    a10, a10, 16
+    add     a9, a9, a10
+    addi    a9, a9, 0x100
+    rsr     a2, exccause
+    rsr     a3, epc1
+    rsr     a4, excvaddr
+    l32i    a10, a9, 0
+    beqz    a10, 5f
+    addi    a9, a9, 0x40            /* second record at 0x3FC90140 */
+5:
+    s32i    a2, a9, 0
+    s32i    a3, a9, 4
+    s32i    a4, a9, 8
+    s32i    a5, a9, 12            /* which vector slot was taken */
+    rsr     a10, ps
+    s32i    a10, a9, 16
+    rsr     a10, windowbase
+    s32i    a10, a9, 20
+    rsr     a10, windowstart
+    s32i    a10, a9, 24
+    s32i    a0, a9, 28
+    s32i    a1, a9, 32
+    movi    a10, -4
+    and     a10, a3, a10          /* epc1 aligned down */
+    movi    a11, 0x41
+    slli    a11, a11, 24
+    bltu    a3, a11, 3f           /* only read the code bytes when they are in IRAM */
+    movi    a11, 0
+    j       4f
+3:
+    l32i    a11, a10, 0           /* the faulting instruction itself */
+4:
+    s32i    a11, a9, 36
+    memw
     l32r    a6, .Ltrace
     rsr     a2, exccause
     rsr     a3, epc1
@@ -568,26 +746,5 @@ diag_trap:
     s32i    a13, a6, 324
     s32i    a14, a6, 328
     s32i    a15, a6, 332
-    /* the words around the faulting instruction, aligned down so the read itself
-     * does not fault: an unaligned l32i here is a second exception, and the double
-     * exception is what makes the ROM print "Saved PC" and reset */
-    /* Read the faulting bytes through the DROM alias of the same MMU page:
-     * 0x4294xxxx and 0x3c94xxxx share MMU entry (addr & 0x1FFFFFF) >> 16, and
-     * the data side of that window is the only reliable way to see what the
-     * loader actually put in flash. A direct read of the 0x42 window from the
-     * data bus returns stale cache lines.
-     */
-    movi    a2, -4
-    and     a2, a3, a2
-    movi    a4, 0x60
-    slli    a4, a4, 20
-    sub     a2, a2, a4
-    l32r    a6, .Ltrace
-    l32i    a4, a2, 0
-    l32i    a5, a2, 4
-    l32i    a7, a2, 8
-    s32i    a4, a6, 224
-    s32i    a5, a6, 228
-    s32i    a7, a6, 232
 1:
     j       1b
