@@ -22,6 +22,7 @@
 #include "semaphore.h"
 #include "sdmmc_host.h"
 #include "xtensa.h"
+#include "bootlog.h"
 #include "gpio-xtensa.h"
 #include <string.h>
 
@@ -538,4 +539,6 @@ void sdmmc_host_target_init(void)
 
     sdmmc_host_init(&sdmmc_host, &sdmmc_config, &sdmmc_ops, &sdmmc_ctl);
     set_intenable(get_intenable() | (1u << XT_SLOT_SDHOST));
+
+    boot_trace('S');                /* SDHOST armed and unmasked */
 }

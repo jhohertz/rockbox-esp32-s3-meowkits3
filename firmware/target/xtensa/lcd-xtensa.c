@@ -1,4 +1,5 @@
 #include "config.h"
+#include "bootlog.h"
 #include "system.h"
 #include "lcd.h"
 #include "lcd-target.h"
@@ -119,6 +120,8 @@ void lcd_init_device(void)
     pca9557_init();
 
     st7789_init();
+
+    boot_trace('L');                /* panel reset and selected */
 
     lcd_on = true;
     lcd_update();

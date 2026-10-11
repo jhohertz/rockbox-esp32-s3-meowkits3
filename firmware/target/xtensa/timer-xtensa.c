@@ -20,6 +20,7 @@
 #include "tick.h"
 #include "timer.h"
 #include "xtensa.h"
+#include "bootlog.h"
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
@@ -82,6 +83,8 @@ void tick_start(unsigned int interval_in_ms)
         return;
 
     wr(TG1(XT_TN_INT_ENA), 1);           /* timer 0 only */
+
+    boot_trace('T');                     /* tick timer armed */
 }
 
 bool timer_set(long cycles, bool start)

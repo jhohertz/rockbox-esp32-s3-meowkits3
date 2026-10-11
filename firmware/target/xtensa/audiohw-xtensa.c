@@ -5,6 +5,7 @@
  * Volume is hardware, so PCM_NATIVE_VOLUME_TYPE resolves to PCM_SINK_HWVOL.
  ****************************************************************************/
 #include "config.h"
+#include "bootlog.h"
 
 #include "system.h"
 #include "audio.h"
@@ -27,6 +28,7 @@ void audiohw_init(void)
     audiohw_preinit();
     i2s_set_frequency(hw_freq_sampr[HW_FREQ_DEFAULT]);
     audiohw_postinit();
+    boot_trace('A');                /* codec and I2S up */
 }
 
 void audiohw_postinit(void)

@@ -43,10 +43,15 @@ STARTUP(target/xtensa/crt0.o)
  * linked by a separate script that cannot see where the firmware's code ends.
  * 0x3FCF0000 is the top of the data-bus view. */
 #define IRAMORIG 0x40378000
-#define IRAMSIZE 0x9000
-#define PLUGIN_IRAMORIG 0x40381000
+#define IRAMSIZE 0xA600
+#define PLUGIN_IRAMORIG 0x40382600
 #define DRAMORIG 0x3FC99000
-#define DRAMSIZE 0x57000
+/* ESP-IDF's memory.ld.in puts the top of internal SRAM at SRAM_IRAM_END 0x403CB700
+ * on the instruction bus; the data bus sees the same bytes 0x6F0000 lower, so the
+ * data-bus end is 0x3FCDB700. The previous 0x57000 ran 96 KB past the end of the
+ * chip: .bss and the stack were being placed in memory that does not exist. */
+#define SRAM_DATA_END 0x3FCDB700
+#define DRAMSIZE (SRAM_DATA_END - DRAMORIG)
 
 /* Flash instruction-cache window. The +0x20 is not cosmetic: the cache MMU
  * requires paddr % 64KB == vaddr % 64KB, and the image file header (0x18) plus
@@ -132,10 +137,27 @@ SECTIONS
      * the PSRAM region would silently read flash instead of PSRAM. Without the
      * trailing ALIGN the page numbering to codecbuf would not be contiguous.
      */
-    .psrambss (NOLOAD) :
+    /* .bss lives in the PSRAM window rather than internal SRAM: the 337 KB static
+     * region has to hold the firmware's IRAM code, the plugin IRAM reserve, .data
+     * and the stack, and the firmware's own statics are 280 KB, so it cannot fit.
+     * It is NOLOAD, so the image loader does not touch it and crt0 zeroes it after
+     * mmu_init() has mapped the pages. Both ends are page aligned because the MMU
+     * maps whole 64 KB pages, and _psrambssstart is set here so mmu_init() covers
+     * .bss as well as .psrambss.
+     */
+    .bss (NOLOAD) :
     {
         . = ALIGN(0x10000);
         _psrambssstart = .;
+        _bssstart = .;
+        *(.bss*)
+        *(COMMON)
+        . = ALIGN(0x10000);
+        _bssend = .;
+    } > DROM
+
+    .psrambss (NOLOAD) :
+    {
         *(.psrambss*)
         . = ALIGN(0x10000);
         _psrambssend = .;
@@ -198,6 +220,12 @@ SECTIONS
          * because the ROM loader never maps the IROM side of the MMU; crt0 maps it
          * from here before anything in .text runs. */
         KEEP(*(.startup*))
+        /* Bring-up exception trap table (crt0.S). It is a second VECBASE table, so
+         * it needs the same 1024 alignment as the real one, and it has to be in
+         * internal SRAM for the same reason.
+         */
+        . = ALIGN(1024);
+        KEEP(*(.ivectors*))
         /* ld evaluates ASSERT at the end of the enclosing section rather than at the
          * point where it is written, so an alignment check here would test the wrong
          * thing. IRAMORIG is a multiple of 1024 and the ALIGN below puts the table on
@@ -227,13 +255,18 @@ SECTIONS
         _dataend = .;
     } > DRAM
 
-    .bss :
+    /* Statics that must be reachable before the MMU is armed, or that a DMA engine
+     * reads directly. GDMA takes the descriptor address from a 20-bit register based
+     * at 0x3FC00000, so a descriptor in PSRAM loses its high bits; the descriptor
+     * rings and the ping-pong buffers have to stay in internal SRAM.
+     */
+    .srambss (NOLOAD) :
     {
-        _bssstart = .;
-        *(.bss*)
-        *(COMMON)
         . = ALIGN(0x4);
-        _bssend = .;
+        _srambssstart = .;
+        *(.srambss*)
+        . = ALIGN(0x4);
+        _srambssend = .;
     } > DRAM
 
     /* The kernel's thread code reads stackbegin/stackend as symbols, so they have
@@ -266,7 +299,7 @@ SECTIONS
            ".iram, .data, .bss and the stack do not fit in internal SRAM")
     ASSERT(_iramend <= IRAMORIG + IRAMSIZE,
            ".iram overflows the region reserved for firmware code")
-    ASSERT(PLUGIN_IRAMORIG + 0x8000 <= DRAMORIG + 0x6F0000,
+    ASSERT(PLUGIN_IRAMORIG + 0x6A00 <= DRAMORIG + 0x6F0000,
            "plugin IRAM aliases into the firmware data region")
 
     /DISCARD/ :
