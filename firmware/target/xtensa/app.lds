@@ -43,9 +43,9 @@ STARTUP(target/xtensa/crt0.o)
  * linked by a separate script that cannot see where the firmware's code ends.
  * 0x3FCF0000 is the top of the data-bus view. */
 #define IRAMORIG 0x40378000
-#define IRAMSIZE 0xA600
-#define PLUGIN_IRAMORIG 0x40382600
-#define DRAMORIG 0x3FC99000
+#define IRAMSIZE 0xA900
+#define PLUGIN_IRAMORIG 0x40382900
+#define DRAMORIG 0x3FC99900
 /* ESP-IDF's memory.ld.in puts the top of internal SRAM at SRAM_IRAM_END 0x403CB700
  * on the instruction bus; the data bus sees the same bytes 0x6F0000 lower, so the
  * data-bus end is 0x3FCDB700. The previous 0x57000 ran 96 KB past the end of the

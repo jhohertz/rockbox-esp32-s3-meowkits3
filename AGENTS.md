@@ -216,7 +216,86 @@ Practical facts about that toolchain:
   PSRAM is cache-backed and slower than internal SRAM — plan the linker script
   around what must live in internal RAM (stack, ISR, framebuffer).
 
-### Reaching the ROM from call0 code
+### The windowed ABI, and why call0 was the wrong call
+
+The `-mabi=call0` override existed because a context switch under the windowed
+ABI looked unwritable. It is writable. The esp32s3 core config has **no REGB
+option**, so `spills`/`refill`/`mtsr`/`mfsr`/`save1..5` are unavailable — but the
+window *exception* handlers still work, and that is all a context switch needs.
+
+`firmware/target/xtensa/vectors.S` now carries `_WindowOverflow4/8/12` and
+`_WindowUnderflow4/8/12`, byte-for-byte the same as ESP-IDF's
+`xtensa_vectors.S` and libgcc's: the overflow handler saves a0-a3 into the
+ancestor's base-save area at `a5-16..a5-4` (or `a9-16..a9-4` for CALLINC 8) and
+issues `rfwo`; the underflow handler reverses it and `rfwu`. Alloca is not a
+vector on esp32s3 — it is dispatched from EXCCAUSE 5 inside the level-1 handler,
+and 0x380 is the double-exception vector.
+
+With those in place:
+
+- `xtensacc()` drops `-mabi=call0`: `-mlongcalls -ffunction-sections
+  -mtext-section-literals -fomit-frame-pointer`.
+- `lib/xtensa_support` (the hand-written soft-float and 64-bit divide helpers
+  needed because libgcc was windowed and unreachable from call0 code) is gone;
+  libgcc is used normally.
+- `store_context()` calls `__xtensa_libgcc_window_spill()` and then saves a0-a15
+  plus `ps`, `windowbase`, `windowstart`, `sar`. `load_context()` restores them.
+  After `wsr windowbase` the register *names* change, so the context pointer is
+  re-read through a literal in the same section (`j 3f; .long xt_context_addr; 3:
+  l32r a6, 10b`) rather than from a register.
+- `lib/libsetjmp/xtensa/setjmp.S` mirrors that, and `_JBLEN` for CPU_XTENSA is 20.
+
+The one rule hand-written assembly has to obey: **every C function must be
+entered with CALLINC 8** (`callx8`, args in the caller's a10/a11, result in a10).
+A frame entered with CALLINC 0 has no base-save area, and the overflow handler
+walks the base-save area of every ancestor frame — so a `call0`/`callx0` anywhere
+in the chain makes the handler read garbage as the ancestor sp and store into it.
+That was the `StoreProhibited` at `ets_get_printf_channel` we were chasing.
+
+### Booting through ESP-IDF's second-stage bootloader (no build required)
+
+The mask ROM at flash offset 0 only copies RAM segments and jumps to the entry
+point; it never arms a cache MMU entry, never enables the external caches, and
+never releases the instruction bus. That is why a Rockbox image flashed at 0x0
+needs crt0 to do the IROM mapping by hand.
+
+ESP-IDF's second-stage bootloader does all of it: `cache_hal_init()`,
+`mmu_hal_init()`, flash QIO/OPI setup, CS timing, WDT configuration, then
+`load_image()` maps DROM and IROM MMU entries for the app's flash-mapped
+segments, copies the RAM segments, and jumps. Rockbox can borrow it instead of
+reimplementing it.
+
+It does **not** have to be built. The PlatformIO ESP32 core ships prebuilt ones:
+
+```
+~/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/
+    bootloader_dio_80m.elf   bootloader_opi_80m.elf
+    bootloader_qio_80m.elf   bootloader_qio_120m.elf
+```
+
+They are ~14 KB, entirely in IRAM, and **windowed ABI** (106 `retw`, 204
+`call8`/`call4`/`call12`, zero `call0`, zero `ret.n`) — which is the reason the
+windowed-ABI branch can use them at all.
+
+`tools/esp-stage2` flashes the three pieces and generates the partition table
+itself (32-byte `esp_partition_info_t` entries, terminated by an `0xEBEB` entry
+whose MD5 sits at offset 16, per `ESP_PARTITION_MD5_OFFSET`):
+
+```sh
+make flash-stage2 ESPBOOT=~/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/bootloader_opi_80m.elf ESPPORT=/dev/ttyACM0
+```
+
+Layout: bootloader at 0x0, partition table at 0x8000, Rockbox image at 0x10000
+(the `app0` partition). Verified: with `ESP_STAGE2_BOOTLOADER` defined in
+`config/meowkits3.h`, crt0 skips the cache-enable and `irom_mmu_map()` sequence
+entirely and the MMU entries are still armed — MMU[0..7] = 1..8 for DROM and
+MMU[144..148] = 9..13 for IROM.
+
+What the stage-2 loader does *not* do is bring up the octal PSRAM: that lives in
+the application, in `components/esp_psram/esp32s3/esp_psram_impl_octal.c`, so
+`psram-xtensa.c` still owns it.
+
+### Reaching the ROM from hand-written assembly
 
 Cache maintenance cannot be done from Rockbox on this core config: there are no
 cache instructions (`probeD`, `flushD`, `lockD`, `rdtag`, `wttag`, `rinvalidate`,

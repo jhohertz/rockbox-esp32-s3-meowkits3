@@ -10,8 +10,8 @@
  * are in the base file rather than esp32s3.rom.version.ld, so they do not move
  * between ROM revisions.
  *
- * Every call goes through xt_rom_call(), which preserves the call0
- * callee-saved registers across a windowed callee - see rom_cache.S.
+ * Every call goes through xt_rom_call(), a plain indirect call compiled for the
+ * windowed ABI - see rom_cache.c.
  ****************************************************************************/
 
 #ifndef ROM_CACHE_H
