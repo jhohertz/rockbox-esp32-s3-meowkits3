@@ -687,6 +687,70 @@ anything that must work before the cache is enabled.
 
 ### PSRAM bring-up is Rockbox's job
 
+**The stock MeowKit firmware proves the chip is alive.** `meowkit-s3-v1.0.2.bin` is a
+full flash image: ESP-IDF second-stage bootloader at 0x0 (entry `0x403c98d8`, three
+segments, DROM at `0x3fce3808`), partition table at `0x8000`, app at `0x10000`. It is
+arduino-esp32 on ESP-IDF **v4.4.3**, and it reports `PSRAM free: 8385839` - the 8 MB
+octal PSRAM works. So every failure in Rockbox's bring-up is a software bug, not a
+dead chip. Two consequences:
+
+- The mask ROM *can* run an ESP-IDF stage-2 bootloader on this board, so the
+  `ets_loader.c 78` loop we hit with our own stage-2 image is not inherent to the
+  layout; the stock bootloader's DROM segment at `0x3fce3808` maps fine.
+- PSRAM init is in the application, not the loader. None of the four prebuilt
+  ESP32-S3 bootloaders (`bootloader_dio_80m`, `bootloader_opi_80m`,
+  `bootloader_qio_120m`, `bootloader_qio_80m`) contains a PSRAM symbol.
+
+**The mode argument to the ROM OPI command is an enum, not a flag.**
+`esp_rom_spiflash_read_mode_t` from `components/esp_rom/include/esp32s3/rom/spi_flash.h`:
+
+```
+QIO=0  QOUT=1  DIO=2  DOUT=3  FASTRD=4  SLOWRD=5  OPI_STR=6  OPI_DTR=7
+```
+
+`esp_psram` passes `ESP_ROM_SPIFLASH_OPI_DTR_MODE` = **7**. Passing 4 (DOUT) makes the
+ROM build a single-line transaction: `USER1` and `USER2` stay at their reset defaults
+(`0x5C000007`, `0x70000000`), `MISO_DLEN` and `CACHE_FCTRL` are set, and the data phase
+returns whatever is floating on the lines. That is the signature to look for.
+
+**ESP-IDF 4.4.3's sequence** (`components/esp_hw_support/port/esp32s3/opiram_psram.c`,
+`psram_enable()`), in order:
+
+| Step | Register effect |
+|---|---|
+| `s_init_psram_pins()` | pad 26 -> `FUNC_SPICS1`, drive 3; `SPI_MEM_DATE_REG(0)` clock drive 3. **Does not touch pads 27/28 or 33..37** |
+| `psram_set_cs_timing()` | `SPI_MEM_SPI_SMEM_AC_REG(0)`: CS_SETUP, CS_HOLD, hold time 3, setup time 3, hold delay 2 |
+| `spi_timing_enter_mspi_low_speed_mode(true)` | `SPI_MEM_CORE_CLK_SEL_REG(0)` = 0 (80 MHz), `SPI_MEM_CLOCK_REG(0)` and `(1)` = div 4, `DIN_MODE`/`DIN_NUM`/`TIMING_CALI` cleared on both |
+| `SET_PERI_REG_MASK(SPI_MEM_DDR_REG(1), VAR_DUMMY)` | SPI1's FMEM_DDR |
+| `esp_rom_spi_set_dtr_swap_mode(1, false, false)` | |
+| `s_init_psram_mode_reg(1, ...)` | MR0 read-modify-write: lt=1, read_latency=2, drive_str=0; MR8 bl=3 |
+| `s_get_psram_mode_reg(1, ...)` | MR0/1, MR2/3, MR4, MR8 reads |
+| `spi_timing_psram_tuning()` | sweeps `DIN_MODE`, `DIN_NUM`, `TIMING_CALI` extra dummy |
+| `spi_timing_enter_mspi_high_speed_mode(true)` | core clock back to 160 MHz, flash div 2, `SPI_MEM_SRAM_CLK_REG(0)` div 2, tuning regs restored |
+| `spi_flash_set_rom_required_regs()` | restores SPI1 to the ROM's init state |
+| `spi_flash_set_vendor_required_regs()` | flash chip specific |
+| `s_config_psram_spi_phases()` | Ext_RAM octal phases, then `Cache_Resume_DCache(0)` |
+
+Measured reset state of the MSPI/pads when entering from the mask ROM (before Rockbox
+writes anything):
+
+| | value | reading |
+|---|---|---|
+| IO_MUX pads 26, 27, 28 | `0x1B00` | MCU_SEL = 1 -> GPIO, not SPI |
+| IO_MUX pads 29..32 | `0x0B00` | MCU_SEL = 0 -> SPI (flash) |
+| IO_MUX pads 33..37 | `0x0A00` | MCU_SEL = 0 -> GPIO, not SPIIO4-7/SPIDQS |
+| `SPI_MEM_CTRL_REG(1)` | `0x00aca278` | octal phase bits already set by the ROM |
+| `SPI_MEM_CACHE_SCTRL_REG(0)` | `0x0055c070` | Ext_RAM cache configured for quad, 22-bit address |
+| `SPI_MEM_DDR_REG(1)` | `0x00000000` | DDR_EN clear |
+| `SPI_MEM_SPI_SMEM_DDR_REG(0)` | `0x00003020` | |
+| `SPI_MEM_CORE_CLK_SEL_REG(1)` | `0x00000000` | 80 MHz |
+| `SPI_MEM_CLOCK_REG(1)` | `0x00070307` | div 8 of 80 MHz = 10 MHz |
+
+ESP-IDF's assumption that pads 33..37 are already routed to the SPI function only
+holds because its bootloader configured the flash for QIO first. Rockbox enters from
+the mask ROM, which reads the flash in DOUT and leaves those pads as GPIO, so the
+routing has to be done in `init_psram_pins()`.
+
 Nothing else does it. The mask ROM loader maps MMU pages for the segments in the
 image and leaves the external RAM alone; ESP-IDF's PSRAM init lives in the
 application (`components/esp_psram/esp32s3/esp_psram_impl_octal.c`), not in the

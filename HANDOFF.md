@@ -53,10 +53,19 @@ and dumps them with esptool.
 
 ### Open blocker
 
-**PSRAM.** Everything above is fine; the chip never responds. Until it does,
+**PSRAM.** Everything above is fine; the chip has not responded yet. Until it does,
 `.bss`, the audiobuffer, the framebuffer and the codec buffers are unmapped and
 the application cannot do anything useful. The bring-up now fails cleanly rather
 than hanging, so the rest of the boot is testable while this is worked on.
+
+**The chip is not dead.** The stock MeowKit image
+(`meowkit-s3-v1.0.2.bin`, arduino-esp32 on ESP-IDF v4.4.3) boots on this board and
+reports `PSRAM free: 8385839` — 8 MB of octal PSRAM in use. So every failure here is
+a software bug. The most concrete one found so far: the mode argument to
+`esp_rom_opiflash_exec_cmd` was `4`, which is `ESP_ROM_SPIFLASH_DOUT_MODE`, not `7`
+(`ESP_ROM_SPIFLASH_OPI_DTR_MODE`). That makes the ROM build a single-line
+transaction, which is exactly the register signature we were seeing (`USER1` and
+`USER2` left at their reset defaults). That is now fixed and needs a hardware run.
 
 What has been eliminated, by measurement rather than inference:
 
