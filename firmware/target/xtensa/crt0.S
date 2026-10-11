@@ -69,6 +69,16 @@
 .Ltrace:      .word crt0_trace
 .Ldiagvec:    .word diag_vector
 
+
+/* A windowed call into a C function. The first argument goes in the caller's
+ * a10 and the second in a11, which is what the callee's entry reads as a2/a3
+ * once the window has rotated by 8; the result comes back in a10.
+ *
+ * call0 would work for the call itself, but a function entered with CALLINC 0
+ * has no base-save area, and the window overflow handler walks the base-save
+ * area of every ancestor frame. Entering every C function with CALLINC 8 is
+ * what makes that walk valid.
+ */
     .global start
 start:
     /* The mask ROM arms the main watchdog (TIMG0 WDT) as part of the flash boot
@@ -103,6 +113,22 @@ start:
     movi    a3, 'V'
     call0   putchar_rom
 
+#ifdef ESP_STAGE2_BOOTLOADER
+    /* ESP-IDF's second-stage loader has already armed the cache MMU for the
+     * flash-mapped segments, switched both external caches on and released the
+     * instruction bus. Nothing here has to repeat it; the only thing worth doing
+     * is throwing away any line the loader left behind so the diagnostics below
+     * read the MMU table rather than a stale copy.
+     */
+    l32r    a2, .Linvdcache
+    movi    a10, 0
+    movi    a11, 0
+    movi    a12, 0
+    movi    a13, 0
+    movi    a14, 0
+    movi    a15, 0
+    callx8  a2
+#else
     /* The ROM leaves the external instruction cache disabled and both
      * instruction buses shut, so a fetch from the IROM window faults with
      * IllegalInstruction even when the MMU entry is armed. ESP-IDF's
@@ -166,10 +192,14 @@ start:
     callx8  a2
     movi    a3, 'C'
     call0   putchar_rom
+#endif
 
+#ifndef ESP_STAGE2_BOOTLOADER
     /* Map every flash-mapped segment before anything in .text can be executed. */
     l32r    a2, .Lirommap
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     movi    a3, 'I'
     call0   putchar_rom
 
@@ -193,6 +223,7 @@ start:
     movi    a14, 0
     movi    a15, 0
     callx8  a2
+#endif
 
     /* Bring-up trace: a snapshot of the MMU table taken at boot time. Reading the
      * table itself is useless afterwards, because attaching esptool resets the chip
@@ -288,7 +319,9 @@ start:
     movi    a3, 'T'
     call0   putchar_rom
     l32r    a2, .Lcanary
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     movi    a3, 'K'
     call0   putchar_rom
 
@@ -298,10 +331,14 @@ start:
     movi    a3, 'P'
     call0   putchar_rom
     l32r    a2, .Lpsinit
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     movi    a2, 'q'
     l32r    a3, .Lbtrace
-    callx0  a3
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
     l32r    a6, .Ltrace
     movi    a4, 'p'
     s32i    a4, a6, 144
@@ -327,10 +364,14 @@ start:
     movi    a3, 'M'
     call0   putchar_rom
     l32r    a2, .Lmmuinit
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     movi    a2, 'n'
     l32r    a3, .Lbtrace
-    callx0  a3
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
     l32r    a6, .Ltrace
     movi    a4, 'm'
     s32i    a4, a6, 148
@@ -342,10 +383,12 @@ start:
      * target is already broken and there is nothing to preserve.
      */
     l32r    a2, .Lpspresent
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     l32r    a6, .Ltrace
-    s32i    a2, a6, 152
-    beqz    a2, 4f
+    s32i    a10, a6, 152
+    beqz    a10, 4f
     l32r    a2, .Lpslo
     l32r    a3, .Lpshi
     movi    a4, 0
@@ -357,7 +400,9 @@ start:
 4:
     movi    a2, 'B'
     l32r    a3, .Lbtrace
-    callx0  a3
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
 
     movi    a3, 'G'
     call0   putchar_rom
@@ -366,9 +411,13 @@ start:
     s32i    a4, a6, 156
     movi    a2, 'R'
     l32r    a3, .Lbtrace
-    callx0  a3
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a3
     l32r    a2, .Lmain
-    callx0  a2
+    mov     a10, a2
+    movi    a11, 0
+    callx8  a2
     /* main does not return on Rockbox; if it does, spin. */
 5:
     j       5b
@@ -432,25 +481,25 @@ diag_vector:
     /* Each vector tags which slot was taken before falling into the shared trap:
      * EXCCAUSE is 0 for a level-1 interrupt as well as for IllegalInstruction, so
      * the slot number is the only way to tell an interrupt from a real exception.
+     *
+     * The window vectors are the exception: they are not errors. Now that the
+     * build uses the toolchain's default windowed ABI, every nested call that
+     * crosses a window boundary lands here, and trapping instead of spilling turns
+     * a normal call into a double exception. They go to the same handlers the real
+     * table uses.
      */
     .org diag_vector + 0x000
-    movi    a5, 0x000
-    j       diag_trap
+    j       xt_window_overflow_4
     .org diag_vector + 0x040
-    movi    a5, 0x040
-    j       diag_trap
+    j       xt_window_underflow_4
     .org diag_vector + 0x080
-    movi    a5, 0x080
-    j       diag_trap
+    j       xt_window_overflow_8
     .org diag_vector + 0x0c0
-    movi    a5, 0x0c0
-    j       diag_trap
+    j       xt_window_underflow_8
     .org diag_vector + 0x100
-    movi    a5, 0x100
-    j       diag_trap
+    j       xt_window_overflow_12
     .org diag_vector + 0x140
-    movi    a5, 0x140
-    j       diag_trap
+    j       xt_window_underflow_12
     .org diag_vector + 0x180
     movi    a5, 0x180
     j       diag_trap

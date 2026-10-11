@@ -631,20 +631,17 @@ mipsr2elcc () {
 
 xtensacc () {
  prefixtools xtensa-esp32s3-elf-
- # The windowed ABI keeps live values in register windows, which a context
- # switch and setjmp() cannot save. call0 keeps the state to a12-a15 plus sp
- # and a0, so build with it.
+ # The esp32s3 core config has no REGB option, so spills/refill/mtsr/mfsr are
+ # not valid opcodes. That does not rule out the windowed ABI: the windows are
+ # still spilled and refilled by the window overflow/underflow exception
+ # handlers, which is what GCC's own code and ESP-IDF rely on. The toolchain's
+ # libgcc contains __xtensa_libgcc_window_spill, a chain of entry/call12 frames
+ # that walks the live windows out through those handlers.
  #
- # (The Xtensa options documentation says a12-a15 are caller-saved under call0.
- # GCC's own implementation disagrees: CALL_REALLY_USED_REGISTERS marks them as
- # windowed-only, and xtensa_conditional_register_usage clears them for call0,
- # so they are callee-saved. The code is what matters.)
- #
- # Note the consequence: the prebuilt toolchain's libgcc is built for the
- # windowed ABI only, so linking -lgcc under call0 mixes ABIs and ld warns
- # about it. Either build a call0 libgcc or supply the helpers Rockbox needs
- # itself, as lib/arm_support does for cores without a hardware divide.
- GCCOPTS="$CCOPTS -mabi=call0 -mlongcalls"
+ # Staying on the toolchain's default ABI means libgcc links normally, ROM calls
+ # are plain callx8 (the ROM is windowed), and the context switch has to spill -
+ # which is what the window vectors in firmware/target/xtensa/vectors.S provide.
+ GCCOPTS="$CCOPTS -mlongcalls"
  GCCOPTS="$GCCOPTS -ffunction-sections -mtext-section-literals"
  GCCOPTIMIZE="-fomit-frame-pointer"
  endian="little"

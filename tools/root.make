@@ -96,9 +96,6 @@ ifndef APP_TYPE
   ifeq (arch_arm,$(ARCH))
     include $(ROOTDIR)/lib/arm_support/arm_support.make
   endif
-  ifeq (arch_xtensa,$(ARCH))
-    include $(ROOTDIR)/lib/xtensa_support/xtensa_support.make
-  endif
 endif
 
 ifeq (,$(NO_UTF8PROC))
