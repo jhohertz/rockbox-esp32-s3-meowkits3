@@ -23,6 +23,7 @@
 #include "system.h"
 #include "rom_cache.h"
 #include "psram-xtensa.h"
+#include "bootlog.h"
 
 #ifdef CPU_XTENSA
 
@@ -55,6 +56,8 @@ static inline int mmu_index(unsigned int vaddr)
 void mmu_init(void)
 {
     volatile uint32_t *table = (volatile uint32_t *)MMU_TABLE_BASE;
+
+    boot_trace('m');
 
     /* Mapping a page to PSRAM is pointless - and actively wrong - if the chip was
      * not brought up. psram_init() has already run by the time we get here.
