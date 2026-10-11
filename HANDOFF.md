@@ -2,7 +2,7 @@
 
 **Branch:** `esp32-s3-ports`
 **Repo:** `/home/jhohertz/co/rockbox`
-**HEAD:** `5f8c3610ec`, 98 commits ahead of `upstream/master`, tree clean
+**HEAD:** `8dbde33486`, tree clean apart from the changes described below
 (HANDOFF.md is a session artifact and is deliberately untracked).
 
 **Read `AGENTS.md` first.** It is the accumulated hardware reference and every
@@ -18,9 +18,59 @@ The port is **feature-complete in software**. Every Rockbox subsystem the board
 needs has a driver, both the native and the simulator build link cleanly, and
 the packed ESP image validates against `esptool image_info`.
 
-What is **not** done is bring-up on silicon. Nothing has ever run on a board.
-Everything below is reasoned from ESP-IDF's own register definitions and
-reference firmware, plus host mocks — not from execution.
+**The board now boots.** A direct ROM boot (Rockbox image flashed at `0x0`, no
+second-stage bootloader) runs `crt0.S`, maps the IROM window, calls
+`psram_init()`, calls `mmu_init()`, zeroes internal SRAM and reaches `main()`.
+Everything below that is now measured on silicon rather than reasoned from
+ESP-IDF's register definitions.
+
+### What is verified on hardware
+
+| Fact | How it was established |
+|---|---|
+| The mask ROM loads IRAM segments and jumps to the entry point | entry `0x40378088` executes; a liveness marker written to `0x3FC90000` is present after reset |
+| `irom_mmu_map()` arms MMU entries 144..149 (physical pages 8..13) and IROM fetches from `0x42900020` work | MMU snapshot in `crt0_trace`; `irom_canary()` in `.text` executes and traces |
+| The Ext_RAM cache returns `0x0bad0bad` for a page whose MMU entry is not usable | direct DROM read of `mmu_init`'s page |
+| A user command issued on **SPI0** stalls the flash read FSM | after `esp_rom_opiflash_exec_cmd(0, ...)`, every later fetch through the `0x42000000` window returns `0x0bad0bad` and the boot dies with `IllegalInstruction` at the first `.text` function; restoring `SPI_CTRL(0)` is not enough |
+| The octal PSRAM chip does **not** answer SPI1/CS1 | MR0/MR2 reads return `0x0000ffff`; a sync write of `0x5a6b7c8d` at address 0 followed by reads at 0 and 0x1000 both return `0xffffffff` |
+| Pads 33..37 are in GPIO mode at reset | they have to be forced to `SPIIO4..SPIIO7`/`SPIDQS` (`MCU_SEL = 4`); pads 27/28 likewise come back as GPIO because this module's flash is quad |
+
+### Bring-up observability
+
+esptool resets the chip before it can read memory, so live UART is not usable for
+post-mortem, and the ROM's `ets_write_char_uart` faults (it reads `g_uart_print`
+in a ROM data page that is not armed). Instead:
+
+- `firmware/target/xtensa/bootlog.c` keeps a 4 KB ring in internal SRAM:
+  `boot_log_len` at `0x3FC9BDFC`, `boot_log` at `0x3FC9BE00`.
+- `crt0_trace` (currently `0x4037aa34`, in `.ibss`) holds the MMU snapshot, the
+  IROM mapping status and the exception record.
+- `diag_trap` in `crt0.S` writes the first two exceptions to `0x3FC90100` and
+  `0x3FC90140`.
+
+Read them with `/tmp/rbprobe.py`, which resolves the symbol addresses from the ELF
+and dumps them with esptool.
+
+### Open blocker
+
+**PSRAM.** Everything above is fine; the chip never responds. Until it does,
+`.bss`, the audiobuffer, the framebuffer and the codec buffers are unmapped and
+the application cannot do anything useful. The bring-up now fails cleanly rather
+than hanging, so the rest of the boot is testable while this is worked on.
+
+What has been eliminated, by measurement rather than inference:
+
+| Hypothesis | Result |
+|---|---|
+| Octal data pads (33..37) left in GPIO mode | ruled out — they read back `MCU_SEL = 4`, `FUN_DRV = 3` after `init_psram_pins()` |
+| The ROM's `esp_rom_opiflash_exec_cmd` mis-marshals the phases | partly true (it leaves `USER1`/`USER2` at reset defaults), but a hand-built transaction with every phase written explicitly gives the same all-ones answer |
+| SPI0 cache access blocks SPI1 user commands | ruled out — suspending the Ext_RAM I- and D-caches around the bring-up changes nothing |
+| The transaction never starts | ruled out — `CMD` self-clears and `SPI_MEM_INT_RAW(1)` bit 2 (`TOTAL_TRANS_END`) is set |
+| SPI1 user commands work in general | not established — a SPI1 user command on CS0 reading flash offset `0x10000` returns `0xffffffff`, not the image header |
+
+The remaining possibilities are all physical: CS1 is not the pad the PSRAM is wired
+to, or the PSRAM's data lines are not the pads we think they are. The next step is a
+pin-level experiment rather than a register one.
 
 | Area | Files | State |
 |---|---|---|

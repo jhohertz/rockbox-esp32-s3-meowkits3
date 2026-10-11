@@ -700,6 +700,53 @@ are configured for octal mode. Register offsets are from
 `components/soc/esp32s3/register/soc/spi_mem_reg.h`; `REG_SPI_MEM_BASE(i) =
 DR_REG_SPI0_BASE - i*0x1000`.
 
+**Measured status (this board).** The sequence runs but the chip does not answer.
+Using the ROM's `esp_rom_opiflash_exec_cmd` (`0x400008b8`, thirteen arguments,
+callable from C under the windowed ABI) on SPI1 with CS1 selected, a register read
+of MR0 returns `0x0000ffff` and a sync write of `0x5a6b7c8d` at address 0 followed
+by reads at 0 and 0x1000 both return `0xffffffff`. Pads 33..37 (`SPIIO4..SPIIO7`,
+`SPIDQS`) are in GPIO mode at reset and must be forced to `MCU_SEL = 4`; pads 27 and
+28 likewise come back as GPIO because this module's flash is quad, not octal.
+
+That pad routing was verified after the fact: dumping `IO_MUX_GPIO33..37` during
+bring-up reads `MCU_SEL = 4` with `FUN_DRV = 3`, and pads 26..32 read `MCU_SEL = 0`.
+So the eight data lines are connected.
+
+A hand-built octal transaction on SPI1 - `ADDR`, `USER2` (command bit length and
+value), `USER1` (address bit length, dummy cycle length), `MOSI_DLEN`, `MISO_DLEN`,
+`MISC` with CS0 disabled and CS1 enabled, `USER` with the phase enables, then
+`CMD |= BIT(18)` - completes: `CMD` self-clears and `SPI_MEM_INT_RAW(1)` bit 2
+(`TOTAL_TRANS_END`, which the header describes as an SPI1 event) is set. The data
+phase still returns nothing. So the transaction runs and the chip does not drive the
+lines.
+
+Two things that were tried and ruled out:
+
+- **Suspending the Ext_RAM caches** (`EXTMEM_ICACHE_CTRL` and `EXTMEM_DCACHE_CTRL`
+  bit 0 cleared) around the register bring-up, on the theory that the hardware
+  arbitrates SPI0 cache access against SPI1 user commands (`ETS_SPI_MEM_REJECT_CACHE_INTR_SOURCE`
+  = 60). No change.
+- **A SPI1 user command on CS0** with the octal phase bits cleared, issuing a plain
+  `0x03` read at flash offset `0x10000`, returns `0xffffffff` rather than the image
+  header. SPI1's user-command path is not a route to the flash, so it cannot be used
+  as a control for the PSRAM test.
+- **SPI0's user-command path on CS1** returns `0x00000000` for MR0 as well, and it
+  breaks the flash read FSM on the way, so the boot dies at the first `.text`
+  function afterwards. There is no MSPI instance whose user-command path reaches the
+  PSRAM on this board.
+
+Two things that are easy to get wrong and were verified:
+
+- **Never issue a user command on SPI0.** SPI0's `CTRL` `FREAD_*` bits drive the
+  flash read FSM that the instruction and data caches use. A user command on SPI0
+  stalls it, and every later fetch through the `0x42000000` window returns the
+  Ext_RAM "no mapping" sentinel `0x0bad0bad`, which shows up as an
+  `IllegalInstruction` at the first `.text` function. Restoring `SPI_CTRL(0)`
+  afterwards is not sufficient. PSRAM transactions must go through SPI1.
+- `0x0bad0bad` is the value the Ext_RAM cache returns for a page whose MMU entry is
+  invalid, not a data value. Seeing it means the mapping, not the read, is the
+  problem.
+
 Sequence, in order, with the values ESP-IDF uses:
 
 | Step | Register | Value |
