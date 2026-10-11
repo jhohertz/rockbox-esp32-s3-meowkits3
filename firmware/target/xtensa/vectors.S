@@ -191,12 +191,23 @@ xt_alloca_exc:
     rsr     a2, ps
     extui   a3, a2, 18, 4          /* PS.OWB */
     xor     a3, a3, a4
-    rsr     a4, excsave1
+    rsr     a4, excsave1           /* the faulting a0, with the CALLINC in its top bits */
     slli    a3, a3, 18
     xor     a2, a2, a3
     wsr     a2, ps
     rsync
-    ret
+    /* 'movsp' has moved the stack pointer but not rotated the window, so the
+     * registers that were live in the ancestor window are now unreachable. The
+     * underflow handler refills them from the frames they were spilled into and
+     * returns to the instruction after the movsp. There is no return address here:
+     * a0 was the faulting instruction's, not a call, so falling through to `ret`
+     * would jump to garbage.
+     */
+    bbci.l  a4, 31, xt_window_underflow_4
+    rotw    -1                      /* the faulting a0 moves to a8 */
+    bbci.l  a8, 30, xt_window_underflow_8
+    rotw    -1
+    j       xt_window_underflow_12
 
 /*
  * The handler runs on the interrupted thread's stack. a0 and a2-a15 have to be
@@ -223,7 +234,8 @@ xt_alloca_exc:
 #define FR_A13  48
 #define FR_A14  52
 #define FR_A15  56
-#define FR_SIZE 80
+#define FR_PS   60
+#define FR_SIZE 64
 
     .section .vector,"ax",@progbits
     .align 4
@@ -242,6 +254,8 @@ xt_level1_handler:
     j       xt_exc_trap
 1:
     addi    a1, a1, -FR_SIZE
+    rsr     a2, ps
+    s32i    a2, a1, FR_PS
     s32i    a0, a1, FR_A0
     s32i    a2, a1, FR_A2
     s32i    a3, a1, FR_A3
@@ -260,9 +274,22 @@ xt_level1_handler:
 
     /* INTERRUPT is the pending bitmask over all 32 slots. The handler is entered
      * for any level-1 slot, so the dispatch has to work out which one it is. */
+    /* C code cannot run in exception mode: PS.EXCM disables the register window,
+     * so the `entry`/`retw` pair every dispatched handler compiles to would not
+     * rotate anything. Clear EXCM, keep interrupts masked at level 1, and let the
+     * window machinery work. rfe restores PS from the saved copy, so the value we
+     * stash above is what the interruptee gets back.
+     */
+    movi    a2, 0x00040001            /* PS_INTLEVEL(1) | PS_WOE, EXCM clear */
+    wsr     a2, ps
+    rsync
+
     rsr     a2, interrupt
     call8   xt_irq_dispatch
 
+    l32i    a2, a1, FR_PS
+    wsr     a2, ps
+    rsync
     l32i    a0, a1, FR_A0
     l32i    a2, a1, FR_A2
     l32i    a3, a1, FR_A3

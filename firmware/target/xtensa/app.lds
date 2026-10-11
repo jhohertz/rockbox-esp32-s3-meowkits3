@@ -208,9 +208,9 @@ SECTIONS
      *
      * The handler has to sit right after the table: the `j` in the table has an 18-bit
      * signed range and cannot reach the flash window 1.6 MB away. C calls are not
-     * limited because xtensacc uses -mlongcalls, which emits callx0 with an absolute
+     * limited because xtensacc uses -mlongcalls, which emits callx8 with an absolute
      * literal rather than a range-limited call8, so the dispatch can reach code in the
-     * flash window. Only the hand-written call0 in the handler is range-limited, which
+     * flash window. Only the hand-written `j` in the handler is range-limited, which
      * is why .icode.irq is placed immediately after the table.
      */
     .iram :

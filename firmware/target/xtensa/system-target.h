@@ -38,17 +38,20 @@ extern long cpu_frequency;   /* set by system_init */
 
 /*
  * Interrupt masking on Xtensa is by level: an interrupt is taken only when its
- * level is strictly greater than INTLEVEL. INTLEVEL is the low 13 bits of the PS
- * register, so the largest value is 0x1FFF and at that value nothing can exceed
- * it, which is how interrupts are disabled.
+ * level is strictly greater than INTLEVEL. INTLEVEL is the low four bits of PS
+ * (xtensa/corebits.h: PS_INTLEVEL_SHIFT 0, PS_INTLEVEL_MASK 0x0F), so 15 is the
+ * largest value and at 15 nothing can exceed it, which is how interrupts are
+ * disabled. The rest of PS is EXCM (bit 4), UM (5), RING (6-7), OWB (8-11),
+ * CALLINC (16-17) and WOE (18).
  *
  * rsr.intlevel / wsr.intlevel do not exist on the esp32s3 core config, so PS has
  * to be read and written as a whole.
  */
-#define PS_INTLEVEL_MASK 0x1FFF
+#define PS_INTLEVEL_MASK 0x0000000F
+#define PS_WOE           0x00040000
 
 #define HIGHEST_IRQ_LEVEL   15
-#define DISABLE_INTERRUPTS  0x1FFF
+#define DISABLE_INTERRUPTS  15
 
 static inline int set_irq_level(int level)
 {
