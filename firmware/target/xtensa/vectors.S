@@ -12,10 +12,12 @@
  * fetch from, so the table lives in internal SRAM, not in the flash cache window.
  *
  * The window vectors occupy 0x000 through 0x17C (overflow/underflow for CALLINC
- * 4, 8 and 12, with the alloca handler in the gaps) and level 2 starts at 0x180.
- * Under the call0 ABI GCC never emits a spill or reflect, so no window vector can
- * be reached; each one is a self-loop trap rather than a run of zeros, so an
- * unexpected exception stops cleanly instead of executing padding.
+ * 4, 8 and 12, with the alloca handler in the gaps). Rockbox builds Xtensa with
+ * the toolchain's default windowed ABI, so those vectors are load-bearing: the
+ * esp32s3 core config has no REGB option, so there is no spills/refill opcode and
+ * the register windows are moved to and from the stack by these handlers instead.
+ * Leaving them as traps makes any nested call that crosses a window boundary raise
+ * a double exception.
  *
  * rfe is available even though rsr.sregs and rsr.eps1 are not: the saved PS and
  * window base live in internal state (the assembler calls it sysregs) that only
@@ -30,20 +32,25 @@
 
 _vector_table:
     .org _vector_table + 0x000
-    j .                               /* window overflow  4 */
+    j xt_window_overflow_4
+
     .org _vector_table + 0x040
-    j .                               /* window underflow 4 */
+    j xt_window_underflow_4
+
     .org _vector_table + 0x080
-    j .                               /* window overflow  8 */
+    j xt_window_overflow_8
+
     .org _vector_table + 0x0c0
-    j .                               /* window underflow 8 */
+    j xt_window_underflow_8
+
     .org _vector_table + 0x100
-    j .                               /* window overflow  12 */
+    j xt_window_overflow_12
+
     .org _vector_table + 0x140
-    j .                               /* window underflow 12 */
+    j xt_window_underflow_12
 
     .org _vector_table + 0x180
-    j .                               /* level 2 */
+    j .                               /* level 2 - not used */
     .org _vector_table + 0x1c0
     j .                               /* level 3 */
     .org _vector_table + 0x200
@@ -61,24 +68,143 @@ _vector_table:
     j xt_level1_handler               /* level 1, user mode */
 
     .org _vector_table + 0x380
-    j .                               /* software exception */
+    j xt_double_trap                   /* double exception - the real one */
     .org _vector_table + 0x3c0
-    j .                               /* double exception */
-    .org _vector_table + 0x400
     j .                               /* invalid exception */
+    .org _vector_table + 0x400
+    j .                               /* hardware exception */
 
     .size _vector_table, . - _vector_table
 
 /*
- * Kept in the same section as the table so that the call0 below is inside the 18-bit
- * range of the j that reaches it. -mlongcalls does not help hand-written asm.
+ * Window overflow and underflow handlers.
+ *
+ * On overflow the window has rotated onto a set of registers that still hold live
+ * values from an ancestor frame; those have to be written to the end of that
+ * ancestor's stack frame before the current frame can use them. On underflow the
+ * reverse: retw is returning to a frame whose registers were spilled, so they are
+ * read back.
+ *
+ * a5/a9/a13 is the callee's stack pointer on entry, and the ancestor frame's
+ * pointer is fetched from the callee's frame at -12. The offsets below are the
+ * spill area at the end of each frame, which is why they are negative and why the
+ * frame size has to be at least the CALLINC the compiler chose.
  */
+    .section .vector,"ax",@progbits
+    .align 4
+
+    .global xt_window_overflow_4
+    .type xt_window_overflow_4, @function
+xt_window_overflow_4:
+    s32e    a0, a5, -16
+    s32e    a1, a5, -12
+    s32e    a2, a5, -8
+    s32e    a3, a5, -4
+    rfwo
+
+    .global xt_window_underflow_4
+    .type xt_window_underflow_4, @function
+xt_window_underflow_4:
+    l32e    a0, a5, -16
+    l32e    a1, a5, -12
+    l32e    a2, a5, -8
+    l32e    a3, a5, -4
+    rfwu
+
+    .global xt_window_overflow_8
+    .type xt_window_overflow_8, @function
+xt_window_overflow_8:
+    s32e    a0, a9, -16
+    l32e    a0, a1, -12             /* a0 <- ancestor's ancestor sp */
+    s32e    a1, a9, -12
+    s32e    a2, a9, -8
+    s32e    a3, a9, -4
+    s32e    a4, a0, -32
+    s32e    a5, a0, -28
+    s32e    a6, a0, -24
+    s32e    a7, a0, -20
+    rfwo
+
+    .global xt_window_underflow_8
+    .type xt_window_underflow_8, @function
+xt_window_underflow_8:
+    l32e    a0, a9, -16
+    l32e    a1, a9, -12
+    l32e    a2, a9, -8
+    l32e    a7, a1, -12             /* a7 <- ancestor's ancestor sp */
+    l32e    a3, a9, -4
+    l32e    a4, a7, -32
+    l32e    a5, a7, -28
+    l32e    a6, a7, -24
+    l32e    a7, a7, -20
+    rfwu
+
+    .global xt_window_overflow_12
+    .type xt_window_overflow_12, @function
+xt_window_overflow_12:
+    s32e    a0,  a13, -16
+    l32e    a0,  a1,  -12
+    s32e    a1,  a13, -12
+    s32e    a2,  a13, -8
+    s32e    a3,  a13, -4
+    s32e    a4,  a0,  -48
+    s32e    a5,  a0,  -44
+    s32e    a6,  a0,  -40
+    s32e    a7,  a0,  -36
+    s32e    a8,  a0,  -32
+    s32e    a9,  a0,  -28
+    s32e    a10, a0,  -24
+    s32e    a11, a0,  -20
+    rfwo
+
+    .global xt_window_underflow_12
+    .type xt_window_underflow_12, @function
+xt_window_underflow_12:
+    l32e    a0,  a13, -16
+    l32e    a1,  a13, -12
+    l32e    a2,  a13, -8
+    l32e    a11, a1,  -12
+    l32e    a3,  a13, -4
+    l32e    a4,  a11, -48
+    l32e    a5,  a11, -44
+    l32e    a6,  a11, -40
+    l32e    a7,  a11, -36
+    l32e    a8,  a11, -32
+    l32e    a9,  a11, -28
+    l32e    a10, a11, -24
+    l32e    a11, a11, -20
+    rfwu
+
+/*
+ * 'movsp' (alloca) raises the Alloca exception cause, which arrives through the
+ * level-1 kernel/user vectors rather than a vector of its own on this core. The
+ * base-save area has already been spilled, so the four registers of the current
+ * window are free scratch; a0 is in EXCSAVE_1. The handler adjusts PS.OWB so the
+ * stack pointer points at the allocated area and returns.
+ */
+    .align 4
+    .global xt_alloca_exc
+    .type xt_alloca_exc, @function
+xt_alloca_exc:
+    rsr     a0, windowbase
+    rotw    -1                      /* a4 gets the old window base */
+    rsr     a2, ps
+    extui   a3, a2, 18, 4          /* PS.OWB */
+    xor     a3, a3, a4
+    rsr     a4, excsave1
+    slli    a3, a3, 18
+    xor     a2, a2, a3
+    wsr     a2, ps
+    rsync
+    ret
 
 /*
  * The handler runs on the interrupted thread's stack. a0 and a2-a15 have to be
- * saved because the C dispatch is free to clobber them: under call0 a0 and a2-a11
- * are caller-saved and a12-a15 are callee-saved, but a handler is not a call from
- * the interrupted code's point of view, so all of them are scratch here.
+ * saved because the C dispatch is free to clobber them: a handler is not a call
+ * from the interrupted code's point of view, so all of them are scratch here. The
+ * windows above the current one are spilled by the overflow handlers as the C call
+ * rotates through them, and refilled by the underflow handlers on the way out, so
+ * saving the current window is enough.
  *
  * The frame is 80 bytes so that a1 stays on the 16-byte boundary the ABI requires.
  */
@@ -105,6 +231,16 @@ _vector_table:
     .type xt_level1_handler, @function
 
 xt_level1_handler:
+    /* Level 1 is shared by interrupts and exceptions: EXCCAUSE tells them apart,
+     * and treating an Alloca or a LoadProhibited as an interrupt would corrupt the
+     * thread instead of reporting it. */
+    rsr     a0, exccause
+    movi    a2, 4                     /* EXCCAUSE_LEVEL1INTERRUPT */
+    beq     a0, a2, 1f
+    movi    a2, 5                     /* EXCCAUSE_ALLOCA */
+    beq     a0, a2, xt_alloca_exc
+    j       xt_exc_trap
+1:
     addi    a1, a1, -FR_SIZE
     s32i    a0, a1, FR_A0
     s32i    a2, a1, FR_A2
@@ -125,7 +261,7 @@ xt_level1_handler:
     /* INTERRUPT is the pending bitmask over all 32 slots. The handler is entered
      * for any level-1 slot, so the dispatch has to work out which one it is. */
     rsr     a2, interrupt
-    call0   xt_irq_dispatch
+    call8   xt_irq_dispatch
 
     l32i    a0, a1, FR_A0
     l32i    a2, a1, FR_A2
@@ -145,3 +281,59 @@ xt_level1_handler:
     addi    a1, a1, FR_SIZE
 
     rfe
+
+/*
+ * Anything that reaches here is a real fault. Record enough to identify it in
+ * internal SRAM, which survives the reset esptool performs when it attaches, then
+ * spin so the chip stays reachable.
+ */
+    .section .ibss,"aw",@progbits
+    .align 4
+    .global xt_exc_dump
+xt_exc_dump:
+    .word 0, 0, 0, 0, 0, 0, 0, 0
+
+    .section .vector,"ax",@progbits
+    .align 4
+    .global xt_exc_trap
+    .type xt_exc_trap, @function
+xt_exc_trap:
+    /* l32r reaches only 128 KB either way, and xt_exc_dump lives in internal SRAM
+     * on the data bus while this code is on the instruction bus. The address is
+     * parked as a literal in the same section and jumped over. */
+    j       1f
+    .align 4
+2:
+    .long   xt_exc_dump
+1:
+    l32r    a3, 2b
+    rsr     a4, exccause
+    s32i    a4, a3, 0
+    rsr     a4, epc1
+    s32i    a4, a3, 4
+    rsr     a4, excvaddr
+    s32i    a4, a3, 8
+    rsr     a4, epc2
+    s32i    a4, a3, 12
+    s32i    a0, a3, 16
+    s32i    a1, a3, 20
+3:
+    j       3b
+
+    .global xt_double_trap
+    .type xt_double_trap, @function
+xt_double_trap:
+    j       1f
+    .align 4
+2:
+    .long   xt_exc_dump
+1:
+    l32r    a3, 2b
+    movi    a4, 0xdead
+    s32i    a4, a3, 32
+    rsr     a4, exccause
+    s32i    a4, a3, 36
+    rsr     a4, epc1
+    s32i    a4, a3, 40
+4:
+    j       4b

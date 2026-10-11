@@ -10,6 +10,18 @@
 
 #define CONFIG_CPU ESP32S3
 
+/* Boot through ESP-IDF's second-stage bootloader instead of letting the mask ROM
+ * jump straight into Rockbox. The stage-2 loader does the cache-MMU arming for the
+ * flash-mapped segments, enables the external caches, configures the MSPI pads and
+ * the watchdog, and then jumps to our entry point - all of which crt0 otherwise has
+ * to hand-roll. It is a prebuilt windowed-ABI binary (see tools/esp-stage2), so
+ * nothing has to be built for it.
+ *
+ * When this is set, the image is flashed at the app partition offset (0x10000) with
+ * the bootloader at 0x0 and a partition table at 0x8000.
+ */
+#define ESP_STAGE2_BOOTLOADER 1
+
 /* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz. */
 #define CPU_FREQ 240000000
 

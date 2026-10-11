@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Flash Rockbox on an ESP32 target using ESP-IDF's second-stage bootloader.
+
+The mask ROM at flash offset 0 only copies the RAM segments of the image it finds
+there and jumps to its entry point. ESP-IDF's second-stage bootloader is what
+actually arms the cache MMU for the flash-mapped segments, enables the external
+instruction and data caches, configures the MSPI pads and the watchdog, and then
+jumps into flash-mapped code. Rockbox can borrow that loader instead of
+reimplementing it in crt0.S.
+
+The bootloader does not have to be built. Espressif ships prebuilt ones per chip
+as part of the Arduino/PlatformIO ESP32 core:
+
+    ~/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/
+        bootloader_dio_80m.elf
+        bootloader_opi_80m.elf
+        bootloader_qio_80m.elf
+        bootloader_qio_120m.elf
+
+Usage:
+
+    tools/esp-stage2 --bootloader <bootloader.elf|bootloader.bin> \
+                     --image rockbox.esp32s3 [--port /dev/ttyACM0] [--chip esp32s3]
+
+The layout written is the ESP-IDF default:
+
+    0x00000  second-stage bootloader
+    0x008000 partition table
+    0x10000  Rockbox image (the "app0" partition)
+
+Nothing else is needed for the loader to find the image: the partition table is
+generated here, in the same format esp_partition.h describes (32-byte entries,
+terminated by an 0xEBEB entry carrying the MD5 of the table).
+"""
+
+import argparse
+import hashlib
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+
+PARTITION_OFFSET = 0x8000
+APP_OFFSET = 0x10000
+
+# type, subtype, offset, size, label
+PARTITIONS = [
+    (1, 2, 0x9000, 0x6000, "nvs"),
+    (1, 0, 0xE000, 0x2000, "otadata"),
+    (2, 0, 0x10000, 0x330000, "app0"),
+    (2, 1, 0x340000, 0x330000, "app1"),
+    (1, 130, 0x670000, 0x180000, "spiffs"),
+    (1, 3, 0x7F0000, 0x10000, "coredump"),
+]
+
+
+def build_partition_table():
+    """ESP-IDF partition table: ESP_PARTITION_MAGIC 0x50AA per entry, then an
+    ESP_PARTITION_MAGIC_MD5 (0xEBEB) terminator holding a 16-byte MD5."""
+    entries = b""
+    for ptype, subtype, offset, size, label in PARTITIONS:
+        entries += struct.pack("<HHII", 0x50AA, ptype | (subtype << 8), offset, size)
+        entries += label.encode().ljust(16, b"\x00")
+        entries += struct.pack("<I", 0)
+    digest = hashlib.md5(entries).digest()
+    # The terminator entry carries its magic at offset 0 and the MD5 at offset 16
+    # (ESP_PARTITION_MD5_OFFSET); the bytes in between are left as 0xff.
+    table = entries + struct.pack("<HH", 0xEBEB, 0xFFFF) + b"\xff" * 12 + digest
+    return table.ljust(2048, b"\xff")
+
+
+def is_elf(path):
+    with open(path, "rb") as f:
+        return f.read(4) == b"\x7fELF"
+
+
+def esptool_cmd():
+    """ESPTOOL lets you point at a specific esptool; the system one is often too
+    old to know the esp32s3 flasher stub, so the venv invocation is the default.
+    """
+    tool = os.environ.get("ESPTOOL")
+    return [tool] if tool else [sys.executable, "-m", "esptool"]
+
+
+def elf_to_image(path, chip, out):
+    subprocess.run(esptool_cmd() + ["--chip", chip, "elf2image", "-o", out, path],
+                   check=True)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--bootloader", required=True,
+                    help="ESP-IDF second-stage bootloader ELF or already-packed image")
+    ap.add_argument("--image", required=True, help="packed Rockbox image (rockbox.<chip>)")
+    ap.add_argument("--chip", default="esp32s3")
+    ap.add_argument("--port", default=None)
+    ap.add_argument("--bootaddr", default="0x0")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="write the bootloader image and partition table to disk only")
+    args = ap.parse_args()
+
+    bl = args.bootloader
+    if is_elf(bl):
+        tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+        tmp.close()
+        bl = elf_to_image(bl, args.chip, tmp.name)
+        print("bootloader image: %s (%d bytes)" % (bl, os.path.getsize(bl)))
+
+    parts = build_partition_table()
+    parts_path = "partitions.bin"
+    with open(parts_path, "wb") as f:
+        f.write(parts)
+    print("partition table: %s (%d bytes), app0 at 0x%x" % (parts_path, len(parts), APP_OFFSET))
+
+    if args.dry_run:
+        return
+
+    cmd = esptool_cmd() + ["--chip", args.chip]
+    if args.port:
+        cmd += ["--port", args.port]
+    cmd += ["write_flash", args.bootaddr, bl, "0x8000", parts_path,
+            "0x%x" % APP_OFFSET, args.image]
+    subprocess.run(cmd, check=True)
+
+
+if __name__ == "__main__":
+    main()
