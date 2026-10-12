@@ -32,8 +32,11 @@ ESP-IDF's register definitions.
 | `irom_mmu_map()` arms MMU entries 144..149 (physical pages 8..13) and IROM fetches from `0x42900020` work | MMU snapshot in `crt0_trace`; `irom_canary()` in `.text` executes and traces |
 | The Ext_RAM cache returns `0x0bad0bad` for a page whose MMU entry is not usable | direct DROM read of `mmu_init`'s page |
 | A user command issued on **SPI0** stalls the flash read FSM | after `esp_rom_opiflash_exec_cmd(0, ...)`, every later fetch through the `0x42000000` window returns `0x0bad0bad` and the boot dies with `IllegalInstruction` at the first `.text` function; restoring `SPI_CTRL(0)` is not enough |
-| The octal PSRAM chip does **not** answer SPI1/CS1 | MR0/MR2 reads return `0x0000ffff`; a sync write of `0x5a6b7c8d` at address 0 followed by reads at 0 and 0x1000 both return `0xffffffff` |
+| The octal PSRAM chip **does** answer SPI1/CS1 | MR0 reads back `0x0d28` after writing `0x28`: the low byte is what we sent, the high byte is MR1 (`0x0d` = Apotek), which was never sent, so it cannot be a FIFO echo. MR2 = `0x6093` (density 3 = 64 Mbit = 8 MB), MR3 = `0x60` (AP_3v3) |
+| Loads through a PSRAM-mapped MMU page work | `cache_psram_probe()` writes `0xB5A7C3D1` to PSRAM page 100 over SPI1, arms MMU entry 100, preloads the D-cache and reads `0x3C640000` back = the exact pattern |
+| Stores through the Ext_RAM D-cache work, and the data is really in the chip | `mmu_init()` writes a per-entry pattern, commits it, discards the line, reads it back: 121 entries tested, 0 bad. The values also survive a reset, so they are not cache residue |
 | Pads 33..37 are in GPIO mode at reset | they have to be forced to `SPIIO4..SPIIO7`/`SPIDQS` (`MCU_SEL = 4`); pads 27/28 likewise come back as GPIO because this module's flash is quad |
+| The ROM loader arms MMU entries past the end of `.rodata` | entry 8 (`0x3C080000`) is armed to flash page 8 although `.rodata` ends at `0x3C07A1B4`. `mmu_init()` must override it: a store through a flash-mapped Ext_RAM page has no write path and stalls the core |
 
 ### Bring-up observability
 
@@ -51,35 +54,38 @@ in a ROM data page that is not armed). Instead:
 Read them with `/tmp/rbprobe.py`, which resolves the symbol addresses from the ELF
 and dumps them with esptool.
 
-### Open blocker
+### PSRAM: resolved
 
-**PSRAM.** Everything above is fine; the chip has not responded yet. Until it does,
-`.bss`, the audiobuffer, the framebuffer and the codec buffers are unmapped and
-the application cannot do anything useful. The bring-up now fails cleanly rather
-than hanging, so the rest of the boot is testable while this is worked on.
+The octal PSRAM bring-up now works end to end. The two things that were actually
+wrong:
 
-**The chip is not dead.** The stock MeowKit image
-(`meowkit-s3-v1.0.2.bin`, arduino-esp32 on ESP-IDF v4.4.3) boots on this board and
-reports `PSRAM free: 8385839` — 8 MB of octal PSRAM in use. So every failure here is
-a software bug. The most concrete one found so far: the mode argument to
-`esp_rom_opiflash_exec_cmd` was `4`, which is `ESP_ROM_SPIFLASH_DOUT_MODE`, not `7`
-(`ESP_ROM_SPIFLASH_OPI_DTR_MODE`). That makes the ROM build a single-line
-transaction, which is exactly the register signature we were seeing (`USER1` and
-`USER2` left at their reset defaults). That is now fixed and needs a hardware run.
+1. **`esp_rom_opiflash_exec_cmd` was called with mode `4` (`DOUT`) instead of `7`
+   (`OPI_DTR`).** That makes the ROM build a single-line transaction, which is why
+   `USER1`/`USER2` looked untouched. ESP-IDF 4.4.3's `psram_enable()` passes
+   `ESP_ROM_SPIFLASH_OPI_DTR_MODE` = 7.
+2. **`mmu_init()` only mapped MMU entries that were still invalid.** The ROM loader
+   arms an entry for every flash-mapped segment and rounds the page count up, so
+   entry 8 was already pointing at flash page 8. A store through a flash-mapped
+   Ext_RAM page has no write path and hangs the core. The mapping is now
+   unconditional over the PSRAM range.
 
-What has been eliminated, by measurement rather than inference:
+The bring-up also has to run at 20 MHz *before* switching to 80 MHz. ESP-IDF's
+`mspi_timing_psram_tuning()` sweeps dummy and input-delay values to reach 80 MHz;
+Rockbox does not have that sweep, and without it every read after the speed change
+returns the previous value. Identification and the first cache probe therefore run
+at low speed.
 
-| Hypothesis | Result |
-|---|---|
-| Octal data pads (33..37) left in GPIO mode | ruled out — they read back `MCU_SEL = 4`, `FUN_DRV = 3` after `init_psram_pins()` |
-| The ROM's `esp_rom_opiflash_exec_cmd` mis-marshals the phases | partly true (it leaves `USER1`/`USER2` at reset defaults), but a hand-built transaction with every phase written explicitly gives the same all-ones answer |
-| SPI0 cache access blocks SPI1 user commands | ruled out — suspending the Ext_RAM I- and D-caches around the bring-up changes nothing |
-| The transaction never starts | ruled out — `CMD` self-clears and `SPI_MEM_INT_RAW(1)` bit 2 (`TOTAL_TRANS_END`) is set |
-| SPI1 user commands work in general | not established — a SPI1 user command on CS0 reading flash offset `0x10000` returns `0xffffffff`, not the image header |
+Boot log tail from a real run:
 
-The remaining possibilities are all physical: CS1 is not the pad the PSRAM is wired
-to, or the PSRAM's data lines are not the pads we think they are. The next step is a
-pin-level experiment rather than a register one.
+```
+i#00000d28#00006093#00002803   MR0/MR1, MR2/MR3, MR8 - Apotek, 8 MB, AP_3v3
+C#00008064#3c640000            MMU entry 100 armed, vaddr 0x3C640000
+#000029ee#b5a7c3d1            preload guard, then the pattern read back
+6                             psram_present = true
+O#00000003                    3 MMU entries overridden (armed to flash by the ROM)
+V#00000079#00000000           121 entries tested, 0 bad
+nBR                           reached main
+```
 
 | Area | Files | State |
 |---|---|---|

@@ -18,6 +18,10 @@
  *
  ****************************************************************************/
 #include "config.h"
+/* Bring-up trace; remove once the xtensa kernel boots reliably. */
+#if defined(CPU_XTENSA)
+#include "bootlog.h"
+#endif
 
 #ifdef HAVE_SIGALTSTACK_THREADS
 /*
@@ -28,6 +32,9 @@
 #endif
 
 #include "thread-internal.h"
+
+/* Bring-up trace budget for the scheduler; remove with the rest of the traces. */
+static int trace_budget = 400;
 #include "kernel.h"
 #include "cpu.h"
 #include "string.h"
@@ -1011,6 +1018,7 @@ void switch_thread(void)
 {
     const unsigned int core = CURRENT_CORE;
     struct core_entry *corep = __core_id_entry(core);
+
     struct thread_entry *thread = corep->running;
 
     if (thread)
@@ -1023,6 +1031,8 @@ void switch_thread(void)
         core_check_valid();
 #endif
         thread_store_context(thread);
+        if (trace_budget-- > 0)
+            boot_trace('J');
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
@@ -1033,6 +1043,8 @@ void switch_thread(void)
     for (;;)
     {
         disable_irq();
+        if (trace_budget-- > 0)
+            boot_trace('u');
 
         /* Check for expired timeouts */
         check_tmo_expired(corep);
@@ -1046,6 +1058,9 @@ void switch_thread(void)
 
         /* Enter sleep mode to reduce power usage */
         RTR_UNLOCK(corep);
+        static int slept;
+        if (slept++ < 5)
+            boot_trace('m');
         core_sleep(IF_COP(core));
 
         /* Awakened by interrupt or other CPU */
@@ -1092,6 +1107,8 @@ void switch_thread(void)
     thread->skip_count = 0; /* Reset aging counter */
 #endif /* HAVE_PRIORITY_SCHEDULING */
 
+    if (trace_budget-- > 0)
+        boot_trace('v');
     rtr_queue_make_first(&corep->rtr, thread);
     corep->running = thread;
 
@@ -1103,6 +1120,8 @@ void switch_thread(void)
 #endif
 
     /* And finally, give control to the next thread. */
+    if (trace_budget-- > 0)
+        boot_trace('K');
     thread_load_context(thread);
 }
 
@@ -1188,8 +1207,10 @@ unsigned int create_thread(void (*function)(void),
                            IF_COP(, unsigned int core))
 {
     struct thread_entry *thread = thread_alloc();
-    if (thread == NULL)
+    if (thread == NULL) {
         return 0;
+    }
+    boot_trace('C');
 
     new_thread_base_init(thread, &stack, &stack_size, name
                          IF_PRIO(, priority) IF_COP(, core));
@@ -1197,10 +1218,18 @@ unsigned int create_thread(void (*function)(void),
     unsigned int stack_words = stack_size / sizeof (uintptr_t);
     if (stack_words == 0)
         return 0;
+    boot_trace('c');
 
     /* Munge the stack to make it easy to spot stack overflows */
-    for (unsigned int i = 0; i < stack_words; i++)
+    boot_trace_hex((unsigned int)(uintptr_t)stack);
+    boot_trace_hex(*(volatile unsigned int *)(0x600c5000u +
+                  (((unsigned int)(uintptr_t)stack & 0x1ffffffu) >> 16) * 4));
+    for (unsigned int i = 0; i < stack_words; i++) {
         ((uintptr_t *)stack)[i] = DEADBEEF;
+        if ((i % 64) == 63)
+            boot_trace('w');
+    }
+    boot_trace('E');
 
 #if NUM_CORES > 1
     /* Writeback stack munging or anything else before starting */
@@ -1210,19 +1239,23 @@ unsigned int create_thread(void (*function)(void),
 
     thread->context.sp = (typeof (thread->context.sp))(stack + stack_size);
     THREAD_STARTUP_INIT(core, thread, function);
+    boot_trace('D');
 
     int oldlevel = disable_irq_save();
+    boot_trace('A');
     LOCK_THREAD(thread);
 
     thread->state = STATE_FROZEN;
 
     if (!(flags & CREATE_THREAD_FROZEN))
         core_schedule_wakeup(thread);
+    boot_trace('B');
 
     unsigned int id = thread->id; /* Snapshot while locked */
 
     UNLOCK_THREAD(thread);
     restore_irq(oldlevel);
+    boot_trace('X');
 
     return id;
 }
@@ -1287,6 +1320,8 @@ void thread_exit(void)
 {
     struct core_entry *corep = __core_id_entry(CURRENT_CORE);
     register struct thread_entry *current = corep->running;
+    boot_trace('E');
+    boot_trace_hex((unsigned int)(uintptr_t)current->name);
 
     /* Cancel CPU boost if any */
     cancel_cpu_boost();

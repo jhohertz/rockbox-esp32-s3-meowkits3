@@ -676,6 +676,20 @@ same memory.
 - Mapping a page is not enough: ESP-IDF calls `cache_hal_invalidate_addr()` on the
   newly mapped range, because the cache may hold lines for an address that only
   became valid a moment earlier.
+- **The ROM loader arms MMU entries past the end of `.rodata`, so the PSRAM mapping
+  has to be unconditional.** Measured: `.rodata` is `0x3C000020` + `0x7A194`, i.e.
+  entries 0..7, but entry 8 (`0x3C080000`) is armed to flash page 8 anyway — the
+  loader rounds the page count up. A *store* through a flash-mapped Ext_RAM page has
+  no write path in the hardware and stalls the core with no exception, so "the entry
+  is already valid, leave it alone" is wrong for a range that must be PSRAM.
+- **Ext_RAM reads and writes are not the same path.** Reads through a flash-mapped
+  page work; writes through one hang. PSRAM-mapped pages read and write fine once
+  the chip is up.
+- **Octal PSRAM identification is self-authenticating, a sync read is not.** Writing
+  `0x28` to MR0 and reading back `0x0d28` proves the chip answered: the low byte is
+  what was sent, the high byte is MR1 (`0x0d` = Apotek), which was never sent. A
+  single sync write/read at one address cannot distinguish a real answer from
+  `SPI_W0` echoing the last transmitted word.
 - Flash code is executed through the instruction cache window at `0x42000020`.
 - RTC fast memory 8 KB at `0x600FE000`, RTC slow 8 KB at `0x50000000`.
 

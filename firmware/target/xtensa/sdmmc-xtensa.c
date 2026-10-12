@@ -67,6 +67,10 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 #define SDMMC_DBADDR      (XT_SDMMC_BASE + 0x88)
 #define SDMMC_IDSTS       (XT_SDMMC_BASE + 0x8c)
 #define SDMMC_IDINTEN     (XT_SDMMC_BASE + 0x90)
+#define SDMMC_USRID       (XT_SDMMC_BASE + 0x68)
+#define SDMMC_VERID       (XT_SDMMC_BASE + 0x6c)
+#define SDMMC_HCON        (XT_SDMMC_BASE + 0x70)
+#define SDMMC_FIFOTH      (XT_SDMMC_BASE + 0x4c)
 #define SDMMC_CLK         (XT_SDMMC_BASE + 0x800)
 
 /* CTRL */#define CTRL_RESET        (1u << 0)
@@ -254,8 +258,13 @@ static bool dma_finished(const struct sdmmc_ctl *ctl, int n)
     return true;
 }
 
+static int sdmmc_irq_trace;
+
 void ICODE_ATTR sdmmc_irq(void)
 {
+    if (sdmmc_irq_trace < 8) {
+        sdmmc_irq_trace++;
+    }
     uint32_t pending = rd(SDMMC_MINTSTS) & (CMD_ERR_MASK | DATA_ERR_MASK | INT_CMD_DONE);
     wr(SDMMC_RINTSTS, pending);
 
@@ -276,6 +285,7 @@ static int sdmmc_submit_command(void *controller,
                                 struct sdmmc_host_response *resp)
 {
     struct sdmmc_ctl *ctl = controller;
+
     uint32_t cmdreg = 0;
     uint32_t events;
     uint32_t bytes = 0;
@@ -353,15 +363,29 @@ static int sdmmc_submit_command(void *controller,
     if (SDMMC_DATA_PRESENT(cmd->flags))
         wr(SDMMC_PLDMND, 1);
 
+
     /* A command with no data is finished when the controller reports it done. A
      * transfer is finished when the data has both left the card and reached
      * memory. The controller's own response/data timeouts bound this, but the
      * loop is bounded too so a wedged peripheral cannot hang the thread. */
     bool done = false;
     for (int tick = 0; tick < 2 * HZ; tick++) {
-        if (semaphore_wait(&sdmmc_sem, 1) == OBJ_WAIT_SUCCEEDED) {
-            uint32_t status = ctl->events;
-            uint32_t dma = ctl->dma_events;
+
+        /* Poll the controller directly. The events are latched in RINTSTS/IDSTS
+         * and cleared by writing them back, so a poll sees exactly what the
+         * interrupt would have reported. */
+        uint32_t status = rd(SDMMC_RINTSTS) & (CMD_ERR_MASK | INT_CMD_DONE |
+                                              INT_DATA_OVER);
+        uint32_t dma = rd(SDMMC_IDSTS) & (DMA_DONE_MASK | DMA_ERR_MASK);
+
+        if (status)
+            wr(SDMMC_RINTSTS, status);
+        if (dma)
+            wr(SDMMC_IDSTS, dma);
+
+        if (status || dma) {
+            ctl->events |= status;
+            ctl->dma_events |= dma;
 
             if (status & CMD_ERR_MASK) {
                 rc = (status & INT_RTO) ? SDMMC_STATUS_TIMEOUT
@@ -380,16 +404,15 @@ static int sdmmc_submit_command(void *controller,
                     done = true;
                     break;
                 }
+                udelay(250);
                 continue;
             }
 
             if (status & INT_CMD_DONE) {
                 if (cmd->flags & SDMMC_RESP_BUSY) {
-                    /* R1b: the card drives DAT0 low while it works. The peripheral
-                     * has no busy-clear interrupt we can rely on, so poll. */
                     int waited = 0;
                     while ((rd(SDMMC_STATUS) & STATUS_DATA_BUSY) && waited < 1000) {
-                        sleep(1);
+                        udelay(100);
                         waited++;
                     }
                     if (waited >= 1000)
@@ -399,14 +422,7 @@ static int sdmmc_submit_command(void *controller,
                 break;
             }
         }
-    }
-
-    if (!done)
-        rc = SDMMC_STATUS_TIMEOUT;
-
-    if (rc == SDMMC_STATUS_OK && resp && ctl->resp_len > 0) {
-        for (int i = 0; i < ctl->resp_len; i++)
-            resp->data[i] = rd(SDMMC_RESP(i));
+        udelay(250);
     }
 
     if (SDMMC_DATA_PRESENT(cmd->flags)) {
@@ -512,10 +528,16 @@ static const struct sdmmc_host_config sdmmc_config INITDATA_ATTR = {
 
 void sdmmc_host_target_init(void)
 {
-    /* The SDHOST block is clock-gated and the gate defaults to off. Nothing in
-     * the register ladder works until it is on.
+    /* The SDHOST clock gate is off at reset; ESP-IDF's sdmmc_ll_enable_bus_clock
+     * sets bit 7 of SYSTEM_PERIP_CLK_EN1 and nothing else is needed to reach the
+     * block. The reset bit is pulsed so the controller starts from its documented
+     * default state rather than whatever a previous image left behind.
      */
     wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1u << 7));
+    wr(XT_SYSTEM_BASE + 0x20, 1u << 7);
+    udelay(10);
+    wr(XT_SYSTEM_BASE + 0x20, 0u);
+    udelay(10);
 
     /* Route the three lines through the GPIO matrix. CLK is driven by the
      * controller; CMD and D0 are bidirectional, so both halves have to be
@@ -538,7 +560,4 @@ void sdmmc_host_target_init(void)
     semaphore_init(&sdmmc_sem, 1, 0);
 
     sdmmc_host_init(&sdmmc_host, &sdmmc_config, &sdmmc_ops, &sdmmc_ctl);
-    set_intenable(get_intenable() | (1u << XT_SLOT_SDHOST));
-
-    boot_trace('S');                /* SDHOST armed and unmasked */
 }

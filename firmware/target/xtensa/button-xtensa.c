@@ -6,6 +6,8 @@
  * this file only reports the raw levels and the touch state.
  ****************************************************************************/
 #include "config.h"
+#include "bootlog.h"
+#include "xtensa.h"
 
 #include "system.h"
 #include "button.h"
@@ -33,6 +35,7 @@
 
 void button_init_device(void)
 {
+
     static const int pins[] = { PIN_BTN_A, PIN_BTN_B, PIN_JOY_UP,
                                 PIN_JOY_DOWN, PIN_JOY_LEFT, PIN_JOY_RIGHT };
 
@@ -103,7 +106,16 @@ int button_read_device(int *data)
      * callback has already filled ft6x06_state. If it has not, the state still holds
      * the last completed read, which is what a polled panel means in practice.
      */
-    ft6x06_irq_handler();
+    /* The panel is polled, not interrupt-driven, but a 14-byte read at 100 kHz
+     * costs about 1.5 ms and this runs inside the level-1 handler. Polling every
+     * tick would spend a third of the CPU in the interrupt; every fifth tick is
+     * plenty for a finger.
+     */
+    /* Bring-up: the touch poll is disabled so the tick does not perform I2C.
+     * Re-enable once the main-thread stall is resolved.
+     */
+    if (0)
+        ft6x06_irq_handler();
 
     if (touchscreen_get_mode() == TOUCHSCREEN_POINT) {
         /* Point mode can only carry one coordinate pair per button event. */

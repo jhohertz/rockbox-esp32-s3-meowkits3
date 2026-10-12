@@ -19,8 +19,8 @@
 #include "kernel.h"
 #include "tick.h"
 #include "timer.h"
-#include "xtensa.h"
 #include "bootlog.h"
+#include "xtensa.h"
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
@@ -76,6 +76,11 @@ void tick_start(unsigned int interval_in_ms)
      */
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T0, XT_SLOT_TIMERG1);
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T1, XT_SLOT_TIMERG1);
+    /* Bring-up experiment: re-enable the tick so the level-1 handler is entered,
+     * but dispatch nothing. If the boot still stalls in run_sync, the handler's
+     * own frame/register save is the problem; if it proceeds, one of the C
+     * handlers is.
+     */
     set_intenable(get_intenable() | (1u << XT_SLOT_TIMERG1));
     /* tn_int_clr is write-to-clear, and int_ena is the per-timer mask */
 
@@ -84,7 +89,6 @@ void tick_start(unsigned int interval_in_ms)
 
     wr(TG1(XT_TN_INT_ENA), 1);           /* timer 0 only */
 
-    boot_trace('T');                     /* tick timer armed */
 }
 
 bool timer_set(long cycles, bool start)
@@ -117,6 +121,15 @@ void timer_stop(void)
 void ICODE_ATTR timer_irq(void)
 {
     unsigned int st = rd(TG1(XT_TN_INT_ST));
+
+    /* Bring-up: a tick character every 100 ticks, so "is the kernel still
+     * running?" stays visible without filling the ring. */
+    static int ticked;
+    ++ticked;
+    if (ticked <= 5 || ticked % 1000 == 0) {
+        boot_trace('t');
+        boot_trace_hex((unsigned int)ticked);
+    }
 
     if (st & 1)
         call_tick_tasks();
