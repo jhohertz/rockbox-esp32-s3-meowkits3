@@ -86,11 +86,17 @@ static inline void store_context(void* addr)
         "s32i    a7, a6, 72          \n"
         "rsr     a7, windowstart     \n"
         "s32i    a7, a6, 76          \n"
-        "rsr     a7, ps              \n"
-        "s32i    a7, a6, 68          \n"
+        /* A thread context must never carry an interrupt level: switch_thread()
+         * is reached from paths that have disabled interrupts, and restoring that
+         * level would leave the resumed thread with the tick and every device
+         * interrupt masked. PS.INTLEVEL is bits 0-3. */
+        "movi    a8, -16             \n"
+        "rsr     a9, ps              \n"
+        "and     a9, a9, a8          \n"
+        "s32i    a9, a6, 68          \n"
         "rsr     a7, sar             \n"
         "s32i    a7, a6, 80          \n"
-        : : "r" (addr) : "a6", "a7"
+        : : "r" (addr) : "a6", "a7", "a8", "a9"
     );
 }
 
@@ -114,10 +120,13 @@ static inline void load_context(const void* addr)
         "beqz    a7, 1f             \n"
 
         /* First run: a clean window at level 0, then enter the starter as if it
-         * had been called with CALLINC 0. */
+         * had been called with CALLINC 0. PS is not zeroed wholesale: WOE has to
+         * stay set, otherwise the window overflow vectors cannot fire for the
+         * thread's own nested calls and ENTRY faults. */
         "movi    a7, 0              \n"
         "wsr     a7, windowbase     \n"
         "wsr     a7, windowstart    \n"
+        "movi    a7, 0x40000        \n"
         "wsr     a7, ps             \n"
         "wsr     a7, sar            \n"
         "rsync                      \n"

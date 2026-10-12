@@ -239,11 +239,35 @@ SECTIONS
          * literal still has to come before the use, so it is placed first. */
         KEEP(*(.icode.literal*))
         KEEP(*(.icode))
-        *(.irodata)
-        *(.ibss)
+        /* Only word-accessed scratch belongs here. The instruction bus rejects
+         * byte and halfword data accesses, so .ibss/.irodata/.idata are not
+         * admitted to .iram; IBSS_ATTR routes them to .srambss instead. The two
+         * hand-written buffers (xt_exc_dump, crt0_trace) stay because they are
+         * reached by l32r from the handler, which has a 128 KB range, and are
+         * only ever touched with s32i/l32r.
+         */
+        KEEP(*(.iramdata))
         . = ALIGN(0x4);
         _iramend = .;
     } > IRAM
+
+    /* Alignment slack for the image packer. A flash-mapped segment has to sit in
+     * the image at an offset congruent to its address modulo the 64 KB MMU page,
+     * and the packer sources that padding from the head of a RAM segment. The mask
+     * ROM's loader has no notion of padding: a segment with load address 0 is
+     * memcpy'd to address 0 and traps with StoreProhibited, so the padding has to
+     * come from a real segment. This one is a page of zeros at the low end of the
+     * data region, which makes it the first RAM segment the packer sees.
+     */
+    .pad :
+    {
+        . = ALIGN(0x4);
+        padarea = .;
+        /* LONG(0) makes this a content section; without any input the linker
+         * would mark it NOBITS and the packer would see an empty segment. */
+        LONG(0);
+        . = . + 0x11000;
+    } > DRAM
 
     /* .data is copied from flash to internal DRAM by the image loader, so its
      * load address is the runtime address. */

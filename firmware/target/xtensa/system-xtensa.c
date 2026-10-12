@@ -13,6 +13,7 @@
  * lives in power-xtensa.c.
  ****************************************************************************/
 #include "config.h"
+#include "bootlog.h"
 
 #include "system.h"
 #include "xtensa.h"
@@ -159,6 +160,8 @@ void system_init(void)
     asm volatile ("wsr %0, intclear" : : "r"(0xFFFFFFFFu));
     asm volatile ("wsr %0, vecbase" : : "r"((unsigned int)_vector_table));
     asm volatile ("rsync");
+    boot_trace('s');                    /* vector table installed */
+    boot_trace_hex((unsigned)cpu_frequency);
 }
 
 void system_reboot(void)

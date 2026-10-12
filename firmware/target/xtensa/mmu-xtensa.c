@@ -90,7 +90,9 @@ void mmu_init(void)
         table[i] = MMU_TARGET_PSRAM | (PSRAM_PADDR_BASE + (i - first));
     }
     boot_trace('O');
-    boot_trace_hex(overridden);
+    boot_trace_hex((unsigned)first);
+    boot_trace_hex((unsigned)last);
+    boot_trace_hex((unsigned)overridden);
 
     /* A page that was invalid before now points at PSRAM, and any line the cache
      * kept for that range is stale. ESP-IDF does the same thing after every

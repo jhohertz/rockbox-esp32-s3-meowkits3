@@ -112,6 +112,7 @@ static bool vbus_last;
 
 static void usb_vbus_monitor(void)
 {
+    boot_trace('v');
     while (1)
     {
         bool inserted =

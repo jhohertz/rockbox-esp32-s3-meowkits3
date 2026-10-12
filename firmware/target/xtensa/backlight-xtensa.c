@@ -20,6 +20,7 @@
 #include "lcd.h"
 #include "backlight-target.h"
 #include "xtensa.h"
+#include "bootlog.h"
 #include "gpio-xtensa.h"
 
 /* A low-speed channel is five words wide - conf0, hpoint, duty, conf1,
@@ -86,6 +87,8 @@ bool backlight_hw_init(void)
 
 void backlight_hw_on(void)
 {
+    boot_trace('k');
+
     /* Wake the panel before light is applied, otherwise the backlight comes up
      * onto a panel that is still coming out of sleep and the first frame is lost.
      */

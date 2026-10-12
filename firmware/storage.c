@@ -18,6 +18,7 @@
  *
  ****************************************************************************/
 #include "storage.h"
+#include "bootlog.h"
 #include "kernel.h"
 #include "ata_idle_notify.h"
 #include "usb.h"
@@ -160,6 +161,7 @@ static FORCE_INLINE int storage_event_send(unsigned int route, long id,
 
 static void NORETURN_ATTR storage_thread(void)
 {
+    boot_trace('o');
     unsigned int bdcast = CONFIG_STORAGE;
     bool usb_mode = false;
     struct queue_event ev;
@@ -277,16 +279,23 @@ static inline void storage_thread_init(void)
         return;
     }
 
+    boot_trace('y');
     queue_init(&storage_queue, true);
+    boot_trace('z');
     storage_thread_id = create_thread(storage_thread, &storage_thread_stack,
                                       sizeof (storage_thread_stack),
                                       0, &storage_thread_name[1]
                                       IF_PRIO(, PRIORITY_USER_INTERFACE)
                                       IF_COP(, CPU));
+    boot_trace('q');
+    boot_trace_hex(get_irq_level());
+    boot_trace_hex(get_intenable());
 }
 
 int storage_init(void)
 {
+    boot_trace('G');
+
     int rc=0;
 
 #ifdef HAVE_SDMMC_HOST
@@ -359,7 +368,9 @@ int storage_init(void)
     init_volume_names();
 #endif
 
+    boot_trace('f');
     storage_thread_init();
+    boot_trace('F');
     return rc;
 }
 

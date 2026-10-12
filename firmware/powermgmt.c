@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "config.h"
+#include "bootlog.h"
 #include "system.h"
 #include "kernel.h"
 #include "thread.h"
@@ -1019,9 +1020,12 @@ error_loading:
 
 void powermgmt_init(void)
 {
+    boot_trace('M');
+
     create_thread(power_thread, power_stack, sizeof(power_stack), 0,
                   power_thread_name IF_PRIO(, PRIORITY_SYSTEM)
                   IF_COP(, CPU));
+    boot_trace('m');
 }
 
 /* Various hardware housekeeping tasks relating to shutting down the player */

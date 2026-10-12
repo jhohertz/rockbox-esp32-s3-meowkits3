@@ -191,19 +191,20 @@ def write_image(out, entry, segments, flash_mode, flash_size_freq):
                 pad += MMU_PAGE
 
         if pad:
-            if ram and pad > SEG_HEADER_LEN:
-                # Use the head of a RAM segment as the padding instead of
-                # burning a page of zeros; the bootloader loads it normally.
-                head = ram[0]
-                tail = Segment(head.addr + pad, head.data[pad:])
-                head.data = head.data[:pad]
-                put(head)
-                if not tail.data:
-                    ram.pop(0)
-                else:
-                    ram[0] = tail
-            else:
-                put(Segment(0, b"\x00" * pad))
+            if not ram:
+                raise ValueError("image needs %d bytes of alignment padding but "
+                                 "the .pad section is exhausted" % pad)
+            # The padding has to be a real segment: the mask ROM has no concept
+            # of padding and memcpy's a load address of 0 to address 0, which
+            # traps with StoreProhibited. So it is carved out of the head of the
+            # .pad section, which is the lowest-address RAM segment.
+            head = ram[0]
+            take = min(pad, len(head.data))
+            put(Segment(head.addr, head.data[:take]))
+            head.addr += take
+            head.data = head.data[take:]
+            if not head.data:
+                ram.pop(0)
         else:
             put(seg)
             flash.pop(0)
