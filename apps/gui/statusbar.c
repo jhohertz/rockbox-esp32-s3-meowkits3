@@ -159,12 +159,19 @@ static void gui_statusbar_time(struct screen * display, struct tm *time);
  * Initializes a status bar
  *  - bar : the bar to initialize
  */
+extern void boot_trace(char c);
+extern void boot_trace_hex(unsigned int v);
+
 static void gui_statusbar_init(struct screen * display, struct gui_statusbar * bar)
 {
+    boot_trace('A');
     bar->display = display;
     bar->redraw_volume = true;
     bar->volume_icon_switch_tick = bar->battery_icon_switch_tick = current_tick;
+    boot_trace('B');
+    boot_trace_hex((unsigned)(uintptr_t)bar);
     memset((void*)&(bar->lastinfo), 0, sizeof(struct status_info));
+    boot_trace('C');
 #if CONFIG_RTC
     bar->last_tm_min = 0;
 #endif
@@ -718,9 +725,12 @@ static void gui_statusbar_icon_recording_info(struct screen * display)
 }
 #endif /* HAVE_RECORDING */
 
+extern void boot_trace(char c);
+
 void gui_syncstatusbar_init(struct gui_syncstatusbar * bars)
 {
     FOR_NB_SCREENS(i) {
+        boot_trace('0' + i);
         gui_statusbar_init(&(screens[i]), &(bars->statusbars[i]));
     }
 }

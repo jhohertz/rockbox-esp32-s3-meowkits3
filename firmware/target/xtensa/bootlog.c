@@ -38,7 +38,12 @@
  * instead: the SRAM mirror is still written, so the log is recoverable via
  * esptool even when nobody is watching the serial port.
  */
-static int usb_cdc_ok;
+/* .srambss rather than .bss: usb_cdc_init() runs from crt0, before mmu_init()
+ * has mapped the PSRAM window that .bss lives in. A store to an MMU entry the
+ * ROM loader armed to flash has no write path, so a plain static here is not
+ * reliably set before the first character is emitted.
+ */
+__attribute__((section(".srambss"))) static int usb_cdc_ok;
 
 static void usb_cdc_putc(char c)
 {
@@ -76,8 +81,15 @@ void ICODE_ATTR usb_cdc_init(void)
  * is also why these globals cannot live in .bss - .bss is in the PSRAM window and
  * is not reachable until mmu_init() has mapped it.
  */
-__attribute__((section(".srambss"))) volatile unsigned char boot_log[4096];
+__attribute__((section(".srambss"))) volatile unsigned char boot_log[8192];
 __attribute__((section(".srambss"))) volatile int boot_log_len;
+
+/* Exception scratch. This must not be a raw address: the previous location,
+ * 0x3FC90100, is the data-bus alias of 0x40378100, which is inside .iram - the
+ * handler was overwriting its own code, and a memory dump of it looked like a
+ * fault record when it was nothing of the kind.
+ */
+__attribute__((section(".srambss"))) volatile unsigned int diag_record[2][12];
 
 /* ICODE_ATTR because boot_trace() is called from the PSRAM bring-up, which runs
  * from .iram while it is reprogramming the MSPI block that feeds the flash
@@ -124,4 +136,20 @@ void ICODE_ATTR boot_trace_raw(unsigned int v)
     boot_log[n + 2] = (unsigned char)((v >> 16) & 0xffu);
     boot_log[n + 3] = (unsigned char)((v >> 24) & 0xffu);
     boot_log_len = n + 4;
+}
+
+/* Bring-up probe for the Xtensa frame convention: crt0 sets a1 to _stackend and
+ * then calls this, so the difference between the printed a1 and _stackend says
+ * whether ENTRY adds or subtracts the frame size, and where locals sit relative
+ * to a1. The level-1 handler's manual frame depends on the answer.
+ */
+void ICODE_ATTR frame_probe(void)
+{
+    unsigned int sp;
+    int local = 0x5a5a5a5a;
+
+    asm volatile ("mov %0, a1" : "=r"(sp));
+    boot_trace('F');
+    boot_trace_hex(sp);
+    boot_trace_hex((unsigned int)&local);
 }

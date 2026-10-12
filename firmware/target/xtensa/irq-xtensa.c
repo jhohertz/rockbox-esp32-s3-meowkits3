@@ -18,6 +18,7 @@
 #include "kernel.h"
 #include "tick.h"
 #include "timer.h"
+#include "bootlog.h"
 #include "xtensa.h"
 
 void timer_irq(void);
@@ -31,8 +32,30 @@ void gdma_rx_irq(void);
 void INT_USB_FUNC(void);
 #endif
 
+static unsigned int isr_epc1(void)
+{
+    unsigned int v;
+    asm volatile ("rsr %0, epc1" : "=r"(v));
+    return v;
+}
+
+static unsigned int isr_sp(void)
+{
+    unsigned int v;
+    asm volatile ("mov %0, a1" : "=r"(v));
+    return v;
+}
+
 void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 {
+    static int disp;
+    ++disp;
+    if (disp <= 3) {
+        boot_trace('Y');
+        boot_trace_hex(pending);
+        boot_trace_hex(get_intenable());
+    }
+
     if (pending & (1u << XT_SLOT_TIMERG1))
         timer_irq();
 
@@ -54,4 +77,7 @@ void VEC_ATTR xt_irq_dispatch(unsigned int pending)
     if (pending & (1u << XT_SLOT_USB))
         INT_USB_FUNC();
 #endif
+
+    if (disp % 100 == 0)
+        boot_trace('H');
 }

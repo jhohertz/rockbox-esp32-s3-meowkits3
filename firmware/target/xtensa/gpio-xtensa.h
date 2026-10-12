@@ -53,6 +53,12 @@
  * Offsets from ESP-IDF's gpio_reg.h (GPIO_FUNC0_IN_SEL_CFG_REG = base + 0x154).
  */
 #define GPIO_FUNC_IN_SEL(n) (DR_REG_GPIO_BASE + 0x154 + 4u * (n))
+
+/* Per-pin configuration, TRM 6.18. Bit 17 selects the pad driver: 0 = normal
+ * (push-pull), 1 = open drain. The I2C master needs this set on SCL/SDA.
+ */
+#define GPIO_PIN_REG(n)      (DR_REG_GPIO_BASE + 0x0074 + 4u * (n))
+#define GPIO_PIN_PAD_DRIVER  (1u << 17)
 #define GPIO_IN_FROM_MATRIX (1u << 7)
 
 /* IO MUX: MCU_SEL is bits 14:12 and picks the pad function. GPIO1 and GPIO2

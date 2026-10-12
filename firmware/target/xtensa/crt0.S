@@ -37,6 +37,8 @@
 .Lbsshi:      .word _bssend
 .Lsramlo:     .word _srambssstart
 .Lsramhi:     .word _srambssend
+.Lstklo:      .word stackbegin
+.Lstkhi:      .word stackend
 .Lpslo:       .word _psrambssstart
 .Lpshi:       .word _psrambssend
 .Lirommap:    .word irom_mmu_map
@@ -49,6 +51,7 @@
 .Lpspresent:  .word psram_present
 .Lbtrace:     .word boot_trace
 .Lcdcinit:    .word usb_cdc_init
+.Lfprobe:     .word frame_probe
 .Lmain:       .word main
 /* ROM trampoline for ets_write_char_uart, from
  * components/esp_rom/esp32s3/ld/esp32s3.rom.ld. It is in the base file rather
@@ -73,6 +76,7 @@
 .Ltrace:      .word crt0_trace
 .Ltracebase:  .word 0x3FC90000
 .Ldiagvec:    .word diag_vector
+.Ldiagrec:    .word diag_record
 
 
 /* A windowed call into a C function. The first argument goes in the caller's
@@ -120,18 +124,12 @@ start:
     and     a4, a4, a3
     s32i    a4, a2, 0
 
-    /* The chip's own USB-Serial/JTAG peripheral enumerates as a CDC serial port
-     * on /dev/ttyACM0 with no firmware involvement, so boot_trace() can print a
-     * live bring-up log there. Its clock is gated by default; force it on before
-     * the first character is emitted.
-     */
-    l32r    a2, .Lcdcinit
+    /* Own stack. Top of internal DRAM. */
+    l32r    a1, .Lstack
+    l32r    a2, .Lfprobe
     movi    a10, 0
     movi    a11, 0
     callx8  a2
-
-    /* Own stack. Top of internal DRAM. */
-    l32r    a1, .Lstack
 
     /* Nothing called us, so the register window is whatever the loader left:
      * a non-zero WINDOWBASE and a WINDOWSTART with bits for windows that were
@@ -399,6 +397,35 @@ start:
     j       8b
 9:
 
+    /* Fill the main thread's stack with the overflow marker. switch_thread()
+     * tests thread->stack[0] against DEADBEEF to detect overflow; create_thread()
+     * writes that pattern for every thread it makes, but the main thread's stack
+     * is the linker's .stack region and nothing else initialises it. Without this
+     * the first scheduler switch reports a false overflow and panics. Same recipe
+     * as the MIPS crt0s.
+     */
+    l32r    a2, .Lstklo
+    l32r    a3, .Lstkhi
+    movi    a4, 0xDEADBEEF
+12:
+    bgeu    a2, a3, 13f
+    s32i    a4, a2, 0
+    addi.n  a2, a2, 4
+    j       12b
+13:
+
+    /* The chip's own USB-Serial/JTAG peripheral enumerates as a CDC serial port on
+     * /dev/ttyACM0 with no firmware involvement, so boot_trace() can print a live
+     * bring-up log there. Its clock is gated by default; force it on before the
+     * first character is emitted. This has to come *after* the .srambss zeroing:
+     * usb_cdc_ok lives in .srambss, so initialising it before the zero loop just
+     * gets cleared.
+     */
+    l32r    a2, .Lcdcinit
+    movi    a10, 0
+    movi    a11, 0
+    callx8  a2
+
     /* Liveness marker: if this value is not in the trace after a flash, the
      * image is not actually being executed and every other read is stale.
      */
@@ -606,7 +633,7 @@ putchar_rom:                      /* a10 = character; a call0 leaf, no frame */
  * internal SRAM survives a reset, so the values are still there when esptool
  * attaches. Each slot is one step of the bring-up.
  */
-    .section .ibss,"aw",@progbits
+    .section .iramdata,"aw",@progbits
     .align 4
     .global crt0_trace
 crt0_trace:
@@ -689,21 +716,19 @@ diag_vector:
     .org diag_vector + 0x400
     .align 4
 diag_trap:
-    /* Record the first exception in raw SRAM at 0x3FC90100 and a second one at
-     * 0x3FC90140, so a double exception does not hide the original.
+    /* Record the first exception in diag_record[0] and a second one in
+     * diag_record[1], so a double exception does not hide the original. The
+     * buffer is a .srambss symbol rather than a hardcoded address: an earlier
+     * version used 0x3FC90100, which is the data-bus alias of 0x40378100 -
+     * inside .iram - so the handler wrote over live code.
      */
-    movi    a9, 0x3F
-    slli    a9, a9, 24
-    movi    a10, 0xC9
-    slli    a10, a10, 16
-    add     a9, a9, a10
-    addi    a9, a9, 0x100
+    l32r    a9, .Ldiagrec
     rsr     a2, exccause
     rsr     a3, epc1
     rsr     a4, excvaddr
     l32i    a10, a9, 0
     beqz    a10, 5f
-    addi    a9, a9, 0x40            /* second record at 0x3FC90140 */
+    addi    a9, a9, 48              /* second record: 12 words */
 5:
     s32i    a2, a9, 0
     s32i    a3, a9, 4

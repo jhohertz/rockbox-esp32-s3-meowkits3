@@ -69,6 +69,15 @@ static inline int set_irq_level(int level)
 /* Masking by level is only half of it: a slot also has to be unmasked in INTENABLE.
  * Levels cannot be programmed on this core config, so the slot has to already be the
  * level you want (see firmware/include/xtensa.h). */
+
+static inline unsigned int get_irq_level(void)
+{
+    unsigned int ps;
+
+    asm volatile ("rsr.ps %0" : "=r"(ps));
+    return ps & PS_INTLEVEL_MASK;
+}
+
 static inline unsigned int get_intenable(void)
 {
     unsigned int v;
@@ -85,12 +94,7 @@ static inline void set_intenable(unsigned int mask)
 
 static inline void enable_irq(void)
 {
-    unsigned int ps;
-
-    asm volatile ("rsr.ps %0" : "=r"(ps));
-    ps &= ~PS_INTLEVEL_MASK;
-    asm volatile ("wsr.ps %0" : : "r"(ps));
-    asm volatile ("rsync");
+    set_irq_level(0);
 }
 
 static inline void disable_irq(void)
@@ -108,9 +112,19 @@ static inline void restore_irq(int oldlevel)
     set_irq_level(oldlevel);
 }
 
-/* Put the core in a power-saving state until an interrupt wakes it. */
+/* Put the core in a power-saving state until an interrupt wakes it.
+ *
+ * switch_thread() reaches here with interrupts masked by PS.INTLEVEL = 15, so a
+ * bare waiti would stall forever: WAITI n waits for a slot of level n+1 or higher
+ * that is enabled *and* able to be taken, and level 1 cannot be taken while the
+ * core is already at level 15. The level has to be dropped before waiting, the
+ * same way ARM's core_sleep re-enables and Coldfire's "stop #0x2000" wakes on an
+ * interrupt. The handler's rfe puts the level back, so the resumed thread is not
+ * left with interrupts open.
+ */
 static inline void core_sleep(void)
 {
+    set_irq_level(0);
     asm volatile ("waiti 0");
 }
 
@@ -129,10 +143,12 @@ static inline void udelay(unsigned us)
 {
     unsigned i = us * (cpu_frequency / 2000000);
 
+    /* The label has to precede the decrement: with it on the branch, `1b` is the
+     * branch itself and a non-zero count never terminates. */
     asm volatile (
         "1:\n"
-        "bnez %0, 1b\n"
         "addi %0, %0, -1\n"
+        "bnez %0, 1b\n"
         : "+r"(i)
     );
 }

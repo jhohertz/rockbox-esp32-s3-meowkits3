@@ -50,17 +50,17 @@ _vector_table:
     j xt_window_underflow_12
 
     .org _vector_table + 0x180
-    j .                               /* level 2 - not used */
+    j xt_unused_trap2              /* level 2 */
     .org _vector_table + 0x1c0
-    j .                               /* level 3 */
+    j xt_unused_trap3              /* level 3 */
     .org _vector_table + 0x200
-    j .                               /* level 4 */
+    j xt_unused_trap4              /* level 4 */
     .org _vector_table + 0x240
-    j .                               /* level 5 */
+    j xt_unused_trap5              /* level 5 */
     .org _vector_table + 0x280
-    j .                               /* level 6 / debug */
+    j xt_unused_trap6              /* level 6 / debug */
     .org _vector_table + 0x2c0
-    j .                               /* NMI */
+    j xt_unused_trapNMI            /* NMI */
 
     .org _vector_table + 0x300
     j xt_level1_handler               /* level 1, supervisor mode */
@@ -68,11 +68,11 @@ _vector_table:
     j xt_level1_handler               /* level 1, user mode */
 
     .org _vector_table + 0x380
-    j xt_double_trap                   /* double exception - the real one */
+    j xt_unused_trapINV            /* no vector at 0x380 on this core */
     .org _vector_table + 0x3c0
-    j .                               /* invalid exception */
+    j xt_double_trap               /* double exception - XCHAL_DOUBLEEXC_VECOFS */
     .org _vector_table + 0x400
-    j .                               /* hardware exception */
+    j xt_unused_trapHW             /* end of the vector table */
 
     .size _vector_table, . - _vector_table
 
@@ -128,6 +128,8 @@ xt_window_overflow_8:
     .global xt_window_underflow_8
     .type xt_window_underflow_8, @function
 xt_window_underflow_8:
+    /* Count before refilling a0-a3: on an underflow those are the registers being
+     * restored, so scratch has to be used first, not after. */
     l32e    a0, a9, -16
     l32e    a1, a9, -12
     l32e    a2, a9, -8
@@ -212,30 +214,64 @@ xt_alloca_exc:
 /*
  * The handler runs on the interrupted thread's stack. a0 and a2-a15 have to be
  * saved because the C dispatch is free to clobber them: a handler is not a call
- * from the interrupted code's point of view, so all of them are scratch here. The
- * windows above the current one are spilled by the overflow handlers as the C call
- * rotates through them, and refilled by the underflow handlers on the way out, so
- * saving the current window is enough.
+ * from the interrupted code's point of view, so all of them are scratch here.
  *
- * The frame is 80 bytes so that a1 stays on the 16-byte boundary the ABI requires.
+ * That is not enough. The interruptee's call chain lives in register windows that
+ * are still in the physical register file, and the esp32s3 core config has no REGB
+ * option, so those windows have no spills/refill opcodes - they are moved to the
+ * stack by the window overflow/underflow handlers instead. Until they are spilled,
+ * any nested call inside the dispatch rotates through windows that still hold the
+ * interruptee's ancestors, overwrites them, and the matching underflow on the way
+ * back reads garbage. Shallow ISRs survive; anything that nests deeper dies at
+ * retw.
+ *
+ * So the handler does what ESP-IDF's _xt_lowint1 + _xt_context_save do: clear PS.EXCM
+ * and set PS.WOE, then run SPILL_ALL_WINDOWS with the stack pointer set back to the
+ * interruptee's frame. That is the point of the exercise - the overflow handlers walk
+ * the ABI base-save chain, and only the interruptee's own frames have a valid one.
+ * Running the spill from the handler's own frame would make the handlers read the
+ * ancestor's sp out of memory that belongs to nobody.
+ *
+ * SPILL_ALL_WINDOWS (Cadence's xt_asm_utils.h, XCHAL_NUM_AREGS == 64) is a no-op
+ * write to a12 followed by a window rotation, repeated until the window has made a
+ * full 16-register turn. Each write to a12 raises a window overflow if a12 holds a
+ * live ancestor register, and the overflow handler spills it into that ancestor's
+ * frame. The net rotation is zero, so the window is where it was.
+ *
+ * EPC1 has to be stashed around the spill because the overflow exceptions overwrite
+ * it, and the zero-overhead loop state has to be saved and cleared, because the C
+ * dispatch uses loops of its own.
  */
-#define FR_A0   0
-#define FR_A2   4
-#define FR_A3   8
-#define FR_A4   12
-#define FR_A5   16
-#define FR_A6   20
-#define FR_A7   24
-#define FR_A8   28
-#define FR_A9   32
-#define FR_A10  36
-#define FR_A11  40
-#define FR_A12  44
-#define FR_A13  48
-#define FR_A14  52
-#define FR_A15  56
-#define FR_PS   60
-#define FR_SIZE 64
+#define FR_A0     0
+#define FR_A2     4
+#define FR_A3     8
+#define FR_A4     12
+#define FR_A5     16
+#define FR_A6     20
+#define FR_A7     24
+#define FR_A8     28
+#define FR_A9     32
+#define FR_A10    36
+#define FR_A11    40
+#define FR_A12    44
+#define FR_A13    48
+#define FR_A14    52
+#define FR_A15    56
+#define FR_PS     60
+#define FR_A1     64
+#define FR_PC     68
+#define FR_SAR    72
+#define FR_LBEG   76
+#define FR_LEND   80
+#define FR_LCOUNT 84
+#define FR_EPC1   88
+#define FR_SIZE   128           /* 16-byte aligned, with slack for the spill area */
+
+/* ESP-IDF's SPILL_ALL_WINDOWS, kept behind a switch. The handler restores PS.EXCM
+ * before the dispatch, which pins the register window, so nested calls cannot
+ * rotate through the interruptee's ancestor windows and there is nothing to spill.
+ * Set to 1 only if a dispatch ever needs to nest with window rotation. */
+#define XT_ISR_SPILL 0
 
     .section .vector,"ax",@progbits
     .align 4
@@ -243,19 +279,30 @@ xt_alloca_exc:
     .type xt_level1_handler, @function
 
 xt_level1_handler:
-    /* Level 1 is shared by interrupts and exceptions: EXCCAUSE tells them apart,
-     * and treating an Alloca or a LoadProhibited as an interrupt would corrupt the
-     * thread instead of reporting it. */
-    rsr     a0, exccause
-    movi    a2, 4                     /* EXCCAUSE_LEVEL1INTERRUPT */
-    beq     a0, a2, 1f
-    movi    a2, 5                     /* EXCCAUSE_ALLOCA */
-    beq     a0, a2, xt_alloca_exc
-    j       xt_exc_trap
+    /* The address of the diagnostic block has to be parked as a literal in this
+     * section, before any l32r that names it: the linker rejects a literal that
+     * lands after the instruction that uses it. Jump over it. */
+    j       1f
+    .align 4
+.Lisr_diag_lit:
+    .long   xt_isr_diag
 1:
+    /*
+     * Exception entry on this core does not rotate the register window: the
+     * handler sees the interruptee's a0..a15 in the current window, and PS.OWB
+     * holds the caller's window base. a0 is therefore the interruptee's return
+     * address, which is exactly what rfe's RETW needs. EXCSAVE_1 is not written
+     * by the hardware here - it reads 0 - so taking a0 from it, as the generic
+     * XEA2 recipe suggests, returns to address 0 and the core faults on the next
+     * instruction fetch.
+     *
+     * The handler runs on the interrupted thread's stack, so every register it
+     * touches has to be stashed. PS.EXCM is restored before the dispatch, which
+     * pins the register window: nested calls inside the dispatch cannot rotate
+     * through the interruptee's ancestor windows, so ESP-IDF's SPILL_ALL_WINDOWS
+     * is not needed on this path.
+     */
     addi    a1, a1, -FR_SIZE
-    rsr     a2, ps
-    s32i    a2, a1, FR_PS
     s32i    a0, a1, FR_A0
     s32i    a2, a1, FR_A2
     s32i    a3, a1, FR_A3
@@ -272,23 +319,188 @@ xt_level1_handler:
     s32i    a14, a1, FR_A14
     s32i    a15, a1, FR_A15
 
-    /* INTERRUPT is the pending bitmask over all 32 slots. The handler is entered
-     * for any level-1 slot, so the dispatch has to work out which one it is. */
-    /* C code cannot run in exception mode: PS.EXCM disables the register window,
-     * so the `entry`/`retw` pair every dispatched handler compiles to would not
-     * rotate anything. Clear EXCM, keep interrupts masked at level 1, and let the
-     * window machinery work. rfe restores PS from the saved copy, so the value we
-     * stash above is what the interruptee gets back.
+    /* The interruptee's stack pointer is the frame base plus the frame size. */
+    addi    a0, a1, FR_SIZE
+    s32i    a0, a1, FR_A1
+    rsr     a0, ps
+    s32i    a0, a1, FR_PS
+    rsr     a0, epc1
+    s32i    a0, a1, FR_PC
+    rsr     a0, sar
+    s32i    a0, a1, FR_SAR
+    rsr     a0, lbeg
+    s32i    a0, a1, FR_LBEG
+    rsr     a0, lend
+    s32i    a0, a1, FR_LEND
+    rsr     a0, lcount
+    s32i    a0, a1, FR_LCOUNT
+    movi    a0, 0
+    wsr     a0, lcount                /* the dispatch's own loops must not rewind
+                                       * the interruptee's */
+    rsync
+
+    /* Level 1 is shared by interrupts and exceptions: EXCCAUSE tells them apart,
+     * and treating an Alloca or a LoadProhibited as an interrupt would corrupt the
+     * thread instead of reporting it. */
+    rsr     a0, exccause
+    movi    a2, 4                     /* EXCCAUSE_LEVEL1INTERRUPT */
+    beq     a0, a2, 1f
+    movi    a2, 5                     /* EXCCAUSE_ALLOCA */
+    beq     a0, a2, xt_alloca_exc
+    j       xt_exc_trap
+1:
+
+    /* Bring-up diagnostic: entry count and the window state the interruptee was
+     * in. a0 is already saved in the frame, so it is free scratch here. */
+    /* a0 is the interruptee's return address, so it has to be captured before
+     * it becomes the scratch register; the base pointer goes in a3. */
+    l32r    a3, .Lisr_diag_lit
+    s32i    a0, a3, 64
+    s32i    a2, a3, 68
+    s32i    a3, a3, 72
+    s32i    a4, a3, 76
+    s32i    a5, a3, 80
+    s32i    a6, a3, 84
+    s32i    a7, a3, 88
+    s32i    a8, a3, 92
+    s32i    a9, a3, 96
+    s32i    a10, a3, 100
+    s32i    a11, a3, 104
+    s32i    a12, a3, 108
+    s32i    a13, a3, 112
+    s32i    a14, a3, 116
+    s32i    a15, a3, 120
+
+    l32r    a0, .Lisr_diag_lit
+    l32i    a2, a0, 0
+    addi    a2, a2, 1
+    s32i    a2, a0, 0
+    rsr     a2, ps
+    s32i    a2, a0, 4
+    rsr     a2, windowbase
+    s32i    a2, a0, 8
+    rsr     a2, windowstart
+    s32i    a2, a0, 12
+    s32i    a7, a0, 48
+
+    /* C code cannot run in exception mode: PS.EXCM pins the register window, so
+     * the entry/retw pair every dispatched handler compiles to would not rotate
+     * anything. INTLEVEL is raised to XCHAL_EXCM_LEVEL (3) while EXCM is cleared,
+     * so level 1 cannot re-open to itself, and window overflow is enabled in case
+     * the dispatch nests deeply.
      */
-    movi    a2, 0x00040001            /* PS_INTLEVEL(1) | PS_WOE, EXCM clear */
+    movi    a2, 0x00040023            /* PS_INTLEVEL(3) | PS_UM | PS_WOE */
     wsr     a2, ps
     rsync
 
-    rsr     a2, interrupt
+#if XT_ISR_SPILL
+    /* ESP-IDF's SPILL_ALL_WINDOWS, run with a1 at the interruptee's frame: the
+     * overflow handlers walk the ABI base-save chain, and only the interruptee's
+     * frames have a valid one. EPC1 is stashed because the overflow exceptions
+     * overwrite it. */
+    rsr     a2, ps
+    rsr     a0, epc1
+    l32i    a1, a1, FR_A1
+    and     a12, a12, a12
+    rotw    3
+    and     a12, a12, a12
+    rotw    3
+    and     a12, a12, a12
+    rotw    3
+    and     a12, a12, a12
+    rotw    3
+    and     a12, a12, a12
+    rotw    4
+    addi    a1, a1, -FR_SIZE
+    wsr     a2, ps
+    rsync
+    wsr     a0, epc1
+    rsync
+#endif
+
+    /* INTERRUPT is the pending bitmask over all 32 slots. The dispatch is entered
+     * with CALLINC 8, so the windowed ABI's first argument is the caller's a10.
+     */
+    rsr     a10, interrupt
     call8   xt_irq_dispatch
 
+    /* Window state as the dispatch left it, before the interruptee's registers
+     * are put back. a0-a15 are all going to be reloaded from the frame, so any
+     * two of them are scratch here. */
+    l32r    a2, .Lisr_diag_lit
+    rsr     a3, ps
+    s32i    a3, a2, 16
+    rsr     a3, windowbase
+    s32i    a3, a2, 20
+    rsr     a3, windowstart
+    s32i    a3, a2, 24
+    s32i    a0, a2, 32
+    s32i    a1, a2, 36
+    l32i    a3, a1, FR_A0
+    s32i    a3, a2, 40
+    l32i    a3, a1, FR_A1
+    s32i    a3, a2, 44
+    l32i    a3, a1, FR_A7
+    s32i    a3, a2, 52
+    /* What the frame actually contains at exit: if any of these differs from
+     * the entry snapshot, the dispatch overwrote the handler's frame. */
+    l32i    a3, a1, FR_A0
+    s32i    a3, a2, 128
+    l32i    a3, a1, FR_A2
+    s32i    a3, a2, 132
+    l32i    a3, a1, FR_A3
+    s32i    a3, a2, 136
+    l32i    a3, a1, FR_A4
+    s32i    a3, a2, 140
+    l32i    a3, a1, FR_A5
+    s32i    a3, a2, 144
+    l32i    a3, a1, FR_A6
+    s32i    a3, a2, 148
+    l32i    a3, a1, FR_A7
+    s32i    a3, a2, 152
+    l32i    a3, a1, FR_A8
+    s32i    a3, a2, 156
+    l32i    a3, a1, FR_A9
+    s32i    a3, a2, 160
+    l32i    a3, a1, FR_A10
+    s32i    a3, a2, 164
+    l32i    a3, a1, FR_A11
+    s32i    a3, a2, 168
+    l32i    a3, a1, FR_A12
+    s32i    a3, a2, 172
+    l32i    a3, a1, FR_A13
+    s32i    a3, a2, 176
+    l32i    a3, a1, FR_A14
+    s32i    a3, a2, 180
+    l32i    a3, a1, FR_A15
+    s32i    a3, a2, 184
+
+    l32i    a2, a1, FR_SAR
+    wsr     a2, sar
+    rsync
+    l32i    a2, a1, FR_LBEG
+    l32i    a3, a1, FR_LEND
+    l32i    a4, a1, FR_LCOUNT
+    wsr     a2, lbeg
+    wsr     a3, lend
+    wsr     a4, lcount
+    rsync
+    /* PS.CALLINC has to be zero when rfe executes. rfe is RESTOREPS + RETW, and
+     * RETW rotates the window back by CALLINC. The handler was entered by a jump
+     * from the vector, not by a call, so there is no forward rotation to undo:
+     * leaving CALLINC at the interruptee's value (8 here) moves windowbase two
+     * windows down and the thread resumes with the wrong registers. ESP-IDF gets
+     * this for free because its whole exception path is call0; we call the
+     * dispatch with call8, so the field is cleared explicitly. RESTOREPS is a
+     * no-op at INTLEVEL 0, so the value written here is the one RETW sees.
+     */
     l32i    a2, a1, FR_PS
+    movi    a3, -0x10000              /* clear PS bits 16-17 (CALLINC) */
+    and     a2, a2, a3
     wsr     a2, ps
+    rsync
+    l32i    a2, a1, FR_PC
+    wsr     a2, epc1
     rsync
     l32i    a0, a1, FR_A0
     l32i    a2, a1, FR_A2
@@ -305,8 +517,9 @@ xt_level1_handler:
     l32i    a13, a1, FR_A13
     l32i    a14, a1, FR_A14
     l32i    a15, a1, FR_A15
-    addi    a1, a1, FR_SIZE
+    l32i    a1, a1, FR_A1
 
+    rsync
     rfe
 
 /*
@@ -314,11 +527,30 @@ xt_level1_handler:
  * internal SRAM, which survives the reset esptool performs when it attaches, then
  * spin so the chip stays reachable.
  */
-    .section .ibss,"aw",@progbits
+    /* Word-only scratch on the instruction bus: the handler reaches it with l32r,
+     * which cannot span the 0x6F0000 gap to the data-bus view of internal SRAM. */
+    .section .iramdata,"aw",@progbits
+    .align 4
+
+    .section .iramdata,"aw",@progbits
+    .align 4
+    .section .iramdata,"aw",@progbits
     .align 4
     .global xt_exc_dump
 xt_exc_dump:
-    .word 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+
+    .section .iramdata,"aw",@progbits
+    .align 4
+    .global xt_isr_diag
+xt_isr_diag:
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+
 
     .section .vector,"ax",@progbits
     .align 4
@@ -344,8 +576,73 @@ xt_exc_trap:
     s32i    a4, a3, 12
     s32i    a0, a3, 16
     s32i    a1, a3, 20
+    rsr     a4, ps
+    s32i    a4, a3, 24
+    rsr     a4, windowbase
+    s32i    a4, a3, 28
+    rsr     a4, windowstart
+    s32i    a4, a3, 32
+    rsr     a4, excsave1
+    s32i    a4, a3, 36
+    rsr     a4, intenable
+    s32i    a4, a3, 40
+    rsr     a4, interrupt
+    s32i    a4, a3, 44
 3:
     j       3b
+
+    /* An unused vector reached by accident: record the cause and spin, so the
+     * board is still reachable over the serial console instead of running with a
+     * corrupted window. */
+    .macro XT_TRAP id
+    j       1f
+    .align  4
+2:
+    .long   xt_exc_dump
+1:
+    l32r    a3, 2b
+    movi    a4, 0xbeef
+    s32i    a4, a3, 0
+    movi    a4, \id
+    s32i    a4, a3, 4
+    rsr     a4, exccause
+    s32i    a4, a3, 8
+    rsr     a4, epc1
+    s32i    a4, a3, 12
+    rsr     a4, excvaddr
+    s32i    a4, a3, 16
+    rsr     a4, windowbase
+    s32i    a4, a3, 20
+    rsr     a4, ps
+    s32i    a4, a3, 24
+3:
+    j       3b
+    .endm
+
+    .global xt_unused_trap2
+xt_unused_trap2:
+    XT_TRAP 2
+    .global xt_unused_trap3
+xt_unused_trap3:
+    XT_TRAP 3
+    .global xt_unused_trap4
+xt_unused_trap4:
+    XT_TRAP 4
+    .global xt_unused_trap5
+xt_unused_trap5:
+    XT_TRAP 5
+    .global xt_unused_trap6
+xt_unused_trap6:
+    XT_TRAP 6
+    .global xt_unused_trapNMI
+xt_unused_trapNMI:
+    XT_TRAP 7
+    .global xt_unused_trapINV
+xt_unused_trapINV:
+    XT_TRAP 8
+    .global xt_unused_trapHW
+xt_unused_trapHW:
+    XT_TRAP 9
 
     .global xt_double_trap
     .type xt_double_trap, @function
