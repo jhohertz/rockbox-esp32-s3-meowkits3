@@ -170,6 +170,22 @@ int main(int argc, char *argv[])
     sys_handle_argv(argc, argv);
 #else
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
+static void tick_task_thread(void)
+{
+    /* The level-1 ISR on this core is a leaf: it only advances current_tick.
+     * The registered tick tasks (button polling, backlight timeout, ...) run
+     * from a thread instead, so nothing in the interrupt path nests into C code
+     * that rotates the register window. */
+    static int loops;
+    while (true)
+    {
+        sleep(1);
+        if (loops++ < 3 || loops % 100 == 0)
+            boot_trace_hex((unsigned int)current_tick);
+        call_tick_tasks();
+    }
+}
+
 int main(void)
 {
 #endif
@@ -418,6 +434,8 @@ static void init(void)
     boot_trace('1');
     button_init();
     boot_trace('2');
+    create_thread(tick_task_thread, NULL, DEFAULT_STACK_SIZE, 0,
+                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
     powermgmt_init();
     boot_trace('3');
     backlight_init();
