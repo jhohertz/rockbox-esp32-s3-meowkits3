@@ -1382,3 +1382,48 @@ unique number (currently max 126 in `configure`, max `MODEL_NUMBER` 132 in
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+
+### Scheduler bring-up: three separate faults that each hid the next
+
+Boot appeared to "hang" at `storage_init`. It was three independent bugs, and
+each one masked the next, so fixing one revealed the following one:
+
+1. **The main thread's stack is not munged.** `switch_thread()` tests
+   `thread->stack[0] != DEADBEEF` to detect overflow. `create_thread()` writes
+   the pattern into every stack it allocates, but the main thread's stack is the
+   linker's `.stack` region, which nothing initialises. The first scheduler
+   switch therefore called `thread_stkov()` → `panicf()`. The MIPS crt0s
+   (`ingenic_x1000/crt0.S`, `ingenic_jz47xx/crt0.S`) already fill it with
+   `0xDEADBEEF`; `firmware/target/xtensa/crt0.S` now does the same, after the
+   `.srambss` zero loop and before the first call into C.
+
+2. **`load_context()` zeroed PS on a thread's first run.** `PS.WOE` is bit 18,
+   so `wsr a7, ps` with `a7 = 0` also disabled window overflow. `xt_thread_start`
+   then faulted on its own `entry` with `EXCCAUSE_ILLEGAL` (the exception dump
+   reads `0x0` in the cause slot and `epc1 = xt_thread_start`). Only
+   `windowbase`, `windowstart` and `sar` need clearing; write `0x40000` to PS.
+
+3. **`core_sleep()` was a bare `waiti 0`.** `switch_thread()` enters the idle
+   loop after `disable_irq()`, which on this port raises `PS.INTLEVEL` to 15.
+   `WAITI n` waits for a slot of level `n+1` or higher that can actually be
+   taken, and level 1 cannot be taken while the core is already at level 15 — so
+   the core stalled with the tick pending and never woke. Drop the level before
+   waiting (ARM's `core_sleep()` does the equivalent with `enable_irq()` after
+   `wfi`).
+
+### Keep the level-1 ISR a leaf
+
+The tick ISR cannot dispatch into C. Anything that nests rotates the register
+window through the overflow/underflow handlers, and the handler's frame is made
+with `addi`, not `entry`, so it has no ABI base-save area for the chain to walk.
+`timer_irq()` now only reads `TN_INT_ST`, advances `current_tick` and clears the
+interrupt. The registered tick tasks (`button_tick`, the backlight timeout, ...)
+run from `tick_task_thread()` in `apps/main.c`, which does `sleep(1)` then
+`call_tick_tasks()`. Same rate, no window rotation in the interrupt path.
+
+### Reading runtime register state
+
+`esptool read_mem` hard-resets the chip before it attaches, so every peripheral
+register it reports is the **reset default**, not the state the application left.
+Use the boot-log ring (`boot_trace`/`boot_trace_hex`) or the `xt_isr_diag` /
+`xt_exc_dump` blocks in `.iramdata` for anything runtime-specific.

@@ -124,6 +124,12 @@ static inline void restore_irq(int oldlevel)
  */
 static inline void core_sleep(void)
 {
+    extern void boot_trace(char c);
+    static int slept;
+    if (slept < 3) {
+        boot_trace('S');
+        slept++;
+    }
     set_irq_level(0);
     asm volatile ("waiti 0");
 }

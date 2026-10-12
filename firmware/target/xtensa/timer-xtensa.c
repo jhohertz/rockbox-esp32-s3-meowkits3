@@ -118,21 +118,16 @@ void timer_stop(void)
 
 /* Called from the level-1 dispatch. Runs on the interrupted thread's stack, so it
  * has to stay small. */
+/* The ISR has to stay a leaf. Everything that nests - the tick tasks, the
+ * backlight timeout, button polling - is run from tick_task_thread() in
+ * apps/main.c, which wakes on current_tick. Only the timer's own bookkeeping
+ * belongs here. */
 void ICODE_ATTR timer_irq(void)
 {
     unsigned int st = rd(TG1(XT_TN_INT_ST));
 
-    /* Bring-up: a tick character every 100 ticks, so "is the kernel still
-     * running?" stays visible without filling the ring. */
-    static int ticked;
-    ++ticked;
-    if (ticked <= 5 || ticked % 1000 == 0) {
-        boot_trace('t');
-        boot_trace_hex((unsigned int)ticked);
-    }
-
     if (st & 1)
-        call_tick_tasks();
+        current_tick++;
 
     if (st & 2)
     {
