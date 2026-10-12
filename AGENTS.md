@@ -1114,7 +1114,18 @@ Things that are not obvious from the register list:
   nothing guarantees when we enter Rockbox from ESP-IDF's bootloader, so XTAL is the
   only dependable source. From 40 MHz that means 400 kHz exactly (host 10, card 5)
   and 20 MHz for the "25 MHz" slot; 50 MHz is unreachable, so the target must not
-  advertise `SDMMC_BUS_CLOCK_50MHZ`.
+  advertise `SDMMC_BUS_CLOCK_50MHZ`. Measured on this board: the BBPLL path produces
+  no clock even with `BBPLL_FORCE_PU` set in `RTC_CNTL_OPTIONS0`, so every SDHOST
+  clock must come from XTAL.
+- **Writing the divisors is not enough — the CIU has to be told.** The clock settings
+  only reach the card interface unit when a command with `update_clk_reg` (bit 21) is
+  issued. It is not a real SD command: index 0, no argument, no response, plus
+  `wait_complete` (13) and `start_command` (31). ESP-IDF's `sd_host` issues it after
+  every clock change, in the order *disable clock → update → program divisors →
+  update → enable clock + low power → update*. Without it `CMD_START` is accepted and
+  then cleared, `RINTSTS` stays 0, `STATUS.cmd_fsm_state` stays 0 and `tcbcnt` (bytes
+  actually sent to the card) is 0. That looks exactly like a dead peripheral; it is
+  not, and no amount of register poking will reveal it.
 - `phase_dout = 1` (90 degrees) is what ESP-IDF sets for the card clock, and it only
   applies to a command whose `use_hold_reg` bit is set.
 - Signals for slot 0 are CLK 172, CMD 178, D0 180 — and CMD/D0 are bidirectional, so
@@ -1355,7 +1366,80 @@ unique number (currently max 126 in `configure`, max `MODEL_NUMBER` 132 in
 
 ---
 
-## 9. Gotchas
+## 9. Bring-up discipline: clocks, reset and routing
+
+Most "the peripheral does nothing" bugs on this port are not logic bugs. They are one
+of three setup facts that were never established, and each one costs a session to
+rediscover. Before debugging a peripheral's behaviour, confirm all three.
+
+**1. The clock gate is enabled.** Every peripheral has a bit in
+`SYSTEM_PERIP_CLK_EN0` (`0x600C0018`) or `SYSTEM_PERIP_CLK_EN1` (`0x600C001C`).
+Several default to 0 — SDHOST (bit 7 of EN1), I2C0 (bit 7 of EN0), timer group 1.
+Reading ID registers can still work while the functional clock is off, so a good
+`VERID` is not proof the block is clocked.
+
+**2. The reset is released.** The matching bits are in `SYSTEM_PERIP_RST_EN0`
+(`0x600C0020`) and `SYSTEM_PERIP_RST_EN1` (**`0x600C0024`**). The group offsets are
+not symmetric with the enable registers, and using `+0x20` for group 1 is the classic
+mistake: the write lands in RST_EN0, the peripheral stays held in reset, and every
+write to it appears to be ignored. Some reset bits read **1** in the reset state, so
+"the register already has the bit set" means *held in reset*, not *already released*.
+
+**3. The clock source actually exists.** A divider fed by an unpowered source is zero.
+For SDHOST that means either powering the BBPLL (`RTC_CNTL_OPTIONS0` bit 11
+`BBPLL_FORCE_PU`, bit 10 `BBPLL_FORCE_PD` cleared) or using XTAL. Derive the divisors
+from the source you can guarantee, not from the datasheet's nominal figure.
+
+**4. The signal is routed.** On this chip no peripheral drives a pad directly: the
+signal has to be connected through the GPIO matrix.
+
+| What | Where | Trap |
+|---|---|---|
+| Output routing | `OUT_SEL[pin]` = `GPIO_BASE + 0x554 + 4*pin` | indexed by **pin** |
+| Input routing | `IN_SEL[signal]` = `GPIO_BASE + 0x154 + 4*signal` | indexed by **signal**, not pin |
+| `func_sel` width | 9 bits | masking to 6 truncates every signal above 63 |
+| Bidirectional signals | both halves must be written | SD CMD (178) and D0 (180) need `OUT_SEL` *and* `IN_SEL`; writing only the output half leaves the controller blind |
+| Pad function | IO MUX `MCU_SEL`, bits 14:12 of `IO_MUX_BASE + 0x04 + 4*pin` | GPIO1/2 default to UART0, GPIO17/18 to DAC, pad 43 to UART0 TX, pads 33-37 to SPIIO4-7. A pad left in its default function does not reach the matrix at all |
+| Input enable | IO MUX `FUN_IE`, bit 9 | `GPIO_ENABLE` only gates the output driver; without `FUN_IE` the pad never feeds `GPIO_IN` |
+| Pull-ups | IO MUX `FUN_PU`, bit 8 | `gpio_reg.h`/`gpio_struct.h` have no pull-up bit and `soc_caps.h` has no `SOC_GPIO_SUPPORT_PULL_UP`, which invites the wrong conclusion that the chip has none |
+
+Signal indices worth having at hand: SDHOST CLK 172, CMD 178, D0 180; I2C0 SCL 89,
+SDA 90; GPSPI2/3 CLK 66, Q/MOSI 67, D/MISO 68 (shared between the two controllers);
+LEDC low-speed channel *n* is signal 80 + *n*.
+
+**5. The interrupt is both mapped and unmasked.** Mapping a source to a vector slot
+(`INTERRUPT_CORE0_BASE + 4*source = slot`) is not the same as enabling it: `INTENABLE`
+must have the slot bit set. Slot levels are fixed by the core config — level-1 slots
+are 0-10, 12, 13, 17, 18, and there is no way to program a level because
+`wsr.intlevel` is not a valid opcode on this core.
+
+### Ordering a peripheral bring-up
+
+Do it in this order, and do not move to behaviour debugging until each step is
+confirmed by a readback:
+
+1. Enable the clock gate; read it back.
+2. Clear the reset bit **in the correct group register**; read it back.
+3. Program the clock from a source you have powered; read the register back — the
+   hardware rewrites some fields, so the readback is the real configuration.
+4. Issue the peripheral's own latch/update transaction if it has one (SDHOST:
+   `update_clk_reg`).
+5. Route every signal, both directions for bidirectional ones; read `OUT_SEL` and
+   `IN_SEL` back.
+6. Only then look at the FSM.
+
+A useful discriminator: if the peripheral's `VERID`/`USRID` read correctly but its
+FSM state never changes and its byte counters stay zero, the problem is the clock or
+the latch, not the command you are sending.
+
+### Reading runtime register state
+
+`esptool read_mem` **hard-resets the chip before attaching**, so every peripheral read
+returns reset defaults, never what the running firmware set. To see runtime state, dump
+the registers from inside the firmware into the boot-log ring (`boot_trace_hex`) or into
+`xt_isr_diag`/`xt_exc_dump`.
+
+## 10. Gotchas
 
 - `SOURCES` files are preprocessed by the *target* compiler, so a `#if` in them
   is evaluated per-target. Editing one without a build dir configured gives
@@ -1421,9 +1505,4 @@ interrupt. The registered tick tasks (`button_tick`, the backlight timeout, ...)
 run from `tick_task_thread()` in `apps/main.c`, which does `sleep(1)` then
 `call_tick_tasks()`. Same rate, no window rotation in the interrupt path.
 
-### Reading runtime register state
-
-`esptool read_mem` hard-resets the chip before it attaches, so every peripheral
-register it reports is the **reset default**, not the state the application left.
-Use the boot-log ring (`boot_trace`/`boot_trace_hex`) or the `xt_isr_diag` /
-`xt_exc_dump` blocks in `.iramdata` for anything runtime-specific.
+For runtime register state see §9, "Reading runtime register state".
