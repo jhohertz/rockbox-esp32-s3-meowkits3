@@ -2,8 +2,37 @@
 
 **Branch:** `esp32-s3-ports`
 **Repo:** `/home/jhohertz/co/rockbox`
-**HEAD:** `8dbde33486`, tree clean apart from the changes described below
+**HEAD:** `fc100af72b`, tree clean apart from the changes described below
 (HANDOFF.md is a session artifact and is deliberately untracked).
+
+### Latest session: the scheduler now runs
+
+The boot stall at `storage_init` turned out to be three independent scheduler
+faults, each masking the next. All three are fixed and committed:
+
+| Fault | Symptom | Fix |
+|---|---|---|
+| main thread's stack never munged with `DEADBEEF` | first `switch_thread()` calls `thread_stkov()` → `panicf()` | `crt0.S` fills `.stack` with `0xDEADBEEF` after zeroing `.srambss` (same as the MIPS crt0s) |
+| `load_context()` wrote `PS = 0` on a thread's first run | `PS.WOE` (bit 18) cleared, so `xt_thread_start`'s `entry` raised `EXCCAUSE_ILLEGAL` | write `0x40000` to PS; only windowbase/windowstart/sar are cleared |
+| `core_sleep()` was a bare `waiti 0` | `disable_irq()` has set `PS.INTLEVEL = 15`; level 1 cannot be taken at level 15, so the idle loop stalled with the tick pending | drop the level before `waiti` |
+
+The tick ISR is now a leaf: `timer_irq()` reads `TN_INT_ST`, increments
+`current_tick` and clears the interrupt. `call_tick_tasks()` moved to
+`tick_task_thread()` in `apps/main.c` (`sleep(1); call_tick_tasks();`).
+
+Measured after those changes: `storage_init` completes, `disk_mount_all()`
+returns 0, `current_tick` reaches 280 (2.8 s of ticks), and `switch_thread()`
+reaches `thread_load_context()` without raising an exception. `xt_exc_dump`
+reads all zero.
+
+**Still open:** the core stops making progress after two scheduler switches —
+the third `switch_thread()` reaches `rtr_queue_make_first()` but not
+`thread_load_context()`. Note that `esptool read_mem` hard-resets the chip, so
+peripheral register reads through it show reset defaults, not runtime state; use
+the boot-log ring or `xt_isr_diag`/`xt_exc_dump` instead.
+
+Unfixed driver bugs carried over: SDHOST writes do not land, FT6336
+transactions time out in the FSM even though the device ACKs under bit-bang.
 
 **Read `AGENTS.md` first.** It is the accumulated hardware reference and every
 register claim in it has been checked against ESP-IDF headers or the SVD. Do not
