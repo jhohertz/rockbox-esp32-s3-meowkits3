@@ -90,6 +90,9 @@ __attribute__((section(".srambss"))) volatile int boot_log_len;
  * fault record when it was nothing of the kind.
  */
 __attribute__((section(".srambss"))) volatile unsigned int diag_record[2][12];
+__attribute__((section(".srambss"))) volatile unsigned int xt_irq_level_hist[64];
+__attribute__((section(".srambss"))) volatile unsigned int xt_irq_caller[64];
+__attribute__((section(".srambss"))) volatile unsigned int xt_irq_level_pos;
 
 /* ICODE_ATTR because boot_trace() is called from the PSRAM bring-up, which runs
  * from .iram while it is reprogramming the MSPI block that feeds the flash

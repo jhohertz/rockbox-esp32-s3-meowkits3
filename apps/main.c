@@ -170,18 +170,17 @@ int main(int argc, char *argv[])
     sys_handle_argv(argc, argv);
 #else
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
+static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
+
 static void tick_task_thread(void)
 {
     /* The level-1 ISR on this core is a leaf: it only advances current_tick.
      * The registered tick tasks (button polling, backlight timeout, ...) run
      * from a thread instead, so nothing in the interrupt path nests into C code
      * that rotates the register window. */
-    static int loops;
     while (true)
     {
-        sleep(1);
-        if (loops++ < 3 || loops % 100 == 0)
-            boot_trace_hex((unsigned int)current_tick);
+        sleep(HZ/2);
         call_tick_tasks();
     }
 }
@@ -190,7 +189,9 @@ int main(void)
 {
 #endif
     CHART(">init");
+    boot_trace('I');
     init();
+    boot_trace('i');
     CHART("<init");
     FOR_NB_SCREENS(i)
     {
@@ -431,15 +432,12 @@ static void init(void)
         global_status.font_id[i] = FONT_SYSFIXED;
     font_init();
     show_logo_boot();
-    boot_trace('1');
     button_init();
-    boot_trace('2');
-    create_thread(tick_task_thread, NULL, DEFAULT_STACK_SIZE, 0,
+    create_thread(tick_task_thread, tick_thread_stack,
+                  sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
     powermgmt_init();
-    boot_trace('3');
     backlight_init();
-    boot_trace('4');
     unicode_init();
 #ifdef HAVE_MULTIVOLUME
     init_volume_names();
@@ -465,11 +463,8 @@ static void init(void)
     gui_syncstatusbar_init(&statusbars);
     gui_sync_skin_init();
     sb_skin_init();
-    boot_trace('5');
     viewportmanager_init();
-    boot_trace('6');
     storage_init();
-    boot_trace('7');
     pcm_init();
     dsp_init();
     settings_reset();
@@ -543,6 +538,13 @@ static void init(void)
     /* current_tick should be ticking by now */
     CHART("ticking");
 
+    /* Xtensa's level-1 ISR is a leaf: it only advances current_tick. The
+     * registered tick tasks have to run from a thread, otherwise they would
+     * nest C code inside an exception frame whose window cannot rotate. */
+    create_thread(tick_task_thread, tick_thread_stack,
+                  sizeof tick_thread_stack, 0,
+                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
+
     unicode_init();
     lcd_init();
 #ifdef HAVE_REMOTE_LCD
@@ -581,11 +583,8 @@ static void init(void)
     m5636_init();
 #endif
 
-    boot_trace('4');
     backlight_init();
-    boot_trace('5');
     button_init();
-    boot_trace('6');
 
     /* Don't initialize power management here if it could incorrectly
      * measure battery voltage, and it's not needed for charging. */
@@ -605,19 +604,12 @@ static void init(void)
 
     /* Keep the order of this 3 (viewportmanager handles statusbars)
      * Must be done before any code uses the multi-screen API */
-    boot_trace('a');
     gui_syncstatusbar_init(&statusbars);
-    boot_trace('b');
     sb_skin_init();
-    boot_trace('c');
     gui_sync_skin_init();
-    boot_trace('d');
     viewportmanager_init();
-    boot_trace('e');
 
-    boot_trace('7');
     rc = storage_init();
-    boot_trace('8');
     CHART("<storage_init");
     if(rc)
     {
@@ -669,11 +661,9 @@ static void init(void)
 
     if (!mounted)
     {
-        boot_trace('9');
         rc = disk_mount_all();
-        boot_trace(':');
-        boot_trace_hex(rc);
-        boot_trace_hex((unsigned)current_tick);
+        boot_trace('M');
+        boot_trace_hex((unsigned)rc);
         if (rc<=0)
         {
             int line=0;

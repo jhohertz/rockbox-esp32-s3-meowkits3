@@ -122,12 +122,25 @@ void timer_stop(void)
  * backlight timeout, button polling - is run from tick_task_thread() in
  * apps/main.c, which wakes on current_tick. Only the timer's own bookkeeping
  * belongs here. */
+__attribute__((section(".srambss"))) volatile unsigned int xt_tick_count;
+__attribute__((section(".srambss"))) volatile unsigned int xt_timer_snap[8];
+
 void ICODE_ATTR timer_irq(void)
 {
     unsigned int st = rd(TG1(XT_TN_INT_ST));
+    xt_tick_count++;
+    xt_timer_snap[0] = st;
+    xt_timer_snap[1] = rd(TG1(XT_TN_INT_ENA));
+    xt_timer_snap[2] = rd(TG1(XT_TN_INT_RAW));
+    xt_timer_snap[3] = rd(TG1(XT_TN_CONFIG(0)));
+    xt_timer_snap[4] = rd(TG1(XT_TN_ALARM_LO(0)));
+    xt_timer_snap[5] = rd(TG1(XT_TN_LO(0)));
+    xt_timer_snap[6] = get_intenable();
+    xt_timer_snap[7] = rd(TG1(XT_TN_LOAD_LO(0)));
 
-    if (st & 1)
+    if (st & 1) {
         current_tick++;
+    }
 
     if (st & 2)
     {

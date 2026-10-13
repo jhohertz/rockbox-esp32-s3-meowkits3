@@ -121,7 +121,6 @@ void lcd_init_device(void)
 
     st7789_init();
 
-    boot_trace('L');                /* panel reset and selected */
 
     lcd_on = true;
     lcd_update();
