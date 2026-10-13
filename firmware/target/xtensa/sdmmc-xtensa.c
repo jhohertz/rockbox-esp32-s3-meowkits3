@@ -71,13 +71,12 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 #define SDMMC_VERID       (XT_SDMMC_BASE + 0x6c)
 #define SDMMC_HCON        (XT_SDMMC_BASE + 0x70)
 #define SDMMC_FIFOTH      (XT_SDMMC_BASE + 0x4c)
-#define SDMMC_CLK         (XT_SDMMC_BASE + 0x7fc)   /* ESP-IDF sdmmc_dev_t.clock */
-#define SDMMC_CLK_ALT     (XT_SDMMC_BASE + 0x800)
-#define SDMMC_CDETECT     (XT_SDMMC_BASE + 0x4c)
-#define SDMMC_TCBCNT      (XT_SDMMC_BASE + 0x58)   /* bits/bytes pushed to the card */
+#define SDMMC_CLK         (XT_SDMMC_BASE + 0x800)
+#define SDMMC_TCBCNT      (XT_SDMMC_BASE + 0x58)   /* bits transferred to the card */
 #define SDMMC_TBBCNT      (XT_SDMMC_BASE + 0x5c)   /* bytes pushed host -> FIFO */
 
-/* CTRL */#define CTRL_RESET        (1u << 0)
+/* CTRL */
+#define CTRL_RESET        (1u << 0)
 #define CTRL_FIFO_RESET   (1u << 1)
 #define CTRL_DMA_RESET    (1u << 2)
 #define CTRL_INT_ENABLE   (1u << 4)
@@ -152,7 +151,7 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 #define DESC_OWNER        (1u << 31)
 
 #define DESC_BUF_BYTES    4096    /* matches ESP-IDF's SDMMC_DMA_MAX_BUF_LEN */
-#define MAX_NR_BLOCKS     128
+#define MAX_NR_BLOCKS     32      /* bounded by BOUNCE_BYTES below */
 #define DESC_COUNT        (MAX_NR_BLOCKS * SD_BLOCK_SIZE / DESC_BUF_BYTES)
 
 struct sdmmc_desc
@@ -174,8 +173,31 @@ struct sdmmc_ctl
 };
 
 static struct sdmmc_host sdmmc_host;
-static struct sdmmc_ctl sdmmc_ctl;
+/* The IDMAC walks the descriptor ring straight out of memory. ESP-IDF allocates it
+ * with MALLOC_CAP_INTERNAL (SOC_SDMMC_PSRAM_DMA_CAPABLE is not defined for esp32s3),
+ * so the ring belongs in internal SRAM, not in the PSRAM window that plain .bss
+ * lands in.
+ */
+static struct sdmmc_ctl sdmmc_ctl __attribute__((section(".srambss")));
 static struct semaphore sdmmc_sem;
+
+/*
+ * The IDMAC is an AHB master that does not go through the Ext_RAM MMU, so a
+ * buffer in the PSRAM window is invisible to it: the descriptor is retired and
+ * no data arrives. ESP-IDF enforces the same rule by allocating SDMMC DMA
+ * buffers with MALLOC_CAP_INTERNAL. Rockbox's disk cache lives in the PSRAM
+ * audiobuffer region, so transfers that do not already sit in internal SRAM are
+ * bounced through this ring.
+ */
+#define BOUNCE_BYTES (16u * 1024u)
+static unsigned char sdmmc_bounce[BOUNCE_BYTES] __attribute__((section(".srambss")));
+
+static bool dma_reachable(const void *p)
+{
+    uintptr_t a = (uintptr_t)p;
+
+    return a >= 0x3FC88000u && a < 0x3FD00000u;
+}
 
 /*
  * Two-stage divider. host_div is the clock generator (1..16), card_div is the
@@ -226,26 +248,71 @@ static bool dma_finished(const struct sdmmc_ctl *ctl, int n)
     return true;
 }
 
-static int sdmmc_irq_trace;
-
+/*
+ * The ISR is the only reader of RINTSTS and IDSTS. The submitting thread never
+ * touches them, so the read-modify-clear of a latched status register has exactly
+ * one owner and no event can be consumed twice or lost between two consumers.
+ * This mirrors ESP-IDF's sd_host_isr, which clears the latched bits and hands the
+ * event to the waiting transaction.
+ */
 void ICODE_ATTR sdmmc_irq(void)
 {
-    if (sdmmc_irq_trace < 8) {
-        sdmmc_irq_trace++;
-    }
-    uint32_t pending = rd(SDMMC_MINTSTS) & (CMD_ERR_MASK | DATA_ERR_MASK | INT_CMD_DONE);
-    wr(SDMMC_RINTSTS, pending);
+    uint32_t pending = rd(SDMMC_MINTSTS)
+                     & (CMD_ERR_MASK | DATA_ERR_MASK | INT_CMD_DONE | INT_DATA_OVER);
+    if (pending)
+        wr(SDMMC_RINTSTS, pending);
 
     uint32_t dma = rd(SDMMC_IDSTS) & (DMA_DONE_MASK | DMA_ERR_MASK);
-    wr(SDMMC_IDSTS, dma);
+    if (dma)
+        wr(SDMMC_IDSTS, dma);
 
     /* RINTSTS is cleared by the write, so MINTSTS goes to zero with it. The events
-     * have to be latched here or the waiting thread would see nothing. */
-    sdmmc_ctl.events |= pending;
-    sdmmc_ctl.dma_events |= dma;
+     * have to be latched here or the waiting thread would see nothing.
+     */
+    if (pending || dma) {
+        sdmmc_ctl.events |= pending;
+        sdmmc_ctl.dma_events |= dma;
+    }
+}
 
-    if (pending || dma)
-        semaphore_release(&sdmmc_sem);
+/* Block until the ISR has latched an event. Bounded so a wedged peripheral cannot
+ * hang the boot. Returns false on timeout. */
+static bool sdmmc_wait_event(struct sdmmc_ctl *ctl)
+{
+    for (int tick = 0; tick < 2 * HZ; tick++) {
+        if (ctl->events || ctl->dma_events)
+            return true;
+        udelay(10000 / HZ);
+    }
+
+    return false;
+}
+
+/*
+ * The CIU captures the response into four 32-bit registers, least significant word
+ * first. For a 48-bit response the CIU leaves the CRC out and puts the payload in
+ * RESP0: CMD8 (R7) reads back 0x1aa, CMD55 (R1) 0x120, CMD41 (R3) the OCR. A 128-bit
+ * CID or CSD uses all four registers, again least-significant word in RESP0, so the
+ * long case has to be reversed: sd_parse_csd(), the R1 status tests and the RCA
+ * extraction all expect the most significant word in data[0]. Verified against a real
+ * card: reversed, the CSD decodes as CSD v2.0 with 124735488 blocks; unreversed it is
+ * garbage.
+ */
+static void read_response(struct sdmmc_host_response *resp, int len)
+{
+    if (len == 4) {
+        /* The CIU packs a 128-bit response least-significant-word first; sd_parse_csd()
+         * and the CID/CSD field extraction expect the most significant word in data[0]. */
+        resp->data[0] = rd(SDMMC_RESP(3));
+        resp->data[1] = rd(SDMMC_RESP(2));
+        resp->data[2] = rd(SDMMC_RESP(1));
+        resp->data[3] = rd(SDMMC_RESP(0));
+    } else {
+        resp->data[0] = rd(SDMMC_RESP(0));
+        resp->data[1] = 0;
+        resp->data[2] = 0;
+        resp->data[3] = 0;
+    }
 }
 
 static int sdmmc_submit_command(void *controller,
@@ -259,6 +326,8 @@ static int sdmmc_submit_command(void *controller,
     uint32_t bytes = 0;
     int ndesc = 0;
     int rc = SDMMC_STATUS_OK;
+    void *dma_buf = NULL;
+    bool bounced = false;
 
     /* CMD0 is the only command that sends the 80-clock initialisation sequence,
      * and it must not wait for a previous transfer. Everything else waits. */
@@ -299,13 +368,23 @@ static int sdmmc_submit_command(void *controller,
         if (ndesc > DESC_COUNT || ((uintptr_t)cmd->buffer & 3))
             return SDMMC_STATUS_ERROR;
 
+        dma_buf = cmd->buffer;
+        if (!dma_reachable(cmd->buffer)) {
+            if (bytes > BOUNCE_BYTES)
+                return SDMMC_STATUS_ERROR;
+            dma_buf = sdmmc_bounce;
+            bounced = true;
+            if (SDMMC_DATA_DIR(cmd->flags) == SDMMC_DATA_WRITE)
+                memcpy(sdmmc_bounce, cmd->buffer, bytes);
+        }
+
         cmdreg |= CMD_DATA_EXPECTED;
         if (SDMMC_DATA_DIR(cmd->flags) == SDMMC_DATA_WRITE)
-            commit_dcache_range(cmd->buffer, bytes);
+            commit_dcache_range(dma_buf, bytes);
         else
-            discard_dcache_range(cmd->buffer, bytes);
+            discard_dcache_range(dma_buf, bytes);
 
-        arm_descriptors(ctl, cmd->buffer, bytes);
+        arm_descriptors(ctl, dma_buf, bytes);
 
         wr(SDMMC_BYTCNT, bytes);
         wr(SDMMC_BLKSIZ, cmd->block_len);
@@ -335,63 +414,48 @@ static int sdmmc_submit_command(void *controller,
 
     /* A command with no data is finished when the controller reports it done. A
      * transfer is finished when the data has both left the card and reached
-     * memory. The controller's own response/data timeouts bound this, but the
-     * loop is bounded too so a wedged peripheral cannot hang the thread. */
-    bool done = false;
-    for (int tick = 0; tick < 2 * HZ; tick++) {
-
-        /* Poll the controller directly. The events are latched in RINTSTS/IDSTS
-         * and cleared by writing them back, so a poll sees exactly what the
-         * interrupt would have reported. */
-        uint32_t status = rd(SDMMC_RINTSTS) & (CMD_ERR_MASK | INT_CMD_DONE |
-                                              INT_DATA_OVER);
-        uint32_t dma = rd(SDMMC_IDSTS) & (DMA_DONE_MASK | DMA_ERR_MASK);
-
-        if (status)
-            wr(SDMMC_RINTSTS, status);
-        if (dma)
-            wr(SDMMC_IDSTS, dma);
-
-        if (status || dma) {
-            ctl->events |= status;
-            ctl->dma_events |= dma;
-
-            if (status & CMD_ERR_MASK) {
-                rc = (status & INT_RTO) ? SDMMC_STATUS_TIMEOUT
-                                        : SDMMC_STATUS_ERROR;
-                done = true;
-                break;
-            }
-
-            if (SDMMC_DATA_PRESENT(cmd->flags)) {
-                if (dma & DMA_ERR_MASK) {
-                    rc = SDMMC_STATUS_ERROR;
-                    done = true;
-                    break;
-                }
-                if ((status & INT_DATA_OVER) && dma_finished(ctl, ndesc)) {
-                    done = true;
-                    break;
-                }
-                udelay(250);
-                continue;
-            }
-
-            if (status & INT_CMD_DONE) {
-                if (cmd->flags & SDMMC_RESP_BUSY) {
-                    int waited = 0;
-                    while ((rd(SDMMC_STATUS) & STATUS_DATA_BUSY) && waited < 1000) {
-                        udelay(100);
-                        waited++;
-                    }
-                    if (waited >= 1000)
-                        rc = SDMMC_STATUS_TIMEOUT;
-                }
-                done = true;
-                break;
-            }
+     * memory. Every event arrives through sdmmc_irq(); this thread only reads the
+     * latched copy the ISR made. The only register polled here is STATUS, which
+     * is a level, not a latch, so it cannot race with the ISR.
+     */
+    while (true) {
+        if (!sdmmc_wait_event(ctl)) {
+            rc = SDMMC_STATUS_TIMEOUT;
+            break;
         }
-        udelay(250);
+
+        uint32_t status = ctl->events;
+        uint32_t dma = ctl->dma_events;
+
+        if (status & CMD_ERR_MASK) {
+            rc = (status & INT_RTO) ? SDMMC_STATUS_TIMEOUT : SDMMC_STATUS_ERROR;
+            break;
+        }
+
+        if (SDMMC_DATA_PRESENT(cmd->flags)) {
+            if (dma & DMA_ERR_MASK) {
+                rc = SDMMC_STATUS_ERROR;
+                break;
+            }
+            /* DATA_OVER says the card finished sending; the owner bits say the
+             * IDMAC finished writing. Both are required. */
+            if ((status & INT_DATA_OVER) && dma_finished(ctl, ndesc))
+                break;
+            continue;
+        }
+
+        if (status & INT_CMD_DONE) {
+            if (cmd->flags & SDMMC_RESP_BUSY) {
+                int waited = 0;
+                while ((rd(SDMMC_STATUS) & STATUS_DATA_BUSY) && waited < 1000) {
+                    udelay(100);
+                    waited++;
+                }
+                if (waited >= 1000)
+                    rc = SDMMC_STATUS_TIMEOUT;
+            }
+            break;
+        }
     }
 
 
@@ -400,8 +464,15 @@ static int sdmmc_submit_command(void *controller,
         wr(SDMMC_BMOD, 0);
 
         if (rc == SDMMC_STATUS_OK && SDMMC_DATA_DIR(cmd->flags) == SDMMC_DATA_READ)
-            discard_dcache_range(cmd->buffer, bytes);
+            discard_dcache_range(dma_buf, bytes);
     }
+
+    if (rc == SDMMC_STATUS_OK && resp && ctl->resp_len)
+        read_response(resp, ctl->resp_len);
+
+    if (bounced && rc == SDMMC_STATUS_OK &&
+        SDMMC_DATA_DIR(cmd->flags) == SDMMC_DATA_READ)
+        memcpy(cmd->buffer, sdmmc_bounce, bytes);
 
     return rc;
 }
@@ -465,8 +536,19 @@ static void set_clock(uint32_t clock)
     clock_update_command();
 
     /* The timeout is counted in card output clocks, so it has to be derived from
-     * the clock we actually generated. */
-    wr(SDMMC_TMOUT, 255u | (255u << 8));
+     * the clock we actually generated. ESP-IDF uses a 255-cycle response timeout
+     * and a data timeout of 100 ms worth of card clocks; a data timeout of zero
+     * (what a bare TMOUT = 255 leaves in the 24-bit data field) makes the data FSM
+     * fire immediately on the first transfer.
+     */
+    uint32_t card_khz = 40000u / host_div;
+    if (card_div)
+        card_khz /= 2u * card_div;
+    uint32_t data_timeout = 100u * card_khz;
+    if (data_timeout > 0xffffffu)
+        data_timeout = 0xffffffu;
+
+    wr(SDMMC_TMOUT, 255u | (data_timeout << 8));
 }
 
 static void sdmmc_set_power_enabled(void *controller, bool enable)
@@ -569,10 +651,11 @@ void sdmmc_host_target_init(void)
      * documented default state rather than whatever a previous image left.
      */
     wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1u << 7));
-    /* SYSTEM_PERIP_RST_EN1 is at +0x24, not +0x20 (that is RST_EN0). The SDHOST
-     * reset bit reads 1 out of the reset state, so the block is held in reset
-     * until it is cleared explicitly.
+    /* SYSTEM_PERIP_RST_EN1 is at +0x24, not +0x20 (that is RST_EN0). ESP-IDF's
+     * sdmmc_ll_reset_register asserts the reset and then releases it; the bit reads
+     * 1 out of the reset state, so the block is held in reset until we clear it.
      */
+    wr(XT_SYSTEM_BASE + 0x24, rd(XT_SYSTEM_BASE + 0x24) | (1u << 7));
     wr(XT_SYSTEM_BASE + 0x24, rd(XT_SYSTEM_BASE + 0x24) & ~(1u << 7));
     udelay(10);
 
@@ -604,49 +687,18 @@ void sdmmc_host_target_init(void)
     gpio_pullup(48, 1);
     gpio_pullup(21, 1);
 
-    /* Pad probe, both output-enable modes. oen_sel=1 takes the pad enable from
-     * GPIO_ENABLE; oen_sel=0 takes it from the peripheral, which is what ESP-IDF
-     * uses for the SDHOST. */
-    static const int probe_pads[] = {45, 47, 48, 21};
-    wr(SDMMC_CTRL, CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET);
-    { int w = 0; while (rd(SDMMC_CTRL) & (CTRL_RESET|CTRL_FIFO_RESET|CTRL_DMA_RESET)) { if (++w>1000) break; udelay(10); } }
-    wr(SDMMC_INTMASK, 0);
-    wr(SDMMC_TMOUT, 255u | (255u << 8));
-    wr(SDMMC_CLKSRC, 0);
-    wr(SDMMC_CLKENA, 0);
-    clock_update_command();
-    wr(SDMMC_CLK, (1u << 0) | (4u << 9) | (9u << 13) | (9u << 17));
-    wr(SDMMC_CLKDIV, 255u);
-    clock_update_command();
-    wr(SDMMC_CLKENA, 1u);
-    clock_update_command();
-
-    for (int oen = 1; oen >= 0; oen--) {
-        for (int i = 0; i < 4; i++) {
-            int pad = probe_pads[i];
-            wr(GPIO_FUNC_OUT_SEL(pad), 172u | ((unsigned)oen << 10));
-            wr((pad >= 32) ? GPIO_ENABLE1_W1TS : GPIO_ENABLE_W1TS, 1u << (pad - 32));
-        }
-        wr(SDMMC_RINTSTS, 0xffffffff);
-        wr(SDMMC_CMDARG, 0);
-        wr(SDMMC_CMD, (1u << 15) | (1u << 31));
-        for (int i = 0; i < 4; i++) {
-            int pad = probe_pads[i];
-            int bit = pad - 32;
-            int o = 0, t = 0, prev = -1;
-            for (int k = 0; k < 60; k++) {
-                int v = (rd(GPIO_IN1) >> bit) & 1;
-                o += v;
-                if (prev >= 0 && v != prev)
-                    t++;
-                prev = v;
-            }
-            udelay(200);
-        }
-    }
-
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_SDIO_HOST, XT_SLOT_SDHOST);
+    /* Mapping a source to a slot is not enough: the slot also has to be unmasked in
+     * INTENABLE, otherwise sdmmc_irq is never reached and the ISR-driven path is
+     * dead. ESP-IDF's sd_host enables the same event set globally at slot
+     * registration.
+     */
+    wr(SDMMC_INTMASK, 0);
+    wr(SDMMC_IDINTEN, DMA_TI | DMA_RI | DMA_NI);
+    wr(SDMMC_CTRL, rd(SDMMC_CTRL) | CTRL_INT_ENABLE);
+    set_intenable(get_intenable() | (1u << XT_SLOT_SDHOST));
     semaphore_init(&sdmmc_sem, 1, 0);
 
+    sdmmc_set_power_enabled(&sdmmc_ctl, true);
     sdmmc_host_init(&sdmmc_host, &sdmmc_config, &sdmmc_ops, &sdmmc_ctl);
 }
