@@ -87,7 +87,6 @@ bool backlight_hw_init(void)
 
 void backlight_hw_on(void)
 {
-    boot_trace('k');
 
     /* Wake the panel before light is applied, otherwise the backlight comes up
      * onto a panel that is still coming out of sleep and the first frame is lost.

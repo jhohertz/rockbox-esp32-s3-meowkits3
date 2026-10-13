@@ -53,15 +53,28 @@ extern long cpu_frequency;   /* set by system_init */
 #define HIGHEST_IRQ_LEVEL   15
 #define DISABLE_INTERRUPTS  15
 
+/* Bring-up probe: the last 32 PS values written by the masking helpers. If the
+ * tick interrupt stops being taken, the culprit has to be a level left raised
+ * here. */
+extern volatile unsigned int xt_irq_level_hist[64];
+extern volatile unsigned int xt_irq_caller[64];
+extern volatile unsigned int xt_irq_level_pos;
+
 static inline int set_irq_level(int level)
 {
-    unsigned int ps, old;
+    unsigned int ps, old, ret;
 
     asm volatile ("rsr.ps %0" : "=r"(ps));
     old = ps & PS_INTLEVEL_MASK;
     ps = (ps & ~PS_INTLEVEL_MASK) | ((unsigned int)level & PS_INTLEVEL_MASK);
     asm volatile ("wsr.ps %0" : : "r"(ps));
     asm volatile ("rsync");          /* CSR writes need a sync before use */
+
+    asm volatile ("mov %0, a0" : "=r"(ret));
+    unsigned int p = xt_irq_level_pos & 63u;
+    xt_irq_level_hist[p] = ps;
+    xt_irq_caller[p] = ret;
+    xt_irq_level_pos = p + 1;
 
     return (int)old;
 }
@@ -124,12 +137,6 @@ static inline void restore_irq(int oldlevel)
  */
 static inline void core_sleep(void)
 {
-    extern void boot_trace(char c);
-    static int slept;
-    if (slept < 3) {
-        boot_trace('S');
-        slept++;
-    }
     set_irq_level(0);
     asm volatile ("waiti 0");
 }

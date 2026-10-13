@@ -238,6 +238,14 @@ static void start_list(void)
     /* FSM_RST is a write trigger like TRANS_START: pulse it so the command pointer
      * starts at slot 0 rather than wherever a previous list left it.
      */
+    /* ESP-IDF's master init clears arbitration_en (default 1). Left set, the
+     * controller compares the driven SDA against the sampled line and reports
+     * ARB_LOST on any stretch, which aborts the list. */
+    /* CTR is written whole, so the second write clears arbitration_en (default 1)
+     * as well as fsm_rst. ESP-IDF's master init does the same via
+     * i2c_ll_enable_arbitration(hw, false): with arbitration on, the controller
+     * compares the driven SDA against the sampled line and aborts the list on any
+     * slave stretch. */
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_FSM_RST);
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE);
 
@@ -288,7 +296,6 @@ void __i2c_async_submit(int bus, i2c_descriptor *desc)
 {
     bool ok;
     int status;
-
     gpio_write(I2C_INT_CLR, 0xFFFF);
 
     if (desc->tran_mode == I2C_WRITE)
@@ -452,7 +459,7 @@ void i2c_init(void)
     /* Digital filter on both lines. The bus is loaded with about 100 pF per line and
      * 10K pull-ups, so a few module-clock cycles of threshold is cheap insurance
      * against ringing on the SCL edge. */
-    gpio_write(I2C_FILTER_CFG, 4u | (4u << 4) | (1u << 8) | (1u << 9));
+    gpio_write(I2C_FILTER_CFG, 7u | (7u << 4) | (1u << 8) | (1u << 9));
 
     /* Direct (non-FIFO) access to TX and RX RAM: each byte occupies a whole word at a
      * fixed address, which is simpler than the auto-advancing pointers and is what
@@ -476,6 +483,9 @@ void i2c_init(void)
      * the level-1 handler with kernel work in flight on the interrupted thread.
      */
     gpio_write(I2C_INT_ENA, 0u);
+    /* Same master configuration as start_list uses, so the peripheral is in master
+     * mode with arbitration off before the first transaction. */
+    gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE);
 
     /* Recovery polls rather than interrupts, and a stale TRANS_COMPLETE bit would
      * otherwise complete a transaction that never started. */

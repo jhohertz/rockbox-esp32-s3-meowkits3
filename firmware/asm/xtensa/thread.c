@@ -123,9 +123,17 @@ static inline void load_context(const void* addr)
          * had been called with CALLINC 0. PS is not zeroed wholesale: WOE has to
          * stay set, otherwise the window overflow vectors cannot fire for the
          * thread's own nested calls and ENTRY faults. */
+        /* Window overflow/underflow is enabled by PS.WOE. Moving WINDOWBASE
+         * while WOE is set and WINDOWSTART still marks the interruptee's
+         * ancestor windows as live makes the hardware walk their base-save
+         * areas - which for a thread that has never run do not exist - and the
+         * overflow handler stores through garbage. Clear WOE first, move the
+         * window, then re-enable it for the thread's own nested calls. */
         "movi    a7, 0              \n"
-        "wsr     a7, windowbase     \n"
+        "wsr     a7, ps             \n"
+        "rsync                      \n"
         "wsr     a7, windowstart    \n"
+        "wsr     a7, windowbase     \n"
         "movi    a7, 0x40000        \n"
         "wsr     a7, ps             \n"
         "wsr     a7, sar            \n"
@@ -133,10 +141,12 @@ static inline void load_context(const void* addr)
         "l32r    a6, 10b            \n"
         "l32i    a6, a6, 0          \n"
         "l32i    a1, a6, 64         \n"
+        /* The starter is entered by jump, so its argument is a2: the entry
+         * point has to be moved there before it is cleared. Clearing it makes a
+         * later load_context() resume the thread instead of restarting it, the
+         * same way the MIPS and SPARC implementations do. */
         "l32i    a2, a6, 84         \n"
-        /* The entry point is consumed. Clear it so a later load_context on the
-         * same context resumes the thread instead of restarting it - the same
-         * thing the MIPS and SPARC implementations do. */
+        "movi    a7, 0              \n"
         "s32i    a7, a6, 84         \n"
         "l32r    a7, 11b            \n"
         "jx      a7                 \n"
@@ -156,14 +166,17 @@ static inline void load_context(const void* addr)
         "l32i    a7, a6, 80              \n"
         "wsr     a7, sar                 \n"
         "rsync                           \n"
+        /* a6 is both the base of every load and one of the registers being
+         * loaded, so its value has to be parked before the rest are read and
+         * installed last. Loading it in place makes the following stores use
+         * the thread's saved a6 as the context pointer. */
+        "l32i    a7,  a6, 24             \n"
         "l32i    a0,  a6, 0              \n"
         "l32i    a1,  a6, 64             \n"
         "l32i    a2,  a6, 8              \n"
         "l32i    a3,  a6, 12             \n"
         "l32i    a4,  a6, 16             \n"
         "l32i    a5,  a6, 20             \n"
-        "l32i    a6,  a6, 24             \n"
-        "l32i    a7,  a6, 28             \n"
         "l32i    a8,  a6, 32             \n"
         "l32i    a9,  a6, 36             \n"
         "l32i    a10, a6, 40             \n"
@@ -172,8 +185,9 @@ static inline void load_context(const void* addr)
         "l32i    a13, a6, 52             \n"
         "l32i    a14, a6, 56             \n"
         "l32i    a15, a6, 60             \n"
-        : : "r" (addr) : "a6", "a7"
-    ); /* Only a6 and a7 are scratch: the rest is the new thread's context */
+        "mov     a6, a7                  \n"
+        : : "r" (addr) : "a6", "a7", "a8", "a9"
+    ); /* a6-a9 are scratch; everything else is the new thread's context */
 }
 
 /* Nothing else is needed to start a thread: load_context() checks start. */
@@ -181,9 +195,6 @@ static inline void load_context(const void* addr)
     ({ (thread)->context.start = (uint32_t)(uintptr_t)(function); })
 
 #if XTENSA_THREAD_SELFTEST
-/* boot_trace lives in the target, not in a header asm/ can reach reliably. */
-void boot_trace(char c);
-void boot_trace_hex(unsigned int v);
 
 /*
  * Bring-up test for the windowed-ABI context switch, run from crt0 before the
@@ -254,13 +265,10 @@ static void xt_loop(int id)
     for (int i = 0; i < xt_rounds; i++) {
         int v = xt_depth(xt_depth_target);
         xt_result[2] = (uint32_t)v;
-        boot_trace((char)('a' + id));
-        boot_trace_hex((unsigned int)v);
     }
     /* The body that runs last unwinds back to crt0 through the saved entry
      * context; the other thread stays suspended on its own stack.
      */
-    boot_trace((char)('z' + id));
     xt_result[3] = (uint32_t)xt_cur;
     load_context(&xt_ctx[2]);
 }
@@ -270,7 +278,6 @@ static void xt_body_b(void) { xt_loop(1); }
 
 void xtensa_thread_selftest(void)
 {
-    boot_trace('T');
 
     xt_depth_target = XT_DEPTH;
     xt_rounds = XT_ROUNDS;
