@@ -1428,6 +1428,51 @@ confirmed by a readback:
    `IN_SEL` back.
 6. Only then look at the FSM.
 
+### Pad directionality is four registers, not one
+
+Writing `GPIO_OUT` does not make a pad an output. Four independent fields decide
+what reaches the wire, and a bring-up that sets only one of them reads back as a
+dead peripheral.
+
+| Register | Field | Effect |
+|---|---|---|
+| `IO_MUX_GPIO<n>` = `0x60009000 + 0x04 + 4n` | `MCU_SEL` [14:12] | 0 = GPIO matrix. Anything else is a fixed peripheral function and the matrix cannot reach the pad at all |
+| | `FUN_IE` [9] | gates the pad **input**. Clear, and `GPIO_IN` never sees the pad however the matrix is routed |
+| | `FUN_PU` [8], `FUN_PD` [7] | internal pull-up / pull-down |
+| | `FUN_DRV` [11:10] | drive strength 0..3 |
+| `GPIO.pin[n]` = `0x74 + 4n` | `pad_driver` [2] | 1 = open-drain (this is the I2C fix) |
+| | `sync1_bypass` [5:4], `sync2_bypass` [1:0] | input synchroniser; the default is two APB flip-flops, so a readback immediately after a write can lag |
+| | `config` [13:12] | ESP-IDF's `gpio_ll_set_dir` writes this, **not** `GPIO_ENABLE` |
+| `func_out_sel_cfg[pin]` = `0x554 + 4*pin` | `func_sel` [8:0] | matrix signal driving the pad; 256 = `SIG_GPIO_OUT_IDX` = `GPIO_OUT[pin]` |
+| | `oen_sel` [10] | **1** = output enable is `GPIO_ENABLE[pin]`; **0** = the peripheral's own output-enable signal |
+| | `oen_inv_sel` [11] | invert that enable |
+| `func_in_sel_cfg[signal]` = `0x154 + 4*signal` | `func_sel` [5:0] | which pad's input feeds this signal |
+
+`oen_sel` is the field that matters for a bidirectional line, and ESP-IDF never
+sets it: `esp_rom_gpio_connect_out_signal(pin, sig, false, false)` passes
+`use_oen = false`, which `gpio_ll_set_output_enable_ctrl` turns into
+`oen_sel = 0` — "use the peripheral's output-enable signal". That lets the
+SDHOST assert the pad driver for the command/data phase and release it so the
+card can drive the same wire. Pinning `oen_sel = 1` with `GPIO_ENABLE` set makes
+the pad permanently driven: correct for CLK (host-to-card only), wrong for CMD
+and DAT0.
+
+Measured on the MeowKit board with a pad test that drives high, drives low, then
+tri-states with the pull-up on, for each `oen_sel` value:
+
+| pad | role | driven high | driven low | tri-state |
+|---|---|---|---|---|
+| 21 | SD DAT0 | 1 | 0 | 1 |
+| 45 | unused, control | 1 | 0 | 0 |
+| 47 | SD CLK | 0 | 0 | 1 |
+| 48 | SD CMD | 0 | 0 | 0 |
+
+Pads 47 and 48 do not follow `GPIO_OUT1` at all, while an unused pad in the same
+register group does. Sampling `GPIO_IN1` bit 15 across CMD0's 80-clock init
+sequence reads a flat 0, so the CIU clock never reaches the CLK pad. This is the
+open item in the SD bring-up: the command FSM completes, `CMD_DONE` is set, and
+no response is captured because the wire is never driven.
+
 A useful discriminator: if the peripheral's `VERID`/`USRID` read correctly but its
 FSM state never changes and its byte counters stay zero, the problem is the clock or
 the latch, not the command you are sending.
