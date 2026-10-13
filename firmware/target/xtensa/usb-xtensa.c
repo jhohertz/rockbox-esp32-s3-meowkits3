@@ -112,11 +112,9 @@ static bool vbus_last;
 
 static void usb_vbus_monitor(void)
 {
-    boot_trace('v');
     while (1)
     {
-        bool inserted =
-            (axp173_input_status() & POWER_INPUT_USB) != 0;
+        bool inserted = (axp173_input_status() & POWER_INPUT_USB) != 0;
 
         if (inserted != vbus_last)
         {
@@ -139,7 +137,6 @@ void usb_init_device(void)
     create_thread(usb_vbus_monitor, vbus_stack, sizeof(vbus_stack), 0,
                   "usb vbus" IF_PRIO(, PRIORITY_SYSTEM) IF_COP(, CPU));
 
-    boot_trace('U');                /* USB device side started */
 }
 
 void usb_enable(bool on)

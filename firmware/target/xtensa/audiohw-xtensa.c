@@ -28,7 +28,6 @@ void audiohw_init(void)
     audiohw_preinit();
     i2s_set_frequency(hw_freq_sampr[HW_FREQ_DEFAULT]);
     audiohw_postinit();
-    boot_trace('A');                /* codec and I2S up */
 }
 
 void audiohw_postinit(void)

@@ -71,7 +71,11 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 #define SDMMC_VERID       (XT_SDMMC_BASE + 0x6c)
 #define SDMMC_HCON        (XT_SDMMC_BASE + 0x70)
 #define SDMMC_FIFOTH      (XT_SDMMC_BASE + 0x4c)
-#define SDMMC_CLK         (XT_SDMMC_BASE + 0x800)
+#define SDMMC_CLK         (XT_SDMMC_BASE + 0x7fc)   /* ESP-IDF sdmmc_dev_t.clock */
+#define SDMMC_CLK_ALT     (XT_SDMMC_BASE + 0x800)
+#define SDMMC_CDETECT     (XT_SDMMC_BASE + 0x4c)
+#define SDMMC_TCBCNT      (XT_SDMMC_BASE + 0x58)   /* bits/bytes pushed to the card */
+#define SDMMC_TBBCNT      (XT_SDMMC_BASE + 0x5c)   /* bytes pushed host -> FIFO */
 
 /* CTRL */#define CTRL_RESET        (1u << 0)
 #define CTRL_FIFO_RESET   (1u << 1)
@@ -324,25 +328,6 @@ static int sdmmc_submit_command(void *controller,
     wr(SDMMC_CMDARG, cmd->argument);
     wr(SDMMC_CMD, cmdreg | (cmd->command << CMD_INDEX_SHIFT) | CMD_START);
 
-    /* Line-level trace: sample the CLK and CMD pads while the CIU clocks the
-     * card. If the SDHOST is driving the pads through the GPIO matrix this is
-     * where we see it. */
-    if (cmd->command == SD_GO_IDLE_STATE) {
-        boot_trace('L');
-        boot_trace_hex(rd(SDMMC_CLK));
-        boot_trace_hex(rd(SDMMC_CLKENA));
-        boot_trace_hex(rd(SDMMC_CLKDIV));
-        for (int i = 0; i < 120; i++) {
-            udelay(1);
-            boot_trace('0' + (char)((rd(GPIO_IN1) >> 15) & 1u));
-            boot_trace('0' + (char)((rd(GPIO_IN1) >> 16) & 1u));
-        }
-    }
-
-    boot_trace('C' + (char)(cmd->command % 10));
-    boot_trace_hex(rd(SDMMC_RINTSTS));
-    boot_trace_hex(rd(SDMMC_RESP(0)));
-
     /* The FSM suspends when it reaches a descriptor the host has not armed yet. */
     if (SDMMC_DATA_PRESENT(cmd->flags))
         wr(SDMMC_PLDMND, 1);
@@ -409,6 +394,7 @@ static int sdmmc_submit_command(void *controller,
         udelay(250);
     }
 
+
     if (SDMMC_DATA_PRESENT(cmd->flags)) {
         wr(SDMMC_CTRL, rd(SDMMC_CTRL) & ~(CTRL_DMA_ENABLE | CTRL_USE_IDMAC));
         wr(SDMMC_BMOD, 0);
@@ -417,13 +403,6 @@ static int sdmmc_submit_command(void *controller,
             discard_dcache_range(cmd->buffer, bytes);
     }
 
-    boot_trace('R' + (char)(rc % 10));
-    boot_trace_hex(ctl->events);
-    boot_trace_hex(rd(SDMMC_RESP(0)));
-    boot_trace_hex(rd(SDMMC_RESP(1)));
-    boot_trace_hex(rd(SDMMC_RESP(2)));
-    boot_trace_hex(rd(SDMMC_RESP(3)));
-    boot_trace_hex(rd(SDMMC_STATUS));
     return rc;
 }
 
@@ -582,107 +561,8 @@ static const struct sdmmc_host_config sdmmc_config INITDATA_ATTR = {
 };
 
 
-/* CRC-7, polynomial 0x83, over the 41-bit index+argument, as the SD spec defines
- * it. The hardware computes this for us; the bit-bang probe needs it by hand.
- */
-static uint8_t sd_crc7(uint32_t index, uint32_t arg)
-{
-    uint64_t data = ((uint64_t)(index & 0x3fu) << 32) | arg;
-    uint8_t crc = 0;
-
-    for (int i = 40; i >= 0; i--) {
-        crc = (crc << 1) | ((data >> i) & 1u);
-        if (crc & 0x80)
-            crc ^= 0x83;
-        crc &= 0x7F;
-    }
-    for (int i = 0; i < 7; i++) {
-        crc <<= 1;
-        if (crc & 0x80)
-            crc ^= 0x83;
-        crc &= 0x7F;
-    }
-    return crc;
-}
-
-/* Drive the card by hand on the same three pins the SDHOST uses. This answers a
- * question the controller cannot: whether the card is electrically reachable at
- * all. If the bit-bang gets a response and the SDHOST does not, the problem is in
- * the controller's clock or signal configuration, not the wiring.
- */
-/* Pulse the clock and sample CMD once per cycle. */
-static void sd_clock_and_read(int clk, int cmd, int n)
-{
-    for (int i = 0; i < n; i++) {
-        gpio_write_pin(clk, 1);
-        udelay(20);
-        boot_trace('0' + (char)gpio_read_pin(cmd));
-        gpio_write_pin(clk, 0);
-        udelay(20);
-    }
-}
-static void pad_test(int pin)
-{
-    int hi = pin >= 32;
-    int bit = hi ? pin - 32 : pin;
-    unsigned outsel = GPIO_FUNC_OUT_SEL(pin);
-    unsigned ents = hi ? GPIO_ENABLE1_W1TS : GPIO_ENABLE_W1TS;
-    unsigned entc = hi ? GPIO_ENABLE1_W1TC : GPIO_ENABLE_W1TC;
-    unsigned ots  = hi ? GPIO_OUT1_W1TS : GPIO_OUT_W1TS;
-    unsigned otc  = hi ? GPIO_OUT1_W1TC : GPIO_OUT_W1TC;
-    unsigned in   = hi ? GPIO_IN1 : GPIO_IN;
-    int r[6];
-
-    /* Pad configured as: GPIO matrix function, input enabled, no pull-down,
-     * pull-up on, maximum drive, push-pull (not open-drain). */
-    wr(IO_MUX_PIN(pin), (rd(IO_MUX_PIN(pin)) & ~IO_MUX_MCU_SEL) |
-                        (1u << 9) | (1u << 8) | (3u << 10));
-    wr(GPIO_PIN_REG(pin), rd(GPIO_PIN_REG(pin)) & ~(1u << 2));
-
-    for (int oen = 1; oen >= 0; oen--) {
-        wr(outsel, 256u | ((unsigned)oen << 10));
-        wr(entc, 1u << bit);
-        wr(ents, 1u << bit);
-        wr(ots, 1u << bit);
-        udelay(200);
-        r[oen * 3] = (int)((rd(in) >> bit) & 1u);
-        wr(otc, 1u << bit);
-        udelay(200);
-        r[oen * 3 + 1] = (int)((rd(in) >> bit) & 1u);
-        wr(entc, 1u << bit);          /* tri-state: the pull-up should win */
-        udelay(200);
-        r[oen * 3 + 2] = (int)((rd(in) >> bit) & 1u);
-    }
-
-    boot_trace('P');
-    boot_trace_hex((unsigned)pin);
-    boot_trace('0' + r[0]); boot_trace('0' + r[1]); boot_trace('0' + r[2]);
-    boot_trace('0' + r[3]); boot_trace('0' + r[4]); boot_trace('0' + r[5]);
-}
-
-static void sd_bitbang_probe(void)
-{
-    const int CLK = 47, CMD = 48, D0 = 21;
-
-    boot_trace('b');
-    pad_test(CLK);
-    pad_test(CMD);
-    pad_test(D0);
-    pad_test(45);        /* unused pad, control */
-
-    /* Idle level of CMD while the pad is tri-stated with its pull-up on. */
-    gpio_set_direction(CMD, 0);
-    boot_trace('i');
-    for (int i = 0; i < 8; i++) {
-        udelay(100);
-        boot_trace('0' + (char)gpio_read_pin(CMD));
-    }
-}
-
 void sdmmc_host_target_init(void)
 {
-    sd_bitbang_probe();
-
     /* The SDHOST clock gate is off at reset; ESP-IDF's sdmmc_ll_enable_bus_clock
      * sets bit 7 of SYSTEM_PERIP_CLK_EN1 and nothing else is needed to reach the
      * block. The reset bit is cleared so the controller starts from its
@@ -724,13 +604,46 @@ void sdmmc_host_target_init(void)
     gpio_pullup(48, 1);
     gpio_pullup(21, 1);
 
-    boot_trace('d');
-    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(47)));
-    boot_trace_hex(rd(GPIO_FUNC_IN_SEL(SIG_SDHOST_CMD)));
-    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(48)));
-    boot_trace_hex(rd(GPIO_FUNC_IN_SEL(SIG_SDHOST_D0)));
-    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(21)));
-    boot_trace_hex(rd(IO_MUX_PIN(48)) & 0x780u);
+    /* Pad probe, both output-enable modes. oen_sel=1 takes the pad enable from
+     * GPIO_ENABLE; oen_sel=0 takes it from the peripheral, which is what ESP-IDF
+     * uses for the SDHOST. */
+    static const int probe_pads[] = {45, 47, 48, 21};
+    wr(SDMMC_CTRL, CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET);
+    { int w = 0; while (rd(SDMMC_CTRL) & (CTRL_RESET|CTRL_FIFO_RESET|CTRL_DMA_RESET)) { if (++w>1000) break; udelay(10); } }
+    wr(SDMMC_INTMASK, 0);
+    wr(SDMMC_TMOUT, 255u | (255u << 8));
+    wr(SDMMC_CLKSRC, 0);
+    wr(SDMMC_CLKENA, 0);
+    clock_update_command();
+    wr(SDMMC_CLK, (1u << 0) | (4u << 9) | (9u << 13) | (9u << 17));
+    wr(SDMMC_CLKDIV, 255u);
+    clock_update_command();
+    wr(SDMMC_CLKENA, 1u);
+    clock_update_command();
+
+    for (int oen = 1; oen >= 0; oen--) {
+        for (int i = 0; i < 4; i++) {
+            int pad = probe_pads[i];
+            wr(GPIO_FUNC_OUT_SEL(pad), 172u | ((unsigned)oen << 10));
+            wr((pad >= 32) ? GPIO_ENABLE1_W1TS : GPIO_ENABLE_W1TS, 1u << (pad - 32));
+        }
+        wr(SDMMC_RINTSTS, 0xffffffff);
+        wr(SDMMC_CMDARG, 0);
+        wr(SDMMC_CMD, (1u << 15) | (1u << 31));
+        for (int i = 0; i < 4; i++) {
+            int pad = probe_pads[i];
+            int bit = pad - 32;
+            int o = 0, t = 0, prev = -1;
+            for (int k = 0; k < 60; k++) {
+                int v = (rd(GPIO_IN1) >> bit) & 1;
+                o += v;
+                if (prev >= 0 && v != prev)
+                    t++;
+                prev = v;
+            }
+            udelay(200);
+        }
+    }
 
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_SDIO_HOST, XT_SLOT_SDHOST);
     semaphore_init(&sdmmc_sem, 1, 0);

@@ -90,6 +90,7 @@ _vector_table:
  * spill area at the end of each frame, which is why they are negative and why the
  * frame size has to be at least the CALLINC the compiler chose.
  */
+
     .section .vector,"ax",@progbits
     .align 4
 
@@ -284,8 +285,6 @@ xt_level1_handler:
      * lands after the instruction that uses it. Jump over it. */
     j       1f
     .align 4
-.Lisr_diag_lit:
-    .long   xt_isr_diag
 1:
     /*
      * Exception entry on this core does not rotate the register window: the
@@ -319,6 +318,29 @@ xt_level1_handler:
     s32i    a14, a1, FR_A14
     s32i    a15, a1, FR_A15
 
+    /* Synthesise the ABI base-save area that ENTRY would have created.
+     *
+     * The dispatch is entered with call8, which rotates the register window.
+     * When that rotation reaches a window that still holds a live ancestor,
+     * the overflow handler walks the base-save chain: frame k's area at
+     * sp_k-16 .. sp_k-4 holds frame k-1's a0..a3, and sp_k-12 is how it finds
+     * the ancestor's stack pointer. A frame built with `addi` has no such
+     * area, so the handler reads uninitialised stack as the ancestor sp and
+     * stores through it. That is the StoreProhibited-at-0 that came out of
+     * xt_double_trap: a0 read 32 out of a1-12 and the handler wrote a4 at
+     * a0-32 = 0.
+     *
+     * The area lands below the handler frame, i.e. below the interruptee's
+     * stack pointer, which is unused stack. a0, a2 and a3 still hold the
+     * interruptee's live values here - they were copied to the frame, not
+     * overwritten.
+     */
+    addi    a10, a1, FR_SIZE            /* the interruptee's sp */
+    s32e    a0,  a1, -16
+    s32e    a10, a1, -12
+    s32e    a2,  a1, -8
+    s32e    a3,  a1, -4
+
     /* The interruptee's stack pointer is the frame base plus the frame size. */
     addi    a0, a1, FR_SIZE
     s32i    a0, a1, FR_A1
@@ -349,39 +371,6 @@ xt_level1_handler:
     beq     a0, a2, xt_alloca_exc
     j       xt_exc_trap
 1:
-
-    /* Bring-up diagnostic: entry count and the window state the interruptee was
-     * in. a0 is already saved in the frame, so it is free scratch here. */
-    /* a0 is the interruptee's return address, so it has to be captured before
-     * it becomes the scratch register; the base pointer goes in a3. */
-    l32r    a3, .Lisr_diag_lit
-    s32i    a0, a3, 64
-    s32i    a2, a3, 68
-    s32i    a3, a3, 72
-    s32i    a4, a3, 76
-    s32i    a5, a3, 80
-    s32i    a6, a3, 84
-    s32i    a7, a3, 88
-    s32i    a8, a3, 92
-    s32i    a9, a3, 96
-    s32i    a10, a3, 100
-    s32i    a11, a3, 104
-    s32i    a12, a3, 108
-    s32i    a13, a3, 112
-    s32i    a14, a3, 116
-    s32i    a15, a3, 120
-
-    l32r    a0, .Lisr_diag_lit
-    l32i    a2, a0, 0
-    addi    a2, a2, 1
-    s32i    a2, a0, 0
-    rsr     a2, ps
-    s32i    a2, a0, 4
-    rsr     a2, windowbase
-    s32i    a2, a0, 8
-    rsr     a2, windowstart
-    s32i    a2, a0, 12
-    s32i    a7, a0, 48
 
     /* C code cannot run in exception mode: PS.EXCM pins the register window, so
      * the entry/retw pair every dispatched handler compiles to would not rotate
@@ -423,57 +412,6 @@ xt_level1_handler:
      */
     rsr     a10, interrupt
     call8   xt_irq_dispatch
-
-    /* Window state as the dispatch left it, before the interruptee's registers
-     * are put back. a0-a15 are all going to be reloaded from the frame, so any
-     * two of them are scratch here. */
-    l32r    a2, .Lisr_diag_lit
-    rsr     a3, ps
-    s32i    a3, a2, 16
-    rsr     a3, windowbase
-    s32i    a3, a2, 20
-    rsr     a3, windowstart
-    s32i    a3, a2, 24
-    s32i    a0, a2, 32
-    s32i    a1, a2, 36
-    l32i    a3, a1, FR_A0
-    s32i    a3, a2, 40
-    l32i    a3, a1, FR_A1
-    s32i    a3, a2, 44
-    l32i    a3, a1, FR_A7
-    s32i    a3, a2, 52
-    /* What the frame actually contains at exit: if any of these differs from
-     * the entry snapshot, the dispatch overwrote the handler's frame. */
-    l32i    a3, a1, FR_A0
-    s32i    a3, a2, 128
-    l32i    a3, a1, FR_A2
-    s32i    a3, a2, 132
-    l32i    a3, a1, FR_A3
-    s32i    a3, a2, 136
-    l32i    a3, a1, FR_A4
-    s32i    a3, a2, 140
-    l32i    a3, a1, FR_A5
-    s32i    a3, a2, 144
-    l32i    a3, a1, FR_A6
-    s32i    a3, a2, 148
-    l32i    a3, a1, FR_A7
-    s32i    a3, a2, 152
-    l32i    a3, a1, FR_A8
-    s32i    a3, a2, 156
-    l32i    a3, a1, FR_A9
-    s32i    a3, a2, 160
-    l32i    a3, a1, FR_A10
-    s32i    a3, a2, 164
-    l32i    a3, a1, FR_A11
-    s32i    a3, a2, 168
-    l32i    a3, a1, FR_A12
-    s32i    a3, a2, 172
-    l32i    a3, a1, FR_A13
-    s32i    a3, a2, 176
-    l32i    a3, a1, FR_A14
-    s32i    a3, a2, 180
-    l32i    a3, a1, FR_A15
-    s32i    a3, a2, 184
 
     l32i    a2, a1, FR_SAR
     wsr     a2, sar
@@ -523,40 +461,36 @@ xt_level1_handler:
     rfe
 
 /*
- * Anything that reaches here is a real fault. Record enough to identify it in
- * internal SRAM, which survives the reset esptool performs when it attaches, then
- * spin so the chip stays reachable.
+ * Anything that reaches here is a real fault. The record lives in internal SRAM
+ * on the instruction bus, so the trap code can reach it with l32r without
+ * crossing the 0x6F0000 gap to the data-bus view; a probe reads it through the
+ * alias. Words 0-11 are the plain exception, 56/57 the trap counts, and 32-60
+ * the nested (double) exception.
  */
-    /* Word-only scratch on the instruction bus: the handler reaches it with l32r,
-     * which cannot span the 0x6F0000 gap to the data-bus view of internal SRAM. */
-    .section .iramdata,"aw",@progbits
-    .align 4
-
-    .section .iramdata,"aw",@progbits
-    .align 4
     .section .iramdata,"aw",@progbits
     .align 4
     .global xt_exc_dump
+    .type xt_exc_dump,@object
 xt_exc_dump:
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-
-    .section .iramdata,"aw",@progbits
-    .align 4
-    .global xt_isr_diag
-xt_isr_diag:
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .word 0, 0, 0, 0
 
     .section .vector,"ax",@progbits
     .align 4
+.Ldiag_lit2:
+    .long   xt_exc_dump
+
     .global xt_exc_trap
     .type xt_exc_trap, @function
 xt_exc_trap:
+    l32r    a0, .Ldiag_lit2
+    l32i    a1, a0, 228
+    addi    a1, a1, 1
+    s32i    a1, a0, 228
     /* l32r reaches only 128 KB either way, and xt_exc_dump lives in internal SRAM
      * on the data bus while this code is on the instruction bus. The address is
      * parked as a literal in the same section and jumped over. */
@@ -647,6 +581,10 @@ xt_unused_trapHW:
     .global xt_double_trap
     .type xt_double_trap, @function
 xt_double_trap:
+    l32r    a0, .Ldiag_lit2
+    l32i    a1, a0, 224
+    addi    a1, a1, 1
+    s32i    a1, a0, 224
     j       1f
     .align 4
 2:
@@ -659,5 +597,31 @@ xt_double_trap:
     s32i    a4, a3, 36
     rsr     a4, epc1
     s32i    a4, a3, 40
+    rsr     a4, epc2
+    s32i    a4, a3, 44
+    rsr     a4, excvaddr
+    s32i    a4, a3, 48
+    rsr     a4, ps
+    s32i    a4, a3, 52
+    rsr     a4, windowbase
+    s32i    a4, a3, 56
+    rsr     a4, windowstart
+    s32i    a4, a3, 60
+    s32i    a0, a3, 64
+    s32i    a1, a3, 68
+    s32i    a2, a3, 72
+    s32i    a3, a3, 76
+    s32i    a4, a3, 80
+    s32i    a5, a3, 84
+    s32i    a6, a3, 88
+    s32i    a7, a3, 92
+    s32i    a8, a3, 96
+    s32i    a9, a3, 100
+    s32i    a10, a3, 104
+    s32i    a11, a3, 108
+    s32i    a12, a3, 112
+    s32i    a13, a3, 116
+    s32i    a14, a3, 120
+    s32i    a15, a3, 124
 4:
     j       4b

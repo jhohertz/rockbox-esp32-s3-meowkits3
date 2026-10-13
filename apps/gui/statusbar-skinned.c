@@ -327,13 +327,11 @@ extern void boot_trace(char c);
 
 void sb_skin_init(void)
 {
-    boot_trace('S');
     FOR_NB_SCREENS(i)
     {
         oldinfovp_label[i] = VP_DEFAULT_LABEL;
         boot_trace('1' + i);
     }
-    boot_trace('E');
 }
 
 #ifdef HAVE_TOUCHSCREEN

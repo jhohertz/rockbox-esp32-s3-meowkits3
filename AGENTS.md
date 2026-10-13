@@ -1139,6 +1139,40 @@ Things that are not obvious from the register list:
   `is_removable = false`, no `sdmmc_poll`, and a missing card shows up as a command
   timeout.
 
+### Two SDHOST facts that took measurement to establish
+
+**The CIU clock is real, and `tcbcnt` is not a command counter.** `TCBCNT` and
+`TBBCNT` count *data-phase* bytes; for a command-only transaction both are 0 even
+when the CIU has clocked the full command. The proof that the clock is actually
+running is the command duration: with `CLK = 0x132801` (host div 10, XTAL) and
+`CLKDIV` card div set to 5, 50 and 255, the poll loop for `CMD_DONE` took 93, 900
+and 4726 iterations. Those are ratios of 9.7 and 5.25 against an expected 10 and
+5.1. A peripheral with no clock would not scale.
+
+**Slot 0 and slot 1 are different signal sets.** ESP-IDF's `SDMMC_HOST_DEFAULT()`
+for ESP32-S3 (not the S31) selects **slot 1**, not slot 0. Slot 1 uses clock signal
+173, CMD 179, DAT0 181, `CLKENA` bit 1 and `CLKDIV` div1; `CLKSRC.cardN` selects
+which divider stage slot N uses. The MeowKit stock firmware calls
+`SD_MMC.setPins(47, 48, 21)` on that default host, so the board's SD lines are
+driven from slot 1 signals. Slot 0 (172/178/180, `CLKENA` bit 0, `CLKDIV` div0) is
+the one Rockbox currently uses.
+
+**Pads 47 and 48 do not follow the GPIO matrix output; every other pad does.** Routing
+the SDHOST clock signal to a pad and sampling `GPIO_IN`/`GPIO_IN1` for 40 reads while
+the init command runs gives a clean square wave on pads 45, 46, 49, 50, 51, 38, 21,
+18, 17, 14, 13, 12, 11, 10, 9, 8, 6, 4, 3, 2, 1 and 0 — and a flat 0 on 47 and 48.
+Driving pad 47 from `SIG_GPIO_OUT_IDX` (256) does change `GPIO_IN1` bit 15, but
+inverted: driven high reads 0, driven low reads 1. Pad 48 never changes. Pads 32-37
+and 42-44 read stuck high (they are the PSRAM SPI pads and the LEDC/AXP lines, all
+actively driven by other circuitry), so "reads a constant" is not by itself a fault
+sign; the 47/48 behaviour is specific to those two pads.
+
+The board has a zener-based level-shift network on the SD CLK and CMD lines (per the
+schematic), and the card-detect line is not connected at all. That network is the
+most likely reason the two pads read a level that is not what the pad drives. Until
+it is characterised, a GPIO-level reading of pads 47/48 says nothing about whether
+the card is seeing the signal.
+
 ### Power and time live in the PMU, not the SoC
 
 The board has an AXP173 (I2C 0x34) and a PCF8563 (I2C 0x51). Neither is a
