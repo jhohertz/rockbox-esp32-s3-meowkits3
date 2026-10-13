@@ -633,6 +633,49 @@ Note that `XCHAL_HAVE_WINDOWED` is 1 and `XCHAL_NUM_AREGS` is 64 for this core �
 hardware has register windows. What is missing is the REGB option, so `mtsr`/`mfsr` and
 the spill/reflect macros are unavailable and windowed context switching cannot be written.
 
+### The level-1 handler has to give `a1` a base-save area
+
+The window overflow/underflow handlers do not walk the stack; they walk the **ABI base-save
+chain hanging off `a1`**. For a frame created by `entry a1, N`, the four words at
+`a1-16 .. a1-4` hold that frame's `a0`, `sp`, `a2`, `a3`, and `a1-12` is how the overflow
+handler reaches the *ancestor* frame's stack. Every nested `call8` rotates the window; when
+the rotation reaches a window that still holds a live ancestor register, the overflow handler
+needs that chain.
+
+A handler frame built with `addi a1, a1, -FR_SIZE` has no base-save area at all. The handler
+then reads uninitialised stack as the ancestor's `sp` and stores through it. That is the
+`StoreProhibited` we were chasing: `excvaddr` was `0x0` once and `0x84` another time, both of
+them `a1 - 16` for some garbage `a1`. So the handler must synthesise the area itself, right
+after saving the registers:
+
+```asm
+    addi    a1, a1, -FR_SIZE
+    ... save a0-a15, ps, epc1, sar, lbeg/lend/lcount ...
+    addi    a10, a1, FR_SIZE        /* the interruptee's sp */
+    s32e    a0,  a1, -16
+    s32e    a10, a1, -12
+    s32e    a2,  a1, -8
+    s32e    a3,  a1, -4
+```
+
+Three things make this work and are easy to get wrong:
+
+- The area goes **below** the handler's frame base, i.e. into unused stack. Writing it above
+  the frame overlaps the frame itself.
+- `a0`, `a2` and `a3` are still the interruptee's live values at that point — they were copied
+  into the frame, not overwritten — so they are valid content for the area. `a10` is scratch.
+- Scratch registers are only free in the *overflow* handlers, where `a0-a3` have already been
+  spilled. In the *underflow* handlers `a0-a3` are the registers being restored, so anything
+  that needs scratch there has to run before the loads.
+
+ESP-IDF's `SPILL_ALL_WINDOWS` in the handler (`XT_ISR_SPILL` in `vectors.S`) is the other way
+to make the chain valid, and it is the wrong one here: it runs the rotation from the
+interruptee's frame, whose ancestors are real C frames, and the extra rotations raise
+overflow exceptions inside the handler. With `PS.EXCM` cleared before the dispatch the window
+is pinned and nothing needs spilling, so the base-save area above is sufficient. Measured:
+`XT_ISR_SPILL=1` crashes in `switch_thread` within a few context switches once the SDHOST
+interrupt is unmasked; `XT_ISR_SPILL=0` boots and cycles all threads indefinitely.
+
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
 The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
@@ -1157,21 +1200,49 @@ which divider stage slot N uses. The MeowKit stock firmware calls
 driven from slot 1 signals. Slot 0 (172/178/180, `CLKENA` bit 0, `CLKDIV` div0) is
 the one Rockbox currently uses.
 
-**Pads 47 and 48 do not follow the GPIO matrix output; every other pad does.** Routing
-the SDHOST clock signal to a pad and sampling `GPIO_IN`/`GPIO_IN1` for 40 reads while
-the init command runs gives a clean square wave on pads 45, 46, 49, 50, 51, 38, 21,
-18, 17, 14, 13, 12, 11, 10, 9, 8, 6, 4, 3, 2, 1 and 0 — and a flat 0 on 47 and 48.
-Driving pad 47 from `SIG_GPIO_OUT_IDX` (256) does change `GPIO_IN1` bit 15, but
-inverted: driven high reads 0, driven low reads 1. Pad 48 never changes. Pads 32-37
-and 42-44 read stuck high (they are the PSRAM SPI pads and the LEDC/AXP lines, all
-actively driven by other circuitry), so "reads a constant" is not by itself a fault
-sign; the 47/48 behaviour is specific to those two pads.
+**Pads 47 and 48 are not ordinary GPIO pads.** `MCU_SEL = 0` is the pad's *dedicated*
+peripheral function, not GPIO. On ESP32-S3 `PIN_FUNC_GPIO` is **1** for every pad. GPIO47
+and GPIO48 are the `SPICLK_P`/`SPICLK_N` pads: with `MCU_SEL = 0` they are wired to the MSPI
+differential clock (`FUNC_SPICLK_P_SPICLK_DIFF`), the GPIO matrix cannot reach them at all,
+and the reading that follows is the SPI clock pair - one inverted, one dead. That is exactly
+the "pad 47 inverted, pad 48 dead" signature. Setting `MCU_SEL = 1` (`FUNC_SPICLK_P_GPIO47`)
+makes both pads behave normally and the card responds to CMD0 and CMD8.
+
+Routing the SDHOST clock signal to a pad and sampling `GPIO_IN`/`GPIO_IN1` for 40 reads while
+the init command runs gives a clean square wave on pads 45, 46, 49, 50, 51, 38, 21, 18, 17,
+14, 13, 12, 11, 10, 9, 8, 6, 4, 3, 2, 1 and 0. Pads 32-37 and 42-44 read stuck high (they are
+the PSRAM SPI pads and the LEDC/AXP lines, all actively driven by other circuitry), so "reads
+a constant" is not by itself a fault sign.
 
 The board has a zener-based level-shift network on the SD CLK and CMD lines (per the
-schematic), and the card-detect line is not connected at all. That network is the
-most likely reason the two pads read a level that is not what the pad drives. Until
-it is characterised, a GPIO-level reading of pads 47/48 says nothing about whether
-the card is seeing the signal.
+schematic), and the card-detect line is not connected at all.
+
+### The SDHOST response and IDMAC buffer layout, measured
+
+**Short responses are in `RESP0`, not `RESP1`.** For a 48-bit response the CIU drops the CRC
+and leaves the payload in `RESP0`: CMD8 (R7) reads back `0x1aa`, CMD55 (R1) `0x120`, CMD41
+(R3) the OCR. `RESP1..RESP3` stay zero.
+
+**A 128-bit response is stored least-significant word first.** `RESP0` carries bits 31:0, so
+the CSD/CID have to be reversed before handing them to `sd_parse_csd()`, which expects the
+most significant word in `data[0]`. Reversed, the CSD of a 64 GB card decodes as CSD v2.0 with
+124735488 blocks; unreversed it is garbage and the mount fails silently with `disk_mount_all()`
+returning 0.
+
+**The IDMAC cannot reach PSRAM.** Rockbox's disk cache buffers live in the PSRAM audiobuffer
+window. Arming a descriptor with such an address retires the descriptor (the OWNER bit clears)
+but transfers nothing - the IDMAC is an AHB master and does not go through the Ext_RAM MMU.
+ESP-IDF encodes the same rule in `SD_HOST_SDMMC_DMA_ALLOC_CAPS`, which for esp32s3 is
+`MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA` because `SOC_SDMMC_PSRAM_DMA_CAPABLE`
+is undefined. `firmware/target/xtensa/sdmmc-xtensa.c` bounces any transfer whose buffer is
+outside DRAM0 (`0x3FC88000-0x3FD00000`) through a 16 KB `.srambss` ring, and caps
+`max_nr_blocks` so no transfer exceeds it.
+
+**`rsr interrupt` reports masked slots too.** The pending bitmask covers all 32 slots
+regardless of `INTENABLE`. Masking a device's slot is therefore not enough to stop its
+handler from running: the tick ISR would dispatch a handler for a device whose interrupt is
+masked, and that handler would consume the other device's event latches. AND the bitmask with
+`INTENABLE` before dispatching, as ESP-IDF's `_xt_interrupt_pending_list()` does.
 
 ### Power and time live in the PMU, not the SoC
 

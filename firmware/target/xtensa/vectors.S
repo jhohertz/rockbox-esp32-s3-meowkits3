@@ -407,10 +407,18 @@ xt_level1_handler:
     rsync
 #endif
 
-    /* INTERRUPT is the pending bitmask over all 32 slots. The dispatch is entered
-     * with CALLINC 8, so the windowed ABI's first argument is the caller's a10.
+    /* INTERRUPT is the pending bitmask over all 32 slots. It reports asserted
+     * sources even when INTENABLE masks them, so a tick interrupt would dispatch a
+     * device handler whose slot is deliberately masked - and that handler would then
+     * consume the other device's event latches. Mask with INTENABLE, as ESP-IDF's
+     * _xt_interrupt_pending_list() does.
+     *
+     * The dispatch is entered with CALLINC 8, so the windowed ABI's first argument
+     * is the caller's a10.
      */
     rsr     a10, interrupt
+    rsr     a11, intenable
+    and     a10, a10, a11
     call8   xt_irq_dispatch
 
     l32i    a2, a1, FR_SAR
