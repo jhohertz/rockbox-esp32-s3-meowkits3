@@ -70,7 +70,14 @@
  */
 #define DR_REG_IO_MUX_BASE 0x60009000
 #define IO_MUX_PIN(n) (DR_REG_IO_MUX_BASE + 0x04 + 4u * (n))
-#define IO_MUX_MCU_SEL (7u << 12)   /* MCU_SEL: 0 = GPIO function */
+/* MCU_SEL is the pad function selector, and on ESP32-S3 the GPIO function is
+ * value 1, not 0. Value 0 is the pad's dedicated peripheral: GPIO47/48 are the
+ * SPICLK_P/SPICLK_N pads, so MCU_SEL=0 hands them to the MSPI block and the
+ * GPIO matrix cannot drive them at all. See soc/io_mux_reg.h: PIN_FUNC_GPIO = 1,
+ * FUNC_SPICLK_P_GPIO47 = 1, FUNC_SPICLK_P_SPICLK_DIFF = 0.
+ */
+#define IO_MUX_MCU_SEL (7u << 12)
+#define IO_MUX_FUNC_GPIO (1u << 12)   /* PIN_FUNC_GPIO */
 #define IO_MUX_FUN_IE  (1u << 9)    /* input enable of the pad */
 #define IO_MUX_FUN_PU  (1u << 8)    /* pad pull-up */
 #define IO_MUX_FUN_PD  (1u << 7)    /* pad pull-down */
@@ -174,7 +181,7 @@ static inline void io_mux_select_gpio(int pin)
         return;
 
     uint32_t r = IO_MUX_PIN(pin);
-    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUN_IE);
+    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
 }
 
 /* GPIO_ENABLE only controls the output driver. A pad whose input enable is clear
