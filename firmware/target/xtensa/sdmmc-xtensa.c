@@ -177,42 +177,6 @@ static struct semaphore sdmmc_sem;
  * Two-stage divider. host_div is the clock generator (1..16), card_div is the
  * slot divider where 0 means bypass and n means 2*n.
  */
-static void set_clock(uint32_t clock)
-{
-    uint32_t freq_hz = sdmmc_host_get_bus_freq(clock);
-    uint32_t host_div, card_div;
-
-    if (freq_hz >= 25000000) {
-        /* 50 MHz is not reachable from a 40 MHz source; 20 MHz is the closest
-         * legal rate and is what sdmmc_host asks for as "25 MHz". */
-        host_div = 2;
-        card_div = 0;
-    } else {
-        /* 400 kHz: 40 MHz / 10 / (2 * 5) is exact. */
-        host_div = 10;
-        card_div = 5;
-    }
-
-    /* div_factor_h at bits 12:9, div_factor_l at 16:13, div_factor_n at 20:17,
-     * clk_sel at bit 23 (0 = XTAL). phase_dout = 1 gives the card clock a 90 degree
-     * delay, which is what the SD spec wants for the data hold time in SDR12/SDR25;
-     * the command register has to set USE_HOLD for it to apply, which we always do.
-     * phase_din and phase_core stay at 0.
-     */
-    wr(SDMMC_CLK, 1u | ((host_div / 2 - 1) << 9) | ((host_div - 1) << 13)
-                  | ((host_div - 1) << 17));
-
-    wr(SDMMC_CLKSRC, 0);              /* slot 0 uses divider div0 */
-    wr(SDMMC_CLKDIV, card_div);
-    wr(SDMMC_CLKENA, 1u | (1u << 16)); /* clock enabled, low-power gating on */
-
-    /* The timeout is counted in card output clocks, so it has to be derived from
-     * the clock we actually generated, not from the rate sdmmc_host asked for:
-     * the "25 MHz" slot is really 20 MHz here. ESP-IDF uses 100 ms.
-     */
-    wr(SDMMC_TMOUT, 255u | ((XT_XTAL_FREQ / (host_div * (card_div ? 2u * card_div : 1u)) / 10u) << 8));
-}
-
 static void arm_descriptors(struct sdmmc_ctl *ctl, void *buf, uint32_t bytes)
 {
     int n = (int)((bytes + DESC_BUF_BYTES - 1) / DESC_BUF_BYTES);
@@ -321,6 +285,7 @@ static int sdmmc_submit_command(void *controller,
 
     cmdreg |= CMD_USE_HOLD;   /* card_num is 0, use the delayed clock for hold time */
 
+
     events = CMD_ERR_MASK | INT_CMD_DONE;
 
     if (SDMMC_DATA_PRESENT(cmd->flags)) {
@@ -358,6 +323,25 @@ static int sdmmc_submit_command(void *controller,
 
     wr(SDMMC_CMDARG, cmd->argument);
     wr(SDMMC_CMD, cmdreg | (cmd->command << CMD_INDEX_SHIFT) | CMD_START);
+
+    /* Line-level trace: sample the CLK and CMD pads while the CIU clocks the
+     * card. If the SDHOST is driving the pads through the GPIO matrix this is
+     * where we see it. */
+    if (cmd->command == SD_GO_IDLE_STATE) {
+        boot_trace('L');
+        boot_trace_hex(rd(SDMMC_CLK));
+        boot_trace_hex(rd(SDMMC_CLKENA));
+        boot_trace_hex(rd(SDMMC_CLKDIV));
+        for (int i = 0; i < 120; i++) {
+            udelay(1);
+            boot_trace('0' + (char)((rd(GPIO_IN1) >> 15) & 1u));
+            boot_trace('0' + (char)((rd(GPIO_IN1) >> 16) & 1u));
+        }
+    }
+
+    boot_trace('C' + (char)(cmd->command % 10));
+    boot_trace_hex(rd(SDMMC_RINTSTS));
+    boot_trace_hex(rd(SDMMC_RESP(0)));
 
     /* The FSM suspends when it reaches a descriptor the host has not armed yet. */
     if (SDMMC_DATA_PRESENT(cmd->flags))
@@ -433,7 +417,77 @@ static int sdmmc_submit_command(void *controller,
             discard_dcache_range(cmd->buffer, bytes);
     }
 
+    boot_trace('R' + (char)(rc % 10));
+    boot_trace_hex(ctl->events);
+    boot_trace_hex(rd(SDMMC_RESP(0)));
+    boot_trace_hex(rd(SDMMC_RESP(1)));
+    boot_trace_hex(rd(SDMMC_RESP(2)));
+    boot_trace_hex(rd(SDMMC_RESP(3)));
+    boot_trace_hex(rd(SDMMC_STATUS));
     return rc;
+}
+
+/* The SDHOST latches the clock divisors into the card interface unit only when a
+ * command with update_clk_reg (bit 21) is issued. It is not a real SD command:
+ * index 0, no response, no argument. Without it the CIU keeps the clock it had
+ * out of reset - zero - and the command FSM never leaves idle even though CMD
+ * accepts the start bit. ESP-IDF's sd_host issues this after every clock change;
+ * omitting it is what makes every command appear to "succeed" with an empty
+ * response.
+ */
+static void clock_update_command(void)
+{
+    wr(SDMMC_CMD, (1u << 21) | (1u << 13) | (1u << 31));
+
+    int waited = 0;
+    while (rd(SDMMC_CMD) & (1u << 31)) {
+        if (++waited > 2000)
+            break;
+        udelay(10);
+    }
+}
+
+static void set_clock(uint32_t clock)
+{
+    uint32_t freq_hz = sdmmc_host_get_bus_freq(clock);
+    uint32_t host_div, card_div;
+
+    /* The generator is fed from the 40 MHz crystal. The 160 MHz BBPLL path was
+     * tried and does not produce a clock on this board even with BBPLL_FORCE_PU
+     * set in RTC_CNTL_OPTIONS0, so XTAL is the only usable source.
+     *
+     * Base period = (div_factor_l + 1) / 40 MHz, then the slot divider in CLKDIV
+     * divides by 2 * divN (0 = bypass).
+     */
+    if (freq_hz >= 25000000) {
+        /* 50 MHz is unreachable from 40 MHz; 20 MHz is the closest legal rate. */
+        host_div = 2;
+        card_div = 0;
+    } else {
+        /* 40 MHz / 10 / (2 * 5) = 400 kHz exactly. */
+        host_div = 10;
+        card_div = 5;
+    }
+
+    wr(SDMMC_CLKSRC, 0);                  /* slot 0 uses divider div0 */
+
+    /* ESP-IDF's order: stop the clock, tell the CIU, program the dividers, tell
+     * the CIU, then re-enable. Writing the dividers while the clock is running
+     * does not take effect. */
+    wr(SDMMC_CLKENA, 0);
+    clock_update_command();
+
+    wr(SDMMC_CLK, (1u << 0) | ((host_div / 2 - 1) << 9) | ((host_div - 1) << 13)
+                  | ((host_div - 1) << 17));
+    wr(SDMMC_CLKDIV, card_div);
+    clock_update_command();
+
+    wr(SDMMC_CLKENA, 1u | (1u << 16));    /* clock on, low-power gating on */
+    clock_update_command();
+
+    /* The timeout is counted in card output clocks, so it has to be derived from
+     * the clock we actually generated. */
+    wr(SDMMC_TMOUT, 255u | (255u << 8));
 }
 
 static void sdmmc_set_power_enabled(void *controller, bool enable)
@@ -455,6 +509,7 @@ static void sdmmc_set_power_enabled(void *controller, bool enable)
             udelay(10);
         }
 
+        wr(SDMMC_PWREN, 1);
         wr(SDMMC_INTMASK, 0);
         wr(SDMMC_RINTSTS, 0xffffffff);
         wr(SDMMC_IDSTS, 0xffffffff);
@@ -526,17 +581,119 @@ static const struct sdmmc_host_config sdmmc_config INITDATA_ATTR = {
     .is_removable = false,
 };
 
+
+/* CRC-7, polynomial 0x83, over the 41-bit index+argument, as the SD spec defines
+ * it. The hardware computes this for us; the bit-bang probe needs it by hand.
+ */
+static uint8_t sd_crc7(uint32_t index, uint32_t arg)
+{
+    uint64_t data = ((uint64_t)(index & 0x3fu) << 32) | arg;
+    uint8_t crc = 0;
+
+    for (int i = 40; i >= 0; i--) {
+        crc = (crc << 1) | ((data >> i) & 1u);
+        if (crc & 0x80)
+            crc ^= 0x83;
+        crc &= 0x7F;
+    }
+    for (int i = 0; i < 7; i++) {
+        crc <<= 1;
+        if (crc & 0x80)
+            crc ^= 0x83;
+        crc &= 0x7F;
+    }
+    return crc;
+}
+
+/* Drive the card by hand on the same three pins the SDHOST uses. This answers a
+ * question the controller cannot: whether the card is electrically reachable at
+ * all. If the bit-bang gets a response and the SDHOST does not, the problem is in
+ * the controller's clock or signal configuration, not the wiring.
+ */
+/* Pulse the clock and sample CMD once per cycle. */
+static void sd_clock_and_read(int clk, int cmd, int n)
+{
+    for (int i = 0; i < n; i++) {
+        gpio_write_pin(clk, 1);
+        udelay(20);
+        boot_trace('0' + (char)gpio_read_pin(cmd));
+        gpio_write_pin(clk, 0);
+        udelay(20);
+    }
+}
+static void pad_test(int pin)
+{
+    int hi = pin >= 32;
+    int bit = hi ? pin - 32 : pin;
+    unsigned outsel = GPIO_FUNC_OUT_SEL(pin);
+    unsigned ents = hi ? GPIO_ENABLE1_W1TS : GPIO_ENABLE_W1TS;
+    unsigned entc = hi ? GPIO_ENABLE1_W1TC : GPIO_ENABLE_W1TC;
+    unsigned ots  = hi ? GPIO_OUT1_W1TS : GPIO_OUT_W1TS;
+    unsigned otc  = hi ? GPIO_OUT1_W1TC : GPIO_OUT_W1TC;
+    unsigned in   = hi ? GPIO_IN1 : GPIO_IN;
+    int r[6];
+
+    /* Pad configured as: GPIO matrix function, input enabled, no pull-down,
+     * pull-up on, maximum drive, push-pull (not open-drain). */
+    wr(IO_MUX_PIN(pin), (rd(IO_MUX_PIN(pin)) & ~IO_MUX_MCU_SEL) |
+                        (1u << 9) | (1u << 8) | (3u << 10));
+    wr(GPIO_PIN_REG(pin), rd(GPIO_PIN_REG(pin)) & ~(1u << 2));
+
+    for (int oen = 1; oen >= 0; oen--) {
+        wr(outsel, 256u | ((unsigned)oen << 10));
+        wr(entc, 1u << bit);
+        wr(ents, 1u << bit);
+        wr(ots, 1u << bit);
+        udelay(200);
+        r[oen * 3] = (int)((rd(in) >> bit) & 1u);
+        wr(otc, 1u << bit);
+        udelay(200);
+        r[oen * 3 + 1] = (int)((rd(in) >> bit) & 1u);
+        wr(entc, 1u << bit);          /* tri-state: the pull-up should win */
+        udelay(200);
+        r[oen * 3 + 2] = (int)((rd(in) >> bit) & 1u);
+    }
+
+    boot_trace('P');
+    boot_trace_hex((unsigned)pin);
+    boot_trace('0' + r[0]); boot_trace('0' + r[1]); boot_trace('0' + r[2]);
+    boot_trace('0' + r[3]); boot_trace('0' + r[4]); boot_trace('0' + r[5]);
+}
+
+static void sd_bitbang_probe(void)
+{
+    const int CLK = 47, CMD = 48, D0 = 21;
+
+    boot_trace('b');
+    pad_test(CLK);
+    pad_test(CMD);
+    pad_test(D0);
+    pad_test(45);        /* unused pad, control */
+
+    /* Idle level of CMD while the pad is tri-stated with its pull-up on. */
+    gpio_set_direction(CMD, 0);
+    boot_trace('i');
+    for (int i = 0; i < 8; i++) {
+        udelay(100);
+        boot_trace('0' + (char)gpio_read_pin(CMD));
+    }
+}
+
 void sdmmc_host_target_init(void)
 {
+    sd_bitbang_probe();
+
     /* The SDHOST clock gate is off at reset; ESP-IDF's sdmmc_ll_enable_bus_clock
      * sets bit 7 of SYSTEM_PERIP_CLK_EN1 and nothing else is needed to reach the
-     * block. The reset bit is pulsed so the controller starts from its documented
-     * default state rather than whatever a previous image left behind.
+     * block. The reset bit is cleared so the controller starts from its
+     * documented default state rather than whatever a previous image left.
      */
     wr(XT_SYSTEM_BASE + 0x1C, rd(XT_SYSTEM_BASE + 0x1C) | (1u << 7));
-    wr(XT_SYSTEM_BASE + 0x20, 1u << 7);
-    udelay(10);
-    wr(XT_SYSTEM_BASE + 0x20, 0u);
+    /* SYSTEM_PERIP_RST_EN1 is at +0x24, not +0x20 (that is RST_EN0). The SDHOST
+     * reset bit reads 1 out of the reset state, so the block is held in reset
+     * until it is cleared explicitly.
+     */
+    wr(XT_SYSTEM_BASE + 0x24, rd(XT_SYSTEM_BASE + 0x24) & ~(1u << 7));
     udelay(10);
 
     /* Route the three lines through the GPIO matrix. CLK is driven by the
@@ -546,15 +703,34 @@ void sdmmc_host_target_init(void)
     io_mux_select_gpio(48);
     io_mux_select_gpio(21);
 
-    gpio_matrix_out(47, SIG_SDHOST_CLK);
-    gpio_matrix_out(48, SIG_SDHOST_CMD);
+    /* CLK is host-to-card only; CMD and D0 are bidirectional, so the SDHOST
+     * must own the pad output enable rather than GPIO_ENABLE. */
+    gpio_matrix_out_oen(47, SIG_SDHOST_CLK, 0);
+    gpio_matrix_out_oen(48, SIG_SDHOST_CMD, 0);
     gpio_matrix_in(48, SIG_SDHOST_CMD);
-    gpio_matrix_out(21, SIG_SDHOST_D0);
+    gpio_matrix_out_oen(21, SIG_SDHOST_D0, 0);
     gpio_matrix_in(21, SIG_SDHOST_D0);
 
     gpio_set_direction(47, 1);
     gpio_set_direction(48, 1);
     gpio_set_direction(21, 1);
+
+    /* The board has clamp diodes on the SD lines but no external pull-ups, and a
+     * DesignWare host samples the CMD response from an open-drain line that must be
+     * held high when the card is not driving it. The IO MUX pull-up is the only one
+     * available on this board.
+     */
+    gpio_pullup(47, 1);
+    gpio_pullup(48, 1);
+    gpio_pullup(21, 1);
+
+    boot_trace('d');
+    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(47)));
+    boot_trace_hex(rd(GPIO_FUNC_IN_SEL(SIG_SDHOST_CMD)));
+    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(48)));
+    boot_trace_hex(rd(GPIO_FUNC_IN_SEL(SIG_SDHOST_D0)));
+    boot_trace_hex(rd(GPIO_FUNC_OUT_SEL(21)));
+    boot_trace_hex(rd(IO_MUX_PIN(48)) & 0x780u);
 
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_SDIO_HOST, XT_SLOT_SDHOST);
     semaphore_init(&sdmmc_sem, 1, 0);

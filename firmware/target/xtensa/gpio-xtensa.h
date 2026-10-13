@@ -31,6 +31,9 @@
 
 #define GPIO_IN           (DR_REG_GPIO_BASE + 0x3C)
 #define GPIO_IN1          (DR_REG_GPIO_BASE + 0x40)
+#define GPIO_STATUS1      (DR_REG_GPIO_BASE + 0x50)
+#define GPIO_STATUS1_W1TS (DR_REG_GPIO_BASE + 0x54)
+#define GPIO_STATUS1_W1TC (DR_REG_GPIO_BASE + 0x58)
 
 /* GPIO matrix: one 32-bit slot per pin.
  *   [8:0]   func_sel  - signal index. 256 (SIG_GPIO_OUT_IDX) is the reset value and
@@ -131,10 +134,27 @@ static inline int gpio_read_pin(int pin)
     return (int)((in >> (pin < 32 ? pin : pin - 32)) & 1u);
 }
 
-/* Route a peripheral signal to a pin through the GPIO matrix. */
+/* Route a peripheral signal to a pin through the GPIO matrix.
+
+ * oen_sel selects the source of the pad's output enable:
+ *   1 - the GPIO_ENABLE bit for this pin, so the pad is driven whenever we say
+ *       "output". Fine for a unidirectional signal.
+ *   0 - the peripheral's own output-enable signal. This is what ESP-IDF uses
+ *       (esp_rom_gpio_connect_out_signal(pin, sig, inv, false)), and it is the
+ *       only correct choice for a bidirectional signal: the SDHOST asserts the
+ *       enable only during the command/data phase and releases it so the card
+ *       can drive the same wire.
+ */
+static inline void gpio_matrix_out_oen(int pin, int signal, int oen_from_enable)
+{
+    gpio_write(GPIO_FUNC_OUT_SEL(pin),
+               ((uint32_t)signal & 0x1FF) |
+               (oen_from_enable ? GPIO_OEN_FROM_ENABLE : 0u));
+}
+
 static inline void gpio_matrix_out(int pin, int signal)
 {
-    gpio_write(GPIO_FUNC_OUT_SEL(pin), ((uint32_t)signal & 0x1FF) | GPIO_OEN_FROM_ENABLE);
+    gpio_matrix_out_oen(pin, signal, 1);
 }
 
 /* Route a pin's input to a peripheral signal. The slot is indexed by signal. */
