@@ -112,3 +112,100 @@ which is what makes conveying against Apache-2.0 IDF code workable. The
 Bluetooth controller is a proprietary prebuilt blob regardless of which path we
 take; that is a separate distribution question and it is worth deciding
 deliberately rather than by accident.
+
+---
+
+## Results (ESP-IDF v5.5.5, toolchain esp-14.2.0_20260121, on the board)
+
+```
+  0 heap/psram                       PASS  internal 321543 B, psram 8386192 B, double fb alloc'd
+  1 i2c + pca9557                    FAIL  read CONFIG: ESP_ERR_INVALID_STATE
+  2 backlight (ledc, active low)     PASS  GPIO 42 at 50% duty (active low)
+  3 st7789 via esp_lcd               PASS  320x240 bars @ 40 MHz, CS held via expander (ESP_OK)
+  4 sd card (1-bit, gpio matrix)     PASS  SD16G, 15280 MB, write/read verified
+  5 axp173 pmu                       PASS  REG12=0x0f vbat=4121 mV ichg=0 mA pek0x46=0x00
+  6 nimble scan                      PASS  25 unique advertiser(s) seen
+```
+
+Verdict: the transition is right. Everything that cost days on the bare-metal
+branch works on first contact here.
+
+### What each result actually establishes
+
+**PSRAM.** `esp_psram: SPI SRAM memory test OK`, 8,386,192 B free, largest block
+8,257,536 B. Octal mode at 80 MHz, configured in `sdkconfig.defaults`, not
+written in code. A 320x240 RGB565 *double* framebuffer allocates from it. This
+was the single hardest problem on the bare-metal branch (MSPI timing sweeps, pad
+routing, MR0/MR8 register transactions, the Ext_RAM cache path) and it is now
+four config lines.
+
+**Internal RAM.** 321,543 B free at boot, largest block 225,280 B. That is the
+budget for things that cannot live in PSRAM: GDMA descriptor rings, ISR stacks,
+and anything the DMA touches.
+
+**SD.** A 16 GB card mounts at 1-bit on GPIO 47/48/21 via
+`CONFIG_SDMMC_USE_GPIO_MATRIX=y`, and a file round-trips. The whole SDHOST IDMAC
+descriptor-ring reimplementation is gone.
+
+**Display.** `esp_lcd_panel_st7789` is in-tree in 5.5.5. With `cs_gpio_num = -1`
+and the SPI bus otherwise unclaimed, colour bars render at 40 MHz PCLK.
+
+**PMU.** The AXP173 answers, `REG12 = 0x0f` (DCDC1, LDO4, LDO2, LDO3 already
+enabled by the bootloader), and battery reads 4121 mV — a plausible Li-ion
+figure. `REG 0x46` (the PEK status register the stock driver reads at the wrong
+offset) is readable.
+
+**Bluetooth.** The prebuilt controller loads (`BLE_INIT: BT controller compile
+version [51d9dfd]`, `Bluetooth MAC: e8:3d:c1:f5:98:e6`), NimBLE syncs and a
+passive scan finds 25 advertisers. This is the capability that forced the
+transition, and it works.
+
+### The one failure, and what it is not
+
+A full 7-bit scan (0x08-0x77) finds six devices and **the PCA9557 is not among
+them at any address**:
+
+| addr | device | result |
+|---|---|---|
+| 0x18 | ES8311 | ACK |
+| 0x19 | PCA9557 | **no response** |
+| 0x34 | AXP173 | ACK |
+| 0x38 | FT6336 | ACK |
+| 0x41 | ES7210 | ACK |
+| 0x44 | SHT30 | absent (not fitted) |
+| 0x51 | PCF8563 | ACK |
+| 0x68 | BMI270 | ACK |
+
+So the bus, the pins, the driver and the timing are all healthy. Two things this
+ruled out explicitly:
+
+- **Not a driver fault.** A `transmit_receive` against the AXP173 succeeds and
+  returns `0x0f`. `ESP_ERR_INVALID_STATE` is simply how this driver reports a
+  NACK on that path, which is why it looked like a bus-level failure.
+- **Not a stuck bus.** SDA and SCL both idle high as plain inputs with pull-ups,
+  and nine-clock recovery changes nothing.
+
+Enabling the AXP173's output rails changes nothing either — `REG12` is already
+`0x0f` before we touch it.
+
+Open questions to settle before the port depends on the expander:
+
+1. Is its `/RESET` being held low, or is its VDD on a rail that is off?
+2. The panel renders bars *even though the expander never asserts LCD reset or
+   CS*. Either those lines are externally biased, or the expander's outputs are
+   in a usable state without being addressed. Worth knowing which, because the
+   amp enable and touch reset are on the same chip.
+3. The bare-metal branch believed the expander worked — the Rockbox logo made it
+   to the screen, which requires reset release and CS. So this is a state
+   difference to chase, not a dead chip.
+
+### Corrections to claims made during this session
+
+`i2c_master_probe()` returns `esp_err_t` where **0 means the device was found**.
+An earlier reading of this output inverted that and concluded the probe ACKed
+when it did not. The bus scan above is the corrected result.
+
+Setting `trans_queue_depth` non-zero made the failing calls return `ESP_OK`, but
+the data came back wrong (two different devices both reading `0xa1`) and the
+driver warns that in asynchronous mode "user cannot get bus error from API".
+That is a way to hide this bug, not fix it; the spike stays synchronous.
