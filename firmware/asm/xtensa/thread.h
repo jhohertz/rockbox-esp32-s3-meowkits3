@@ -21,48 +21,43 @@
 /*
  * Xtensa under the windowed ABI.
  *
- * A live thread is not just a0-a15: the register windows above the current one
- * hold the state of every ancestor call. Before a switch those windows are
- * written to the thread's own stack by the window overflow handlers (see
- * firmware/target/xtensa/vectors.S), which is what
- * __xtensa_libgcc_window_spill() provokes. After that only the current window is
- * live, so saving it plus WINDOWBASE/WINDOWSTART/PS/SAR is the whole context.
+ * A thread's live state is not a list of registers. Every call frame on the
+ * thread's stack already reserves a 16-byte base save area, and the window
+ * overflow/underflow handlers use it: window N's a0, a2, a3 and a4 live in the
+ * base save area of window N-1's frame, at (ancestor sp - 16)..(ancestor sp -
+ * 4). Spill the windows before switching and the whole call chain is on the
+ * thread's own stack. From then on the only thing that identifies where the
+ * thread stopped is its stack pointer -- the registers come back by itself,
+ * refilled by the underflow handlers as the thread unwinds.
  *
- * On the way back in, WINDOWSTART tells the hardware which windows are spilled,
- * and the underflow handlers refill them as the thread unwinds. The spilled data
- * stays on the thread's stack, below the saved sp, and is only read back before
- * that stack grows again.
+ * So that is what is saved: sp, the a0 that RETW needs to leave the switch
+ * frame, and PS. This is the same set FreeRTOS saves for a solicited (i.e.
+ * cooperative, non-interrupt) yield -- see XT_SOL_PC / XT_SOL_PS in its
+ * portasm.S, and _frxt_dispatch's solicited path, which restores exactly those
+ * and then executes retw. Saving a0-a15 as well, which is what a call0 port
+ * does, is not a longer version of the same thing: it overwrites a window the
+ * hardware is about to refill from memory that is already correct.
+ *
+ * SAR and the zero-overhead loop registers are deliberately absent. Neither
+ * survives a call in the windowed ABI, and a cooperative switch only happens
+ * at a call boundary, so a thread cannot be holding live values in them.
+ * FreeRTOS likewise does not save them on its solicited path; an interrupt can
+ * land inside a zero-overhead loop and an unsolicited frame does carry them.
  */
 struct regs
 {
-    uint32_t r[16];      /* a0, a2-a15 of the window that was current (a1 in sp) */
-    uint32_t sp;
-    uint32_t ps;
-    uint32_t windowbase;
-    uint32_t windowstart;
-    uint32_t sar;
-    /* Zero-overhead loop state. GCC emits ZOL on Xtensa, and a thread can be
-     * switched inside one: LCOUNT is the remaining iteration count, LBEG/LEND
-     * the bounds. Without them the resumed thread re-enters the loop with the
-     * hardware's loop registers pointing at some other thread's bounds.
-     */
-    uint32_t lbeg;
-    uint32_t lend;
-    uint32_t lcount;
-    uint32_t start;      /* thread entry point, or NULL once running */
+    uint32_t sp;      /* stack pointer of the switch_thread frame */
+    uint32_t pc;      /* a0 exactly as the windowed ABI encoded it */
+    uint32_t ps;      /* PS with INTLEVEL and EXCM cleared, CALLINC 8 */
+    uint32_t start;   /* entry point, zero once the thread has run */
 };
 
-#define XT_A0    0
-#define XT_PS    68
-#define XT_WB    72
-#define XT_WS    76
-#define XT_SAR   80
-#define XT_LBEG  84
-#define XT_LEND  88
-#define XT_LCOUNT 92
-#define XT_START 96
+#define XT_SP    0
+#define XT_PC    4
+#define XT_PS    8
+#define XT_START 12
 
-/* The level-1 handler runs on the interrupted thread's stack: 80 bytes for its
- * own frame, then the dispatch, the GDMA completion path and the mixer chain
- * that the completion callback drives. */
+/* The level-1 handler runs on the interrupted thread's stack: its own frame,
+ * then the dispatch, the GDMA completion path and the mixer chain that the
+ * completion callback drives. */
 #define DEFAULT_STACK_SIZE 0x1000 /* Bytes */
