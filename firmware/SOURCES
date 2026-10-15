@@ -665,22 +665,15 @@ target/coldfire/ata-as-coldfire.S
 
 #elif defined(CPU_XTENSA)
 
-/* Build-integration probe: proves Rockbox's config and IDF's config compile in
- * one translation unit. Remove together with the bare-metal startup files. */
-target/xtensa/idf-probe.c
-
 /* The bare-metal startup is not used on this path and is not built: ESP-IDF owns
  * the entry point, the vectors, the cache/MMU arming, the PSRAM bring-up and the
  * core timer. That whole layer lives on the tagged branch baremetal-pre-idf,
  * along with crt0.S, vectors.S, irom-map.c, mmu-xtensa.c, psram-xtensa.c,
- * rom_cache.c, irq-xtensa.c and app.lds.
- *
- * timer-xtensa.c is absent for the same reason: it armed the core timer and
- * installed its own interrupt slot, which is not something a guest of FreeRTOS
- * may do. The Rockbox tick comes back with the threading step. */
-target/xtensa/bootlog.c
+ * rom_cache.c, irq-xtensa.c and app.lds. */
+target/xtensa/memory-xtensa-syms.S
 target/xtensa/system-xtensa.c
 target/xtensa/power-xtensa.c
+target/xtensa/timer-xtensa.c
 #if CONFIG_I2C == I2C_XTENSA
 target/xtensa/i2c-xtensa.c
 target/xtensa/pca9557.c
@@ -697,9 +690,7 @@ target/xtensa/backlight-xtensa.c
 target/xtensa/adc-xtensa.c
 target/xtensa/debug-xtensa.c
 target/xtensa/usb-xtensa.c
-#ifdef HAVE_SDMMC_HOST
-target/xtensa/sdmmc-xtensa.c
-#endif
+target/xtensa/sd-idf.c
 #ifdef HAVE_AXP173
 drivers/axp173.c
 #endif

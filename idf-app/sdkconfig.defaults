@@ -6,10 +6,28 @@
 
 CONFIG_IDF_TARGET="esp32s3"
 
+# ---- core clock ----
+# 240 MHz, matching the stock MeowKit firmware (arduino-esp32) and CPU_FREQ in
+# firmware/export/config/meowkits3.h. IDF's own default for this target is 160,
+# so it has to be stated rather than assumed: Rockbox's udelay() counts core
+# cycles against CPU_FREQ, and system-xtensa.c asserts the two agree, so
+# leaving this unset is a compile error rather than a silent 1.5x timing skew.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
 # ---- flash ----
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ---- app partition ----
+# IDF's default single-app table gives the app 1 MB. Rockbox does not fit in it:
+# the loaded image is ~1.07 MB before anything is trimmed, because it is Rockbox
+# (code, fonts, language files, bitmaps, skins) on top of IDF's own text and
+# rodata -- roughly 460 KB flash text, 520 KB flash rodata, 64 KB IRAM and 23 KB
+# of initialized data. The failure is not subtle (esptool refuses the image), but
+# it is a partition-table error, so it reads as a size problem rather than a
+# configuration one. 16 MB of flash, 3 MB of app.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # ---- PSRAM: octal, 80 MHz ----
 # MODE_OCT is the whole point: the N16R8 module's PSRAM is an octal device on
@@ -22,6 +40,13 @@ CONFIG_SPIRAM_SPEED_80M=y
 # 0x3FC00000, so a PSRAM address loses its high bits.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# Claim .ext_ram.bss. Rockbox's audiobuffer, framebuffer and codec/plugin load
+# buffers are linker symbols its core expects a linker script to place, and this
+# path has no Rockbox linker script -- they are declared in that section by
+# firmware/target/xtensa/memory-xtensa-syms.S instead. Without this option IDF
+# does not claim the section, the buffers fall back to the 337 KB internal DRAM,
+# and the link fails with dram0_0_seg overflowed by several megabytes.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # ---- console: the board's only always-available serial is USB-Serial-JTAG ----
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

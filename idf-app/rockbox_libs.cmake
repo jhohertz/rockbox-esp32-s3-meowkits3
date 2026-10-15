@@ -6,4 +6,5 @@ set(ROCKBOX_LIBS
     /home/jhohertz/co/rockbox/build-meowkits3/lib/libskin_parser.a
     /home/jhohertz/co/rockbox/build-meowkits3/lib/libutf8proc.a
     /home/jhohertz/co/rockbox/build-meowkits3/lib/libfixedpoint.a
+    /home/jhohertz/co/rockbox/build-meowkits3/lib/rbcodec/codecs/libspeex-voice.a
 )

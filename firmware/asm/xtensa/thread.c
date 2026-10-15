@@ -42,11 +42,13 @@ extern void __xtensa_libgcc_window_spill(void);
  * 16-bit PC-relative range. So the address is emitted as a literal in the same
  * section as the code and jumped over.
  */
-/* The address has to be re-read after the window rotation, so it cannot live in
- * a register. .srambss rather than .bss: .bss sits in the PSRAM window, which is
- * not mapped until mmu_init(), and the bring-up test below runs before then. */
-static volatile uint32_t xt_context_addr
-    __attribute__((section(".srambss")));
+/* The address has to be re-read after the window rotation, so it cannot live
+ * in a register. Plain .bss is right: under ESP-IDF .bss is placed in the
+ * internal DRAM segment, which is what the old .srambss section in Rockbox's
+ * own linker script was for. That script is gone, and a section name nothing
+ * declares is not a request - the linker would place it wherever its default
+ * rules happen to put it. */
+static volatile uint32_t xt_context_addr;
 
 void xt_thread_start(void (*fn)(void))
 {
@@ -58,9 +60,42 @@ void xt_thread_start(void (*fn)(void))
  * Store non-volatile context.
  *---------------------------------------------------------------------------
  */
+/* FreeRTOS's own cooperative yield on this core calls this spelling of the
+ * spill (portasm.S, vPortYield). Declared here rather than pulled from an IDF
+ * header: this file is also read by translation units that do not see IDF. */
+extern void xthal_window_spill_nw(void);
+
+#define XT_PS_INTLEVEL_MASK 0x0000000Fu
+#define XT_PS_WOE_MASK      0x00040000u
+#define XT_EXCM_LEVEL       1u
+
 static inline void store_context(void* addr)
 {
-    __xtensa_libgcc_window_spill();
+    /* The spill has to be the _nw variant, and it has to be done with WOE off.
+     *
+     * __xtensa_libgcc_window_spill() -- what the bare-metal branch used -- is a
+     * chain of ENTRYs that works by *taking* window overflow exceptions. A
+     * window exception cannot be taken while PS.INTLEVEL is non-zero, and
+     * switch_thread() has already masked interrupts by raising it to 15. The
+     * result is a double exception reported with PC inside that ENTRY chain, PS
+     * showing INTLEVEL 0xF and EXCM set, and a backtrace whose return address is
+     * really a data address.
+     *
+     * xthal_window_spill_nw() walks the base-save areas with plain stores and
+     * never needs an exception; clearing WOE makes sure none is attempted while
+     * it runs. This is the sequence FreeRTOS uses, including raising the level to
+     * EXCM_LEVEL across it rather than leaving it wherever the caller left it. */
+    unsigned int ps, saved;
+
+    asm volatile ("rsr    %0, ps" : "=r" (saved));
+    ps = (saved & ~(XT_PS_INTLEVEL_MASK | XT_PS_WOE_MASK)) | XT_EXCM_LEVEL;
+    asm volatile ("wsr    %0, ps" : : "r" (ps));
+    asm volatile ("rsync");
+
+    xthal_window_spill_nw();
+
+    asm volatile ("wsr    %0, ps" : : "r" (saved));
+    asm volatile ("rsync");
 
     asm volatile(
         /* The compiler's own spill slots are on this thread's stack, so
@@ -123,17 +158,25 @@ static inline void load_context(const void* addr)
         ".align 4                   \n"
         "10: .long xt_context_addr  \n"
         "11: .long xt_thread_start  \n"
-        "12: .long xt_ctx_hist      \n"
     "3:                             \n"
         "l32r    a6, 10b            \n"
         "l32i    a6, a6, 0          \n"
         "l32i    a7, a6, 96         \n"
         "beqz    a7, 1f             \n"
 
-        /* First run: a clean window at level 0, then enter the starter as if it
-         * had been called with CALLINC 0. PS is not zeroed wholesale: WOE has to
-         * stay set, otherwise the window overflow vectors cannot fire for the
-         * thread's own nested calls and ENTRY faults. */
+        /* First run: a clean window, then enter the starter. PS is not zeroed
+         * wholesale: WOE has to stay set, otherwise the window overflow vectors
+         * cannot fire for the thread's own nested calls and ENTRY faults.
+         *
+         * CALLINC has to be 8, not 0. The starter is windowed C, so its ENTRY
+         * rotates the window by CALLINC and reserves the base-save area that
+         * every later overflow handler walks. Entering windowed code with
+         * CALLINC 0 leaves that area unreserved, and the overflow handler then
+         * reads garbage as the ancestor stack pointer and stores through it --
+         * which is what this looked like: a double exception whose reported
+         * frame had a data address as a return address. The bare-metal form of
+         * this file ran under the call0 ABI, where 0 was right; under IDF the
+         * ABI is windowed and 8 is the only legal entry. */
         /* Window overflow/underflow is enabled by PS.WOE. Moving WINDOWBASE
          * while WOE is set and WINDOWSTART still marks the interruptee's
          * ancestor windows as live makes the hardware walk their base-save
@@ -145,7 +188,7 @@ static inline void load_context(const void* addr)
         "rsync                      \n"
         "wsr     a7, windowstart    \n"
         "wsr     a7, windowbase     \n"
-        "movi    a7, 0x40000        \n"
+        "movi    a7, 0x40002000     \n"   /* PS.WOE | CALLINC 8 */
         "wsr     a7, ps             \n"
         "movi    a7, 0              \n"
         "wsr     a7, sar            \n"
@@ -165,22 +208,6 @@ static inline void load_context(const void* addr)
         "jx      a7                 \n"
 
     "1:                             \n"
-        /* Log what the switch installs so a later fault can be matched against
-         * the last context that was restored. */
-        "l32r    a8, 12b             \n"
-        "l32i    a7, a6, 68          \n"
-        "s32i    a7, a8, 0           \n"
-        "l32i    a7, a6, 72          \n"
-        "s32i    a7, a8, 4           \n"
-        "l32i    a7, a6, 76          \n"
-        "s32i    a7, a8, 8           \n"
-        "l32i    a7, a6, 0           \n"
-        "s32i    a7, a8, 12          \n"
-        "l32i    a7, a6, 64          \n"
-        "s32i    a7, a8, 16          \n"
-        "l32i    a7, a8, 20          \n"
-        "addi    a7, a7, 1           \n"
-        "s32i    a7, a8, 20          \n"
         /* WINDOWBASE first: the windows above it are refilled from the thread's
          * stack by the underflow handlers as it unwinds. */
         "l32i    a7, a6, 72              \n"
@@ -190,7 +217,23 @@ static inline void load_context(const void* addr)
         "l32i    a6, a6, 0               \n"
         "l32i    a7, a6, 76              \n"
         "wsr     a7, windowstart         \n"
+        /* PS.CALLINC has to be 8 on the way out, whatever it was on the way in.
+         * switch_thread() ends with the compiler's retw, and RETW only strips
+         * the window encoding from a0 when PS.CALLINC is non-zero: with 0 it
+         * behaves as a plain return and jumps to the raw saved address, which on
+         * the windowed ABI still has bit 31 set. The fault this produces is an
+         * InstrFetchProhibited at the aligned form of that address -- PC
+         * 0x82052047, EXCVADDR 0x82052044, i.e. the instruction after the call8
+         * to switch_thread in sleep(), with the encoding bit still on it. */
         "l32i    a7, a6, 68              \n"
+        "movi    a9, 3                   \n"
+        "slli    a9, a9, 16              \n"
+        "movi    a8, -1                  \n"
+        "xor     a8, a8, a9              \n"   /* ~CALLINC field */
+        "and     a7, a7, a8              \n"
+        "movi    a9, 2                   \n"
+        "slli    a9, a9, 16              \n"   /* CALLINC 8 */
+        "or      a7, a7, a9              \n"
         "wsr     a7, ps                  \n"
         "l32i    a7, a6, 80              \n"
         "wsr     a7, sar                 \n"
@@ -228,108 +271,3 @@ static inline void load_context(const void* addr)
 /* Nothing else is needed to start a thread: load_context() checks start. */
 #define THREAD_STARTUP_INIT(core, thread, function) \
     ({ (thread)->context.start = (uint32_t)(uintptr_t)(function); })
-
-#if XTENSA_THREAD_SELFTEST
-
-/*
- * Bring-up test for the windowed-ABI context switch, run from crt0 before the
- * kernel exists.
- *
- * Two bodies alternate on two separate stacks in internal SRAM. Each recurses
- * XT_DEPTH deep and calls the switch from the innermost frame, so several
- * register windows are live at the moment of the save. The interesting part is
- * the resume: load_context restores a0, sp, PS, WINDOWBASE and WINDOWSTART, and
- * the epilogue's retw then rotates back through the underflow handlers, which
- * refill the spilled windows from the frames on that thread's own stack.
- *
- * The trace is the evidence. xt_depth(6) returns 21 only if every frame above
- * the switch unwound with its registers intact, so a run that prints
- * a #00000015 b #00000015 ... eight times, and then z, has exercised the whole
- * spill/refill path. A broken restore takes an exception instead, which the
- * bring-up trap records in xt_exc_dump.
- */
-#define XT_STACK_WORDS 512
-#define XT_DEPTH       6
-#define XT_ROUNDS      4
-
-/* .srambss is NOLOAD and crt0 zeroes it, so none of these can carry a static
- * initialiser - the values have to be set at run time.
- */
-static volatile int xt_depth_target __attribute__((section(".srambss")));
-static volatile int xt_rounds __attribute__((section(".srambss")));
-static int (*volatile xt_recurse)(int) __attribute__((section(".srambss")));
-
-static uint32_t xt_stack[2][XT_STACK_WORDS]
-    __attribute__((section(".srambss"), aligned(16)));
-/* [0] and [1] are the two threads; [2] is the entry context, so the test can
- * hand control back to crt0 rather than spinning.
- */
-static struct regs xt_ctx[3] __attribute__((section(".srambss")));
-static int xt_cur __attribute__((section(".srambss")));
-/* Result cells so the outcome is readable even if the trace ring is confusing:
- * [0] magic, [1] switches, [2] last xt_depth() result, [3] xt_cur at the end.
- */
-volatile uint32_t xt_result[8] __attribute__((section(".srambss")));
-
-/* Everything here runs from .text: the test executes before the PSRAM is touched,
- * so the flash cache window is still healthy. It cannot be ICODE_ATTR - internal
- * SRAM is only 43 KB and the firmware's IRAM code already nearly fills it.
- *
- * GCC flattens a plain self-recurrence into a loop, which leaves one frame live
- * and tests nothing. Recursing through a function pointer keeps the frames real,
- * and the asm barrier keeps each frame's own value in a register instead of
- * folding it into an accumulator.
- */
-__attribute__((noinline)) static int xt_depth(int n)
-{
-    int live = n;
-    asm volatile("" : "+r"(live));
-    if (n == 0) {
-        store_context(&xt_ctx[xt_cur]);
-        xt_cur ^= 1;
-        xt_result[1]++;
-        load_context(&xt_ctx[xt_cur]);
-        /* Not reached in this thread: load_context returns into the other one. */
-        return live;
-    }
-    return xt_recurse(n - 1) + live;
-}
-
-static void xt_loop(int id)
-{
-    for (int i = 0; i < xt_rounds; i++) {
-        int v = xt_depth(xt_depth_target);
-        xt_result[2] = (uint32_t)v;
-    }
-    /* The body that runs last unwinds back to crt0 through the saved entry
-     * context; the other thread stays suspended on its own stack.
-     */
-    xt_result[3] = (uint32_t)xt_cur;
-    load_context(&xt_ctx[2]);
-}
-
-static void xt_body_a(void) { xt_loop(0); }
-static void xt_body_b(void) { xt_loop(1); }
-
-void xtensa_thread_selftest(void)
-{
-
-    xt_depth_target = XT_DEPTH;
-    xt_rounds = XT_ROUNDS;
-    xt_recurse = xt_depth;
-    xt_result[0] = 0x54485244u; /* 'THRD' */
-    xt_result[1] = 0;
-
-    /* Snapshot the state crt0 handed us so the test can return to it. */
-    store_context(&xt_ctx[2]);
-
-    xt_ctx[0].sp    = (uint32_t)(uintptr_t)&xt_stack[0][XT_STACK_WORDS];
-    xt_ctx[0].start = (uint32_t)(uintptr_t)xt_body_a;
-    xt_ctx[1].sp    = (uint32_t)(uintptr_t)&xt_stack[1][XT_STACK_WORDS];
-    xt_ctx[1].start = (uint32_t)(uintptr_t)xt_body_b;
-    xt_cur = 0;
-
-    load_context(&xt_ctx[0]);
-}
-
-#endif /* XTENSA_THREAD_SELFTEST */

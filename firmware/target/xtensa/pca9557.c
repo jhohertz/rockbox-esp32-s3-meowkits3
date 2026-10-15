@@ -2,7 +2,6 @@
 #include "system.h"   /* mdelay */
 #include "i2c.h"
 #include "pca9557.h"
-#include "bootlog.h"
 
 /* The reference firmware reads the output register before every write. That is two
  * I2C transactions per pin change, which is fine for control signals but wasteful.
@@ -57,7 +56,6 @@ int pca9557_read(int pin)
 void pca9557_init(void)
 {
     unsigned char v;
-    boot_trace('B');
     int ok = 0;
 
     for (int attempt = 0; attempt < 5; attempt++) {
@@ -94,8 +92,5 @@ void pca9557_init(void)
      * read back as outputs (bit clear in the config register).
      */
     if (read_reg(PCA9557_REG_CONFIG, &v)) {
-        boot_trace('k');
-        boot_trace_hex(v);
     }
-    boot_trace('K');
 }

@@ -1,0 +1,109 @@
+# Where Rockbox's static data goes.
+#
+# ESP-IDF's internal DRAM segment is 0x53700 bytes (337 KB) and IDF's own
+# startup, FreeRTOS, drivers and heap already claim a large part of it before
+# Rockbox is linked in. Rockbox's statics do not fit in what is left, so some of
+# them have to go to the 8 MB of octal PSRAM the board carries.
+#
+# The default here is internal DRAM, and PSRAM is granted object by object.
+# That is the opposite of the first version of this file, which moved every
+# Rockbox archive to PSRAM and named the exceptions, and it was changed because
+# the exceptions were not enumerable. Thread stacks in Rockbox are plain
+# `static long foo_stack[...]` arrays -- one per driver, in that driver's .bss
+# (powermgmt.c, storage.c, usb.c, codec_thread.c, audio_thread.c, apps/main.c,
+# and more). Moving whole archives therefore moved the stacks, and a Rockbox
+# thread switched onto a PSRAM stack produced a double exception inside
+# __xtensa_libgcc_window_spill with a stack pointer in the PSRAM window: the
+# register spill area and the stack both live in cache-backed memory the core
+# cannot maintain per address. That is the same hazard that keeps
+# memory-xtensa-syms.S's thread-0 stack out of PSRAM, just arrived at by
+# accident. Anything that can *be* a stack has to stay in DRAM, and there is no
+# complete list of those objects, so the safe rule is: stay in DRAM unless a
+# named object is known to be pure data.
+#
+# The same argument covers DMA. On esp32s3 the D-cache only covers IRAM0 and
+# DRAM0 (cache_ll_vaddr_to_cache_level_id accepts nothing else), GDMA takes a
+# descriptor address from a 20-bit window based at 0x3FC00000, and IDF's SD
+# driver does no cache maintenance on the caller's buffer at all -- its
+# esp_cache_msync() calls are compiled out behind SOC_CACHE_INTERNAL_MEM_VIA_-
+# L1CACHE, which this part does not define. So anything that can be the
+# destination of a storage or audio transfer stays in DRAM too: that rules out
+# disk_cache.o and dir.o, which are read destinations, and pcm-xtensa.o and
+# i2s-xtensa.o, which hold the GDMA descriptors and the ping-pong pairs.
+#
+# What is moved is the large, CPU-only data: language and unicode tables, the
+# scroll engine's line cache, bidi, the rbcodec buffering. These are read and
+# written by the core and never handed to a DMA engine. PSRAM at 80 MHz is
+# slower than internal SRAM, so this is a performance cost; it is paid for the
+# alternative, which is not fitting at all.
+#
+# Initialized data (.data) stays in internal DRAM: IDF has no PSRAM target for
+# it, because .ext_ram.bss is NOLOAD and there is nothing to load initial values
+# from. It is about 23 KB including IDF's own, so it is not the pressure point.
+#
+# The mapping blocks are named rb_firmware, rb_apps, ... rather than all being
+# called 'main', even though 'main' is the component that registers this file.
+# ldgen keys fragments by that name and fails the build outright on a duplicate
+# ("Duplicate definition of fragment 'main'"), and one block can only carry one
+# archive -- so one name per archive is forced. The name is otherwise inert: it
+# is the archive line that decides what the entries apply to.
+
+[scheme:rb_psram]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+# The default, spelled out everywhere so that the PSRAM entries below read as
+# the deliberate exceptions they are.
+[scheme:rb_dram]
+entries:
+    bss -> dram0_bss
+    common -> dram0_bss
+
+[mapping:rb_firmware]
+archive: libfirmware.a
+entries:
+    unicode (rb_psram)
+    bidi (rb_psram)
+    scroll_engine (rb_psram)
+    # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
+    # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
+    # buffers are already in .ext_ram.bss by their own section attribute, which
+    # this archive-level entry does not override.
+    memory-xtensa-syms (rb_dram)
+    pcm-xtensa (rb_dram)
+    i2s-xtensa (rb_dram)
+    * (rb_dram)
+
+[mapping:rb_apps]
+archive: librockbox.a
+entries:
+    playlist (rb_psram)
+    language (rb_psram)
+    * (rb_dram)
+
+[mapping:rb_rbcodec]
+archive: librbcodec.a
+entries:
+    buffering (rb_psram)
+    * (rb_dram)
+
+[mapping:rb_skin]
+archive: libskin_parser.a
+entries:
+    * (rb_psram)
+
+[mapping:rb_utf8]
+archive: libutf8proc.a
+entries:
+    * (rb_psram)
+
+[mapping:rb_fixed]
+archive: libfixedpoint.a
+entries:
+    * (rb_psram)
+
+[mapping:rb_speexvoice]
+archive: libspeex-voice.a
+entries:
+    * (rb_psram)

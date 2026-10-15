@@ -5,7 +5,6 @@
  * Volume is hardware, so PCM_NATIVE_VOLUME_TYPE resolves to PCM_SINK_HWVOL.
  ****************************************************************************/
 #include "config.h"
-#include "bootlog.h"
 
 #include "system.h"
 #include "audio.h"

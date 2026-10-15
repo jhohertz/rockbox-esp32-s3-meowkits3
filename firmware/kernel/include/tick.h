@@ -38,22 +38,33 @@ extern void init_tick(void) INIT_ATTR;
 static inline void call_tick_tasks(void)
 {
 }
+
+static inline void run_tick_tasks(void)
+{
+}
 #else
 extern volatile long current_tick;
 
-/* inline helper for implementing target interrupt handler */
-static inline void call_tick_tasks(void)
+/* The registered functions on their own, without touching the clock. Split out
+ * because a target whose interrupt cannot run them still has to advance
+ * current_tick -- see the xtensa tick, which is required to do only that. */
+static inline void run_tick_tasks(void)
 {
     extern void (*tick_funcs[MAX_NUM_TICK_TASKS+1])(void);
     void (**p)(void) = tick_funcs;
     void (*fn)(void);
 
-    current_tick++;
-
     for(fn = *p; fn != NULL; fn = *(++p))
     {
         fn();
     }
+}
+
+/* inline helper for implementing target interrupt handler */
+static inline void call_tick_tasks(void)
+{
+    current_tick++;
+    run_tick_tasks();
 }
 #endif
 
