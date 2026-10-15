@@ -84,11 +84,75 @@ void vApplicationTickHook(void)
 {
 #ifdef ROCKBOX_SCAN_TRACE
     {
+        static unsigned hook_n;
         extern void scan_trace(int tag, unsigned long a, unsigned long b,
                                unsigned long c);
         unsigned int ie;
         asm volatile ("rsr %0, intenable" : "=r"(ie));
         scan_trace(60, current_tick, esp_cpu_get_core_id(), ie);
+
+        /* The OS tick is a SYSTIMER alarm in periodic mode off the shared
+         * unit-1 counter: alarm 0 -> core 0, alarm 1 -> core 1. Sample the
+         * source from whichever core is still ticking, so the question
+         * "did the counter stop, did the compare stop re-arming, or did the
+         * interrupt stop being delivered" is answered by the hardware
+         * rather than by inference. */
+        if ((hook_n++ & 7u) == 0)
+        {
+            static volatile unsigned *const sys =
+                (volatile unsigned *)0x60023000;
+            scan_trace(61, sys[0x4c / 4],       /* unit1 counter, low half */
+                       sys[0x00 / 4],           /* conf: bit24=alarm0, bit23=alarm1 */
+                       sys[0x34 / 4]);          /* target0 conf: period + mode */
+            scan_trace(62, sys[0x38 / 4],       /* target1 conf (core 1) */
+                       sys[0x64 / 4],           /* int_ena  */
+                       sys[0x70 / 4]);          /* int_st   */
+
+            /* IDF's SysTickIsrHandler runs, then only calls the tick handler
+             * if counter/period has moved past its own per-core count. So a
+             * dead tick can mean "the ISR never ran" or "the ISR ran and
+             * decided there was nothing to do". Those two look identical from
+             * the outside and are fixed differently, so read the bookkeeping
+             * directly. Address of this file-static from rockbox.map. */
+            {
+                static volatile unsigned *const handled =
+                    (volatile unsigned *)0x3fc9b52c;
+                static unsigned last_h0, stalled, rearmed;
+                scan_trace(63, handled[0],      /* core 0's served count */
+                           handled[1],          /* core 1's served count */
+                           sys[0x4c / 4] / 160000); /* periods elapsed */
+                /* If core 0's alarm is armed in the peripheral, its interrupt
+                 * is enabled in INTENABLE, and the line never asserts, then
+                 * the peripheral's target-0 output is what died. Re-arm it
+                 * from here and see whether core 0 starts being served again:
+                 * that separates "the alarm state machine stalled" from
+                 * "the CPU-side line is dead", and is also the candidate fix. */
+                if (handled[0] == last_h0)
+                {
+                    stalled++;
+                    if (stalled == 4)
+                    {
+                        sys[0x6c / 4] = 1;           /* int_clr: alarm 0 */
+                        sys[0x34 / 4] = 0xc0027100;  /* target0: unit1, period, 160000 */
+                        sys[0x50 / 4] = 1;           /* comp_load[0]: apply */
+                        sys[0x00 / 4] |= (1u << 24); /* target0_work_en */
+                        sys[0x64 / 4] |= 1;          /* int_ena alarm 0 */
+                        rearmed = 1;
+                    }
+                }
+                else
+                {
+                    stalled = 0;
+                    last_h0 = handled[0];
+                }
+                scan_trace(66, rearmed, stalled, handled[0]);
+                {
+                    extern volatile unsigned rb_late_hits;
+                    extern volatile unsigned rb_late_err;
+                    scan_trace(64, rb_late_hits, rb_late_err, 0);
+                }
+            }
+        }
     }
 #endif
     if (esp_cpu_get_core_id() == 0)

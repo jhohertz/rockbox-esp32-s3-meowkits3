@@ -1129,6 +1129,30 @@ void switch_thread(void)
         asm volatile ("rsr %0, intenable" : "=r"(ie));
         asm volatile ("rsr %0, ps"        : "=r"(ps));
         STRACE(47, ie, ps, current_tick);
+        {
+            /* `interrupt` is the set of CPU interrupt lines currently asserted
+             * to this core; `intstatus` is that set ANDed with INTENABLE. A
+             * bit sitting in intstatus while we are running thread code means
+             * the core is refusing an interrupt it has been handed; both empty
+             * means nothing is even arriving at this core. */
+            static int injected;
+            unsigned ip;
+            asm volatile ("rsr %0, interrupt" : "=r"(ip));
+            STRACE(65, ip, ip & ie, ie);   /* asserted, asserted-and-enabled */
+
+            /* Nothing ever asserts core 0's systimer line, and re-arming the
+             * peripheral does not bring it back. So ask the core to raise that
+             * same line itself. If IDF's SysTickIsrHandler then runs (its own
+             * served-count advances), core 0 accepts interrupts fine and the
+             * fault is upstream of the CPU. If the count stays frozen, core 0
+             * cannot take an interrupt at all. */
+            if ((ie & (1u << 29)) && !injected)
+            {
+                injected = 1;
+                asm volatile ("wsr %0, intset" : : "r"(1u << 29));
+                asm volatile ("rsync");
+            }
+        }
     }
 #endif
     STRACE(42, thread, get_irq_level(), current_tick);
