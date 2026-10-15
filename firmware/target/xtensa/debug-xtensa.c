@@ -6,19 +6,19 @@
  * console this board has, so every subsystem that can be checked without
  * hardware-in-the-loop gets a line.
  *
- * The order is the order a failure is most likely to appear in. PSRAM and the
- * MMU come first because nothing else works if they do not; then the internal
- * SRAM budget, because exceeding it is a link-time failure that only shows up
- * as an ASSERT; then the I2C devices, which are the slowest thing on the bus
- * and the easiest thing to get wrong; then storage and USB.
+ * The order is the order a failure is most likely to appear in: the core and
+ * its cache first, then the external MMU, then the I2C devices, which are the
+ * slowest thing on the bus and the easiest thing to get wrong, then storage
+ * and USB. The rows that reported Rockbox's own startup - PSRAM bring-up,
+ * IROM arming, the internal SRAM budget - went with the bare-metal startup;
+ * under ESP-IDF those subsystems belong to IDF and report themselves.
  ****************************************************************************/
 #include "config.h"
 #include "system.h"
 #include "kernel.h"
 #include "list.h"
 #include "xtensa.h"
-#include "rom_cache.h"
-#include "psram-xtensa.h"
+#include "cache-xtensa.h"
 #include "i2c.h"
 #include "i2c-target.h"
 #include "pca9557.h"
@@ -42,21 +42,14 @@ static unsigned int core_prid(void)
     return v;
 }
 
-/* Defined by app.lds. dramend is the top of the internal data region; the
- * ASSERT in the same script guarantees nothing is placed above it. */
-extern char _datastart[], _dataend[];
-extern char _bssstart[], _bssend[];
-extern char _stackend[];
-extern char _psrambssstart[], _psrambssend[];
-extern char dramend[];
-
-/* Set by irom-map.c: how many flash segments crt0 armed in the MMU before
- * jumping into the IROM window. */
-extern int irom_map_status;
-
+/*
+ * The external cache MMU is a 512-entry table of 32-bit values at 0x600C5000;
+ * bit 14 is the "invalid" flag. IDF arms the entries for flash and PSRAM at
+ * startup, so this counts what the platform actually mapped - which is what
+ * decides whether the audiobuffer and the frame buffers are reachable.
+ */
 static unsigned int mmu_mapped_pages(void)
 {
-    /* The table has 32-bit entries; bit 14 is the "invalid" flag. */
     volatile const uint32_t *table =
         (volatile const uint32_t *)0x600C5000;
     unsigned int n = 0;
@@ -101,11 +94,7 @@ enum
     INFO_CPU,
     INFO_CORE,
     INFO_CACHE,
-    INFO_IROM,
-    INFO_PSRAM,
     INFO_MMU,
-    INFO_SRAM,
-    INFO_PSRAMBSS,
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_COUNT
@@ -129,40 +118,9 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         snprintf(buf, bufsz, "D-cache line size: %u bytes",
                  cache_dcache_line_size());
         break;
-    case INFO_IROM:
-        /* A negative status means crt0 could not read the image header, which
-         * means the IROM window is whatever the ROM loader left it as - on this
-         * chip that is nothing, so the firmware would not have reached here.
-         */
-        if (irom_map_status < 0)
-            snprintf(buf, bufsz, "IROM MMU mapping: failed (%d)",
-                     irom_map_status);
-        else
-            snprintf(buf, bufsz, "IROM MMU mapping: %d segments armed",
-                     irom_map_status);
-        break;
-    case INFO_PSRAM:
-        snprintf(buf, bufsz, "PSRAM: %s",
-                 psram_present() ? "responding" : "not responding");
-        break;
     case INFO_MMU:
         snprintf(buf, bufsz, "External cache MMU: %u of 512 pages mapped",
                  mmu_mapped_pages());
-        break;
-    case INFO_SRAM: {
-        /* .data starts at DRAMORIG and the stack is the last thing placed, so
-         * the span between them is exactly what the region is carrying.
-         */
-        unsigned long used = (unsigned long)(_stackend - _datastart);
-        unsigned long total = (unsigned long)(dramend - _datastart);
-
-        snprintf(buf, bufsz, "Internal SRAM: %lu used, %lu free",
-                 used, total - used);
-        break;
-    }
-    case INFO_PSRAMBSS:
-        snprintf(buf, bufsz, "Statics moved to PSRAM: %lu bytes reserved",
-                 (unsigned long)(_psrambssend - _psrambssstart));
         break;
     case INFO_USB:
         /* The DWC is clock-gated until usb_enable() runs, and a gated

@@ -27,9 +27,6 @@
 
 #include "settings.h"
 #include "debug.h"
-#if defined(CPU_XTENSA)
-#include "bootlog.h"
-#endif
 #include "lang.h"
 #include "kernel.h"
 #include "plugin.h"
@@ -413,17 +410,12 @@ void filetype_init(void)
     viewer_count = 0;
     filetype_count = 1;
 
-    boot_trace('1');
     read_builtin_types_init();
-    boot_trace('2');
     read_viewers_config_init();
-    boot_trace('3');
     read_viewer_theme_file();
 #ifdef HAVE_LCD_COLOR
-    boot_trace('4');
     read_color_theme_file();
 #endif
-    boot_trace('5');
 }
 
 /* remove all white spaces from string */

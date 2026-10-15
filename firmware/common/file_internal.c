@@ -448,11 +448,6 @@ static NO_INLINE int open_path_component(struct pathwalk *walkp,
        filesystems */
 
     /* scan parent for name; stream is converted to this parent */
-    boot_trace('O');
-    boot_trace_hex((unsigned int)(uintptr_t)stream);
-    boot_trace_hex((unsigned int)(uintptr_t)stream->cachep);
-    boot_trace_hex((unsigned int)(uintptr_t)compp);
-    boot_trace_hex((unsigned int)(uintptr_t)parentp);
     file_cache_reset(stream->cachep);
     stream->infop = &parentp->info;
     fat_filestr_init(&stream->fatstr, &parentp->info.fatfile);
