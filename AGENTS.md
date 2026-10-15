@@ -1407,6 +1407,48 @@ The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557
 0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
 is absent on this board.
 
+### Why the reference bypasses IDF's transaction layer
+
+The reason is stated in LovyanGFX's own comment at `Bus_SPI.cpp:561-566`:
+
+> Use burst mode only when the transfer length is a multiple of 4.
+> When these three conditions coincide, data near the end of the DMA transfer
+> gets corrupted:
+> 1. transmit clock **80 MHz** (1:1 with the APB clock)
+> 2. **DMA burst read** enabled
+> 3. transmit data length **not a multiple of 4** (1-3 bytes of remainder)
+
+Its mitigation chooses the burst bits by hand:
+
+```c
+dma_conf |= (length & 3) ? (SPI_OUTDSCR_BURST_EN)
+                         : (SPI_OUTDSCR_BURST_EN | SPI_OUT_DATA_BURST_EN);
+```
+
+That is the whole argument for bypassing `spi_device`: **IDF chooses those bits
+and the caller cannot reach them.** A large framebuffer push at 80 MHz is
+exactly the shape that triggers the erratum, and the driver has no lever.
+
+Three more pieces of the same case:
+
+- `LGFX_SPIDMA_WORKAROUND` plus `spicommon_dmaworkaround_transfer_active()` at
+  four call sites, working around a second known SPI-DMA defect.
+- `buscfg.max_transfer_sz = 1` — deliberately small enough that IDF's
+  transaction layer cannot be used for real transfers at all. This is intent,
+  not an oversight.
+- `*reg(SPI_USER_REG(port))` is rewritten on every `beginTransaction()`, so
+  whatever IDF configured never survives.
+- A comment on teardown: `gpio_matrix_in` "has a serious bug in ArduinoESP32
+  v1.0.x (it can change settings on unrelated pins)", so it only ever touches
+  the output half of the matrix.
+
+Practical consequence for this port: **a FIFO-only driver is immune to the
+80 MHz DMA tail corruption**, because there is no DMA read to corrupt. The
+hand-driven path writes the 64-byte CPU buffer directly, which is why it is
+both reference-faithful and the safer starting point. If we later push whole
+frames over GDMA for throughput, the burst-enable rule above becomes a hard
+requirement, not an optimisation.
+
 ### The reference does not use IDF's SPI transaction path
 
 This decides the shape of the display driver, and it is easy to assume wrong.
@@ -1475,7 +1517,7 @@ the data written.
 | `MADCTL` (0x36) | **`0xA8`** = MV \| MY \| BGR | with `0xA0` green and white are correct but red and blue are exchanged, which isolates bit 3 |
 | window with MV set | CASET `0..319`, RASET `0..239` | MV swaps the axes; the un-swapped pair is wrong |
 | `INVON` (0x21) | send it | reference sets `cfg.invert = true` |
-| bus clock | **10 MHz**, not 20 | reference `devcfg.clock_speed_hz = 10000000` |
+| bus clock | **80 MHz, verified working on this glass** | reference `cfg.freq_write = 80000000`. Do not be misled by the `clock_speed_hz = 10000000` in `spi::init`'s `devcfg` -- that configures the IDF device the reference never transmits on |
 | `SPI_USER` | `0x18000001` = `USR_MOSI \| USR_MISO \| DOUTDIN` | reference writes exactly this, MISO phase left on |
 | `SPI_CTRL` | `0` | reference writes `*SPI_CTRL = 0` |
 | `SPI_CMD` | plain write of `USR`, not read-modify-write | reference `*_spi_cmd_reg = SPI_EXECUTE` |
