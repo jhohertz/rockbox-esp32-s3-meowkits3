@@ -467,10 +467,11 @@ static void claim_lcd_pads(const char *tag)
 
 static void stage_lcd(void)
 {
-    /* Retired for now: IDF's master reports ESP_OK for every transfer while
-     * emitting no clock edge at the pad whatsoever. The direct driver below
-     * takes the pads instead. */
-    record(3, ST_SKIPPED, "esp_lcd path parked; see direct driver");
+    /* The earlier "esp_lcd emits no clock edges at the pad" verdict was an
+     * artefact of the probe: it called gpio_set_direction() immediately before
+     * counting, which re-routes the pad to SIG_GPIO_OUT_IDX and disconnects it
+     * from the peripheral being measured. With the pixel contract now settled,
+     * this is the path the port is meant to use. */
     if (!dev_pca9557) {
         record(3, ST_SKIPPED, "needs the expander");
         return;
@@ -553,7 +554,10 @@ static void stage_lcd(void)
 
     esp_lcd_panel_dev_config_t pcfg = {
         .reset_gpio_num = -1,     /* already handled via the expander */
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        /* BGR, not RGB. Measured: with the RGB ordering green and white are
+         * correct but red and blue are exchanged -- MADCTL bit 3 alone. The
+         * reference asks for the same thing via rgb_order = false. */
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
     };
     err = esp_lcd_new_panel_st7789(io, &pcfg, &panel);
@@ -600,9 +604,12 @@ static void stage_lcd(void)
     vTaskDelay(pdMS_TO_TICKS(130));
     /* ST7789 needs RGB inversion. The GRAM is 240x320 and we drive it as
      * 320x240, hence swap_xy plus a y offset of 320-240. */
+    /* Measured contract is MADCTL 0xA8 = MV | MY | BGR. The driver composes
+     * that value from rgb_ele_order (the BGR bit, set above), swap_xy (MV) and
+     * mirror (MX/MY), so the three calls below are what produce 0xA8. */
     esp_lcd_panel_invert_color(panel, true);
     esp_lcd_panel_swap_xy(panel, true);
-    esp_lcd_panel_mirror(panel, true, false);
+    esp_lcd_panel_mirror(panel, false, true);
     /* No offset: the panel's GRAM is a full 240x320 and we drive it as
      * 320x240, so with MV set CASET spans the 320 axis and RASET the 240 one.
      * The 80 that shows up in 240x240 ST7789 recipes does not apply here, and
@@ -635,39 +642,22 @@ static void stage_lcd(void)
              outb, inb,
              !!(inb & (1u << EXP_LCD_RST)), !(inb & (1u << EXP_LCD_CS)), fbmem);
 
-    /* A solid fill is offset-invariant in content but not in window, so this
-     * A/Bs the geometry directly: red is drawn with the old 80-row offset and
-     * green with none. If green reaches the glass and red does not, the gap
-     * was the whole problem. */
-    struct { uint16_t c; int xg; int yg; const char *what; } steps[] = {
-        { 0xF800,   0, 80, "red   gap(0,80)" },
-        { 0x07E0,   0,  0, "green gap(0,0)"  },
-        { 0x001F,  80,  0, "blue  gap(80,0)" },
-    };
-    for (unsigned s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
-        esp_lcd_panel_set_gap(panel, steps[s].xg, steps[s].yg);
-        for (size_t i = 0; i < (size_t)LCD_H * LCD_V; i++) {
-            fb[i] = steps[s].c;
-        }
-        esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H, LCD_V, fb);
-        ESP_LOGI(TAG, "fill %s", steps[s].what);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-    esp_lcd_panel_set_gap(panel, 0, 0);
-
-    static const uint16_t bars[] = {
-        0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000, 0xF81F, 0x07FF, 0xFB00
-    };
+    /* The same four quadrants the direct driver drew, so the two paths are
+     * directly comparable. Expect TL red, TR green, BL blue, BR white. */
     for (int y = 0; y < LCD_V; y++) {
-        uint16_t c = bars[(y * 8) / LCD_V];
         for (int x = 0; x < LCD_H; x++) {
+            uint16_t c;
+            if      (y < LCD_V / 2 && x < LCD_H / 2) c = 0xF800;
+            else if (y < LCD_V / 2)                  c = 0x07E0;
+            else if (x < LCD_H / 2)                  c = 0x001F;
+            else                                     c = 0xFFFF;
             fb[y * LCD_H + x] = c;
         }
     }
     err = esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H, LCD_V, fb);
     /* The colour path queues, so draw_bitmap can return while the DMA is
      * still reading. Hold the buffer until the pixels are on the glass. */
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(1500));
 
     /* Everything reports success, so check the thing that actually matters:
      * are the GPSPI signals wired to the pads the panel is wired to. DC should
@@ -684,7 +674,7 @@ static void stage_lcd(void)
     fb = NULL;
 
     record(3, err == ESP_OK ? ST_PASS : ST_FAIL,
-           "%dx%d bars @ %d MHz, CS held via expander (%s)",
+           "esp_lcd quadrants %dx%d @ %d MHz (%s)",
            LCD_H, LCD_V, LCD_PCLK_HZ / 1000000, esp_err_to_name(err));
 }
 
@@ -916,7 +906,7 @@ static void summary(void)
  * produce it. A 8x8 colour draw is 64 pixels = 1024 data bits plus 8 command
  * and 32 window bits, so a few hundred edges means the transfer is running but
  * short, and zero means the clock never leaves the chip. */
-static void stage_spi_probe(void)
+__attribute__((unused)) static void stage_spi_probe(void)
 {
     if (!panel) {
         record(7, ST_SKIPPED, "no panel to drive");
@@ -1175,7 +1165,7 @@ static int d_xfer_counted(const uint8_t *data, int len)
     return edges;
 }
 
-static void stage_lcd_direct(void)
+__attribute__((unused)) static void stage_lcd_direct(void)
 {
     if (!dev_pca9557) {
         record(3, ST_SKIPPED, "needs the expander");
@@ -1366,7 +1356,7 @@ void app_main(void)
     stage_heap();
     stage_i2c_expander();
     stage_backlight();
-    stage_lcd_direct();
+    stage_lcd();
     stage_sd();
     stage_pmu();
     stage_ble();

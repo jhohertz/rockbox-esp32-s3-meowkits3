@@ -45,7 +45,7 @@
 #define PIN_LCD_DC          39
 /* CS and RST are NOT GPIOs -- they are expander bits above. */
 #define SPI_LCD_HOST        SPI2_HOST
-#define LCD_PCLK_HZ         (40 * 1000 * 1000)
+#define LCD_PCLK_HZ         (10 * 1000 * 1000)   /* reference clock_speed_hz */
 #define LCD_H               320
 #define LCD_V               240
 
