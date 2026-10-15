@@ -99,4 +99,5 @@ void app_main(void)
     if (handle == NULL)
         ESP_LOGE(TAG, "could not create the rockbox task (%d KB stack)",
                  ROCKBOX_STACK_BYTES / 1024);
+
 }

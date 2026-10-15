@@ -68,3 +68,12 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Rockbox owns one core outright: its scheduler is cooperative and, when every
+# Rockbox thread is blocked, it waits for the next tick inside the FreeRTOS task
+# rather than returning from it. The idle task on that core therefore never runs
+# and never feeds the watchdog, which resets the whole chip (TG1WDT_SYS_RST)
+# looking like a hang. The watchdog still covers everything IDF itself does.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_FREERTOS_HZ=100
+CONFIG_FREERTOS_USE_TICK_HOOK=y

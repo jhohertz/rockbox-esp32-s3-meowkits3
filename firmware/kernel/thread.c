@@ -921,6 +921,8 @@ static NO_INLINE void check_tmo_expired_inner(struct core_entry *corep)
     struct thread_entry *prev = NULL;
     struct thread_entry *thread = TMO_THREAD_FIRST(&corep->tmo);
 
+    STRACE(44, corep, corep->tmo.head, corep->tmo.tail);
+
     /* If there are no processes waiting for a timeout, just keep the check
        tick from falling into the past. */
 
@@ -932,6 +934,9 @@ static NO_INLINE void check_tmo_expired_inner(struct core_entry *corep)
         enable_irq();
 
         struct thread_entry *next = TMO_THREAD_NEXT(thread);
+
+        STRACE(45, thread, thread->id, next);
+        STRACE(46, thread, thread->tmo_tick, thread->state);
 
         /* Lock thread slot against explicit wakeup */
         disable_irq();
@@ -1035,10 +1040,10 @@ void switch_thread(void)
         /* Check core_ctx buflib integrity */
         core_check_valid();
 #endif
-        STRACE(40, thread, core, 0);
+        STRACE(40, thread, thread->id, thread->state);
         thread_store_context(thread);
         STRACE(41, thread, thread->context.frame[XT_F_PC],
-               thread->context.sp);
+               thread->context.frame[XT_F_A1]);
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
@@ -1118,7 +1123,15 @@ void switch_thread(void)
     profile_thread_started(THREAD_ID_SLOT(thread->id));
 #endif
 
-    STRACE(42, thread, core, 0);
+#if defined(CPU_XTENSA)
+    {
+        unsigned int ie, ps;
+        asm volatile ("rsr %0, intenable" : "=r"(ie));
+        asm volatile ("rsr %0, ps"        : "=r"(ps));
+        STRACE(47, ie, ps, current_tick);
+    }
+#endif
+    STRACE(42, thread, get_irq_level(), current_tick);
     /* And finally, give control to the next thread. */
 thread_load_context(thread);
 }

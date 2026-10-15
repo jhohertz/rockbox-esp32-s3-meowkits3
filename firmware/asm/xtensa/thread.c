@@ -26,8 +26,10 @@
 /* The save area in asm/xtensa/thread.h is a bare word array, because that
  * header is also read by the freestanding domain. These tie it to the real
  * structure IDF uses, so the two cannot drift apart silently. */
-_Static_assert(sizeof(XtExcFrame) <= sizeof(uint32_t) * XT_FRAME_WORDS,
-               "struct regs.frame is smaller than XtExcFrame");
+/* Not sizeof(XtExcFrame): see the comment on XT_FRAME_WORDS. The extra state
+ * IDF stores for the FP register file lives beyond the struct. */
+_Static_assert(sizeof(uint32_t) * XT_FRAME_WORDS >= XT_STK_FRMSZ,
+               "struct regs.frame is smaller than the area IDF writes");
 _Static_assert(offsetof(XtExcFrame, exit) == XT_F_EXIT * 4, "XT_F_EXIT");
 _Static_assert(offsetof(XtExcFrame, pc)   == XT_F_PC   * 4, "XT_F_PC");
 _Static_assert(offsetof(XtExcFrame, ps)   == XT_F_PS   * 4, "XT_F_PS");
@@ -108,15 +110,28 @@ static inline void store_context(void* addr)
     uint32_t* f = ctx->frame;
     unsigned int saved, pc;
 
-    /* a0 is read before anything else runs. It is both the address the thread
-       resumes at (the instruction after the call into the blocking primitive)
-       and, at that address, the value a0 has to hold -- the call has already
-       returned by then, so one word serves both slots of the frame. */
+    /* a0 is read before anything else runs: it is both where the thread
+       resumes (the instruction after the call into the blocking primitive)
+       and the value a0 has to hold there. The two frame slots take different
+       forms of it -- see below. */
     asm volatile ("mov    %0, a0" : "=r" (pc));
     asm volatile ("rsr    %0, ps" : "=r" (saved));
     asm volatile ("mov    %0, a1" : "=r" (ctx->sp));
 
-    f[XT_F_PC]   = pc;
+    /* The two slots take different forms of the same word.
+       a0 keeps the value verbatim, which is what the resumed thread expects to
+       find in a0 at that point. pc may not: in the windowed ABI the *top two
+       bits* of a0 (31:30) carry the window increment, so the address's own top
+       bits have been overwritten, not merely flagged. retw reconstructs that;
+       _xt_user_exit does not -- it writes the frame's pc straight to EPC_1 and
+       executes rfe, which jumps to the value verbatim. Masking bit 31 alone
+       leaves bit 30 wrong and yields InstrFetchProhibited at 0x020522f3.
+       ESP-IDF's own decoder (esp_cpu_utils.h, esp_cpu_process_stack_pc) maps
+       the pair back with `| 0x40000000`, which is valid here because every
+       executable region on this chip -- flash .text at 0x42xxxxxx, IRAM at
+       0x4037xxxx, and the PSRAM codec window -- has bits 31:30 set to 01. */
+    f[XT_F_PC]   = (pc & 0x80000000u) ? ((pc & 0x3fffffffu) | 0x40000000u)
+                                      : pc;
     f[XT_F_A0]   = pc;
     f[XT_F_A1]   = ctx->sp;
     f[XT_F_EXIT] = (uint32_t)(uintptr_t)&_xt_user_exit;
