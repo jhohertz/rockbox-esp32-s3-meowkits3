@@ -23,6 +23,7 @@
  * context switch only ever runs from thread context, never from an ISR.
  */
 
+#include "driver/gptimer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -78,6 +79,59 @@ static void rockbox_task(void *arg)
     ESP_LOGE(TAG, "rockbox main() returned");
     while (1)
         vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+/* Diagnostic: allocate an interrupt on core 0 *after* the FreeRTOS tick on
+ * that core has gone quiet, and count its callbacks. If a freshly allocated
+ * source fires, core 0 still takes interrupts and the systimer's binding
+ * specifically is what broke. If this stays at zero too, core 0's interrupt
+ * delivery as a whole is dead -- two very different bugs. */
+volatile unsigned rb_late_hits;
+volatile unsigned rb_late_err;
+
+static bool IRAM_ATTR rb_late_cb(gptimer_handle_t timer,
+                                 const gptimer_alarm_event_data_t *edata,
+                                 void *user_ctx)
+{
+    (void)timer; (void)edata; (void)user_ctx;
+    rb_late_hits++;
+    return false;
+}
+
+static void rb_late_probe(void *arg)
+{
+    gptimer_handle_t tm;
+    gptimer_config_t cfg = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000,
+    };
+    gptimer_event_callbacks_t cbs = { .on_alarm = rb_late_cb };
+    gptimer_alarm_config_t ac = {
+        .alarm_count = 100000,        /* 100 ms */
+        .reload_count = 0,
+        .flags.auto_reload_on_alarm = true,
+    };
+
+    (void)arg;
+    /* Start well after the tick is known to have stopped (~0.5 s in). */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    rb_late_err = gptimer_new_timer(&cfg, &tm);
+    if (rb_late_err != ESP_OK)
+        return;
+    rb_late_err = gptimer_register_event_callbacks(tm, &cbs, NULL);
+    if (rb_late_err != ESP_OK)
+        return;
+    rb_late_err = gptimer_enable(tm);
+    if (rb_late_err != ESP_OK)
+        return;
+    rb_late_err = gptimer_set_alarm_action(tm, &ac);
+    if (rb_late_err != ESP_OK)
+        return;
+    rb_late_err = gptimer_start(tm);
+    for (;;)
+        vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 void app_main(void)
