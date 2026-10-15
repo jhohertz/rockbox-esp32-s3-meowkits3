@@ -449,6 +449,54 @@ There is no "display off while audio plays" hook in Rockbox. The sleep countdown
 starts when the backlight goes off, so the way to get a dark screen while listening is
 the backlight timeout, and the panel follows a moment later.
 
+### GPSPI2 display path
+
+The panel is driven by GPSPI2 (`0x60024000`) in **polled CPU-buffer mode**, not DMA:
+`SPI_DMA_CONF = 0`, data comes from the 16-word buffer at `+0x98`. Register offsets
+from `components/soc/esp32s3/register/soc/spi_reg.h`: CMD `0x00`, ADDR `0x04`,
+CTRL `0x08`, CLOCK `0x0C`, USER `0x10`, USER1 `0x14`, USER2 `0x18`, MS_DLEN `0x1C`,
+MISC `0x20`, DMA_CONF `0x30`, W0 `0x98`.
+
+- **`SPI_MS_DLEN` is a bit count, stored as `bit_num - 1`** (`SPI_MS_DATA_BITLEN`,
+  bits [17:0]). A 64-byte chunk must be `511`. Writing `words * 8 - 1` where `words`
+  counts 32-bit words sends 128 bits — a quarter of the buffer. Commands and their
+  1-4 byte arguments are exactly one word, so the init sequence, MADCTL and the
+  window commands all behave correctly while the pixel data is truncated. That is the
+  signature of "geometry right, content garbage".
+- **CONF registers must be latched before `USR`**: `CMD.UPDATE` (bit 23) copies USER,
+  CLOCK and MS_DLEN from the APB domain into the SPI clock domain and self-clears.
+  ESP-IDF's `spi_ll_apply_config()` is exactly `cmd.update = 1; while (cmd.update);`.
+  `CMD.USR` is bit 24.
+- **The clock source is selected in CLK_GATE (`+0xE8`)**, not by the CPU clock:
+  bit 2 `MST_CLK_SEL` = 1 chooses PLL_CLK_80M, cleared gives XTAL (40 MHz). The SPI
+  clock is `source / ((clkdiv_pre+1) * (clkcnt_n+1))`, with `clkcnt_l` [5:0],
+  `clkcnt_h` [11:6], `clkcnt_n` [17:12], `clkdiv_pre` [21:18], `clk_equ_sysclk` bit 31.
+  `clkcnt_h` must be `floor((clkcnt_n+1)/2 - 1)` and `clkcnt_l == clkcnt_n`.
+- **`SPI_MS_DLEN` is an exact bit count, not a word count.** `SPI_MS_DATA_BITLEN`
+  is bits [17:0] and holds `bit_num - 1`. The CPU FIFO is addressed in 32-bit
+  words, but the transfer length does not have to be a multiple of 32. Rounding
+  `MS_DLEN` up to `words*32-1` pads every one-byte command with 24 zero bits, and
+  the panel reads those as argument bytes: `CASET` and `RASET` get a window made
+  of the padding instead of the values sent. ESP-IDF's `spi_ll_write_buffer()` sets
+  the bit length exactly; do the same and only round the *buffer fill* up to words.
+- **`CASET`/`RASET` do not start a write.** The ST7789 only accepts pixel data
+  after `RAMWR` (`0x2C`). LovyanGFX's `set_window_8()` ends with
+  `writeCommand(cmd, 8)` and every caller passes `CMD_RAMWR`. A driver that sends
+  the two window commands and then pixel bytes with DC high has no active write,
+  so the whole frame is discarded and the panel keeps the GRAM left by the previous
+  boot. The symptom is noise that does not change when the image changes, which is
+  easy to mistake for a broken SPI link.
+- **CS is an expander output, not a GPIO.** Toggling it per transfer costs a full I2C
+  transaction (~1.6 ms at 100 kHz) and puts every pixel write on the same bus as the
+  codec, PMU and touchscreen. The reference firmware never toggles CS: LovyanGFX is
+  configured with `pin_cs = -1` and the PCA9557 simply holds CS asserted after the
+  reset. Assert it once in `st7789_init()` and leave it.
+- **MOSI is `FSPID_OUT` (103), not `FSPIQ_OUT` (102).** `spid_out` is MOSI and
+  `spiq_out` is MISO in `components/esp_hal_gpspi/esp32s3/spi_periph.c`; the
+  signal comments in `gpio-xtensa.h` had them swapped.
+- The buffer is little-endian: byte 0 of the transfer sits in bits [7:0] of `SPI_W0`
+  (`spi_ll_write_buffer` does `memcpy(&word, &buf[x/8], 4); hw->data_buf[x/32] = word`).
+
 ### I2S and GDMA
 
 The I2S peripheral does have a DMA controller — "DMA controller that allows stream
@@ -1656,3 +1704,122 @@ run from `tick_task_thread()` in `apps/main.c`, which does `sleep(1)` then
 `call_tick_tasks()`. Same rate, no window rotation in the interrupt path.
 
 For runtime register state see §9, "Reading runtime register state".
+
+---
+
+## 11. How the image is entered, and what the entry code may not touch
+
+Established by instrumenting `crt0.S` with markers in RTC slow memory and by
+flashing purpose-built minimal images, rather than by reading the ROM.
+
+**The ESP-IDF stage-2 bootloader does reach our entry point.** An earlier
+conclusion that it did not was an artefact: the marker was at `0x50000D60`, which
+`boot_trace_start()` deliberately zeroes. With the ESP-IDF second-stage loader
+(stock `meowkit` bootloader at 0x0, partition table at 0x8000, image at 0x10000)
+crt0 runs to completion. The PlatformIO prebuilt bootloaders do not run on this
+board; the stock one does.
+
+**Both loaders jump to the entry, and both leave a usable window state.** Do not
+"fix" it.
+
+| Loader | PS | windowbase | windowstart | a1 | vecbase |
+|---|---|---|---|---|---|
+| mask ROM (image at 0x0) | `0x60520` | 3 | `0x8` | `0x3fceb570` | `0x40000000` |
+| ESP-IDF stage two | `0x60920` | 9 | `0x280` | `0x3fceb350` | `0x40000000` |
+
+Both are `INTLEVEL 0, UM 1, CALLINC 8, WOE 1, EXCM 0`.
+
+**Writing `PS.EXCM` with `WSR.PS` breaks the very next `ENTRY`.** Measured, one
+variable at a time, `callx8` into a callee that does `entry a1,48` … `retw.n`.
+(`WSR.PS` really does raise EXCM — writing `0x60530` reads back as `0x60530`, so
+this is not a silently-ignored bit.) Even with the ESP-IDF-identical window
+handlers installed at VECBASE, and at recursion depth 1 where no window can
+have wrapped, the callee never executes its first instruction:
+
+| PS written | callee entered | returned |
+|---|---|---|
+| `0x60520` (the loader's value, EXCM=0) | yes | yes |
+| `0x60530` (`+EXCM`) | **no** | no |
+| `0x60510` (`-UM`, `+EXCM`) | **no** | no |
+| `0x40520` (`CALLINC=0`, EXCM=0) | yes | yes |
+
+The fault that follows lands at a ROM address (`epc1 = 0x40044290`, EXCCAUSE 0)
+with the interruptee PS still `0x60530`, i.e. control leaves our image as soon as
+`ENTRY` is executed with EXCM set. This is the open question on the port: the
+windowed ABI is only correct with EXCM=1, but on this core config `ENTRY` faults
+with EXCM=1 when the window state is the one the loader handed us.
+
+Clearing `WINDOWSTART` to 0 is separately fatal for a different reason: with no
+window marked live, no overflow ever fires, so no base-save area is ever written
+and `retw` reads an uninitialised frame.
+
+`EXCM` is hardware-managed: it is set on **exception return** (`rfe`/`rfi`) and
+cannot be raised by software. The practical consequence on this port is that the
+first tick interrupt's `rfe` silently switches the whole firmware from `EXCM=0`
+to `EXCM=1`, and the window vectors only become live at that moment. Anything in
+the hand-written assembly that was written against `EXCM=0` has to be re-checked.
+
+The toolchain's own `crt0.o` for esp32s3 is the reference for how little an entry
+point should do — it is literally:
+
+```
+_start:  l32r a4, main ; jx a4      /* R_XTENSA_32 -> main */
+```
+
+No special-register write, no stack set-up. `firmware/target/xtensa/crt0.S` now
+matches that: it sets `a1` and masks interrupts, and touches nothing else.
+
+### The context switch is the part that is still wrong
+
+`store_context()` masks the saved `PS` with `-31` (clearing `INTLEVEL` and
+`EXCM`) and `load_context()` writes it back with `wsr ps` — which cannot set
+`EXCM`. So every restored thread runs with `EXCM=0`, i.e. with the window
+overflow/underflow vectors disabled, and GCC's windowed code silently destroys
+ancestor windows once the call chain is four `call8`s deep.
+
+ESP-IDF and FreeRTOS do not restore a context by returning from a C function.
+`_xt_context_restore` is followed by an exit dispatcher (`_xt_user_exit`) that
+installs the saved values through the exception registers and then executes
+`rfe`:
+
+```
+_xt_user_exit:
+    l32i  a0, sp, XT_STK_PS    /* interruptee PS  -> WSR PS      */
+    wsr   a0, EXCSAVE_1 ... 
+    l32i  a0, sp, XT_STK_PC    /* interruptee PC  -> WSR EPC1    */
+    l32i  a0, sp, XT_STK_A0    /* interruptee a0  -> (EXCSAVE1)  */
+    l32i  sp, sp, XT_STK_A1    /* deallocate the frame           */
+    rsync
+    rfe                        /* this is what sets PS.EXCM = 1  */
+```
+
+That is only consistent because FreeRTOS *enters* the scheduler through a
+syscall exception, so the hardware captures `a0`/`a1`/`PS`/`PC` as a coherent
+frame. Rockbox's `switch_thread()` calls `thread_store_context()` and
+`thread_load_context()` as ordinary C functions and lets the compiler's `retw`
+return, which is why the saved window state cannot be made valid. Aligning this
+means making the switch take a software exception rather than a call.
+
+### RTC slow memory is not uniformly writable
+
+Stores to some offsets silently drop. Verified working: the log ring
+`0x50000000..0x50000BFF`, `0x50000C00` (live block), `0x50000D60`, `0x50000D64`,
+`0x50000D80..0x50000D8C`, `0x50001004`. Verified dropping stores: `0x50000C04`,
+`0x50000D68` (sometimes), `0x50000D80` in some builds, `0x50000E40`. When a
+marker reads back as a stale value from an earlier run, suspect the slot before
+suspecting the code — put results in the log ring with `s8i` instead.
+
+### Tick path, two independent faults
+
+Both had to be fixed together; either one alone leaves `current_tick` at zero.
+
+1. `system_init()` zeroes `INTENABLE` when it takes over the vectors, and only
+   the GDMA slots were ever unmasked. The timer slot (`XT_SLOT_TIMERG1`, 1) was
+   never enabled, so the alarm fired in `TN_INT_RAW` forever.
+2. The asm level-1 handler incremented `xt_tick_count` and, by a stale literal,
+   `xt_exc_cause` — not `current_tick`. `timer_irq()` is never called, because
+   the handler is deliberately a leaf.
+
+With both fixed the scheduler runs: `switch_thread` iterates, SD initialises
+(`CMD41` OCR `0x00ff8000` in the log), and a full 320x240 frame is pushed
+(4842 SPI chunks).

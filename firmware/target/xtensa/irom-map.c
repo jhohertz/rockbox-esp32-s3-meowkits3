@@ -74,11 +74,9 @@ static void ICODE_ATTR irom_scan(void)
     int e;
 
     boot_trace('S');
-    for (e = 144; e < 150; e++) {
+    for (e = 140; e < 152; e++)
         boot_trace_hex(mmu[e]);
-        boot_trace_hex(*(volatile uint32_t *)(DROM_VIEW + (uint32_t)e * MMU_PAGE));
-        boot_trace_hex(*(volatile uint32_t *)(0x42000000u + (uint32_t)e * MMU_PAGE));
-    }
+    boot_trace('s');
 }
 
 int irom_canary(void)

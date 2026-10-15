@@ -2,6 +2,7 @@
 #include "system.h"   /* mdelay */
 #include "i2c.h"
 #include "pca9557.h"
+#include "bootlog.h"
 
 /* The reference firmware reads the output register before every write. That is two
  * I2C transactions per pin change, which is fine for control signals but wasteful.
@@ -10,6 +11,8 @@
 static unsigned char out_reg;
 static unsigned char config_reg;
 
+static unsigned i2c_rd(unsigned reg) { return *(volatile unsigned *)reg; }
+
 static int read_reg(unsigned char reg, unsigned char *value)
 {
     return i2c_readmem(PCA9557_ADDR, reg, value, 1) == 1;
@@ -17,7 +20,19 @@ static int read_reg(unsigned char reg, unsigned char *value)
 
 static int write_reg(unsigned char reg, unsigned char value)
 {
-    return i2c_writemem(PCA9557_ADDR, reg, &value, 1) == 1;
+    int r = i2c_writemem(PCA9557_ADDR, reg, &value, 1);
+
+    return r == 1;
+}
+
+int pca9557_status(void)
+{
+    unsigned char v;
+
+    if (!read_reg(PCA9557_REG_INPUT, &v))
+        return -1;
+
+    return v;
 }
 
 int pca9557_write(int pin, int value)
@@ -42,6 +57,7 @@ int pca9557_read(int pin)
 void pca9557_init(void)
 {
     unsigned char v;
+    boot_trace('B');
     int ok = 0;
 
     for (int attempt = 0; attempt < 5; attempt++) {
@@ -73,4 +89,13 @@ void pca9557_init(void)
         v = 0;
 
     out_reg = v;
+
+    /* Confirm the config write took effect: the pins we just made outputs must
+     * read back as outputs (bit clear in the config register).
+     */
+    if (read_reg(PCA9557_REG_CONFIG, &v)) {
+        boot_trace('k');
+        boot_trace_hex(v);
+    }
+    boot_trace('K');
 }

@@ -48,8 +48,11 @@ extern void __xtensa_libgcc_window_spill(void);
 static volatile uint32_t xt_context_addr
     __attribute__((section(".srambss")));
 
+extern void boot_trace(char c);
+
 void xt_thread_start(void (*fn)(void))
 {
+    boot_trace('J');                  /* a thread body was entered */
     fn();
     thread_exit();
 }
@@ -86,16 +89,26 @@ static inline void store_context(void* addr)
         "s32i    a7, a6, 72          \n"
         "rsr     a7, windowstart     \n"
         "s32i    a7, a6, 76          \n"
-        /* A thread context must never carry an interrupt level: switch_thread()
-         * is reached from paths that have disabled interrupts, and restoring that
-         * level would leave the resumed thread with the tick and every device
-         * interrupt masked. PS.INTLEVEL is bits 0-3. */
-        "movi    a8, -16             \n"
+        /* A thread context must never carry an interrupt level or the exception
+         * flag: switch_thread() is reached from paths that have disabled
+         * interrupts, and restoring a non-zero INTLEVEL would leave the resumed
+         * thread with the tick and every device interrupt masked. More
+         * importantly, PS.EXCM (bit 4) makes RETW illegal, so a context saved
+         * with EXCM set faults on the first retw after being restored.
+         * PS.INTLEVEL is bits 0-3, PS.EXCM is bit 4. */
+        "movi    a8, -32             \n"
         "rsr     a9, ps              \n"
         "and     a9, a9, a8          \n"
         "s32i    a9, a6, 68          \n"
         "rsr     a7, sar             \n"
         "s32i    a7, a6, 80          \n"
+        "rsr     a7, lbeg            \n"
+        "s32i    a7, a6, 84          \n"
+        "rsr     a7, lend            \n"
+        "s32i    a7, a6, 88          \n"
+        "rsr     a7, lcount          \n"
+        "s32i    a7, a6, 92          \n"
+        "rsync                       \n"
         : : "r" (addr) : "a6", "a7", "a8", "a9"
     );
 }
@@ -113,10 +126,11 @@ static inline void load_context(const void* addr)
         ".align 4                   \n"
         "10: .long xt_context_addr  \n"
         "11: .long xt_thread_start  \n"
+        "12: .long xt_ctx_hist      \n"
     "3:                             \n"
         "l32r    a6, 10b            \n"
         "l32i    a6, a6, 0          \n"
-        "l32i    a7, a6, 84         \n"
+        "l32i    a7, a6, 96         \n"
         "beqz    a7, 1f             \n"
 
         /* First run: a clean window at level 0, then enter the starter as if it
@@ -136,7 +150,9 @@ static inline void load_context(const void* addr)
         "wsr     a7, windowbase     \n"
         "movi    a7, 0x40000        \n"
         "wsr     a7, ps             \n"
+        "movi    a7, 0              \n"
         "wsr     a7, sar            \n"
+        "wsr     a7, lcount         \n"
         "rsync                      \n"
         "l32r    a6, 10b            \n"
         "l32i    a6, a6, 0          \n"
@@ -145,13 +161,29 @@ static inline void load_context(const void* addr)
          * point has to be moved there before it is cleared. Clearing it makes a
          * later load_context() resume the thread instead of restarting it, the
          * same way the MIPS and SPARC implementations do. */
-        "l32i    a2, a6, 84         \n"
+        "l32i    a2, a6, 96         \n"
         "movi    a7, 0              \n"
-        "s32i    a7, a6, 84         \n"
+        "s32i    a7, a6, 96         \n"
         "l32r    a7, 11b            \n"
         "jx      a7                 \n"
 
     "1:                             \n"
+        /* Log what the switch installs so a later fault can be matched against
+         * the last context that was restored. */
+        "l32r    a8, 12b             \n"
+        "l32i    a7, a6, 68          \n"
+        "s32i    a7, a8, 0           \n"
+        "l32i    a7, a6, 72          \n"
+        "s32i    a7, a8, 4           \n"
+        "l32i    a7, a6, 76          \n"
+        "s32i    a7, a8, 8           \n"
+        "l32i    a7, a6, 0           \n"
+        "s32i    a7, a8, 12          \n"
+        "l32i    a7, a6, 64          \n"
+        "s32i    a7, a8, 16          \n"
+        "l32i    a7, a8, 20          \n"
+        "addi    a7, a7, 1           \n"
+        "s32i    a7, a8, 20          \n"
         /* WINDOWBASE first: the windows above it are refilled from the thread's
          * stack by the underflow handlers as it unwinds. */
         "l32i    a7, a6, 72              \n"
@@ -165,6 +197,12 @@ static inline void load_context(const void* addr)
         "wsr     a7, ps                  \n"
         "l32i    a7, a6, 80              \n"
         "wsr     a7, sar                 \n"
+        "l32i    a7, a6, 84              \n"
+        "wsr     a7, lbeg                \n"
+        "l32i    a7, a6, 88              \n"
+        "wsr     a7, lend                \n"
+        "l32i    a7, a6, 92              \n"
+        "wsr     a7, lcount              \n"
         "rsync                           \n"
         /* a6 is both the base of every load and one of the registers being
          * loaded, so its value has to be parked before the rest are read and

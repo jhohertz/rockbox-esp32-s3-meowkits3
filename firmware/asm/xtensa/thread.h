@@ -41,6 +41,14 @@ struct regs
     uint32_t windowbase;
     uint32_t windowstart;
     uint32_t sar;
+    /* Zero-overhead loop state. GCC emits ZOL on Xtensa, and a thread can be
+     * switched inside one: LCOUNT is the remaining iteration count, LBEG/LEND
+     * the bounds. Without them the resumed thread re-enters the loop with the
+     * hardware's loop registers pointing at some other thread's bounds.
+     */
+    uint32_t lbeg;
+    uint32_t lend;
+    uint32_t lcount;
     uint32_t start;      /* thread entry point, or NULL once running */
 };
 
@@ -49,7 +57,10 @@ struct regs
 #define XT_WB    72
 #define XT_WS    76
 #define XT_SAR   80
-#define XT_START 84
+#define XT_LBEG  84
+#define XT_LEND  88
+#define XT_LCOUNT 92
+#define XT_START 96
 
 /* The level-1 handler runs on the interrupted thread's stack: 80 bytes for its
  * own frame, then the dispatch, the GDMA completion path and the mixer chain

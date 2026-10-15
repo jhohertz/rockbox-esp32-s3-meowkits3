@@ -32,19 +32,25 @@ void gdma_rx_irq(void);
 void INT_USB_FUNC(void);
 #endif
 
+/* The level-1 vector is entered far more often than the 100 Hz tick. Counting
+ * the vector entry (vectors.S) and the dispatch separately is the only way to
+ * tell a spurious entry from a real one.
+ */
+__attribute__((section(".srambss"))) volatile unsigned int xt_dispatch_n;
+__attribute__((section(".srambss"))) volatile unsigned int xt_pending_last;
+
 void VEC_ATTR xt_irq_dispatch(unsigned int pending)
 {
-    if (pending & (1u << XT_SLOT_TIMERG1))
-        timer_irq();
+    xt_dispatch_n++;
+    xt_pending_last = pending;
+    /* Accumulate rather than overwrite: the last dispatch tells us little, the
+     * union of every pending bitmask tells us which slots ever reach dispatch.
+     */
+    rtc_bump(13);
+    rtc_or(12, pending);
 
-    if (pending & (1u << XT_SLOT_GDMA_OUT_CH0))
-        gdma_irq();
-
-    if (pending & (1u << XT_SLOT_SDHOST))
-        sdmmc_irq();
-
-    if (pending & (1u << XT_SLOT_I2C0))
-        i2c_irq();
+    /* Bisection: dispatch does nothing but return. */
+    (void)pending;
 
 #ifdef HAVE_RECORDING
     if (pending & (1u << XT_SLOT_GDMA_IN_CH0))

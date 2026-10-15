@@ -18,6 +18,9 @@
  *
  ****************************************************************************/
 #include "sdmmc_host.h"
+#ifdef CPU_XTENSA
+#include "bootlog.h"   /* bring-up trace only */
+#endif
 #include "system.h"
 #include "storage.h"
 #include "disk_cache.h"
@@ -454,6 +457,12 @@ static int sdmmc_host_cmd_send_app_op_cond(struct sdmmc_host *host)
     for (; timeout > 0; timeout--)
     {
         int rc = sdmmc_host_submit_app_cmd(host, &cmd, &resp);
+#ifdef CPU_XTENSA
+        rtc_bump(11);
+        boot_trace('A');
+        boot_trace_hex((unsigned)rc);
+        boot_trace_hex(resp.data[0]);
+#endif
         if (rc)
             return rc;
 
@@ -699,6 +708,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_send_if_cond(host);
+#ifdef CPU_XTENSA
+    boot_trace('3');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_send_if_cond: %d", rc);
@@ -706,6 +719,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_send_app_op_cond(host);
+#ifdef CPU_XTENSA
+    boot_trace('4');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_send_app_op_cond: %d", rc);
@@ -713,6 +730,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_all_send_cid(host);
+#ifdef CPU_XTENSA
+    boot_trace('5');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_all_send_cid: %d", rc);
@@ -720,6 +741,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_send_rca(host);
+#ifdef CPU_XTENSA
+    boot_trace('6');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_send_rca: %d", rc);
@@ -727,6 +752,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_send_csd(host);
+#ifdef CPU_XTENSA
+    boot_trace('7');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_send_csd: %d", rc);
@@ -734,6 +763,10 @@ static int sdmmc_host_device_init(struct sdmmc_host *host)
     }
 
     rc = sdmmc_host_cmd_select_card(host);
+#ifdef CPU_XTENSA
+    boot_trace('8');
+    boot_trace_hex((unsigned)rc);
+#endif
     if (rc)
     {
         logf("sdmmc_host_cmd_select_card: %d", rc);

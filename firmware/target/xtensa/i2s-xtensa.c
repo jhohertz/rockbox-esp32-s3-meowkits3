@@ -23,6 +23,7 @@
  *    same thing on every descriptor it hands to a DMA engine.
  ****************************************************************************/
 #include "config.h"
+#include "bootlog.h"
 
 #include "system.h"
 #include "string.h"
@@ -241,13 +242,23 @@ void i2s_init(void)
                     (1u << 13) |                    /* tx_stop_en */
                     (1u << 12) |                    /* tx_pcm_bypass */
                     (1u << 8));                     /* tx_update */
-    while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
-        ;
+    /* tx_update is documented as self-clearing, but ESP-IDF never waits for it.
+     * Bound the wait so a bit that does not clear cannot hang the boot, and leave
+     * the readback in the trace log. */
+    int guard = 10000;
+    while ((rd(I2S_TX_CONF) & TX_CONF_UPDATE) && guard > 0) {
+        udelay(1);
+        guard--;
+    }
+    boot_trace('U');
+    boot_trace_hex(rd(I2S_TX_CONF));
 
     gdma_init();
+    boot_trace('G');
 
 #ifdef HAVE_RECORDING
     i2s_rx_init();
+    boot_trace('g');
 #endif
 }
 
@@ -272,8 +283,11 @@ static void program_rx_div(void)
                           (CLKM_CONF_CLK_SEL_XTAL << 27) | div_integ);
     wr(I2S0_RX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
     wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
-    while (rd(I2S0_RX_CONF) & RX_CONF_UPDATE)
-        ;
+    int guard = 10000;
+    while ((rd(I2S0_RX_CONF) & RX_CONF_UPDATE) && guard > 0) {
+        udelay(1);
+        guard--;
+    }
 }
 
 void i2s_rx_init(void)
@@ -309,10 +323,17 @@ void i2s_rx_init(void)
                      RX_CONF_STOP_MODE |
                      RX_CONF_PCM_BYPASS);
     wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
-    while (rd(I2S0_RX_CONF) & RX_CONF_UPDATE)
-        ;
+    int guard = 10000;
+    while ((rd(I2S0_RX_CONF) & RX_CONF_UPDATE) && guard > 0) {
+        udelay(1);
+        guard--;
+    }
+    boot_trace('R');
+    boot_trace_hex(rd(I2S0_RX_CONF));
 
     program_rx_div();
+    boot_trace('r');
+    boot_trace_hex(rd(I2S0_RX_CONF));
 }
 #endif /* HAVE_RECORDING */
 
@@ -444,17 +465,22 @@ static void sink_set_freq(uint16_t freq)
 
 static void sink_init(void)
 {
+    boot_trace('i');
     i2s_init();
+    boot_trace('I');
 
     audiohw_preinit();
+    boot_trace('P');
 
     /* Reset and configure the ADC before the first rate is programmed, so the
      * clock registers land on a chip that has actually been reset. */
 #ifdef HAVE_RECORDING
     es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]);
+    boot_trace('E');
 #endif
 
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
+    boot_trace('F');
 }
 
 struct pcm_sink builtin_pcm_sink = {

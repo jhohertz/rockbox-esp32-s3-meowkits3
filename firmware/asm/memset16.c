@@ -25,13 +25,22 @@
 #define ROCKBOX_UNALIGNED(X)   ((uintptr_t)X & (sizeof(long) - 1))
 #define TOO_SMALL(LEN) ((LEN) < LBLOCKSIZE)
 
+extern void boot_trace(char c);
+extern void boot_trace_hex(unsigned int v);
+
 void memset16(void *dst, int val, size_t len)
 {
-#if defined(PREFER_SIZE_OVER_SPEED) || defined(__OPTIMIZE_SIZE__)
+#if defined(CPU_XTENSA)
+    /* The generic LBLOCKSIZE version above is built around a zero-overhead
+     * loop. On the esp32s3 core config that loop state (LBEG/LEND/LCOUNT) is
+     * not preserved across the level-1 tick interrupt, so a memset that spans
+     * a tick never terminates. A plain counted store loop is not affected.
+     */
     unsigned short *p = (unsigned short *)dst;
+    unsigned short v = (unsigned short)(val & 0xffff);
 
     while (len--)
-        *p++ = val;
+        *p++ = v;
 #else
     unsigned short *p = (unsigned short *)dst;
     unsigned int i;
@@ -51,7 +60,7 @@ void memset16(void *dst, int val, size_t len)
         {
             buffer = 0;
             for (i = 0; i < LBLOCKSIZE; i++)
-            buffer = (buffer << 16) | val;
+                buffer = (buffer << 16) | val;
         }
 
         while (len >= LBLOCKSIZE*4)
@@ -74,5 +83,5 @@ void memset16(void *dst, int val, size_t len)
 
     while (len--)
         *p++ = val;
-#endif /* not PREFER_SIZE_OVER_SPEED */
+#endif
 }

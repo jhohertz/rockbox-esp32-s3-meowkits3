@@ -61,7 +61,7 @@
  * (push-pull), 1 = open drain. The I2C master needs this set on SCL/SDA.
  */
 #define GPIO_PIN_REG(n)      (DR_REG_GPIO_BASE + 0x0074 + 4u * (n))
-#define GPIO_PIN_PAD_DRIVER  (1u << 17)
+#define GPIO_PIN_PAD_DRIVER  (1u << 2)   /* open-drain: the pad can only pull low */
 #define GPIO_IN_FROM_MATRIX (1u << 7)
 
 /* IO MUX: MCU_SEL is bits 14:12 and picks the pad function. GPIO1 and GPIO2
@@ -92,8 +92,8 @@
 #define SIG_SDHOST_D0    180   /* SDHOST_CDATA_IN_10 / SDHOST_CDATA_OUT_10 */
 
 #define SIG_FSPICLK_OUT  101   /* GPSPI2 clock */
-#define SIG_FSPIQ_OUT    102   /* GPSPI2 MOSI */
-#define SIG_FSPID_OUT    103   /* GPSPI2 MISO */
+#define SIG_FSPIQ_OUT    102   /* GPSPI2 MISO - driven only in slave mode */
+#define SIG_FSPID_OUT    103   /* GPSPI2 MOSI - the master data output */
 
 /* I2S1 outputs */
 #define SIG_I2S1_MCLK_OUT 21
@@ -117,8 +117,55 @@ static inline void gpio_write(uint32_t reg, uint32_t val)
     *(volatile uint32_t *)reg = val;
 }
 
+/* ESP32-S3 has 49 general-purpose pads (SOC_GPIO_PIN_COUNT), and every one of them
+ * has an IO MUX entry: FUN_PD/FUN_PU/FUN_IE/FUN_DRV/MCU_SEL at bits 7..14 of
+ * IO_MUX_GPIO0_REG + 4*n. Pull-ups are in the IO MUX, not in the GPIO block - that
+ * is why a search of gpio_reg.h finds nothing.
+ */
+static inline void io_mux_select_gpio(int pin)
+{
+    if (pin > 48)
+        return;
+
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
+}
+
+/* GPIO_ENABLE only controls the output driver. A pad whose input enable is clear
+ * does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
+static inline void gpio_input_enable(int pin, int enable)
+{
+    if (pin > 48)
+        return;
+
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_IE)
+                         : (gpio_read(r) & ~IO_MUX_FUN_IE));
+}
+
+static inline void gpio_pullup(int pin, int enable)
+{
+    if (pin > 48)
+        return;
+
+    uint32_t r = IO_MUX_PIN(pin);
+    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_PU)
+                         : (gpio_read(r) & ~IO_MUX_FUN_PU));
+}
+
+/* ESP-IDF's gpio_output_enable() does three things: route the pad to the GPIO
+ * matrix default, set the output enable, and select the GPIO function in the IO
+ * MUX. The third step is not optional. Pads 39-42 are MTCK/MTDO/MTDI/MTMS (JTAG),
+ * 15/16 are the XTAL_32K_P/N pads, 13/14 carry FSPI functions and 47/48 are the
+ * MSPI clock pair. With MCU_SEL left at 0 the pad is muxed to that peripheral and
+ * a GPIO-matrix signal routed to "GPIO n" never reaches the driver, so the pin
+ * reads and stays at its idle level no matter what the controller does.
+ */
 static inline void gpio_set_direction(int pin, int output)
 {
+    if (output)
+        io_mux_select_gpio(pin);
+
     if (pin < 32) {
         gpio_write(output ? GPIO_ENABLE_W1TS : GPIO_ENABLE_W1TC, 1u << pin);
     } else {
@@ -169,42 +216,5 @@ static inline void gpio_matrix_in(int pin, int signal)
 {
     gpio_write(GPIO_FUNC_IN_SEL(signal), ((uint32_t)pin & 0x3F) | GPIO_IN_FROM_MATRIX);
 }
-
-/* ESP32-S3 has 49 general-purpose pads (SOC_GPIO_PIN_COUNT), and every one of them
- * has an IO MUX entry: FUN_PD/FUN_PU/FUN_IE/FUN_DRV/MCU_SEL at bits 7..14 of
- * IO_MUX_GPIO0_REG + 4*n. Pull-ups are in the IO MUX, not in the GPIO block - that
- * is why a search of gpio_reg.h finds nothing.
- */
-static inline void io_mux_select_gpio(int pin)
-{
-    if (pin > 48)
-        return;
-
-    uint32_t r = IO_MUX_PIN(pin);
-    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
-}
-
-/* GPIO_ENABLE only controls the output driver. A pad whose input enable is clear
- * does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
-static inline void gpio_input_enable(int pin, int enable)
-{
-    if (pin > 48)
-        return;
-
-    uint32_t r = IO_MUX_PIN(pin);
-    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_IE)
-                         : (gpio_read(r) & ~IO_MUX_FUN_IE));
-}
-
-static inline void gpio_pullup(int pin, int enable)
-{
-    if (pin > 48)
-        return;
-
-    uint32_t r = IO_MUX_PIN(pin);
-    gpio_write(r, enable ? (gpio_read(r) | IO_MUX_FUN_PU)
-                         : (gpio_read(r) & ~IO_MUX_FUN_PU));
-}
-
 
 #endif /* GPIO_XTENSA_H */
