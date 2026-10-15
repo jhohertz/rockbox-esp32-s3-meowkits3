@@ -1828,6 +1828,139 @@ guarded. Every target that uses `sdmmc_host` happens to define `HAVE_HOTSWAP`,
 so it never surfaced. A target with a soldered-down card reader (this one) has
 no presence to track, so the assignment is now guarded like the rest.
 
+### Getting Rockbox's scheduler to run at all: four separate faults
+
+Rockbox's kernel had never switched a thread under ESP-IDF. Making it try
+produced four distinct faults, each of which hid the next. They are recorded
+separately because three of them are not about the context switch at all, and
+the fourth is not a bug but a wrong model.
+
+**1. Every thread stack was in PSRAM.** A Rockbox thread stack is not allocated
+from a pool: it is a plain `static long foo_stack[DEFAULT_STACK_SIZE/sizeof(long)]`
+in whichever driver creates the thread (`powermgmt.c`, `storage.c`, `usb.c`,
+`codec_thread.c`, `audio_thread.c`, `apps/main.c`, and more). So the
+`LDFRAGMENTS` fragment that retargeted *whole archives* to PSRAM moved every
+stack in the tree with it, and the first context switch landed on a stack in the
+PSRAM window: `A1 = 0x3c6eeac0`, `EXCVADDR` in the same window, fault inside the
+register-window spill. A stack in cache-backed memory is not merely slow, it is
+unusable for the windowed ABI.
+
+The fix is to invert the placement policy: **internal DRAM by default, PSRAM only
+for objects named as pure CPU-only data.** The exceptions cannot be enumerated
+the other way round, because "is this object ever a stack?" has no complete
+answer. The same reasoning excludes two more classes: objects that can be the
+destination of a storage or audio DMA (`disk_cache.o`, `dir.o` — they are read
+buffers handed to the SD driver, which does no cache maintenance on caller
+buffers on this part), and objects holding GDMA descriptors and the ping-pong
+pairs (`pcm-xtensa.o`, `i2s-xtensa.o`).
+
+What actually has to move is much less than it looks. Measured per object across
+the archives that are *linked into the firmware*: `unicode` 74 KB, `language`
+31 KB, `disk_cache` 36 KB, `scroll_engine` 26 KB, `bidi` 6 KB, `buffering` 13
+KB, `playlist` 8 KB. The huge `.bss` figures in `lib/rbcodec/codecs/*.o` (flac at
+358 KB, wmaprodec at 292 KB) are a red herring — codecs and plugins are separate
+executables and are never linked into the firmware image.
+
+**2. The tick interrupt was switching threads.** The gptimer alarm called
+`call_tick_tasks()`, which runs the registered tick functions. Those are ordinary
+C: button polling does I2C, I2C on this target ends in a semaphore wait, and a
+Rockbox semaphore wait calls `switch_thread()`. A context switch from interrupt
+context cannot work on this core. `call_tick_tasks()` in `tick.h` is now split
+into the clock (`current_tick++`) and the functions (`run_tick_tasks()`), so the
+alarm advances the clock only and `apps/main.c`'s tick thread runs the functions
+in thread context. That is the arrangement the tick thread already carried a
+comment explaining; the gptimer rewrite had quietly undone it. **A target tick ISR
+may advance `current_tick` and nothing else.**
+
+**3. The spill took exceptions that could not be taken.** `store_context()`
+called `__xtensa_libgcc_window_spill()`. That function is a chain of `entry`s
+(lib2funcs.S) that works by *deliberately taking window overflow exceptions* and
+letting the overflow vectors write each window into its ancestor's base-save
+area. A window exception cannot be taken while `PS.INTLEVEL` is non-zero, and
+`switch_thread()` masks interrupts by raising `PS.INTLEVEL` to 15. The result is
+a double exception, reported with PC inside that `entry` chain, `PS = 0x00070e1f`
+(INTLEVEL 0xF, EXCM set), and a backtrace whose "return address" is a data
+address — i.e. an undecodable frame, which is why this looked like a corrupted
+context when it was not one.
+
+FreeRTOS's own cooperative yield (`portasm.S`, `vPortYield`) shows the correct
+sequence, and it is not the libgcc function:
+
+```asm
+movi   a6, ~(PS_WOE_MASK|PS_INTLEVEL_MASK)
+and    a2, a2, a6            /* clear WOE and INTLEVEL */
+addi   a2, a2, XCHAL_EXCM_LEVEL
+wsr    a2, PS
+rsync
+call0  xthal_window_spill_nw /* walks base-save areas with plain stores */
+```
+
+`xthal_window_spill_nw()` never needs an exception, and clearing `WOE` around it
+means none can be attempted either. Use that, not the libgcc one, in any context
+switch on this part.
+
+**4. `CALLINC` is load-bearing in both directions.** Two separate consequences:
+
+- Windowed C entered with `CALLINC 0` has no base-save area, and the overflow
+  handler then walks the base-save area of every *ancestor* frame through garbage.
+  `load_context()`'s first-run path entered the thread starter with `CALLINC 0`,
+  which is what the call0 form of that file wanted. Under IDF the ABI is windowed
+  and the entry must be `CALLINC 8` (`PS` bits 16-17 = 2).
+- `RETW` only strips the window encoding from `a0` when `PS.CALLINC` is non-zero.
+  With `CALLINC 0` it behaves as a plain return and jumps to the raw saved
+  address, which still has bit 31 set. The signature is an `InstrFetchProhibited`
+  at the 4-byte-aligned form of that address: `PC 0x82052047`, `EXCVADDR
+  0x82052044` — the instruction after the `call8` to `switch_thread` in `sleep()`,
+  with the encoding bit still on it. So the `PS` a resumed thread runs with must
+  carry `CALLINC 8`, whatever the outgoing thread had.
+
+With those four fixed the fault becomes decodable, which is the point of writing
+them down: `InstrFetchProhibited`, backtrace `sleep -> switch_thread`, reached
+from `dircache_enable -> init_dircache -> init -> main`.
+
+### The context switch model: save the stack pointer, then unwind
+
+The remaining fault is not a bug in the same sense. Rockbox's
+`firmware/asm/xtensa/thread.c` saves the sixteen visible registers of the current
+window plus `sp`/`ps`/`windowbase`/`windowstart`/`sar`/ZOL, and on resume writes
+all of them back and lets the compiler's `retw` return into the resumed thread.
+That is the model the call0 ABI makes natural, and it is not how the windowed ABI
+switches. FreeRTOS's port states the rule in one line:
+
+> "Windowed ABI defers the actual context switch until the stack is unwound to
+> interrupt entry."
+
+What FreeRTOS actually stores per task is a **stack pointer**
+(`pxCurrentTCBs->pxTopOfStack = SP`) plus a frame at the bottom of that stack. It
+never restores `a0`-`a15` wholesale and never writes `WINDOWBASE` or
+`WINDOWSTART`. The mechanism is:
+
+1. Spill the windows, so every live register of the whole call chain is in memory
+   on that thread's own stack, in the base-save areas its `entry` frames reserved.
+2. Save `sp`.
+3. To resume: set `sp` to the saved value, install `PS`, and *return through the
+   frame*. Each `retw` on the way out triggers a window underflow, and the
+   underflow handler refills `a0`/`a2`/`a3`/`a4` from the base-save area at
+   `a1-16..a1-4` of the frame it is leaving. The register contents come back from
+   the new thread's stack, not from a save area, and the hardware's own window
+   bookkeeping is never overridden.
+
+That is why writing `WINDOWBASE`/`WINDOWSTART` by hand is wrong: those CSRs are
+the underflow handler's input, and a synthetic value makes it refill from areas
+that were never written. It is also why the first run of a thread needs a
+*synthetic frame* rather than a jump — `pxPortInitialiseStack()` in FreeRTOS's
+`port.c` is the reference for building one, and it builds a frame that looks
+exactly like an interrupt entry, because that is the only shape the exit
+dispatcher understands.
+
+The consequence for Rockbox is narrow: only the register-level primitive changes.
+`switch_thread()`, the thread table, the blocking primitives and the cooperative
+scheduler are untouched; `store_context()` becomes spill-and-save-`sp`, and
+`load_context()` becomes restore-`sp`-and-unwind. The outgoing and incoming
+threads must both be blocked at a point where their frame chain is intact on
+their own stack, which is exactly what a Rockbox thread is when it is in
+`sleep()`, `mutex_wait()` or `queue_recv()`.
+
 ### Codecs, plugins and the image format
 
 > **Superseded on this branch.** The image is now produced by ESP-IDF's own
@@ -2181,6 +2314,14 @@ No special-register write, no stack set-up. `firmware/target/xtensa/crt0.S` now
 matches that: it sets `a1` and masks interrupts, and touches nothing else.
 
 ### The context switch is the part that is still wrong
+
+> *Superseded.* The diagnosis here is partly right and the conclusion is wrong.
+> `wsr ps` cannot set `EXCM`, true, but the fix is not "make the switch take a
+> software exception": FreeRTOS's cooperative yield is an ordinary C-visible
+> function and switches correctly without one, because it saves only the stack
+> pointer and lets the `retw` chain refill the windows. See "The context switch
+> model: save the stack pointer, then unwind" above, which is what the IDF branch
+> implements.
 
 `store_context()` masks the saved `PS` with `-31` (clearing `INTLEVEL` and
 `EXCM`) and `load_context()` writes it back with `wsr ps` — which cannot set
