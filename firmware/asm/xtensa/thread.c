@@ -345,18 +345,7 @@ static inline void load_context(const void* addr)
         "l32i    a1, a6, 0          \n"   /* sp  */
         "l32i    a0, a6, 4          \n"   /* pc, still window-encoded */
         "l32i    a7, a6, 8          \n"
-        /* Put the window state back with the stack it belongs to. WINDOWBASE is
-         * where this thread's base save chain is rooted, and WINDOWSTART is
-         * rebuilt from it because store narrowed it to that one bit. Both are
-         * written before PS so the retw below rotates from the right origin. */
-        "l32i    a8, a6, 16         \n"   /* windowbase */
-        "wsr     a8, windowbase     \n"
-        "movi    a9, 1              \n"
-        "ssl     a8                 \n"
-        "sll     a9, a9             \n"
-        "wsr     a9, windowstart    \n"
         "wsr     a7, ps             \n"
-        "rsync                      \n"
         "retw.n                     \n"
         "2:                         \n"
         "break   1, 2               \n"   /* unreachable */
