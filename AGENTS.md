@@ -2280,6 +2280,87 @@ PS says interrupts are allowed.
   FreeRTOS task rather than returning from it, so that core's idle task never
   runs and never feeds the watchdog.
 
+### The OS tick on esp32s3 is a SYSTIMER alarm, and what a dead tick looks like
+
+`CONFIG_ESP_TIMER_IMPL_SYSTIMER=y`, and the FreeRTOS tick uses the same block
+(`components/freertos/port_systick.c`, `vSystimerSetup`):
+
+- one shared counter, **unit 1** (`SYSTIMER_COUNTER_OS_TICK`), running at
+  1.6 MHz here;
+- **alarm 0 -> core 0, alarm 1 -> core 1**, each in `SYSTIMER_ALARM_MODE_PERIOD`
+  with `target_conf.period = 1000000 / CONFIG_FREERTOS_HZ` (160000 at 100 Hz);
+- interrupt source `ETS_SYSTIMER_TARGET0_INTR_SOURCE + cpuid` = 57 / 58.
+
+Those two sources have **no `_INTR_MAP` register** in the esp32s3 SVD: unlike
+almost every other peripheral, the systimer alarms are not routed through the
+programmable matrix. `esp_intr_alloc` still calls
+`esp_rom_route_intr_matrix()` for them, but there is nothing in the SVD to read
+back, so the usual "check the matrix entry" diagnostic does not exist here.
+
+Register layout (`DR_REG_SYSTIMER_BASE = 0x60023000`, offsets derived from the
+member order of `systimer_dev_t`, which is the only reliable way -- the
+`*_REG` defines omit the interrupt registers):
+
+| Offset | Field |
+|---|---|
+| 0x00 | `conf` -- bit 24 `target0_work_en`, bit 23 `target1_work_en`, bit 22 `target2_work_en` |
+| 0x1c..0x30 | `target_val[0..2]` hi/lo -- the **one-shot** compare; reads 0 in period mode |
+| 0x34..0x3c | `target_conf[0..2]` -- bits 25:0 period, bit 30 period mode, bit 31 unit select |
+| 0x40..0x4c | `unit_val[0..1]` hi/lo -- the counters themselves |
+| 0x50..0x58 | `comp_load[0..2]` -- write 1 to latch a compare value |
+| 0x64 / 0x68 / 0x6c / 0x70 | `int_ena` / `int_raw` / `int_clr` / `int_st` |
+
+Reading `target_val` in period mode is the trap: it comes back zero and looks
+like the alarm was never programmed. The period lives in `target_conf`.
+
+`SysTickIsrHandler` runs, clears its own alarm bit, and only calls
+`xPortSysTickHandler()` when `counter/period` has advanced past a per-core
+count, `s_handled_systicks[cpuid]`. That means a dead tick has two
+indistinguishable faces -- "the ISR never ran" and "the ISR ran and decided
+there was nothing to do" -- and they are fixed differently. Tell them apart by
+reading IDF's own counter: it is a file-static, but the linker map gives its
+address (`grep -A1 .bss.s_handled_systicks rockbox.map`). If it is frozen, the
+ISR never ran.
+
+### What the dead tick turned out to be, measured
+
+Every hypothesis that was on the list is now eliminated by measurement:
+
+| Check | Result |
+|---|---|
+| `conf` / `target_conf[0]` / `int_ena` | all correct and unchanged: alarm armed, period mode, period 160000, int_ena bit 0 set |
+| shared counter | advancing the whole time |
+| re-arm the alarm from the other core (`int_clr`, rewrite `target_conf`, `comp_load`, set `target0_work_en`) | **does not revive it** |
+| core's `INTENABLE` | armed, unchanged across the death (`0x1300032e`) |
+| core's `PS` at every switch | `0x00060020` -- INTLEVEL 0, EXCM clear, UM set |
+| `rsr interrupt` on the dying core | `0x00018040` = CCOMPARE0/1/2 only, none enabled. **No peripheral line is ever asserted to that core again.** |
+| a gptimer allocated on that core *after* the death | every call returns `ESP_OK`, and it never delivers one interrupt |
+| SD card stubbed out | still dies, at 39 |
+
+And the finding that reframes it: **the fault follows Rockbox.** Pin the
+Rockbox task to core 0 and `s_handled_systicks[0]` freezes at 49 while core 1
+runs freely; pin it to core 1 and `s_handled_systicks[1]` freezes at 49 while
+core 0 runs freely past 128. It is not a core-0 defect -- it is whatever
+Rockbox does to whichever core runs it.
+
+The task watchdog that follows is a consequence, not a second bug: the idle
+task on the dead core enters WFI and is never woken, so it stops feeding the
+watchdog. `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n` was there to hide
+exactly this.
+
+Two smaller facts worth keeping:
+
+- **`rsr intstatus` is not a valid instruction on this core config.** Read
+  `rsr interrupt` and AND it with `INTENABLE` in software.
+- Pinning Rockbox to a core moves the failure but does not change it, and it
+  moves the watchdog to the *other* core's idle task. If you swap cores for an
+  experiment, swap `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/1` with it or the
+  result is uninterpretable.
+
+Next bisect: does the tick survive if Rockbox never performs a context switch?
+That separates "our switch corrupts the core" from "something else Rockbox runs
+on that core does", and it is the shortest remaining path.
+
 ### Where it stands now
 
 Measured, after the flat-frame switch and a full clean rebuild:
