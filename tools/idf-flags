@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+#
+# Extract the compile flags ESP-IDF uses for its own C sources, so that Rockbox's
+# build can compile files that include IDF headers against exactly the same
+# configuration IDF was built with.
+#
+# The flags are taken from compile_commands.json, which IDF generates for its own
+# build. That is deliberately not a hand-maintained list of include directories:
+# IDF's component set is large, changes with sdkconfig, and a stale list fails in
+# ways that look like a code bug (a header found, but a CONFIG_ define missing).
+#
+# Usage: idf-flags <idf-build-dir> [-o <output>]
+#
+# The output is a make fragment defining IDF_CFLAGS, suitable for -include'ing
+# from tools/root.make.
+
+import json
+import shlex
+import sys
+import os
+
+
+# Flags that describe *how IDF compiles its own translation units* rather than
+# what IDF is. Inheriting them would silently change how Rockbox's C is compiled.
+#
+# -std= is deliberately NOT in this list. IDF's headers require C17:
+# esp_common/include/esp_assert.h defines
+#
+#     #define ESP_STATIC_ASSERT static_assert
+#
+# with the comment "Since IDF v5.0, C17 standard is used". Under -std=gnu11
+# `static_assert` is not a keyword and only exists if <assert.h> happened to be
+# included, so IDF headers fail to parse with "expected ')' before '<='". IDF's
+# dialect therefore has to win; it is appended after Rockbox's, so it does.
+DROP_EXACT = {"-c", "-MMD", "-MD", "-MG"}
+
+
+def pick_entry(entries):
+    """Choose a C entry from the project itself, not from IDF's own components.
+
+    A project entry is the one whose flags a Rockbox file would want: it is
+    compiled as C, with the app's include path and the full component set.
+    """
+    c_entries = [e for e in entries if e["file"].endswith(".c")]
+    if not c_entries:
+        sys.exit("idf-flags: compile_commands.json has no C entries")
+
+    # Prefer an entry that is not inside IDF itself: those are the ones that also
+    # carry the project's own include directories.
+    idf_path = os.environ.get("IDF_PATH", "")
+    project = [e for e in c_entries if not (idf_path and e["file"].startswith(idf_path))]
+    pool = project or c_entries
+
+    # Shortest command = the least per-file decoration, so the result is the
+    # common flag set rather than one file's extras.
+    return min(pool, key=lambda e: len(e.get("command") or " ".join(e.get("arguments", []))))
+
+
+def extract(entry):
+    cmd = entry.get("command")
+    if cmd:
+        argv = shlex.split(cmd)
+    else:
+        argv = entry.get("arguments", [])
+
+    keep = []
+    skip_next = False
+    src = os.path.normpath(entry["file"])
+
+    for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if i == 0:
+            continue  # the compiler itself
+        if arg in DROP_EXACT:
+            continue
+        if arg in ("-o", "-MF", "-MT", "-MQ", "-include"):
+            skip_next = True
+            continue
+        if os.path.normpath(arg) == src:
+            continue
+        keep.append(arg)
+
+    return keep
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.exit("usage: idf-flags <idf-build-dir> [-o <output>]")
+
+    build = os.path.abspath(argv[1])
+    out = None
+    if "-o" in argv:
+        out = argv[argv.index("-o") + 1]
+
+    ccc = os.path.join(build, "compile_commands.json")
+    if not os.path.isfile(ccc):
+        sys.exit(
+            "idf-flags: %s not found.\n"
+            "Run the ESP-IDF build once before Rockbox's (idf.py build), so that it\n"
+            "can report the flags and generated headers its components expect." % ccc
+        )
+
+    with open(ccc) as f:
+        entries = json.load(f)
+
+    flags = extract(pick_entry(entries))
+
+    # sdkconfig.h is generated into the build tree and IDF headers include it by
+    # name, so the directory has to be reachable even though it is not a source
+    # directory.
+    gen = os.path.join(build, "config")
+    if os.path.isdir(gen) and not any(a == "-I" + gen for a in flags):
+        flags.append("-I" + gen)
+
+    line = "IDF_CFLAGS := " + " ".join(shlex.quote(f) for f in flags) + "\n"
+
+    if out:
+        with open(out, "w") as f:
+            f.write(line)
+        print("idf-flags: %d flags -> %s" % (len(flags), out))
+    else:
+        sys.stdout.write(line)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
