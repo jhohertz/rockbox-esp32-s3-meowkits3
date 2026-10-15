@@ -40,6 +40,12 @@
  */
 #define CPU_FREQ 240000000
 
+/* TEMPORARY bring-up instrumentation for the dircache scan fault. Pairs with
+ * the STRACE() calls in firmware/common/dircache.c and the .noinit ring in
+ * firmware/target/xtensa/scan_trace.c. Delete this line, those calls and that
+ * file to remove it. */
+#define ROCKBOX_SCAN_TRACE
+
 /* Not set, on purpose. Rockbox's cpu_boost() exists to call
  * set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
  * IDF moves the analog regulator bias (dbias) along with the core clock via
