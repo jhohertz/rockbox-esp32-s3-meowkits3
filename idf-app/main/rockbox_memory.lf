@@ -31,9 +31,18 @@
 # disk_cache.o and dir.o, which are read destinations, and pcm-xtensa.o and
 # i2s-xtensa.o, which hold the GDMA descriptors and the ping-pong pairs.
 #
-# What is moved is the large, CPU-only data: language and unicode tables, the
-# scroll engine's line cache, bidi, the rbcodec buffering. These are read and
-# written by the core and never handed to a DMA engine. PSRAM at 80 MHz is
+# What is moved is the large, CPU-only data: language and unicode tables,
+# bidi, the rbcodec buffering. These are read and written by the core and never
+# handed to a DMA engine.
+#
+# scroll_engine.o and playlist.o were on this list and came off it. Both look
+# like pure data by size (26 KB and 7.6 KB) but each also holds a thread stack:
+# scroll_engine.c has `static ... scroll_stack[]` and playlist.c has
+# `playlist_stack`, and the archive-level entry moved the whole .bss with them.
+# The symptom was a deterministic Cache error / "MMU entry fault" the first time
+# the scheduler resumed one of those threads -- EXCVADDR repeating on every boot.
+# The rule is not "is this object big and inert", it is "does this object contain
+# something a core can be executing on".  PSRAM at 80 MHz is
 # slower than internal SRAM, so this is a performance cost; it is paid for the
 # alternative, which is not fitting at all.
 #
@@ -65,7 +74,6 @@ archive: libfirmware.a
 entries:
     unicode (rb_psram)
     bidi (rb_psram)
-    scroll_engine (rb_psram)
     # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
     # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
     # buffers are already in .ext_ram.bss by their own section attribute, which
@@ -78,7 +86,6 @@ entries:
 [mapping:rb_apps]
 archive: librockbox.a
 entries:
-    playlist (rb_psram)
     language (rb_psram)
     * (rb_dram)
 
