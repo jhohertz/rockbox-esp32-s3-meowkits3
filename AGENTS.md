@@ -2334,7 +2334,7 @@ Every hypothesis that was on the list is now eliminated by measurement:
 | core's `INTENABLE` | armed, unchanged across the death (`0x1300032e`) |
 | core's `PS` at every switch | `0x00060020` -- INTLEVEL 0, EXCM clear, UM set |
 | `rsr interrupt` on the dying core | `0x00018040` = CCOMPARE0/1/2 only, none enabled. **No peripheral line is ever asserted to that core again.** |
-| a gptimer allocated on that core *after* the death | every call returns `ESP_OK`, and it never delivers one interrupt |
+| a gptimer allocated on that core *after* the death | **not a valid test** -- the probe task meant to allocate it was never created, so `rb_late_err == 0` was just its initial value. Retracted. |
 | SD card stubbed out | still dies, at 39 |
 
 And the finding that reframes it: **the fault follows Rockbox.** Pin the
@@ -2357,9 +2357,43 @@ Two smaller facts worth keeping:
   experiment, swap `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/1` with it or the
   result is uninterpretable.
 
-Next bisect: does the tick survive if Rockbox never performs a context switch?
-That separates "our switch corrupts the core" from "something else Rockbox runs
-on that core does", and it is the shortest remaining path.
+### The switch is not what kills the tick, and neither is the peripheral
+
+Two more bisects, both decisive:
+
+- **`switch_thread()` made a complete no-op**: the tick still freezes at
+  exactly 49. Rockbox's context switch is exonerated. What does this is ordinary
+  Rockbox code on that core, not the register-level switch.
+- **`real_target_val[]`** (0x74/0x78/0x7c -- the values the hardware actually
+  compares against; `target_val` reads 0 in period mode and tells you nothing)
+  **advances for alarm 0 the whole time**, in exact `8 * 160000` steps between
+  samples. The peripheral keeps generating core 0's alarms on schedule.
+
+  Trap: `int_raw` read clear for alarm 0, which looks like "it never fired". It
+  read clear because the re-arm probe in the same build writes `int_clr` bit 0.
+  Instrumentation clearing the very thing being measured.
+
+So: the alarm fires, the peripheral asserts, and **the core never vectors to
+it.** Confirmed from a completely independent angle -- a probe task pinned to
+the dying core at *higher* priority than the Rockbox task reaches its body,
+calls `vTaskDelay(2000)`, and is never resumed. A runnable task on a core whose
+tick is dead stays ready-but-unscheduled forever, because that core is never
+preempted again.
+
+What is left, and the shortest path to it: the interrupt is pending at the
+peripheral and not reaching the core, while that core's `INTENABLE` is armed and
+its `PS` is clean. The one number never established is **which CPU interrupt
+number IDF assigned that core's systimer handler** -- `esp_intr_alloc` picks it
+dynamically, the systimer sources have no matrix register to read back, and the
+allocator's table is file-static and absent from the map, so "is that specific
+bit still set" has not been checkable.
+
+The experiment that settles it without that number: from a task pinned to the
+dying core, call `esp_intr_alloc(ETS_SYSTIMER_TARGET0_INTR_SOURCE, ...)` with
+**our own** handler. If ours fires, a fresh allocation reaches the core and
+IDF's original binding is what was lost -- and re-allocating becomes the fix.
+If ours does not fire either, the core's intake is genuinely closed and the
+fault is in the CPU-side path.
 
 ### Where it stands now
 
