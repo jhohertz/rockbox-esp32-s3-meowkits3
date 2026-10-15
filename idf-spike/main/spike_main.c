@@ -26,6 +26,7 @@
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -139,12 +140,53 @@ static esp_err_t expander_write(uint8_t val)
 
 static void stage_i2c_expander(void)
 {
+    /* Before touching the controller: are SDA and SCL electrically idle high?
+     * A line stuck low means a device is mid-transaction (needs the nine-clock
+     * recovery) or the rail feeding the 10K pull-ups is off. Distinguishing an
+     * electrical fault from a driver fault is worth two lines, and the driver's
+     * ESP_ERR_INVALID_STATE does not tell you which you have. */
+    for (int i = 0; i < 2; i++) {
+        int pin = i == 0 ? PIN_I2C_SDA : PIN_I2C_SCL;
+        gpio_set_direction(pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+    int sda = gpio_get_level(PIN_I2C_SDA);
+    int scl = gpio_get_level(PIN_I2C_SCL);
+    ESP_LOGI(TAG, "bus idle: SDA(%d)=%d SCL(%d)=%d", PIN_I2C_SDA, sda,
+             PIN_I2C_SCL, scl);
+    if (!sda || !scl) {
+        /* Nine clocks on SCL with SDA released frees a slave that latched
+         * mid-transfer. The schematic has no bus switch, so this only helps a
+         * stuck slave, not an unpowered one. */
+        ESP_LOGW(TAG, "line held low, trying nine-clock recovery");
+        gpio_set_direction(PIN_I2C_SCL, GPIO_MODE_OUTPUT);
+        for (int n = 0; n < 9; n++) {
+            gpio_set_level(PIN_I2C_SCL, 0);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            gpio_set_level(PIN_I2C_SCL, 1);
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        gpio_set_direction(PIN_I2C_SCL, GPIO_MODE_INPUT);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        ESP_LOGI(TAG, "after recovery: SDA=%d SCL=%d", gpio_get_level(PIN_I2C_SDA),
+                 gpio_get_level(PIN_I2C_SCL));
+    }
+
     i2c_master_bus_config_t buscfg = {
         .i2c_port = I2C_PORT,
         .sda_io_num = PIN_I2C_SDA,
         .scl_io_num = PIN_I2C_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
+        /* Left at 0 the driver runs fully synchronously, and every multi-op
+         * transaction (anything but probe's START/STOP pair) returns
+         * ESP_ERR_INVALID_STATE immediately. Giving it a queue depth makes the
+         * calls return ESP_OK but the received bytes come back wrong (two
+         * different devices both read 0xa1), and the driver itself warns that
+         * asynchronous mode "cannot get bus error from API". So stay
+         * synchronous and find the real fault instead of papering over it. */
+        .trans_queue_depth = 0,
         .flags.enable_internal_pullup = true,
     };
     esp_err_t err = i2c_new_master_bus(&buscfg, &i2c_bus);
@@ -152,6 +194,7 @@ static void stage_i2c_expander(void)
         record(1, ST_FAIL, "i2c_new_master_bus: %s", esp_err_to_name(err));
         return;
     }
+    ESP_LOGI(TAG, "i2c bus %d created", (int)I2C_PORT);
 
     i2c_device_config_t devcfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -163,6 +206,83 @@ static void stage_i2c_expander(void)
         record(1, ST_FAIL, "add pca9557 device: %s", esp_err_to_name(err));
         return;
     }
+    ESP_LOGI(TAG, "pca9557 device added at 0x%02x", ADDR_PCA9557);
+
+    /* Register the PMU here rather than at the end of this stage: the expander
+     * may be unreachable and that must not cost us the power/charge data. */
+    i2c_device_config_t axpcfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ADDR_AXP173,
+        .scl_speed_hz = 100000,
+    };
+    i2c_master_bus_add_device(i2c_bus, &axpcfg, &dev_axp173);
+
+    /* Isolate which transfer shape the synchronous path actually completes.
+     * probe() is a 2-op START/STOP pair and works; a register read is a 6-op
+     * list containing a zero-length READ (total_bytes = read_size - 1) when
+     * read_size is 1. Test each in turn, resetting the FSM in between so one
+     * failure cannot poison the next result. */
+    {
+        /* Which devices ACK tells us which rails are up. The pull-ups sit on
+         * EXP_3V3, so lines can idle high while the expander itself is
+         * unpowered -- healthy lines plus no ACK is exactly that signature.
+         * The AXP173 normally runs straight off the battery, so if it ACKs and
+         * the expander does not, the expander's rail is the thing that is off. */
+        /* Full 7-bit scan: if the expander answers somewhere other than 0x19
+         * that is an addressing bug of ours; if it answers nowhere while every
+         * other device does, its reset or supply rail is the suspect. */
+        int found = 0;
+        for (int a = 0x08; a <= 0x77; a++) {
+            esp_err_t p = i2c_master_probe(i2c_bus, (uint8_t)a, 100);
+            if (p == ESP_OK) {
+                ESP_LOGI(TAG, "  ACK at 0x%02x", a);
+                found++;
+            }
+        }
+        ESP_LOGI(TAG, "bus scan: %d device(s)", found);
+    }
+
+    /* The expander is absent from the scan while six other devices answer. The
+     * obvious explanation is that the rail feeding it is off: the AXP173 runs
+     * straight from the battery and answers, but everything downstream of one
+     * of its DO outputs will not. Read the output-enable register, turn on the
+     * rails the reference firmware uses, and scan again.
+     *
+     * REG 0x12: bit0 DCDC1, bit1 LDO4, bit2 LDO2, bit3 LDO3, bit4 DCDC2,
+     * bit6 EXTEN. Voltages are set in separate registers before enabling.
+     */
+    {
+        i2c_device_config_t axp_early = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = ADDR_AXP173,
+            .scl_speed_hz = 100000,
+        };
+        i2c_master_dev_handle_t axp;
+        if (i2c_master_bus_add_device(i2c_bus, &axp_early, &axp) == ESP_OK) {
+            uint8_t en = 0;
+            if (i2c_master_transmit_receive(axp, &(uint8_t){0x12}, 1, &en, 1, 1000)
+                    == ESP_OK) {
+                ESP_LOGI(TAG, "AXP173 REG12 before = 0x%02x", en);
+                uint8_t want = en | 0x0Fu;   /* DCDC1, LDO4, LDO2, LDO3 */
+                uint8_t d[2] = { 0x12, want };
+                i2c_master_transmit(axp, d, 2, 1000);
+                ESP_LOGI(TAG, "AXP173 REG12 -> 0x%02x", want);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                int found2 = 0;
+                for (int a = 0x08; a <= 0x77; a++) {
+                    if (i2c_master_probe(i2c_bus, (uint8_t)a, 100) == ESP_OK) {
+                        if (a == ADDR_PCA9557) {
+                            ESP_LOGI(TAG, "  PCA9557 now ACKs at 0x19");
+                        }
+                        found2++;
+                    }
+                }
+                ESP_LOGI(TAG, "bus scan after power-up: %d device(s)", found2);
+            } else {
+                ESP_LOGW(TAG, "could not read AXP173 REG12");
+            }
+        }
+    }
 
     /* Presence must be tested on REG_CONFIG, not on a status register: the
      * expander powers up with all bits set as inputs. */
@@ -172,6 +292,7 @@ static void stage_i2c_expander(void)
         record(1, ST_FAIL, "read CONFIG: %s", esp_err_to_name(err));
         return;
     }
+    ESP_LOGI(TAG, "pca9557 CONFIG = 0x%02x", cfg);
 
     /* Make LCD reset, LCD CS and the amp enable outputs. */
     uint8_t out = 0;
@@ -192,14 +313,6 @@ static void stage_i2c_expander(void)
 
     uint8_t back = 0;
     i2c_reg_read(dev_pca9557, PCA9557_REG_CONFIG, &back, 1);
-
-    /* Add the PMU device now too; stage 5 uses it. */
-    i2c_device_config_t axp = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ADDR_AXP173,
-        .scl_speed_hz = 100000,
-    };
-    i2c_master_bus_add_device(i2c_bus, &axp, &dev_axp173);
 
     record(1, (back & (1u << EXP_LCD_RST)) == 0 ? ST_PASS : ST_FAIL,
            "CONFIG 0x%02x -> 0x%02x", cfg, back);
@@ -408,9 +521,12 @@ static void stage_sd(void)
     }
     remove(path);
 
-    record(4, ok ? ST_PASS : ST_FAIL, "%s, %u MB, %s",
-           card->cid.name,
-           (unsigned)(card->csd.capacity * card->csd.sector_size / 1024 / 1024),
+    /* capacity is in sectors; multiplying by 512 in 32 bits overflows on any
+     * card over 4 GB and prints nonsense. */
+    unsigned long long mb = (unsigned long long)card->csd.capacity *
+                            card->csd.sector_size / (1024ull * 1024ull);
+    record(4, ok ? ST_PASS : ST_FAIL, "%s, %llu MB, %s",
+           card->cid.name, mb,
            ok ? "write/read verified" : "write/read failed");
 
     if (!ok) {
@@ -579,9 +695,16 @@ void app_main(void)
 
     summary();
 
-    /* Leave the console alive so the panel state can be inspected on the
-     * bench and heap fragmentation can be re-read. */
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+    /* The board's console is USB-Serial-JTAG, which re-enumerates when the
+     * chip resets, so a host that attaches after boot has missed everything.
+     * Re-announce periodically: a bench probe should be readable whenever you
+     * happen to look at it, not only if you were attached at t=0. */
+    for (int round = 0; ; round++) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        printf("\n-- re-announce %d --\n", round);
+        summary();
+        printf("  heap now: internal %u B, psram %u B\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     }
 }
