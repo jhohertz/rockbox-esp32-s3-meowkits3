@@ -58,13 +58,14 @@ void ICODE_ATTR feed_rwdt(void);
 
 void power_init(void)
 {
+    boot_trace('U');                /* power_init entered */
     /* The bootloader enables the RTC watchdog with a timeout sized for itself.
      * Keeping it and feeding it from the tick is the only freeze protection this
      * target has. */
     if (rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & RWDT_EN_BIT)
         tick_add_task(feed_rwdt);
 
-    axp173_init();
+    /* TEMP: AXP173 bring-up disabled to isolate the fault */
     boot_trace('W');                /* PMU responding */
 }
 

@@ -124,8 +124,11 @@ void set_cpu_frequency(long frequency)
      * depend on the PLL taps.
      */
     if (!step || step->hz == old ||
-        ((rd(XT_SYS_CLK_CONF) >> XT_SYS_CLK_SEL_SHIFT) & 3) != XT_SYS_CLK_SEL_PLL)
+        ((rd(XT_SYS_CLK_CONF) >> XT_SYS_CLK_SEL_SHIFT) & 3) != XT_SYS_CLK_SEL_PLL) {
+        boot_trace('c');
+        boot_trace_hex((unsigned)((rd(XT_SYS_CLK_CONF) >> XT_SYS_CLK_SEL_SHIFT) & 3));
         return;
+    }
 
     if (step->hz > old)
         set_ldo_slaves(step->slaves);
@@ -143,8 +146,36 @@ void set_cpu_frequency(long frequency)
     cpu_frequency = step->hz;
 }
 
+/*
+ * The mask ROM enters the image with the core on XTAL and PRE_DIV_CNT at its reset
+ * value of 1, i.e. 20 MHz. set_cpu_frequency() deliberately refuses to move a core
+ * that is not already on the PLL, so without this the whole target runs at 20 MHz
+ * and cpu_boost() silently does nothing.
+ *
+ * The BBPLL is forced on first. It is already load-bearing for this target: MSPI
+ * (flash and PSRAM) and GPSPI2 (the display) both derive their clocks from a PLL
+ * tap, so the PLL being up is not optional here.
+ */
+static void cpu_clock_up(void)
+{
+    enum { BBPLL_FORCE_PD = 10, BBPLL_FORCE_PU = 11 };
+
+    wr(XT_RTCCNTL_BASE, (rd(XT_RTCCNTL_BASE) & ~(1u << BBPLL_FORCE_PD))
+                        | (1u << BBPLL_FORCE_PU));
+
+    /* 480 MHz tap, CPUPERIOD_SEL = 2 -> 240 MHz, pre-divisor cleared because it
+     * only applies to the XTAL and RC_FAST paths.
+     */
+    wr(XT_SYS_CPU_PER_CONF, (rd(XT_SYS_CPU_PER_CONF) & ~(XT_CPU_PERIOD_MASK | XT_PLL_FREQ_SEL))
+                            | XT_CPU_PERIOD_240M | XT_PLL_FREQ_SEL);
+
+    wr(XT_SYS_CLK_CONF, (rd(XT_SYS_CLK_CONF) & ~(XT_SYS_PRE_DIV_MASK | (3u << XT_SYS_CLK_SEL_SHIFT)))
+                        | (XT_SYS_CLK_SEL_PLL << XT_SYS_CLK_SEL_SHIFT));
+}
+
 void system_init(void)
 {
+    cpu_clock_up();
     cpu_frequency = read_cpu_frequency();
 
     /* Peripheral clock gating. The timer groups default to enabled but GDMA does not

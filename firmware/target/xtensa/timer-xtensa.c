@@ -76,19 +76,20 @@ void tick_start(unsigned int interval_in_ms)
      */
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T0, XT_SLOT_TIMERG1);
     wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_TIMERG1_T1, XT_SLOT_TIMERG1);
-    /* Bring-up experiment: re-enable the tick so the level-1 handler is entered,
-     * but dispatch nothing. If the boot still stalls in run_sync, the handler's
-     * own frame/register save is the problem; if it proceeds, one of the C
-     * handlers is.
-     */
-    set_intenable(get_intenable() | (1u << XT_SLOT_TIMERG1));
-    /* tn_int_clr is write-to-clear, and int_ena is the per-timer mask */
-
     if (!tn_program(0, (long)interval_in_ms * TIMER_FREQ / 1000, true))
         return;
 
+    /* Clear any alarm match that fired while the counter was being loaded, then
+     * unmask the timer's own output. */
+    wr(TG1(XT_TN_INT_CLR), 1);
     wr(TG1(XT_TN_INT_ENA), 1);           /* timer 0 only */
 
+    /* The peripheral side is only half the path. system_init() zeroes INTENABLE
+     * when it takes over the vectors, and nothing else unmasks this slot, so the
+     * alarm fires in TN_INT_RAW forever and current_tick never moves: every
+     * thread blocks in sleep() and the scheduler deadlocks without ever faulting.
+     */
+    set_intenable(get_intenable() | (1u << XT_SLOT_TIMERG1));
 }
 
 bool timer_set(long cycles, bool start)
@@ -127,36 +128,11 @@ __attribute__((section(".srambss"))) volatile unsigned int xt_timer_snap[8];
 
 void ICODE_ATTR timer_irq(void)
 {
-    unsigned int st = rd(TG1(XT_TN_INT_ST));
     xt_tick_count++;
-    xt_timer_snap[0] = st;
-    xt_timer_snap[1] = rd(TG1(XT_TN_INT_ENA));
-    xt_timer_snap[2] = rd(TG1(XT_TN_INT_RAW));
-    xt_timer_snap[3] = rd(TG1(XT_TN_CONFIG(0)));
-    xt_timer_snap[4] = rd(TG1(XT_TN_ALARM_LO(0)));
-    xt_timer_snap[5] = rd(TG1(XT_TN_LO(0)));
-    xt_timer_snap[6] = get_intenable();
-    xt_timer_snap[7] = rd(TG1(XT_TN_LOAD_LO(0)));
-
-    if (st & 1) {
-        current_tick++;
-    }
-
-    if (st & 2)
-    {
-        if (pfn_timer != NULL)
-            pfn_timer();
-    }
-
-    /* tn_alarm_en is self-clearing: it goes to 0 when the alarm fires. Autoreload
-     * reloads the counter but does not re-arm the comparison, so without this the
-     * tick would happen exactly once.
-     */
-    if (st & 1)
-        wr(TG1(XT_TN_CONFIG(0)), rd(TG1(XT_TN_CONFIG(0))) | XT_TN_ALARM_EN);
-    if (st & 2)
-        wr(TG1(XT_TN_CONFIG(1)), rd(TG1(XT_TN_CONFIG(1))) | XT_TN_ALARM_EN);
-
-    /* Clear only what fired. tn_int_clr is write-to-clear. */
-    wr(TG1(XT_TN_INT_CLR), st);
+    current_tick++;
+    rtc_set(3, (unsigned)current_tick);
+    /* Heartbeat: if the trace stops but the tick keeps running, the ISR is fine
+     * and some thread is the one that stalled. */
+    if ((xt_tick_count % 500u) == 0u)
+        boot_trace('T');
 }

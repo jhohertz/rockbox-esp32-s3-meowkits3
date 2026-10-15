@@ -28,6 +28,7 @@
  * A timer is two words (conf, value), so the timer stride is 0x8.
  * See ESP-IDF components/soc/esp32s3/register/soc/ledc_reg.h. */
 #define LEDC_CONF             (XT_LEDC_BASE + 0xd0)
+#define LEDC_CLK_EN           (1u << 31)   /* in-block clock gate, reset default 0 */
 #define LEDC_LSCH_CONF0(ch)   (XT_LEDC_BASE + 0x00 + 0x14 * (ch))
 #define LEDC_LSCH_HPOINT(ch)  (XT_LEDC_BASE + 0x04 + 0x14 * (ch))
 #define LEDC_LSCH_DUTY(ch)    (XT_LEDC_BASE + 0x08 + 0x14 * (ch))
@@ -60,6 +61,13 @@ static void set_duty(unsigned duty)
 
 bool backlight_hw_init(void)
 {
+    /* LEDC's peripheral clock gate (SYSTEM_PERIP_CLK_EN0 bit 11) is off at reset.
+     * ESP-IDF's ledc_ll_enable_clock() is a no-op on this SoC, so the gate has to
+     * be raised here or every write below lands in a powered-down block.
+     */
+    wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | (1u << 11)); /* LEDC */
+    wr(LEDC_CONF, rd(LEDC_CONF) | LEDC_CLK_EN);
+
     gpio_matrix_out(BL_PIN, BL_SIG_OUT);
     gpio_set_direction(BL_PIN, 1);
 
@@ -82,11 +90,21 @@ bool backlight_hw_init(void)
     wr(LEDC_LSCH_CONF0(BL_CHANNEL), (BL_TIMER & 3u) | (1u << 2));
 
     set_duty(0);
+
+    boot_trace('b');
+    boot_trace_hex(rd(LEDC_CONF));
+    boot_trace_hex(rd(LEDC_LSTIMER_CONF(BL_TIMER)));
+    boot_trace_hex(rd(LEDC_LSCH_CONF0(BL_CHANNEL)));
+    boot_trace_hex(rd(LEDC_LSCH_HPOINT(BL_CHANNEL)));
+    boot_trace_hex(rd(LEDC_LSCH_DUTY(BL_CHANNEL)));
+    boot_trace_hex(gpio_read(IO_MUX_PIN(BL_PIN)));
+    boot_trace_hex(gpio_read(GPIO_FUNC_OUT_SEL(BL_PIN)));
     return true;
 }
 
 void backlight_hw_on(void)
 {
+    boot_trace('L');
 
     /* Wake the panel before light is applied, otherwise the backlight comes up
      * onto a panel that is still coming out of sleep and the first frame is lost.
@@ -97,6 +115,7 @@ void backlight_hw_on(void)
 
 void backlight_hw_off(void)
 {
+    boot_trace('l');
     set_duty(0);
     lcd_enable(false);
 }

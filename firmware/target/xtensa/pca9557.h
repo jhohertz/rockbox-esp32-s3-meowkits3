@@ -22,5 +22,6 @@
 void pca9557_init(void);
 int pca9557_write(int pin, int value);
 int pca9557_read(int pin);
+int pca9557_status(void);
 
 #endif

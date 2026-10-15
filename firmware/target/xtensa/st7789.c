@@ -1,5 +1,6 @@
 #include "config.h"
 #include "system.h"
+#include "bootlog.h"
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
@@ -18,24 +19,31 @@
 #define CMD_MADCTL  0x36
 
 #define COLMOD_RGB565 0x55
-/* LovyanGFX's rotation table, entry 3 (the panel's offset_rotation), with the
- * BGR bit set because rgb_order is false:
- *   MAD_MV(0x20) | MAD_MY(0x80) | MAD_ML(0x10) | MAD_BGR(0x08) = 0xB8
+/* LovyanGFX's rotation table, entry 3 (the panel's offset_rotation), with
+ * rgb_order = false contributing MAD_BGR = 0x00:
+ *   MAD_MV(0x20) | MAD_MY(0x80) | MAD_ML(0x10) = 0xB0
  * The GRAM is 240x320; this is what makes it behave as a 320x240 panel. */
-#define MADCTL_VALUE  0xB8
+#define MADCTL_VALUE  0xB0
 
 /* The panel only needs a lower bound on the reset and sleep-out timings, so a
  * generous delay is fine; udelay() is bounded by the core clock rather than by
  * how many cycles the compiler happens to put in the loop body. */
 static void delay_ms(int ms)
 {
+    boot_trace('d');
     udelay(ms * 1000);
+    boot_trace('D');
 }
 
-static void cs(int select)
+/* CS lives on the PCA9557, not on a GPIO. Toggling it per transfer costs a full
+ * I2C transaction (~1.6 ms at 100 kHz) and makes every pixel write depend on the
+ * bus having finished. The reference firmware never toggles CS either: LovyanGFX is
+ * configured with pin_cs = -1 and the expander just holds CS asserted for the whole
+ * session. Do the same - assert once, after the reset, and never touch it again.
+ */
+static void cs_assert(void)
 {
-    /* Active low. */
-    pca9557_write(IOEXP_LCD_CS, !select);
+    pca9557_write(IOEXP_LCD_CS, 0);   /* expander bit low = CS active */
 }
 
 static void dc(int data)
@@ -51,19 +59,19 @@ void st7789_write_command(uint8_t cmd)
 
 void st7789_write_data(const uint8_t *data, int len)
 {
+    *(volatile unsigned int *)0x50001b60 = 0x11110000u + (unsigned)len;
     dc(1);
+    *(volatile unsigned int *)0x50001b60 = 0x22220000u + (unsigned)len;
     spi_write(data, len);
+    *(volatile unsigned int *)0x50001b60 = 0x33330000u + (unsigned)len;
 }
 
 static void cmd(uint8_t c, const uint8_t *args, int n)
 {
-    cs(1);
     st7789_write_command(c);
 
     if (n > 0)
         st7789_write_data(args, n);
-
-    cs(0);
 }
 
 void st7789_init(void)
@@ -84,15 +92,35 @@ void st7789_init(void)
     };
 
     /* Reset sequence, in the order the reference firmware performs it. */
+    boot_trace('J');                        /* st7789_init entered */
     pca9557_write(IOEXP_LCD_CS, 1);        /* deselect */
+    boot_trace('1');
     pca9557_write(IOEXP_TOUCH_RST, 0);
+    boot_trace('2');
     pca9557_write(IOEXP_LCD_RST, 0);       /* assert reset */
+    boot_trace('3');
     delay_ms(20);
+    boot_trace('4');
     pca9557_write(IOEXP_LCD_RST, 1);       /* release */
+    boot_trace('5');
     pca9557_write(IOEXP_TOUCH_RST, 1);
+    boot_trace('6');
     delay_ms(120);                          /* ST7789 needs ~120 ms after release */
+    boot_trace('K');                        /* reset sequence done */
 
+    cs_assert();
+    boot_trace('7');
+
+    /* The expander's input register mirrors the state of every pin, outputs
+     * included, so this is the only external proof that the CS/RST writes landed.
+     * Expected: bit0 RST=1, bit1 CS=0, bit3 PA=0, bit6 TOUCH_RST=1.
+     */
+    boot_trace('S');
+    boot_trace_hex((unsigned)pca9557_status());
+
+    boot_trace('N');                        /* about to call spi_init */
     spi_init();
+    boot_trace('n');                        /* spi_init returned */
 
     for (int i = 0; i < (int)sizeof(init_list); ) {
         uint8_t c = init_list[i];
@@ -100,6 +128,8 @@ void st7789_init(void)
         cmd(c, &init_list[i + 2], n);
         i += 2 + n;
     }
+
+    boot_trace('P');
 
     cmd(CMD_SLPOUT, 0, 0);
     delay_ms(130);
@@ -110,6 +140,9 @@ void st7789_init(void)
     cmd(CMD_MADCTL, (const uint8_t[]){MADCTL_VALUE}, 1);
     cmd(CMD_INVON, 0, 0);
     cmd(CMD_DISPON, 0, 0);
+
+    boot_trace('s');
+    boot_trace_hex((unsigned)pca9557_status());
 }
 
 void st7789_display_off(void)

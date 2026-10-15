@@ -1,4 +1,5 @@
 #include "config.h"
+#include <string.h>
 #include "bootlog.h"
 #include "system.h"
 #include "lcd.h"
@@ -16,26 +17,16 @@ extern bool lcd_on;
 /* Backlight is active low on this board. */
 #define PIN_LCD_BL 42
 
-static void cs(int select)
-{
-    pca9557_write(IOEXP_LCD_CS, !select);
-}
+/* CS is asserted once in st7789_init() and left asserted; see the comment there.
+ * Nothing in the draw path touches the expander.
+ */
 
 void lcd_write_command(int byte)
 {
-    cs(1);
     st7789_write_command((unsigned char)byte);
-    cs(0);
 }
 
-/* Raw byte write, for command arguments. lcd_write_data takes pixels, which is a
- * different thing, so the two cannot share a helper. */
-static void write_bytes(const unsigned char *data, int len)
-{
-    cs(1);
-    st7789_write_data(data, len);
-    cs(0);
-}
+/* Raw byte write is not usable on its own: see write_cmd_args below. */
 
 void lcd_write_data(const fb_data *p_bytes, int count)
 {
@@ -45,24 +36,50 @@ void lcd_write_data(const fb_data *p_bytes, int count)
     unsigned char buf[SPI_BUF_BYTES];
     int i;
 
-    cs(1);
+    static unsigned long long copy_cyc, spi_cyc, chunks;
 
+    rtc_bump(24);                      /* lcd_write_data entries */
+    rtc_set(31, (unsigned)count);      /* the count we were handed */
     while (count > 0) {
         int n = count > chunk ? chunk : count;
+        rtc_bump(23);                  /* pixel-chunk iterations */
         int j = 0;
+        unsigned int c0, c1, c2;
 
+        asm volatile ("rsr %0, ccount" : "=r"(c0));
         for (i = 0; i < n; i++) {
             unsigned short pixel = p_bytes[i];
             buf[j++] = (unsigned char)(pixel >> 8);
             buf[j++] = (unsigned char)(pixel & 0xFF);
+            *(volatile unsigned int *)0x50001b48 = (unsigned int)i;
         }
+        asm volatile ("rsr %0, ccount" : "=r"(c1));
+        *(volatile unsigned int *)0x50001b4c = 0xBEEF0000u + (unsigned)j;
 
         st7789_write_data(buf, j);
+        *(volatile unsigned int *)0x50001b4c = 0xCAFE0000u + (unsigned)chunks;
+
+        asm volatile ("rsr %0, ccount" : "=r"(c2));
+        copy_cyc += c1 - c0;
+        spi_cyc += c2 - c1;
+        chunks++;
+        *(volatile unsigned int *)0x50001b40 = (unsigned int)chunks;
+        *(volatile unsigned int *)0x50001b44 = (unsigned int)(p_bytes - (const fb_data *)lcd_framebuffer);
+
         p_bytes += n;
         count -= n;
     }
+}
 
-    cs(0);
+/* The ST7789 takes a command and its parameters in one CS-low phase. CS is held
+ * asserted for the whole session, so command and arguments naturally share that
+ * phase; the helper keeps the pairing explicit.
+ */
+static void write_cmd_args(unsigned char cmd, const unsigned char *args, int n)
+{
+    st7789_write_command(cmd);
+    if (n > 0)
+        st7789_write_data(args, n);
 }
 
 static void set_window(int x1, int x2, int y1, int y2)
@@ -76,11 +93,68 @@ static void set_window(int x1, int x2, int y1, int y2)
         (unsigned char)(y2 >> 8), (unsigned char)(y2 & 0xFF)
     };
 
-    lcd_write_command(0x2A);   /* CASET */
-    write_bytes(caset, 4);
-    lcd_write_command(0x2B);   /* RASET */
-    write_bytes(raset, 4);
+    write_cmd_args(0x2A, caset, 4);   /* CASET */
+    write_cmd_args(0x2B, raset, 4);   /* RASET */
+
+    /* RAMWR starts the write. CASET/RASET only set the address window; the panel
+     * does not accept pixel data until 0x2C has been issued. LovyanGFX's
+     * set_window_8() ends with writeCommand(cmd, 8) and every caller passes
+     * CMD_RAMWR. Omitting it leaves GRAM untouched, which looks like noise that
+     * never changes rather than a wrong image.
+     */
+    st7789_write_command(0x2C);
 }
+
+/* Bring-up pattern, written through the framebuffer rather than straight to the
+ * panel. That is the path Rockbox actually uses, so it tests the whole chain:
+ * framebuffer in the PSRAM window -> lcd_update_rect -> set_window -> SPI.
+ * Each fill is a different window, so the geometry is visible if it is right.
+ */
+static void fb_fill(int x, int y, int w, int h, unsigned short rgb)
+{
+    for (int row = y; row < y + h; row++)
+        for (int col = x; col < x + w; col++)
+            *LCD_FRAMEBUF_ADDR(col, row) = rgb;
+}
+
+/* Geometry probe: alternating single rows, then single columns. If the panel's
+ * window is the 320x240 we asked for, this reads as a fine comb. If the window is
+ * actually 240 wide, each 320-pixel row spills 80 pixels into the next one and the
+ * comb turns into a diagonal smear.
+ *
+ * The panel has been confirmed to display, so the multi-frame pattern and its
+ * one-second pauses are no longer needed; they only delay boot by several seconds
+ * and fill the trace ring before the interesting part of boot runs.
+ */
+static void test_pattern(void)
+{
+    fb_fill(0, 0, LCD_WIDTH, LCD_HEIGHT, 0xF800);
+    lcd_update();
+}
+
+/* .framebuffer is NOLOAD and sits in the PSRAM window; crt0 zeroes .bss and
+ * .srambss but not it, so at first use it holds whatever PSRAM happened to
+ * contain. That is the "noise that looks like a data area".
+ */
+static void dump_framebuffer(void)
+{
+}
+
+/* Two things can make the panel show GRAM garbage while the SPI itself is fine:
+ * CS never actually asserting (it lives on the expander, not a GPIO), or DC stuck
+ * low so every byte is read as a command. Both are checkable from the outside:
+ * the PCA9557 input register mirrors the state of its own output pins, and a pad
+ * driven through the GPIO matrix reads back in GPIO_IN.
+ */
+static void probe_control_lines(void)
+{
+    unsigned dcbit = 1u << (PIN_LCD_DC - 32);
+
+    (void)dcbit;
+}
+
+__attribute__((section(".srambss"))) volatile unsigned int xt_lcd_rect_n;
+__attribute__((section(".srambss"))) volatile unsigned int xt_lcd_data_n;
 
 void lcd_update_rect(int x, int y, int width, int height)
 {
@@ -102,10 +176,14 @@ void lcd_update_rect(int x, int y, int width, int height)
     if (width <= 0 || height <= 0)
         return;
 
+    rtc_bump(25);                      /* lcd_update_rect entries */
     set_window(x, x_end - 1, y, y_end - 1);
 
-    for (int row = y; row < y_end; row++)
+    for (int row = y; row < y_end; row++) {
         lcd_write_data(LCD_FRAMEBUF_ADDR(x, row), width);
+        rtc_bump(26);                  /* rows pushed */
+    }
+    boot_trace('g');
 }
 
 void lcd_update(void)
@@ -117,13 +195,32 @@ void lcd_init_device(void)
 {
     /* Forced by the hardware: CS and RST are expander outputs, so the expander has
      * to be reachable before the panel can be reset or selected. */
+    boot_trace('c');
     pca9557_init();
-
+    boot_trace('e');
+    boot_trace('!');
     st7789_init();
+    boot_trace('D');
 
+    /* .framebuffer is NOLOAD in the PSRAM window and crt0 only zeroes .bss,
+     * .psrambss and .srambss, so the first lcd_update() would push whatever
+     * PSRAM happened to hold. Clear it before anything draws.
+     */
+    boot_trace('U');
+    dump_framebuffer();
+    boot_trace('V');
+    memset(lcd_framebuffer, 0, FRAMEBUFFER_SIZE);
+    boot_trace('Y');
+    probe_control_lines();
+    boot_trace('Z');
 
+    /* lcd_update_rect drops the draw when the panel is inactive, so the flag has
+     * to be set before anything is drawn - not after.
+     */
     lcd_on = true;
-    lcd_update();
+    test_pattern();
+
+    boot_trace('F');
 }
 
 /* Three power states, matching what Rockbox expects from a target that declares

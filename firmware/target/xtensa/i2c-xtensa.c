@@ -223,16 +223,24 @@ static bool build_read(int device, const unsigned char *pre, int npre, int count
     return add_read(count);
 }
 
+/* Reset both FIFOs. This has to happen *before* the TX bytes are pushed: the
+ * reset clears the FIFO, so doing it after build_write/build_read leaves a WRITE
+ * command with a byte count and an empty FIFO. The controller then stalls on the
+ * write and reports TRANS_COMPLETE together with TIME_OUT, which reads as a
+ * successful transaction that never touched the bus.
+ */
+static void reset_fifos(void)
+{
+    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) | (1u << 12) | (1u << 13));
+    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) & ~((1u << 12) | (1u << 13)));
+}
+
 /* Latch the programmed list and trigger the controller. The registers live in the
  * APB clock domain and the controller in the asynchronous I2C_SCLK domain, so the
  * config has to be copied across before the transaction is started. The caller is
  * responsible for the terminating STOP or END command. */
 static void start_list(void)
 {
-    /* Reset both FIFOs so the TX pointer starts at zero. */
-    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) | (1u << 12) | (1u << 13));
-    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) & ~((1u << 12) | (1u << 13)));
-
     gpio_write(I2C_INT_CLR, 0xFFFF);
 
     /* FSM_RST is a write trigger like TRANS_START: pulse it so the command pointer
@@ -292,11 +300,23 @@ static int wait_complete(void)
     return I2C_STATUS_TIMEOUT;
 }
 
+/* Count edges on the two lines while a transaction runs. At 100 kHz an 11-bit
+ * transaction (start + 8 address bits + ack) is about 110 us, so a tight register
+ * loop samples it densely enough to count transitions rather than just the two
+ * end levels.
+ */
+
+static void set_timing(unsigned freq);
+
+/* Temporary bring-up probe: sweep the bus frequency and report, for each, the
+ * interrupt flags and the bits actually sampled on SDA at rising SCL edges.
+ */
 void __i2c_async_submit(int bus, i2c_descriptor *desc)
 {
     bool ok;
     int status;
     gpio_write(I2C_INT_CLR, 0xFFFF);
+    reset_fifos();
 
     if (desc->tran_mode == I2C_WRITE)
         ok = build_write(desc->slave_addr, desc->buffer[0], desc->count[0],
@@ -508,6 +528,7 @@ static void sync_callback(int status, i2c_descriptor *d)
  */
 static int sync_run(i2c_descriptor *desc)
 {
+    boot_trace('j');                    /* i2c transaction requested */
     desc->callback = sync_callback;
     desc->arg = 0;
     desc->next = NULL;
@@ -521,6 +542,8 @@ static int sync_run(i2c_descriptor *desc)
     /* __i2c_async_submit runs the transaction to completion before returning, so
      * the callback has already fired by the time the queue call does.
      */
+    boot_trace('z');
+    boot_trace_hex((unsigned)cb_status);
     return cb_done ? cb_status : I2C_STATUS_ERROR;
 }
 
