@@ -2152,6 +2152,76 @@ Two rules for reading a fault here:
   so IDF's decoder is running on heuristics -- which makes a clean backtrace
   itself evidence that the window state is sane.
 
+### A breadcrumb ring that survives the crash
+
+Some faults on this platform cannot be printed. A double exception runs
+`break 1, 4` in `_DoubleExceptionVector` before anything is recorded, this core
+config exposes no `DEPC`/`DEXCCAUSE` to recover the original cause from, and
+`printf` is unavailable from the paths that matter (the thread switch masks
+interrupts and IDF's libc `printf` takes a `_lock_t`). So trace by *writing*,
+and read it back after the reboot:
+
+```c
+static struct scan_ring ring __attribute__((section(".noinit"), aligned(4)));
+```
+
+`.noinit` is `(NOLOAD)` in IDF's generated `sections.ld` — it is neither in the
+image nor cleared by startup — and a panic reboots through `RTC_SW_CPU_RST`,
+which leaves internal SRAM alone. Measured: a ring written before the panic is
+read intact by the next boot. Two things to get right:
+
+- The slots must be wiped when the ring is dumped. `.noinit` is never cleared,
+  so an undumped ring mixes the current boot's records with an older boot's
+  leftovers and the output reads as garbage after a certain point.
+- `__builtin_frame_address(0)` is not usable on this windowed ABI. It returned
+  `0xc03465cf`, which is not a stack address. Read `a1` with inline asm instead,
+  or trace values that mean something in the code being traced.
+
+This is what found the next fault. The ring stopped at the record written just
+before `thread_load_context()`, and every `load_context()` before that had been
+a *first run* — so the resume path had never once executed.
+
+### The resume path returns through the frame; the window registers are not its business
+
+A resumed thread needs its stack pointer, its window-encoded return address and
+`PS`. That is the whole list. FreeRTOS's resume of a solicited frame
+(`_frxt_dispatch`'s `.L_frxt_dispatch_sol`) is exactly:
+
+```
+l32i    a3,  sp, XT_SOL_PS
+l32i    a0,  sp, XT_SOL_PC
+wsr     a3,  PS
+retw
+```
+
+Our resume path hand-wrote `WINDOWBASE` and `WINDOWSTART` immediately before its
+`retw.n`, using `a8` and `a9` as scratch to do it. The file's own comment said
+those registers were "deliberately not touched here; they are that handler's
+input" — and the code contradicted the comment. `WINDOWSTART` is the flag that
+decides whether a `retw` takes a window underflow at all, and the underflow
+handler indexes the base save area through a register in the `a8`/`a9` range
+(`_WindowUnderflow8` does `l32e a0, a9, -16`), so the scratch registers are the
+handler's operands.
+
+Measured, with the ring above:
+
+| | before | after |
+|---|---|---|
+| last record | seq 67, the one before `thread_load_context` | seq 21865 |
+| dircache scan | never completes | completes, 1706 entries built |
+| fault | double exception, cause unrecoverable | cache error in `_xt_handle_exc`, *after* the resume |
+
+Note the interaction with the previous fix. Saving `WINDOWBASE` per thread was
+correct and is still needed by the *store* path, which narrows `WINDOWSTART` to
+that one window after the spill. It does not follow that the resume path has to
+write them back; the store's narrowing is what makes the `retw` chain refill
+registers from the base save areas, and that works without touching the window
+state on the way in.
+
+What is left is a different fault, further along: `Cache error / MMU entry
+fault` with `PC` in `_xt_handle_exc` (`xtensa_vectors.S:744`), reached after a
+successful resume rather than during one.
+
 ### Codecs, plugins and the image format
 
 > **Superseded on this branch.** The image is now produced by ESP-IDF's own
