@@ -65,6 +65,9 @@
 #define SPI_FMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE0)
 #define SPI_SMEM_DDR(i)       (SPI_MEM_BASE(i) + 0xE4)
 #define SPI_CLK_GATE(i)       (SPI_MEM_BASE(i) + 0xE8)
+#define SPI_TIMING_CALI(i)    (SPI_MEM_BASE(i) + 0xA8)   /* flash-side tuning  */
+#define SPI_DIN_MODE(i)       (SPI_MEM_BASE(i) + 0xAC)
+#define SPI_DIN_NUM(i)        (SPI_MEM_BASE(i) + 0xB0)
 #define SPI_RD_STATUS(i)      (SPI_MEM_BASE(i) + 0x2C)
 #define SPI_INT_RAW(i)        (SPI_MEM_BASE(i) + 0xF8)
 #define SPI_USER(i)           (SPI_MEM_BASE(i) + 0x18)
@@ -153,6 +156,10 @@
 #define ROM_SPI_SET_DTR_SWAP    0x4000093cu
 #define ROM_CACHE_RESUME_DCACHE 0x400018c0u
 #define ROM_CACHE_INVALIDATE_D  0x40001680u
+#define ROM_CACHE_DISABLE_ICACHE 0x4000186cu
+#define ROM_CACHE_ENABLE_ICACHE  0x40001878u
+#define ROM_CACHE_DISABLE_DCACHE 0x40001884u
+#define ROM_CACHE_ENABLE_DCACHE  0x40001890u
 #define ROM_CACHE_START_PRELOAD 0x40001770u
 #define ROM_CACHE_PRELOAD_DONE  0x4000177cu
 #define ROM_CACHE_END_PRELOAD   0x40001788u
@@ -164,20 +171,32 @@
  */
 #define OPI_DTR_MODE            7
 
-/* ESP-IDF reaches 80 MHz on this PSRAM by sweeping dummy and input-delay values.
- * Rockbox has no equivalent sweep, so it uses the configuration ESP-IDF falls back
- * to when the sweep fails: input delay mode 4 on every DIN line and on DQS, zero
- * delay cycles, and two extra dummy cycles on the Ext_RAM read path. That is the
- * entry mspi_timing_tuning_configs.h names as default_config_id for a 160 MHz core
- * clock with an 80 MHz module clock in DTR mode, so it is a known-good setting
- * rather than a guess at one. */
-#define FLASH_DIV           2      /* 80 MHz from a 160 MHz core clock */
-#define LOW_SPEED_DIV       4      /* 20 MHz from the 80 MHz core clock ESP-IDF uses */
-#define PSRAM_DIV           2      /* 80 MHz */
+/* MSPI clock dividers. The core clock is selected in SPI_MEM_CORE_CLK_SEL_REG and
+ * the module clocks are derived from it: 80 MHz core / 4 = 20 MHz during the chip
+ * bring-up, 160 MHz core / 2 = 80 MHz afterwards. Both MSPI instances share the
+ * core-clock register, and the flash read FSM is shared too, which is why ESP-IDF
+ * always slows SPI0 and SPI1 together.
+ */
+#define CORE_CLK_80         0
+#define CORE_CLK_160        2
+#define LOW_SPEED_DIV       4      /* 20 MHz from the 80 MHz core clock */
+#define HIGH_SPEED_DIV      2      /* 80 MHz from the 160 MHz core clock */
 
-#define DIN_MODE_VALUE      4u
-#define DIN_NUM_VALUE       0u
-#define PSRAM_EXTRA_DUMMY   2u
+/* ESP-IDF's PSRAM timing table for a 160 MHz core clock and an 80 MHz module clock
+ * in DTR mode, from
+ * components/esp_mspi/mspi_timing_tuning/port/esp32s3/mspi_timing_tuning_configs.h.
+ * Each row is (spi_din_mode, spi_din_num, extra_dummy_len); the sweep tries all 14
+ * and keeps the longest run that reads the reference pattern back correctly.
+ * default_config_id for this table is 5, used when the sweep finds no run of 3-5.
+ */
+typedef struct { uint8_t din_mode, din_num, extra_dummy; } mspi_tune_t;
+
+static const mspi_tune_t psram_tune_table[14] = {
+    {0, 0, 0}, {4, 2, 2}, {2, 1, 2}, {4, 1, 2}, {1, 0, 1}, {4, 0, 2}, {0, 0, 1},
+    {4, 2, 3}, {2, 1, 3}, {4, 1, 3}, {1, 0, 2}, {4, 0, 3}, {0, 0, 2}, {4, 2, 4}
+};
+#define PSRAM_DEFAULT_TUNE  5
+#define PSRAM_TEST_WORDS    16     /* MSPI_TIMING_TEST_DATA_LEN is 64 bytes */
 
 /* Chicken and egg: this whole path reconfigures the MSPI block, and the MSPI block
  * is what feeds the flash instruction-cache window that .text is executed from.
@@ -209,23 +228,65 @@ static void ICODE_ATTR set_psram_clock(unsigned div)
         wr(SPI_SRAM_CLK(0), ((div - 1) << 16) | ((div / 2 - 1) << 8) | (div - 1));
 }
 
-/* The input-delay and extra-dummy registers only matter once the Ext_RAM clock is
- * at its final speed, so this is paired with set_psram_clock(). */
-static void ICODE_ATTR set_psram_timing(void)
+/* Write the nine DIN0..DIN7 + DQS fields of a DIN register with one value. The
+ * mode fields are 3 bits at offsets 0,3,...,24; the num fields are 2 bits at
+ * 0,2,...,18. Same layout on the flash side and the PSRAM side.
+ */
+static void ICODE_ATTR set_din_mode_num(int spi, unsigned mode, unsigned num)
 {
-    uint32_t mode = 0;
-    uint32_t num = 0;
+    uint32_t m = 0, n = 0;
+    int i;
 
-    for (int i = 0; i < 9; i++) {
-        mode |= (DIN_MODE_VALUE & 7u) << (3 * i);
-        num  |= (DIN_NUM_VALUE & 3u) << (2 * i);
+    for (i = 0; i < 9; i++) {
+        m |= (mode & 7u) << (3 * i);
+        n |= (num  & 3u) << (2 * i);
     }
+    wr(SPI_DIN_MODE(spi), m);
+    wr(SPI_DIN_NUM(spi), n);
+}
 
-    wr(SPI_SMEM_DIN_MODE(0), mode);
-    wr(SPI_SMEM_DIN_NUM(0), num);
+static void ICODE_ATTR set_psram_din_mode_num(int spi, unsigned mode, unsigned num)
+{
+    uint32_t m = 0, n = 0;
+    int i;
 
-    /* bit 1 enables the calibration dummy, bits 4:2 give its length */
-    wr(SPI_SMEM_CALI(0), (1u << 1) | (PSRAM_EXTRA_DUMMY << 2));
+    for (i = 0; i < 9; i++) {
+        m |= (mode & 7u) << (3 * i);
+        n |= (num  & 3u) << (2 * i);
+    }
+    wr(SPI_SMEM_DIN_MODE(spi), m);
+    wr(SPI_SMEM_DIN_NUM(spi), n);
+}
+
+/* The extra-dummy register is a calibration enable (bit 1) plus a length in the
+ * bits above it. Clearing the enable returns the transaction to its un-tuned form.
+ */
+static void ICODE_ATTR set_extra_dummy(int reg, unsigned len)
+{
+    if (len)
+        wr(reg, (rd(reg) & ~(1u << 1)) | (1u << 1) | ((len & 7u) << 2));
+    else
+        wr(reg, rd(reg) & ~((1u << 1) | (7u << 2)));
+}
+
+/* ESP-IDF's mspi_timing_enter_low_speed_mode(): 80 MHz core, 20 MHz on both MSPI
+ * instances, and every tuning register back to zero. The DIN registers are shared,
+ * so clearing them for SPI1 while SPI0 still runs fast would break the flash path;
+ * that is why both instances are slowed together.
+ */
+static void ICODE_ATTR mspi_enter_low_speed(void)
+{
+    wr(SPI_CORE_CLK_SEL(0), CORE_CLK_80);
+    wr(SPI_CORE_CLK_SEL(1), CORE_CLK_80);
+    set_spi_clock(0, LOW_SPEED_DIV);
+    set_spi_clock(1, LOW_SPEED_DIV);
+    set_psram_clock(LOW_SPEED_DIV);
+    set_din_mode_num(0, 0, 0);
+    set_psram_din_mode_num(0, 0, 0);
+    set_extra_dummy(SPI_TIMING_CALI(0), 0);
+    set_extra_dummy(SPI_TIMING_CALI(1), 0);
+    set_extra_dummy(SPI_SMEM_CALI(0), 0);
+    set_extra_dummy(SPI_SMEM_CALI(1), 0);
 }
 
 static void ICODE_ATTR init_psram_pins(void)
@@ -330,6 +391,16 @@ static void ICODE_ATTR rom_write_word(int spi, uint32_t addr, uint32_t val)
                                    &val, 32, NULL, 0, 1 << 1, 0);
 }
 
+static uint32_t ICODE_ATTR rom_read_word(int spi, uint32_t addr)
+{
+    uint32_t v = 0;
+
+    ((opi_exec_t)ROM_OPI_EXEC_CMD)(spi, OPI_DTR_MODE, OPI_SYNC_READ, CMD_BITS,
+                                   addr, ADDR_BITS, RD_DUMMY_BITS,
+                                   NULL, 0, &v, 32, 1 << 1, 0);
+    return v;
+}
+
 /* Identify the chip from its mode registers.
  *
  * A mode-register read is self-authenticating in a way a sync read is not. We write
@@ -365,17 +436,118 @@ static bool ICODE_ATTR psram_identify(int spi)
  * on a stalled FSM hangs the CPU with no way to observe it. Cache_Start_DCache_Preload
  * drives the same FSM asynchronously, so its DONE flag can be polled with a guard.
  */
+/* The external caches sit on the same MSPI block whose clocks the bring-up is
+ * changing. ESP-IDF suspends them before every speed switch (spi_flash_disable_cache
+ * / spi_flash_restore_cache around mspi_timing_enter_*_early) so no fetch is in
+ * flight while the divider moves. Everything in this file is ICODE_ATTR, so it runs
+ * from internal SRAM and does not need the flash window while the cache is down.
+ */
+static void ICODE_ATTR extmem_cache_suspend(void)
+{
+    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) & ~1u);
+    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) & ~1u);
+}
+
+static void ICODE_ATTR extmem_cache_resume(void)
+{
+    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) | 1u);
+    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) | 1u);
+}
+
+/* ESP-IDF writes 64 bytes of 0xa5ff005a at PSRAM address 0 once, before the sweep,
+ * and each candidate configuration only reads them back. Address 0 here is the chip's
+ * own address space (MSPI_TIMING_PSRAM_TEST_DATA_ADDR), not the MMU window, so the
+ * test needs no mapping.
+ */
+static void ICODE_ATTR psram_write_reference(int spi)
+{
+    for (int i = 0; i < PSRAM_TEST_WORDS; i++)
+        rom_write_word(spi, (uint32_t)i * 4u, 0xa5ff005au);
+}
+
+static bool ICODE_ATTR psram_read_reference(int spi)
+{
+    for (int i = 0; i < PSRAM_TEST_WORDS; i++)
+        if (rom_read_word(spi, (uint32_t)i * 4u) != 0xa5ff005au)
+            return false;
+    return true;
+}
+
+/* mspi_timing_psram_tuning(), reduced to the DIN sweep that SOC_MEMSPI_TIMING_TUNING_BY_MSPI_DELAY
+ * uses on this chip. The reference data is written at 20 MHz; the sweep then runs at
+ * the final 80 MHz module clock, which is the speed the Ext_RAM cache will actually
+ * use.
+ */
+static int ICODE_ATTR psram_tune(void)
+{
+    int run = 0, best = 0, end = 0;
+
+    wr(SPI_CORE_CLK_SEL(0), CORE_CLK_160);
+    wr(SPI_CORE_CLK_SEL(1), CORE_CLK_160);
+    set_spi_clock(0, HIGH_SPEED_DIV);
+    set_spi_clock(1, HIGH_SPEED_DIV);
+    /* SPI_MEM_SPI_SMEM_TIMING_CALI_REG bit 0 is the PSRAM timing-adjust clock enable. */
+    wr(SPI_SMEM_CALI(0), rd(SPI_SMEM_CALI(0)) | 1u);
+    /* Variable dummy is disabled during the sweep so the dummy length is exactly what
+     * the DIN registers add. */
+    wr(SPI_FMEM_DDR(1), rd(SPI_FMEM_DDR(1)) & ~DDR_VAR_DUMMY);
+
+    for (int i = 0; i < 14; i++) {
+        set_psram_din_mode_num(0, psram_tune_table[i].din_mode,
+                               psram_tune_table[i].din_num);
+        set_extra_dummy(SPI_TIMING_CALI(1), psram_tune_table[i].extra_dummy);
+
+        if (psram_read_reference(1)) {
+            run++;
+            if (run > best) {
+                best = run;
+                end = i;
+            }
+        } else {
+            run = 0;
+        }
+    }
+
+    boot_trace('Y');
+    boot_trace_hex(best);
+    boot_trace_hex(end);
+
+    /* s_select_best_tuning_config_dtr, 160 MHz core clock: a run of 3-4 takes the
+     * second-to-last point of the run, a run of 5 the third-to-last. Anything else is
+     * a failed sweep and falls back to the table's default_config_id.
+     */
+    if (best <= 2 || best >= 6)
+        return PSRAM_DEFAULT_TUNE;
+    if (best <= 4)
+        return end - 1;
+    return end - 2;
+}
+
+/* mspi_timing_enter_high_speed_mode(): both instances back to 80 MHz module clock,
+ * the Ext_RAM PSRAM clock at 80 MHz, and the winning DIN/dummy values applied to
+ * SPI0, which owns the cache path.
+ */
+static void ICODE_ATTR mspi_enter_high_speed(int tune_id)
+{
+    const mspi_tune_t *c = &psram_tune_table[tune_id];
+
+    wr(SPI_CORE_CLK_SEL(0), CORE_CLK_160);
+    wr(SPI_CORE_CLK_SEL(1), CORE_CLK_160);
+    set_spi_clock(0, HIGH_SPEED_DIV);
+    set_spi_clock(1, HIGH_SPEED_DIV);
+    set_psram_clock(HIGH_SPEED_DIV);
+    set_psram_din_mode_num(0, c->din_mode, c->din_num);
+    set_extra_dummy(SPI_SMEM_CALI(0), c->extra_dummy);
+}
+
 static bool ICODE_ATTR cache_psram_probe(void)
 {
-    const uint32_t pat = 0xB5A7C3D1u;
     /* Entry 100 is inside the 8 MB PSRAM (128 pages) and above the pages the ROM
      * loader mapped: the DROM segment is 0x3c000020 + 0x7a194, i.e. entries 0..7.
      */
     const int entry = 100;
     const uint32_t vaddr = FLASH_WINDOW_LOW + (uint32_t)entry * MMU_PAGE;
-    uint32_t guard = 0, got;
-
-    rom_write_word(1, (uint32_t)entry * MMU_PAGE, pat);
+    uint32_t guard = 0, bad = 0, i;
 
     *(volatile uint32_t *)(MMU_TABLE_BASE + 4u * (unsigned)entry) =
         MMU_TARGET_PSRAM | (uint32_t)entry;
@@ -385,13 +557,24 @@ static bool ICODE_ATTR cache_psram_probe(void)
 
     ((void (*)(uint32_t, uint32_t))ROM_CACHE_INVALIDATE_D)(vaddr, MMU_PAGE);
 
+    /* A bulk write, not one word. Single-word probes pass on this board even when
+     * the Ext_RAM read path is mistuned, so the test has to look like the thing
+     * Rockbox actually does: several kilobytes written and read back.
+     */
+    for (i = 0; i < 4096; i++)
+        *(volatile uint32_t *)(vaddr + i * 4u) = 0xa5ff005au + i;
+    boot_trace('B');
+    for (i = 0; i < 4096; i++)
+        if (*(volatile uint32_t *)(vaddr + i * 4u) != 0xa5ff005au + i)
+            bad++;
+    boot_trace_hex(bad);
+
     boot_trace_hex(rd(EXTMEM_CACHE_STATE));
     boot_trace_hex(rd(EXTMEM_DCACHE_PRELOAD_CTRL));
     ((void (*)(uint32_t, uint32_t))ROM_CACHE_START_PRELOAD)(vaddr, MMU_PAGE);
     while (!((int (*)(void))ROM_CACHE_PRELOAD_DONE)() && guard++ < 2000000u)
         ;
     boot_trace_hex(rd(EXTMEM_CACHE_STATE));
-    boot_trace_hex(rd(EXTMEM_DCACHE_PRELOAD_CTRL));
     boot_trace_hex(rd(EXTMEM_DBUS_REJECT_ST));
     boot_trace_hex(rd(EXTMEM_DBUS_REJECT_VADDR));
     boot_trace_hex(rd(EXTMEM_CACHE_MMU_FAULT));
@@ -402,9 +585,7 @@ static bool ICODE_ATTR cache_psram_probe(void)
     if (guard >= 2000000u)
         return false;
 
-    got = *(volatile uint32_t *)vaddr;
-    boot_trace_hex(got);
-    return got == pat;
+    return bad == 0;
 }
 
 /* SPI0's Ext_RAM cache path: the hardware builds the octal transaction itself from
@@ -438,12 +619,6 @@ bool ICODE_ATTR psram_present(void)
     return s_psram_present;
 }
 
-static void ICODE_ATTR extmem_cache_resume(void)
-{
-    wr(EXTMEM_ICACHE_CTRL, rd(EXTMEM_ICACHE_CTRL) | 1u);
-    wr(EXTMEM_DCACHE_CTRL, rd(EXTMEM_DCACHE_CTRL) | 1u);
-}
-
 /* Does SPI1's user-command path reach the physical MSPI pins at all? The flash is
  * on the same block and the same pins, only on CS0. A plain serial read of a known
  * flash offset through SPI1 separates "SPI1 user commands work" from "the CS1 side
@@ -451,39 +626,28 @@ static void ICODE_ATTR extmem_cache_resume(void)
  */
 bool ICODE_ATTR psram_init(void)
 {
+    int tune;
 
     boot_trace('p');
 
-    /* SPI0 and SPI1 share the core clock selection, and they also share the flash
-     * read FSM: ESP-IDF's own comment on mspi_timing_enter_low_speed_mode() warns
-     * that slowing SPI1 alone breaks SPI0 if SPI0 is still running fast. So the
-     * flash path is slowed for the duration of the bring-up and restored at the
-     * end, rather than left at its final speed while SPI1 talks octal. */
-    /* spi_timing_enter_mspi_low_speed_mode(): core clock 80 MHz, module clock 20 MHz
-     * on both instances. ESP-IDF uses 80/4 rather than 160/8 even though both give
-     * 20 MHz; the dummy-phase cycle counts are derived from the module clock, so
-     * matching the source exactly is cheaper than arguing about equivalence.
+    /* ESP-IDF wraps every MSPI speed change in a cache suspend/restore
+     * (spi_flash_disable_cache / spi_flash_restore_cache around
+     * mspi_timing_enter_low_speed_early). The block whose divider is about to move
+     * is the same block the instruction and data caches read flash through, so no
+     * fetch should be in flight while it changes. Everything here is ICODE_ATTR and
+     * runs from internal SRAM, so the boot survives the cache being down.
      */
-    wr(SPI_CORE_CLK_SEL(0), 0);                /* 80 MHz */
-    wr(SPI_CORE_CLK_SEL(1), 0);
+    extmem_cache_suspend();
+    mspi_enter_low_speed();
+    extmem_cache_resume();
+
     wr(SPI_CLK_GATE(0), rd(SPI_CLK_GATE(0)) | 1u);
     wr(SPI_CLK_GATE(1), rd(SPI_CLK_GATE(1)) | 1u);
     /* The CMD/ADDR/DOUT/DIN/DUMMY phases of a user command run in octal only if
-     * SPI1's CTRL says so. The ROM leaves these set after a quad-flash boot on
-     * this module, but the bring-up must not depend on that. */
+     * SPI1's CTRL says so. The ROM leaves these set after a quad-flash boot on this
+     * module, but the bring-up must not depend on that. */
     wr(SPI_CTRL(1), rd(SPI_CTRL(1)) |
                     (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 9));
-    set_spi_clock(0, LOW_SPEED_DIV);
-    set_spi_clock(1, LOW_SPEED_DIV);
-    /* Clear any input-delay/extra-dummy tuning left over from a previous image:
-     * at 20 MHz those registers must be at their 20 MHz values, and ESP-IDF's
-     * mspi_timing_enter_low_speed_mode() clears them before touching the chip. */
-    wr(SPI_SMEM_DIN_MODE(0), 0);
-    wr(SPI_SMEM_DIN_NUM(0), 0);
-    wr(SPI_SMEM_DIN_MODE(1), 0);
-    wr(SPI_SMEM_DIN_NUM(1), 0);
-    wr(SPI_SMEM_CALI(0), rd(SPI_SMEM_CALI(0)) & ~3u);
-    wr(SPI_SMEM_CALI(1), rd(SPI_SMEM_CALI(1)) & ~3u);
 
     /* ESP-IDF's s_init_psram_pins() only sets pad 26 to SPICS1 and the clock drive
      * strength; it never routes pads 33..37 to SPIIO4..7/SPIDQS. Measured on this
@@ -498,11 +662,10 @@ bool ICODE_ATTR psram_init(void)
      * the address the MMU hands out would no longer be a plain byte offset. */
     wr(SYSCON_SRAM_ACE0, rd(SYSCON_SRAM_ACE0) & ~SRAM_ECC_ENABLE);
 
-    /* Octal PSRAM is DTR-only (the doc states quad PSRAM is STR, octal is DTR), so
-     * the double-data-rate enable has to be on for the instance that talks to the
-     * chip. ESP-IDF only sets the variable-dummy bit here; Rockbox also makes sure
-     * DDR_EN is set, and clears the DTR swap bits as esp_rom_spi_set_dtr_swap_mode(1,
-     * false, false) does.
+    /* Octal PSRAM is DTR-only (quad PSRAM is STR), so the double-data-rate enable
+     * has to be on for the instance that talks to the chip. ESP-IDF only sets the
+     * variable-dummy bit here; Rockbox also makes sure DDR_EN is set, and clears the
+     * DTR swap bits as esp_rom_spi_set_dtr_swap_mode(1, false, false) does.
      */
     wr(SPI_FMEM_DDR(1), (rd(SPI_FMEM_DDR(1)) & ~0xCu) | DDR_EN | DDR_VAR_DUMMY);
     { typedef void (*dtr_t)(int, int, int);
@@ -511,71 +674,72 @@ bool ICODE_ATTR psram_init(void)
     boot_trace('c');
 
     /* ESP-IDF drives the PSRAM through SPI1. SPI0 cannot be used for this: its
-     * user-command FSM is the same hardware that the instruction and data caches
-     * use to read flash, and issuing a user command on it leaves the flash read
-     * path stalled, so every later fetch through the 0x42000000 window returns the
+     * user-command FSM is the same hardware the instruction and data caches use to
+     * read flash, and issuing a user command on it leaves the flash read path
+     * stalled, so every later fetch through the 0x42000000 window returns the
      * 0x0bad0bad "no mapping" sentinel and the boot dies on an IllegalInstruction.
      */
     boot_trace('1');
 
-    /* Bring the chip up at 20 MHz. ESP-IDF's mspi_timing_psram_tuning() then sweeps
-     * dummy and input-delay values to reach 80 MHz; without that sweep the read path
-     * stops returning data. Measured on this board: at 20 MHz MR0 reads back 0x0d28
-     * (the byte we wrote, plus MR1 = 0x0d vendor id we never sent), and after going
-     * to 80 MHz every subsequent read returns the previous value. So identification
-     * and the first cache probe have to happen before the speed change.
-     */
+    /* MR0: lt = 1 (fixed latency), read_latency = 2, drive_str = 0.
+     * MR8: bl = 3 (1024-byte burst), bt = 0. */
     rom_write_mr(1, 0x0, (1u << 5) | (2u << 2));
     rom_write_mr(1, 0x8, 3u);
 
-    if (psram_identify(1)) {
-        boot_trace('4');
-        config_psram_spi_phases();
-
-        /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM
-         * D-cache is re-enabled so loads through a PSRAM-mapped MMU page are served
-         * by the cache rather than rejected. The external-ram doc is explicit that
-         * the two are not separable: "When flash cache is disabled ... the external
-         * RAM also becomes inaccessible. Any read operations from or write operations
-         * to it will lead to an illegal cache access exception." PSRAM is not a
-         * second memory bus; it is the cache's other backing store.
-         */
-        boot_trace('5');
-        { typedef void (*resume_t)(int);
-          ((resume_t)ROM_CACHE_RESUME_DCACHE)(0); }
-
-        boot_trace_hex(rd(EXTMEM_DCACHE_CTRL));
-
-        if (cache_psram_probe()) {
-            s_psram_present = true;
-            boot_trace('6');
-            return true;
-        }
+    if (!psram_identify(1)) {
+        /* The chip never answered. Put the MSPI clocks back so the flash path still
+         * works, and report the absence rather than leaving the boot stalled. */
+        extmem_cache_suspend();
+        mspi_enter_high_speed(PSRAM_DEFAULT_TUNE);
+        extmem_cache_resume();
+        s_psram_present = false;
         boot_trace('!');
+        return false;
     }
 
-    /* spi_timing_enter_mspi_high_speed_mode(): back to the clock the target wants.
-     * Kept even on the failure path because the flash read FSM is shared and the
-     * boot needs it at full speed.
-     */
-    wr(SPI_CORE_CLK_SEL(0), 2);                /* 160 MHz */
-    wr(SPI_CORE_CLK_SEL(1), 2);
-    set_spi_clock(0, FLASH_DIV);
-    set_spi_clock(1, FLASH_DIV);
-    set_psram_clock(PSRAM_DIV);
-    set_psram_timing();
-    boot_trace('h');
+    boot_trace('4');
 
+    /* The reference pattern is written once, at the 20 MHz bring-up clock, and the
+     * sweep then runs at the 80 MHz the Ext_RAM cache will use. This is the step
+     * the previous port skipped, and it is the reason bulk writes stalled: the
+     * Ext_RAM read path needs the DIN delay tuned for the module clock it is
+     * actually running at.
+     */
+    psram_write_reference(1);
+    tune = psram_tune();
+    boot_trace_hex(tune);
+
+    extmem_cache_suspend();
+    mspi_enter_high_speed(tune);
     extmem_cache_resume();
-    boot_trace('x');
 
-    /* The Ext_RAM cache preload is deliberately not attempted here: enabling it
-     * on a chip that has not answered a user command leaves SPI0's Ext_RAM FSM
-     * idle and the preload DONE flag clear, and every subsequent load through the
-     * 0x3C000000 window - including flash-mapped .text pages - then stalls. The
-     * chip has to be brought up through SPI1 first.
+    config_psram_spi_phases();
+
+    /* ESP-IDF ends the bring-up with Cache_Resume_DCache(0): the Ext_RAM D-cache is
+     * re-enabled so loads through a PSRAM-mapped MMU page are served by the cache
+     * rather than rejected. The external-ram doc is explicit that the two are not
+     * separable: "When flash cache is disabled ... the external RAM also becomes
+     * inaccessible. Any read operations from or write operations to it will lead to
+     * an illegal cache access exception." PSRAM is not a second memory bus; it is
+     * the cache's other backing store.
      */
+    boot_trace('5');
+    { typedef void (*resume_t)(int);
+      ((resume_t)ROM_CACHE_RESUME_DCACHE)(0); }
 
+    boot_trace_hex(rd(EXTMEM_DCACHE_CTRL));
+    boot_trace_hex(rd(SPI_SMEM_DIN_MODE(0)));
+    boot_trace_hex(rd(SPI_SMEM_CALI(0)));
+    boot_trace_hex(rd(SPI_SRAM_CLK(0)));
+    boot_trace_hex(rd(SPI_CORE_CLK_SEL(0)));
+
+    if (cache_psram_probe()) {
+        s_psram_present = true;
+        boot_trace('6');
+        return true;
+    }
+
+    boot_trace('!');
     s_psram_present = false;
     return false;
 }

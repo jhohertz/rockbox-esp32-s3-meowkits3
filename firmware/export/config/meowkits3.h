@@ -138,41 +138,27 @@
 #define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
 
 /*
- * USB: the SoC's Synopsys DWC2 OTG core. Full speed only; the chip has no VBUS
- * sense line, so insertion is detected from the PMU (see usb-xtensa.c).
+ * USB: not built.
  *
- * The FIFO RAM is 256 words and there are six endpoints, so USB_NUM_ENDPOINTS is
- * the hardware limit rather than a choice. That budget is exactly EP0 plus mass
- * storage bulk IN/OUT, HID interrupt IN and CDC bulk IN/OUT: the CDC notification
- * endpoint is declared optional and usb_core.c skips it when the pool is
- * exhausted. Isochronous audio needs two more endpoints, so it only fits when
- * mass storage is not active - which is what the "usb-dac" setting's charge-only
- * mode does. Enabling it alongside storage makes the allocator drop audio with a
- * logf, rather than fail.
+ * The board's usable USB is the USB-Serial-JTAG block, which is what the host
+ * already uses to flash and to read the bring-up trace; it enumerates as CDC
+ * with no firmware involvement. The SoC also has a DWC-derived OTG block, but
+ * its GUSBCFG is not the classic DWC2 layout: phyif sits at bit 3, ulpiutmisel
+ * at 4, fsintf at 5 and physel at 6, and ESP-IDF's own driver has to set
+ * phyif = 1 for this core. Rockbox's usb-designware.c writes the whole register
+ * with only the PHY field and then compares it back in full, so the bring-up
+ * panics with "PHY type not supported" before anything else runs.
  *
- * The transfer buffers are static and in internal SRAM: the DWC's DMA is an
- * internal AHB master, while the core allocator's pool is the audiobuffer, which
- * on this target is PSRAM. Internal SRAM is the scarce resource - the static
- * region is 337 KB - so the buffers are 16 KB per direction, which is a third of
- * what a target with a megabyte of static data would use.
+ * Nothing on this target needs the OTG core: charging is monitored through the
+ * AXP173 (CONFIG_CHARGING + HAVE_AXP173 report VBUS), and storage is the SD card.
+ * Revisit only with a driver that matches this core's register layout.
+ *
+ * USB_NONE is what makes this stick. Without it main() runs the
+ * "if USB is plugged in, enter USB mode before mounting" loop, and because the
+ * AXP173 reports VBUS present whenever the board is powered from the host, that
+ * loop never terminates: boot stops there and nothing else is ever initialised.
  */
-#define CONFIG_USBOTG USBOTG_DESIGNWARE
-#define HAVE_USBSTACK
-#define USB_NUM_ENDPOINTS 6
-#define USB_DW_FORCE_DEVICE_MODE
-#define USB_VENDOR_ID  0x6666 /* "prototype device" VID in folklore */
-#define USB_PRODUCT_ID 0xEC02
-#define USB_DEVBSS_ATTR __attribute__((aligned(32)))
-#define USB_READ_BUFFER_SIZE  (16 * 1024)
-#define USB_WRITE_BUFFER_SIZE (16 * 1024)
-
-/* The board has no accessible UART: UART0's pads are GPIO1 and GPIO2, which the
- * reference firmware never uses either - its Serial is TinyUSB CDC on the OTG
- * port. The DWC is therefore the only console, so the CDC class driver is
- * enabled and logf() feeds it. Its 16 KB ring buffer goes to PSRAM.
- */
-#define USB_ENABLE_SERIAL
-#define ROCKBOX_HAS_LOGF
+#define USB_NONE
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */

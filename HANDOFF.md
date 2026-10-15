@@ -2,744 +2,534 @@
 
 **Branch:** `esp32-s3-ports`
 **Repo:** `/home/jhohertz/co/rockbox`
-**HEAD:** `fc100af72b`, tree clean apart from the changes described below
-(HANDOFF.md is a session artifact and is deliberately untracked).
-
-### Latest session: the scheduler now runs
-
-The boot stall at `storage_init` turned out to be three independent scheduler
-faults, each masking the next. All three are fixed and committed:
-
-| Fault | Symptom | Fix |
-|---|---|---|
-| main thread's stack never munged with `DEADBEEF` | first `switch_thread()` calls `thread_stkov()` → `panicf()` | `crt0.S` fills `.stack` with `0xDEADBEEF` after zeroing `.srambss` (same as the MIPS crt0s) |
-| `load_context()` wrote `PS = 0` on a thread's first run | `PS.WOE` (bit 18) cleared, so `xt_thread_start`'s `entry` raised `EXCCAUSE_ILLEGAL` | write `0x40000` to PS; only windowbase/windowstart/sar are cleared |
-| `core_sleep()` was a bare `waiti 0` | `disable_irq()` has set `PS.INTLEVEL = 15`; level 1 cannot be taken at level 15, so the idle loop stalled with the tick pending | drop the level before `waiti` |
-
-The tick ISR is now a leaf: `timer_irq()` reads `TN_INT_ST`, increments
-`current_tick` and clears the interrupt. `call_tick_tasks()` moved to
-`tick_task_thread()` in `apps/main.c` (`sleep(1); call_tick_tasks();`).
-
-Measured after those changes: `storage_init` completes, `disk_mount_all()`
-returns 0, `current_tick` reaches 280 (2.8 s of ticks), and `switch_thread()`
-reaches `thread_load_context()` without raising an exception. `xt_exc_dump`
-reads all zero.
-
-**Still open:** the core stops making progress after two scheduler switches —
-the third `switch_thread()` reaches `rtr_queue_make_first()` but not
-`thread_load_context()`. Note that `esptool read_mem` hard-resets the chip, so
-peripheral register reads through it show reset defaults, not runtime state; use
-the boot-log ring or `xt_isr_diag`/`xt_exc_dump` instead.
-
-Unfixed driver bugs carried over: SDHOST writes do not land, FT6336
-transactions time out in the FSM even though the device ACKs under bit-bang.
+**HEAD:** `6bbab13605` ("xtensa: get the SD card mounted"), 124 commits ahead of
+upstream. Working tree is dirty — see "Uncommitted changes" below.
+HANDOFF.md is a session artifact and is deliberately untracked.
 
 **Read `AGENTS.md` first.** It is the accumulated hardware reference and every
 register claim in it has been checked against ESP-IDF headers or the SVD. Do not
-re-derive anything from memory; the two bugs that got in earlier were both
-"remembered" register offsets.
+re-derive anything from memory.
 
 ---
 
-## 1. Status at a glance
+## 0. PLAN — stop reimplementing what ESP-IDF already provides
 
-The port is **feature-complete in software**. Every Rockbox subsystem the board
-needs has a driver, both the native and the simulator build link cleanly, and
-the packed ESP image validates against `esptool image_info`.
+This is the strategic decision taken after the PSRAM-write stall, and it governs
+every subsequent step. Do not lose it.
 
-**The board now boots.** A direct ROM boot (Rockbox image flashed at `0x0`, no
-second-stage bootloader) runs `crt0.S`, maps the IROM window, calls
-`psram_init()`, calls `mmu_init()`, zeroes internal SRAM and reaches `main()`.
-Everything below that is now measured on silicon rather than reasoned from
-ESP-IDF's register definitions.
+### Findings that led here
 
-### What is verified on hardware
+- **No Rockbox target uses FreeRTOS or any RTOS.** Rockbox *is* the RTOS:
+  `firmware/kernel/thread.c` owns the ready list, timeouts, `sleep()`,
+  `wake_thread()`, semaphores, mutexes, tick tasks. A target only supplies
+  `tick_start()`, `thread_store_context()`/`thread_load_context()`, and
+  `core_sleep()`/`wait_for_interrupt()`. Every bare-metal arch implements those
+  in assembly.
+- **But the layering already exists in the tree.** `firmware/asm/thread-unix.c`
+  (setjmp/longjmp + a signal trampoline), `thread-win32.c` and `thread-sdl.c`
+  run Rockbox's cooperative threads *inside one OS thread*, and
+  `firmware/target/hosted/kernel-unix.c` supplies `tick_start` from a timer
+  thread. "Rockbox on top of someone else's scheduler" is a supported shape.
+- **ESP-IDF's Xtensa interrupt/exception code is not FreeRTOS-specific.** It is
+  Cadence's generic "Xtensa RTOS support sources" with a glue header
+  (`xtensa_rtos.h`) that maps exactly three callouts — `XT_RTOS_INT_ENTER()`,
+  `XT_RTOS_INT_EXIT()`, `XT_RTOS_TIMER_INT()`. There is a **bare-metal port**
+  where those are no-ops. Everything else — `_xt_context_save`,
+  `_xt_context_restore`, `_xt_user_exit`, the window overflow/underflow
+  handlers, the vector layout, alloca and coprocessor exception paths — is
+  generic assembly we can take verbatim.
+- **The actual blocker is peripheral bring-up, not the scheduler.** The current
+  hang is a bulk write to the PSRAM framebuffer through SPI0's Ext_RAM cache.
+  One word per MMU entry across 121 pages works; a multi-kilobyte write stalls.
+  AGENTS.md already records the smoking gun: "at 20 MHz MR0 reads back 0x0d28
+  … and after going to 80 MHz every subsequent read returns the previous value",
+  and `psram-xtensa.c` says outright that we copied ESP-IDF's *fallback*
+  config because "Rockbox has no equivalent" of `mspi_timing_psram_tuning()`.
 
-| Fact | How it was established |
+### The plan, in order of payoff
+
+1. **Port ESP-IDF's PSRAM bring-up and MSPI timing tuning verbatim.**
+   Sources (all RTOS-free, register level + ROM calls):
+   - `components/esp_hal_mspi/esp32s3/include/hal/psram_ctrlr_ll.h`
+   - `components/esp_hal_mspi/esp32s3/include/hal/mspi_ll.h`
+   - `components/esp_mspi/mspi_timing_tuning/{mspi_timing_tuning.c,port/esp32s3/*}`
+   - `components/esp_hal_cache/esp32s3/include/hal/{cache_ll.h,mmu_ll.h}`
+   - `components/esp_psram/esp32s3/esp_psram_impl_octal.c`
+   Replace the hand-rolled sequence in `firmware/target/xtensa/psram-xtensa.c`
+   with ESP-IDF's, **including the DIN_MODE/DIN_NUM/TIMING_CALI sweep**.
+   Success test: the 16 KB bulk framebuffer write completes and reads back.
+
+2. **Replace the hand-written level-1 handler with ESP-IDF's `_xt_lowint1`,
+   `_xt_context_save` and `_xt_user_exit`, stubbing `XT_RTOS_*`.**
+   `_xt_context_save` is written for the windowed ABI: it saves a2-a11, a14, a15,
+   SAR, LBEG, LEND, LCOUNT, then runs `SPILL_ALL_WINDOWS` with EXCM temporarily
+   cleared and INTLEVEL raised to `XCHAL_EXCM_LEVEL` (= 3 on this core). It is
+   the same machinery FreeRTOS-on-Xtensa uses for task switching, so it is the
+   right thing to be compatible with.
+   Note: `_xt_context_save` **must be entered via `call0`**.
+
+3. **Keep Rockbox's scheduler.** Do not swap in FreeRTOS. If Bluetooth becomes a
+   goal, the compatible end state is:
+   ```
+   FreeRTOS (ESP-IDF)
+     |-- task: ESP-IDF BT / WiFi / drivers
+     |-- task: Rockbox (its own cooperative threads inside this one task)
+   ```
+   Adopting (1) and (2) now makes that transition cheap, because the context
+   handling is already the code FreeRTOS uses.
+
+### What is *not* in the plan
+
+- Reimplementing soft float or 64-bit divide (libgcc is fine now that we are on
+  the windowed ABI).
+- Replacing `firmware/kernel/thread.c`.
+- Hand-tuning MSPI dummy/delay values by guesswork — take ESP-IDF's sweep.
+
+---
+
+## 1. Where the port is right now
+
+| Subsystem | Status |
 |---|---|
-| The mask ROM loads IRAM segments and jumps to the entry point | entry `0x40378088` executes; a liveness marker written to `0x3FC90000` is present after reset |
-| `irom_mmu_map()` arms MMU entries 144..149 (physical pages 8..13) and IROM fetches from `0x42900020` work | MMU snapshot in `crt0_trace`; `irom_canary()` in `.text` executes and traces |
-| The Ext_RAM cache returns `0x0bad0bad` for a page whose MMU entry is not usable | direct DROM read of `mmu_init`'s page |
-| A user command issued on **SPI0** stalls the flash read FSM | after `esp_rom_opiflash_exec_cmd(0, ...)`, every later fetch through the `0x42000000` window returns `0x0bad0bad` and the boot dies with `IllegalInstruction` at the first `.text` function; restoring `SPI_CTRL(0)` is not enough |
-| The octal PSRAM chip **does** answer SPI1/CS1 | MR0 reads back `0x0d28` after writing `0x28`: the low byte is what we sent, the high byte is MR1 (`0x0d` = Apotek), which was never sent, so it cannot be a FIFO echo. MR2 = `0x6093` (density 3 = 64 Mbit = 8 MB), MR3 = `0x60` (AP_3v3) |
-| Loads through a PSRAM-mapped MMU page work | `cache_psram_probe()` writes `0xB5A7C3D1` to PSRAM page 100 over SPI1, arms MMU entry 100, preloads the D-cache and reads `0x3C640000` back = the exact pattern |
-| Stores through the Ext_RAM D-cache work, and the data is really in the chip | `mmu_init()` writes a per-entry pattern, commits it, discards the line, reads it back: 121 entries tested, 0 bad. The values also survive a reset, so they are not cache residue |
-| Pads 33..37 are in GPIO mode at reset | they have to be forced to `SPIIO4..SPIIO7`/`SPIDQS` (`MCU_SEL = 4`); pads 27/28 likewise come back as GPIO because this module's flash is quad |
-| The ROM loader arms MMU entries past the end of `.rodata` | entry 8 (`0x3C080000`) is armed to flash page 8 although `.rodata` ends at `0x3C07A1B4`. `mmu_init()` must override it: a store through a flash-mapped Ext_RAM page has no write path and stalls the core |
+| Boot through the mask ROM | works; crt0 brings up PSRAM, MMU, IROM mapping |
+| CPU frequency | 240 MHz (was stuck at 20 MHz) |
+| Scheduler + tick thread | runs; 930 level-1 interrupts handled with zero window drift |
+| SD card | **mounts** — `disk_mount_all()` returns 7 (sometimes 1 or 0 after a hard reset) |
+| Dircache scan | completes within 300 s |
+| LCD (ST7789 over GPSPI2) | **works** — user saw the Rockbox logo and a panic screen |
+| Backlight | on |
+| I²C (PCA9557, AXP173, FT6336, ES8311) | working transaction-level path |
+| USB | stub only (OTG core not built; VBUS comes from the AXP173) |
+| Audio | **not started** |
+| Stability | boot reaches the UI, then hangs/resets. Root cause not yet pinned. |
 
-### Bring-up observability
+The reset is **not** a watchdog: RTC `WDTCONFIG0 = 0x00000000` (WDT_EN clear),
+brownout disabled. `RESET_STATE` reset_cause_procpu reads 21 =
+`USB_UART_CHIP_RESET`, i.e. esptool's own reset, when the probe is what stopped
+it.
 
-esptool resets the chip before it can read memory, so live UART is not usable for
-post-mortem, and the ROM's `ets_write_char_uart` faults (it reads `g_uart_print`
-in a ROM data page that is not armed). Instead:
+---
 
-- `firmware/target/xtensa/bootlog.c` keeps a 4 KB ring in internal SRAM:
-  `boot_log_len` at `0x3FC9BDFC`, `boot_log` at `0x3FC9BE00`.
-- `crt0_trace` (currently `0x4037aa34`, in `.ibss`) holds the MMU snapshot, the
-  IROM mapping status and the exception record.
-- `diag_trap` in `crt0.S` writes the first two exceptions to `0x3FC90100` and
-  `0x3FC90140`.
+## 2. The decisive finding of this session: `rfe` semantics
 
-Read them with `/tmp/rbprobe.py`, which resolves the symbol addresses from the ELF
-and dumps them with esptool.
+The whole windowed-ABI question turns on what `rfe` (= `RESTOREPS; RETW`) does at
+the end of a level-1 handler. It was unresolved because the Cadence ISA PDF is
+not reachable (403/404 from every mirror tried, including web.archive).
 
-### PSRAM: resolved
+**Resolved by experiment on the board.** A one-shot probe in
+`xt_level1_handler` set `a0` to `xt_marker_a0` and `epc1` to `xt_marker_epc1`,
+both spin markers that stamp a distinct 32-bit value into `xt_probe_out`, then
+executed `rfe`.
 
-The octal PSRAM bring-up now works end to end. The two things that were actually
-wrong:
-
-1. **`esp_rom_opiflash_exec_cmd` was called with mode `4` (`DOUT`) instead of `7`
-   (`OPI_DTR`).** That makes the ROM build a single-line transaction, which is why
-   `USER1`/`USER2` looked untouched. ESP-IDF 4.4.3's `psram_enable()` passes
-   `ESP_ROM_SPIFLASH_OPI_DTR_MODE` = 7.
-2. **`mmu_init()` only mapped MMU entries that were still invalid.** The ROM loader
-   arms an entry for every flash-mapped segment and rounds the page count up, so
-   entry 8 was already pointing at flash page 8. A store through a flash-mapped
-   Ext_RAM page has no write path and hangs the core. The mapping is now
-   unconditional over the PSRAM range.
-
-The bring-up also has to run at 20 MHz *before* switching to 80 MHz. ESP-IDF's
-`mspi_timing_psram_tuning()` sweeps dummy and input-delay values to reach 80 MHz;
-Rockbox does not have that sweep, and without it every read after the speed change
-returns the previous value. Identification and the first cache probe therefore run
-at low speed.
-
-Boot log tail from a real run:
+Result:
 
 ```
-i#00000d28#00006093#00002803   MR0/MR1, MR2/MR3, MR8 - Apotek, 8 MB, AP_3v3
-C#00008064#3c640000            MMU entry 100 armed, vaddr 0x3C640000
-#000029ee#b5a7c3d1            preload guard, then the pattern read back
-6                             psram_present = true
-O#00000003                    3 MMU entries overridden (armed to flash by the ROM)
-V#00000079#00000000           121 entries tested, 0 bad
-nBR                           reached main
+xt_probe_done   = 1
+wb before rfe   = 0000000d
+ws before rfe   = 00002aa0
+ps before rfe   = 00060000
+MARKER          = 45454545      -> 'EEEE'
 ```
 
-| Area | Files | State |
+So:
+
+* **`rfe` resumes at EPC1, not at a0.** Setting `a0` to a decoy had no effect.
+* **`rfe` does not rotate the window.** `xt_isr_hist` recorded
+  `wb@entry == wb@exit` and `delta == 0` across 930 interrupts.
+* The exception-entry PS on this core is `0x60010`: `INTLEVEL=0`, `EXCM=1`,
+  `UM=0`, `OWB=0`, `CALLINC=8`, `WOE=1`. Note `INTLEVEL` is **0**, not 1 — this
+  core does not raise INTLEVEL for a level-1 exception taken at level 0.
+
+The handler's current exit (`PS = entryPS & 0xFFFF0000`, then `wsr epc1`, restore
+a0..a15 and a1, `rfe`) is therefore correct. The comment in `vectors.S` claiming
+the mask clears `CALLINC` is wrong — `0xFFFF0000` clears bits 0-15 and leaves
+bits 16-17 (`CALLINC`) and 18 (`WOE`) set — but it does not matter, because RETW
+does not use CALLINC in exception mode.
+
+**The probe is still in `vectors.S`** behind `#define XT_RET_PROBE 1` at the top
+of the file. Set it to 0 for production builds.
+
+---
+
+## 3. The ROM ships a complete XOS exception layer — worth knowing, not usable
+
+`/tmp/romelf/esp32s3_rev0_rom.elf` (from `esp-rom-elfs`) contains a full Xtensa
+RTOS exception layer at the default VECBASE (0x40000000):
+
+| Symbol | Address | Notes |
 |---|---|---|
-| Arch support (config.h, elf, rom.lds, thread switching, setjmp) | `firmware/export/config.h`, `firmware/asm/xtensa/`, `lib/libsetjmp/xtensa/` | done |
-| call0 ABI + Rockbox-supplied 64-bit and soft-float helpers (no libgcc) | `lib/xtensa_support/` | done |
-| Target skeleton, crt0, linker scripts, MMU | `firmware/target/xtensa/{crt0.S,app.lds,mmu-xtensa.c,vectors.S}` | done |
-| Interrupt dispatch (VECBASE, no INTBASE) | `firmware/target/xtensa/{vectors.S,irq-xtensa.c}` | done |
-| I2C master (command-list machine, async core) | `firmware/target/xtensa/{i2c-xtensa.c,i2c-target.h}` | done |
-| PCA9557 expander, GPSPI2, ST7789 + power states, LEDC backlight | `firmware/target/xtensa/{pca9557.c,spi-xtensa.c,st7789.c,lcd-xtensa.c,backlight-xtensa.c}` | done |
-| I2S + GDMA audio out, ES8311, speaker amp | `firmware/target/xtensa/{i2s-xtensa.c,es8311.c,audiohw-xtensa.c}` | done |
-| Recording: I2S0 RX + GDMA IN ch 0, ES7210 | `firmware/target/xtensa/{pcm-xtensa.c,es7210.c}` | done |
-| SDHOST (DesignWare MMC) storage | `firmware/target/xtensa/sdmmc-xtensa.c` | done |
-| Buttons + FT6336 polled touchscreen | `firmware/target/xtensa/{button-xtensa.c,button-target.h}`, `apps/keymaps/keymap-meowkits3.c` | done |
-| RTC (PCF8563), PMU (AXP173), PEK power key, clean shutdown | `firmware/drivers/rtc/rtc_pcf8563.c`, `firmware/drivers/axp173.c`, `firmware/target/xtensa/power-xtensa.c` | done |
-| Octal PSRAM bring-up at 80 MHz (Rockbox must do it; ROM/bootloader do not) | `firmware/target/xtensa/psram-xtensa.c` | done |
-| ESP image packing + flash/verify goals | `tools/esp-elf2image`, `tools/espflash.make` | done |
-| CPU frequency ladder (240/160/80 MHz) | `firmware/target/xtensa/system-xtensa.c`, `system-target.h` | done |
-| USB-OTG (DWC2 device: MSC + HID + CDC, VBUS via the PMU) | `firmware/target/xtensa/usb-xtensa.c`, `firmware/drivers/usb-designware.c` | done |
-| SDL simulator (`--type=S`) | `uisimulator/buttonmap/meowkits3.c`, `uisimulator/bitmaps/UI-meowkits3.bmp`, `firmware/target/hosted/sdl/sim-ui-defines.h` | done, headless-verified only |
-| CPU-only statics relocated to PSRAM | `firmware/target/xtensa/app.lds`, `crt0.S`, `mmu-xtensa.c`, `firmware/common/unicode.c`, `apps/language.c`, `firmware/logf.c` | done |
-| Bring-up report card in the debug menu | `firmware/target/xtensa/debug-xtensa.c` | done |
+| `_WindowOverflow4/8/12`, `_WindowUnderflow4/8/12` | 0x40000000–0x40000170 | byte-identical to ESP-IDF's, `s32e`/`l32e` + `rfwo`/`rfwu` |
+| `_xtos_alloca_handler` | 0x40000010 | alloca (EXCCAUSE 5) |
+| `_UserExceptionVector` | 0x40000340 | builds a 256-byte pseudo frame, dispatches via `xtos_exc_handler_table` at 0x3fcedf68 |
+| `_xtos_l1int_handler` | 0x40034eb8 | full level-1 dispatch: `entry a1,0x100`, `rsil a15,1` (clears EXCM, sets INTLEVEL), `callx12` to the C handler |
+| `_xtos_return_from_exc` | 0x400559b4 | restores PS verbatim, sets EPC1, `rfe` |
+| `xthal_window_spill` | 0x40053e74 | ROM window spill (**not** in the published `esp32s3.rom.ld`) |
+| `xthal_window_spill_nw` | 0x40053d60 | the actual spill loop |
 
-### Last ten commits
+Only these are in the published ROM interface (`esp32s3.rom.ld`):
+`_xtos_ints_off/on`, `_xtos_restore_intlevel`, `_xtos_set_exception_handler`,
+`_xtos_set_interrupt_handler(_arg)`, `_xtos_set_intlevel`, `_xtos_set_vpri`,
+`xthal_get_interrupt`, `xthal_set_intclear`, `xthal_bcopy`, `xthal_memcpy`,
+`xthal_get_ccompare`, `xthal_set_ccompare`, `xthal_get_ccount`.
 
-```
-5f8c3610ec ft6x06: clamp the reported point count to the parsed array
-09479e178b xtensa: set the backlight PWM period and clock source correctly
-8b8dc5bf57 xtensa: correct two register comments
-c98e5bb8e5 tools: flash an ESP32 target from the build directory
-3a2085f4c3 xtensa: run the PSRAM at its rated 80 MHz
-c68ef2eeda meowkits3: add a USB serial console and a bring-up report card
-fa11295173 xtensa: refuse a DMA frame that does not fit a GDMA descriptor
-82f899243c xtensa: move the CPU-only statics into PSRAM
-101f5bdc98 meowkits3: stop A and B from firing twice per press
-f9ce9e3a9a meowkits3: make the joystick and the touch grid do the same thing
-```
+**Why we cannot use it directly:** the ROM's `_KernelExceptionVector` is
+`break 1,0; j .` — supervisor-mode (UM=0) exceptions are unhandled. Rockbox runs
+in supervisor mode, so the ROM's vectors would trap. ESP-IDF overrides both
+vectors for the same reason.
+
+`xthal_window_spill` is callable at a fixed address but is not part of the
+published interface, so it is revision-fragile. `__xtensa_libgcc_window_spill()`
+(at `0x429038f0` in the current image) is the safer equivalent and is what
+`store_context()` and `lib/libsetjmp/xtensa/setjmp.S` already use.
+
+ESP-IDF does **not** call the ROM spill; it uses the `SPILL_ALL_WINDOWS` macro
+from `components/xtensa/include/xt_asm_utils.h` (also in `/tmp/xt_asm_utils.h`).
 
 ---
 
-## 2. Build, verify, flash
+## 4. Window spill / context save — the reference implementation
 
-```sh
-cd /tmp/rbbuild3
-PATH=/tmp/rbtest/prefix/xtensa-esp-elf/bin:/tmp/xtensa-esp-elf/bin:$PATH make -j8
+ESP-IDF's `_xt_lowint1` / `_xt_context_save` / `_xt_user_exit`
+(`/tmp/vectors_S`, `/tmp/xtensa_context.S`, extracted with
+`git show HEAD:components/xtensa/xtensa_vectors.S`) is the proven model for this
+exact core with the windowed ABI. The sequence:
+
+1. Vector: `wsr a0, EXCSAVE_1` then `call0 _xt_user_exc` (`call0` used as a jump).
+2. `_xt_user_exc`: `rsr exccause`; if `EXCCAUSE_LEVEL1INTERRUPT` → `j _xt_lowint1`.
+3. `_xt_lowint1`: allocate `XT_STK_FRMSZ`, save pre-interrupt SP, PS, EPC1,
+   EXCSAVE_1 (a0), and the exit point.
+4. `call0 _xt_context_save` — saves a2-a11 (+a14,a15 for windowed ABI), SAR,
+   LBEG/LEND/LCOUNT (and *zeroes* LCOUNT so the dispatch's loops do not rewind
+   the interruptee's).
+5. Inside `_xt_context_save`, for the windowed ABI:
+   - `INTLEVEL = max(INTLEVEL, XCHAL_EXCM_LEVEL)` (= 3 on esp32s3)
+   - clear `EXCM`, set `WOE`
+   - save EPC1 (the overflow exceptions overwrite it)
+   - `addi sp, sp, XT_STK_FRMSZ` then `SPILL_ALL_WINDOWS` then subtract again
+   - restore PS and EPC1
+6. `wsr PS_INTLEVEL(1) | PS_UM | PS_WOE` → C code can now run.
+7. `dispatch_c_isr` — uses `call4`/`call8`, i.e. real window rotation.
+8. `_xt_user_exit`: restore PS **verbatim** from the frame, set EPC1, restore a0
+   and sp, `rsync`, `rfe`.
+
+`SPILL_ALL_WINDOWS` for `XCHAL_NUM_AREGS == 64`:
 ```
-
-Clean output ends with:
-
+and a12, a12, a12 ; rotw 3
+and a12, a12, a12 ; rotw 3
+and a12, a12, a12 ; rotw 3
+and a12, a12, a12 ; rotw 3
+and a12, a12, a12 ; rotw 4
 ```
-wrote /tmp/rbbuild3/rockbox.esp32s3: 5 segments, entry 0x42000034
-```
+Net rotation zero; each `and` raises a window overflow if a12 holds a live
+ancestor register, and the overflow handler spills it into that ancestor's frame.
+Requires `EXCM=0` and `WOE=1`. It is *faster* than the HAL `xthal_window_spill`
+(145 vs 279 cycles on LX6 per the header comment).
 
-`/tmp/xtensa-esp-elf/bin` contains a broken Rust wrapper that panics; the real
-toolchain is under `/tmp/rbtest/prefix/xtensa-esp-elf/bin/`. Both need to be on
-PATH — `configure` looks for the wrapper name, `make` uses the real one.
+**The pseudo base-save area is mandatory.** ESP-IDF's vectors.S header comment
+says it outright: the exception dispatcher uses the same window as the
+pre-exception code and only uses `call0`, so to make the overflow handlers able
+to walk the chain you must store a copy of the pre-exception base-save area
+(a0..a4) below the dispatcher's SP. Our handler does this with
+`s32e a0/a10/a2/a3` at `a1-16/-12/-8/-4`. Without it the overflow handler reads
+uninitialised stack as the ancestor sp and stores through garbage — that was the
+`StoreProhibited` at address 0 we saw in `xt_double_trap`.
 
-Simulator:
-
-```sh
-cd /tmp/rbsim
-../tools/configure --target=133 --ram=8 --type=S
-make
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./rockboxui
-```
-
-Image inspection without a board:
-
-```sh
-make espverify
-# File size 926320, entry 42000034, 5 segments, checksum valid
-```
-
-Flashing (once a board exists):
-
-```sh
-make flash                       # or: make flash ESPPORT=/dev/ttyACM0
-```
-
-`tools/espflash.make` is included from `tools/root.make` only when
-`CPU == xtensa` **and** the artifact name contains `esp32` — the simulator
-shares the arch but produces `rockboxui`, so the gate is on the artifact.
-
-Disassembly:
-
-```sh
-/tmp/rbtest/prefix/xtensa-esp-elf/bin/xtensa-esp-elf-objdump -d /tmp/rbbuild3/rockbox.elf
-```
-
-`objcopy -O binary` is useless here: it spans the gap between the two flash
-windows and produces a ~100 MB file of zeros. Packaging uses the ELF directly.
-
-Note on objdump and `.startup`: it misaligns on the padding byte at
-`0x4200004e`. Disassemble from the instruction boundary
-(`--start-address=0x42000050`) to see the real call sequence.
+`XT_ISR_SPILL` in `vectors.S` is currently **0**. The dispatch works without an
+explicit spill because the pseudo base-save area makes the overflow chain valid.
+Setting it to 1 previously produced a bad overflow (`a1 = 0xcccccccd`) and was
+reverted. If a deeper dispatch chain ever breaks, revisit it with the ESP-IDF
+ordering (spill *before* the dispatch, PS restored afterwards).
 
 ---
 
-## 3. Commit conventions
+## 5. Context switch (`firmware/asm/xtensa/thread.c`)
 
-- `subsystem: short description`, then a body explaining *why*, then
-  `Change-Id: I<40 hex chars>`. No `Co-Authored-By`.
-- C only. No C++isms, no typedefs for structs, no code in headers, `/* C */`
-  comments, four spaces, no tabs, under 80 columns (keymap tables routinely
-  exceed it; the tree does too).
-- Follow the style of the file you are editing. Do not invent a new arch
-  dispatch idiom — use `#if defined(CPU_*)` as in `firmware/asm/`.
+`struct regs` (`firmware/asm/xtensa/thread.h`):
+```
+r[16]  a0, a2..a15          (offsets 0,8,12,...,60)
+sp     64
+ps     68
+windowbase 72
+windowstart 76
+sar      80
+start    84   (thread entry point, cleared to 0 once running)
+```
+
+`store_context()` calls `__xtensa_libgcc_window_spill()` first, then saves the
+current window plus WB/WS/PS/SAR. PS is masked with `-16` (0xFFFFFFF0) which
+clears `INTLEVEL` (bits 0-3) but **leaves `EXCM` (bit 4) alone**. If a context is
+ever saved while `EXCM=1`, the resumed thread runs in exception mode and its next
+`retw` raises `EXCCAUSE_ILLEGAL_INSTRUCTION`. **This is the most likely cause of
+the boot loop and should be changed to `-17` (0xFFFFFFEF).**
+
+`load_context()` restores WB first, then WS, PS, SAR, then the registers. It
+cannot use a plain `l32r sym` because the context lives in `.bss` (PSRAM window)
+while the code is in the flash window — outside l32r's 16-bit PC-relative range —
+so the address is parked as a literal in the same section and jumped over.
+
+There is a self-test (`XTENSA_THREAD_SELFTEST`) that alternates two threads, each
+recursing 6 deep through a function pointer, switching at the bottom, and
+checking that `xt_depth(6)` returns 21. It is off in the production build.
 
 ---
 
-## 4. Verification discipline
+## 6. Tooling
 
-There is no hardware. Every claim is checked one of four ways:
-
-1. **ESP-IDF source.** A full ESP-IDF checkout is at `/tmp/espidf`; use
-   `components/soc/esp32s3/register/soc/*_reg.h` and `*_struct.h` for bit
-   positions, and `components/soc/esp32s3/include/soc/gpio_sig_map.h` for
-   signal indices.
-2. **Host mock.** Extract the driver body into `/tmp/<name>test/mock.c` with
-   `rd`/`wr` redirected to a sparse array, then assert the programmed values.
-3. **Disassembly.** Confirm the compiled function writes the addresses and
-   values intended.
-4. **Reference firmware.** `/tmp/meowkit` is the stock MeowKit firmware;
-   `src/bsp/config.h` is the authoritative pin map.
-
-Mock tests currently on disk:
-
-| Directory | What it proves |
+| Tool | Purpose |
 |---|---|
-| `/tmp/freqtest` | clock ladder, LDO slave ordering, XTAL guard |
-| `/tmp/dwctest` | real `usb_dw_check_hw()` against mock GHWCFG2/3/4; FIFO layout |
-| `/tmp/i2ctest` | command-list budget (32 TX words, 32 RX words, 8 slots) |
-| `/tmp/psramtest` | full octal PSRAM bring-up sequence replayed against an emulated chip |
-| `/tmp/gdmatest` | GDMA OUT ring: exactly one descriptor in flight over 2000 frames |
-| `/tmp/sdhosttest` | IDMAC descriptor ring: first/last/chain flags, ring closure, 128-block ring |
-| `/tmp/keymaptest` | real keymap tables: stick and grid agree in 11 contexts × 4 directions; no key fires twice per tap |
-| `/tmp/dbgtest` | report card produces 14 items, SRAM arithmetic matches the real link |
-| `/tmp/ledctest` | LEDC timer/period/duty arithmetic, monotonic brightness |
-| `/tmp/i2sdiv` | I2S clock divider: every supported rate lands within 1 ppm of 256×rate |
+| `/tmp/rbwin` | build dir. `make -j8` → `rockbox.elf` + `rockbox.esp32s3` |
+| `/tmp/rbtest/prefix/xtensa-esp-elf/bin/xtensa-esp-elf-gcc` | esp-14.2.0_20260121 |
+| `/tmp/rbtest/prefix/bin/xtensa-esp32s3-elf-nm`, `.../xtensa-esp-elf-objdump` | symbol/disassembly |
+| `/tmp/probe8.py` | reads `xt_probe_out`, `xt_isr_hist`, boot log tail. Run with `/tmp/esptoolvenv/bin/python probe8.py` |
+| `/tmp/probe7.py` | reads boot_log tail, `xt_exc_dump` (128 words), `xt_isr_hist`, `xt_ctx_hist` |
+| `/tmp/rbconsole.py` | CDC console (RTS-only reset) |
+| `/tmp/rawread.py` | live CDC capture |
+| `/tmp/rbwatch.py` | CDC without reset — only captures the 28 bytes of ROM loader output, because `boot_trace` writes to UART0 FIFO, not USB-Serial-JTAG CDC |
+| `/tmp/romelf/esp32s3_rev0_rom.elf` | ROM ELF for XOS/ISA archaeology |
+| `/tmp/espidf` | full ESP-IDF git clone (sparse). `git show HEAD:<path>` extracts any file |
+| `/tmp/vectors_S`, `/tmp/xtensa_context.S`, `/tmp/xt_asm_utils.h` | ESP-IDF xtensa port, extracted |
 
----
+**esptool `dump_mem` hard-resets the chip** before attaching, so peripheral
+registers read as reset defaults. For runtime state use the boot-log ring or
+`xt_exc_dump`.
 
-## 5. Memory map
+`xt_exc_dump` is in `.iramdata` (instruction bus, 0x4037aec0 currently); probes
+must subtract 0x6F0000 to read it through the data-bus alias. Symbols in
+`.srambss` (0x3fc...) do not need the alias.
 
-### Internal SRAM (the binding constraint)
-
-`app.lds`: `DRAMORIG = 0x3FC99000`, `DRAMSIZE = 0x57000` (356,352 bytes).
-
-| Symbol | Address |
-|---|---|
-| `_datastart` | 0x3fc99000 |
-| `_bssend` | 0x3fce10f4 |
-| `_stackend` | 0x3fce2100 |
-| `dramend` | 0x3fcf0000 |
-
-Used: 299,264 bytes. **Free: 57,088 bytes.** That reserve is what hardware
-bring-up will need, so do not spend it on anything speculative.
-
-`.iram` is `IRAMORIG = 0x40378000`, `IRAMSIZE = 0x9000` (36,864). Used: 34,764
-(`_iramstart` 0x40378000 → `_iramend` 0x403807cc). **Only 2,100 bytes free.**
-Anything added to `.icode`/`.icode.irq` has to fit there.
-
-The instruction bus and the data bus see the same physical SRAM at addresses
-differing by `0x6F0000` (`0x40378000` ↔ `0x3FC88000`). `DRAMORIG` is the alias
-of the end of the instruction region, reserved as a constant rather than
-`SIZEOF(.iram)` because plugins are linked by a separate script that cannot see
-where the firmware's code ends.
-
-### PSRAM / DROM window
-
-| Region | Address | Notes |
-|---|---|---|
-| `.rodata` | 0x3c000020 – 0x3c079f58 (499,512 bytes) | pages 0–7, mapped by the ROM loader |
-| `.psrambss` | 0x3c080000 – 0x3c0a0000 | pages 8–9, NOLOAD, zeroed by crt0 |
-| `.audiobuf` | 0x3c0a0000 – 0x3c65a820 | 6,006,816 bytes, sized from the location counter |
-| `.framebuffer` | 0x3c65a820 | 153,600 bytes |
-| `codecbuf` | 0x3c680020 | must equal `CODEC_ORIGIN` in `plugin.lds` |
-| `pluginbuf` | 0x3c780020 | |
-| `psramend` | 0x3c800020 | end of the MMU-mapped range |
-
-`mmu_init()` maps MMU pages 8–128 (121 entries) to PSRAM physical pages 0–120.
-The MMU table is 512 × 32-bit entries at `0x600C5000`; the **entry index is the
-masked address** (`vaddr & 0x1FFFFFF`), not `vaddr - 0x3C000000`. Bit 15 = PSRAM
-target, bit 14 = invalid, bits 0–13 = physical page.
-
-Why `.psrambss` is aligned to 64 KB at **both** ends: the MMU maps whole pages,
-the ROM loader has already mapped the page that ends `.rodata` to flash, and
-`mmu_init()` skips entries that are already valid. Before this change the
-audiobuffer started at `0x3c07928c`, inside page 7, so its first ~26 KB read
-flash. The trailing ALIGN keeps the page numbering to `codecbuf` contiguous.
-
-Statics moved to PSRAM via `PSRAM_BSS_ATTR` (defined in `meowkits3.h`, empty
-default in `config.h`):
-
-| Static | Size |
-|---|---|
-| `codepage_table` (`firmware/common/unicode.c`) | 65,538 |
-| `language_buffer` (`apps/language.c`) | 29,008 |
-| `logfbuffer` (`firmware/logf.c`) | 16,385 |
-
-`cache_buffer` in `disk_cache.c` (32 KB) was deliberately **not** moved: the
-SDHOST IDMAC writes straight into the buffer it is given, and the directory
-cache passes `cache_buffer` as that buffer. GDMA/DWC reachability of PSRAM
-through the MMU is unconfirmed, so anything DMA-touched stays in internal SRAM.
-
-### ESP image
-
-5 segments, entry `0x42000034`, 926,320 bytes, checksum valid:
-
-| Seg | Length | Load address |
-|---|---|---|
-| 1 | 0x79f38 | 0x3c000020 (`.rodata`, DROM) |
-| 2 | 0x024e8 | 0x3fc99000 (`.data`, DRAM) |
-| 3 | 0x03bc8 | 0x40378000 (`.iram`, first half) |
-| 4 | 0x5d638 | 0x42000020 (`.text`, IROM) |
-| 5 | 0x04c04 | 0x4037bbc8 (`.iram`, second half) |
-
-Flash-mapped segments must sit in the file at an offset congruent to their
-address modulo the 64 KB MMU page size — that is why `IROMORIG`/`DROMORIG` carry
-the `+0x20`. `.psrambss` is `SHT_NOBITS` and is skipped by `esp-elf2image`.
-
----
-
-## 6. Entry sequence (verified by disassembly)
-
-`crt0.S` is **not** a reset vector; the mask ROM owns the vectors and *jumps* to
-the entry point. So `a0` is not a return address, `a1` is whatever the loader
-left, and `.bss` is not in the image.
-
+Layout of `xt_exc_dump` (96 words):
 ```
-movi a2, 0; wsr a2, windowbase          /* pin WINDOW_BASE to 0 */
-l32r a1, .Lstack                        /* own stack, top of internal DRAM */
-zero .bss loop
-call0 psram_init                        /* 0x4204b418 */
-call0 mmu_init                          /* 0x4204b600 */
-call0 psram_present                     /* 0x4204b3b0 */
-beqz → skip .psrambss zero loop
-zero .psrambss loop
-call0 main                              /* 0x42007cd4 */
-j 5b                                    /* spin */
+0 exccause   1 epc1   2 excvaddr   3 epc2
+4 a0  5 a1  6 a2  7 a3  8 a4(marker 0)  9 a5 ... 19 a15
+20 ps  21 windowbase  22 windowstart  23 excsave1
+24 intenable  25 interrupt  26 boot_log_len_at_trap
+56 double_trap_count  57 exc_trap_count
+32..60 nested (double) exception
 ```
 
-Literals are written as `.word` in `.startup` rather than `l32r symbol`: this
-binutils hits an internal error (`ldlang.c 1074`) when an `l32r` references a
-linker-script-defined symbol directly.
-
-The vector table is at `_vector_table = 0x40378400` (1024-aligned, as VECBASE
-requires), and `xt_level1_handler` is at `0x40378804` — reachable by the table's
-`j` (18-bit signed range). `.icode.irq` is placed immediately after the table in
-`app.lds` for the same reason; `-mlongcalls` makes the C calls out of the
-dispatch unlimited, but hand-written `call0` is not.
+`xt_isr_hist` (8 words, `.srambss`): `wb@entry, ws@entry, ps@entry, wb@exit,
+ws@exit, count, delta, spare`.
 
 ---
 
-## 7. Interrupt slots
+## 6b. Booting through ESP-IDF's second-stage bootloader
 
-Sources are routed by writing the slot number to
-`0x600C2000 + 4 * source_id`. Levels cannot be programmed (no
-`rsr.intlevel`/`wsr.intlevel` on this core config), so a handler can only use a
-slot that is already level 1: 0–10, 12, 13, 17, 18.
+**Does the MeowKit use ESP-IDF stage 2? Yes.** `meowkit-s3-v1.0.2.bin` is a
+standard ESP image: ESP-IDF second-stage bootloader at 0x0 (entry `0x403c98d8`,
+three segments, DROM at `0x3fce3808`), partition table at 0x8000, app at 0x10000.
+It is arduino-esp32 on ESP-IDF 4.4.3. Flashing that image back makes the player
+work, so the board definitely runs a stage-2 loader.
 
-| Slot | Source | Source id |
-|---|---|---|
-| 1 | TIMERG1 T0/T1 | 53, 54 |
-| 2 | GDMA OUT ch0 | 71 |
-| 3 | SDHOST | 30 |
-| 5 | GDMA IN ch0 | 66 |
-| 8 | I2C0 | 42 |
-| 9 | USB (DWC2) | 38 |
-
-0 = WiFi MAC, 4 = WiFi baseband, 6 = core timer, 7 = software. No collisions.
-All source ids verified against `intr_s3.h` — the enum has gaps, which is why
-`I2C_EXT0` is 42 and not 41.
-
-Slot 1 carries both TIMERG1 timers: timer 0 drives the kernel tick and timer 1
-drives Rockbox's `timer_set()`. The group has one interrupt source per timer, so
-both are routed to the same slot.
-
-The **core timer** (`rsr.ccount`, `wsr.ccompare0`) is readable but its interrupt
-cannot be armed on this core config — that is a different peripheral from
-TIMERG1 and is not used.
-
----
-
-## 8. Input semantics
-
-Settled and mock-verified.
-
-- **Stick**: up/down is the wheel axis (prev/next in lists, inc/dec in settings,
-  volume in the WPS); left/right is the select axis (cancel/OK, skip on release,
-  seek on hold). This matches the scroll-wheel targets (iriver H1x0/H3x0, Sansa
-  Clip+).
-- **Grid**: the four cardinal cells (`TOPMIDDLE`, `BOTTOMMIDDLE`, `MIDLEFT`,
-  `MIDRIGHT`) are aliased to the same actions in `button_context_standard`, so
-  the panel and the stick agree — including in contexts where
-  `keymap-touchscreen.c` is empty (e.g. `CONTEXT_LIST`).
-- **EQ / colour picker / time screens**: left/right is the inc/dec axis there.
-  The touchscreen table leaves the top and bottom cells unclaimed in those
-  contexts, which is why `keymap-meowkits3.c` has its own
-  `stick_context_settings_lr_inc`.
-- **A and B are buttons, not directions.** Both commit on **release** (like a
-  scroll-wheel SELECT/MODE key). A = OK, A hold = context menu. B = main menu,
-  B hold = quick screen. LEFT = cancel.
-- **Invariant enforced by the mock:** no key may produce more than one action
-  per tap, across 13 keys × 6 contexts. The old mapping violated this (B tap
-  fired CANCEL on press and QUICKSCREEN on release).
-- Grid mode is the default (`apps/settings_list.c` picks point mode only for
-  `APPLICATION` and Onda targets). In the simulator the arrow keys go to the
-  stick and `7 8 9 u i o j k l` address the grid cells.
-- **Multi-touch**: `button-xtensa.c` ORs all reported points. `action_code_worker()`
-  requires an exact match, so a two-finger combination silently returns
-  `ACTION_NONE`. This is the house convention (`shanlingq1` does the same). If it
-  ever annoys, the fix is to take `points[0]` in grid mode.
-- `ft6x06.c` now clamps `nr_points` to `FT6x06_NUM_POINTS` — the register field
-  is four bits wide and callers iterate over it.
-
----
-
-## 9. USB
-
-Rockbox's generic DWC2 driver (`firmware/drivers/usb-designware.c`) is used; the
-ESP32-S3 work is target hooks only.
-
-| Item | Value |
-|---|---|
-| DWC2 base | `0x60080000` |
-| USB wrap | `0x60039000` |
-| RTC usb_conf | `0x60008120` |
-| Interrupt source | 38 → slot 9 |
-| Clock enable | bit 23 of `SYSTEM_PERIP_CLK_EN0` (`0x600C0018`) |
-| Endpoints | 6 total, 5 IN |
-| FIFO RAM | 256 words |
-| Architecture | 2 = internal DMA |
-| PHY | internal full-speed (UTMI_8) |
-
-**FIFO sizing**: RX 64, NPTX 16, PTX 40. GHWCFG4 claims five periodic FIFOs but
-only four `DIEPTXF` registers exist (0x104–0x110), so PTX is chosen so
-`(256 − 64 − 16) / 40 = 4` and the phantom fifth is never allocated. Total 240
-of 256.
-
-**Endpoint budget is exactly six**: EP0 + MSC bulk IN/OUT + HID interrupt IN +
-CDC bulk IN/OUT. The CDC notification endpoint is optional and skipped when the
-pool is exhausted. Isochronous audio needs two more, so it only fits when MSC is
-inactive; the allocator then disables audio with a `logf` rather than failing.
-Four IN endpoints need dedicated TX FIFOs (MSC IN, CDC bulk IN, CDC int IN, HID
-IN) — exactly the four available.
-
-**Two things the generic driver cannot do by itself:**
-
-1. **PHY routing.** The DWC does not own the pins. `RTC_CNTL_USB_CONF_REG` bits
-   20 (`SW_HW_USB_PHY_SEL`) and 19 (`SW_USB_PHY_SEL`) plus `USB_WRAP`
-   `OTG_CONF` bit 18 (`PAD_ENABLE`) must be set. `phy_sel` bit 2 selects an
-   *external* PHY and stays clear.
-2. **VBUS.** There is no sense line on the SoC or the board. `usb-xtensa.c` runs
-   a thread polling `axp173_input_status()` every 200 ms and calls
-   `usb_status_event()`. Tick-based polling is not viable: an I2C transaction
-   takes ~1.6 ms.
-
-**Memory**: the DWC's DMA is an internal AHB master and the core allocator's pool
-is the audiobuffer, which is PSRAM here. `USB_STATIC_ALLOC` is therefore defined
-for `CONFIG_CPU == ESP32S3` in `usb_storage.c`, and the transfer buffers are
-static in internal SRAM at 16 KB per direction.
-
-`CPU_XTENSA` was added to `HAVE_CPU_CACHE_ALIGN` in `firmware/export/cpu.h`.
-Cache maintenance is explicit: `USB_DW_PHYSADDR(x)` is the identity,
-`NO_UNCACHED_ADDR` and `POST_DMA_FLUSH` are set, and the driver's
-`COMMIT_DCACHE_RANGE`/`DISCARD_DCACHE_RANGE` resolve to the ROM trampoline in
-`rom_cache.h`.
-
-**Mode selection is runtime, not compile time.** `firmware/usb.c` enables drivers
-per state: at `USB_POWERED` (bus reset seen) storage is off, HID is on, audio
-follows the `usb-dac` setting; at `USB_INSERTED` (first SET_ADDRESS/SET_CONFIG/
-transfer) storage turns on and HID/serial follow their settings. There is no
-"MSC only" switch; the closest is charge-only audio mode.
-
-**Latent upstream bug**: `usb_core.c`'s `hex[]` table has 16 entries indexed by a
-bitmask of enabled drivers. With four drivers the id maxes at 15 — exactly the
-array size. A fifth driver would overflow. Worth reporting upstream.
-
-**If USB enumerates with inverted data**, the first thing to try is the USB wrap's
-`exchg_pins` / `exchg_pins_override` — ESP32-S3 revisions have a D+/D− swap
-quirk. ESP-IDF exposes it; tinyusb does not call it.
-
----
-
-## 10. Pre-flash verification pass
-
-Everything checkable without a board has now been checked. Register offsets,
-bit positions, signal indices and clock arithmetic were re-verified against
-ESP-IDF's esp32s3 headers. Four real defects were found and fixed:
-
-1. **Backlight PWM** (`09479e178b`): `duty_res` is the number of resolution
-   bits, not bits minus one (8 written where 9 belongs); `hpoint` was never
-   written, so the PWM had no period; and bit 24 of the timer config is
-   `tick_sel`, not the clock source — the low-speed clock source is
-   `apb_clk_sel`, a two-bit field in `LEDC_CONF` at `+0xd0`. The driver claimed
-   XTAL and silently ran on APB.
-2. **I2C command-list budget** (`fbc7b3f827`): RX RAM is 32 words, one received
-   byte per word; a longer read wraps the RAM and still reports OK.
-3. **GDMA frame size** (`fa11295173`): a silent clamp to 4095 replaced by a
-   `_Static_assert` plus `panicf()`.
-4. **ft6x06 point count** (`5f8c3610ec`): four-bit field, callers iterate over
-   it, array is two entries.
-
-Also confirmed:
-
-- GPIO matrix `func_sel` is 9 bits (a 6-bit mask truncates every signal above
-  63; GPSPI is 101–103). Output slots are indexed by pin (`+0x554`), input slots
-  by signal (`+0x154`). Pull-ups live in the IO MUX (`FUN_PU` bit 8), not in the
-  GPIO block.
-- All peripheral base addresses match `reg_base.h`: LEDC 0x60019000, I2S0
-  0x6000F000, I2S1 0x6002D000, GDMA 0x6003F000, GPSPI2 0x60024000, SDHOST
-  0x60028000, I2C0 0x60013000, TIMERG1 0x60020000.
-- Clock gate bit positions: spi2 = 6, i2c_ext0 = 7, ledc = 11, i2s1 = 21, usb =
-  23 in `perip_clk_en0`; dma = 6, sdio_host = 7 in `perip_clk_en1`.
-- GDMA OUT channel offsets (conf0 0x60, conf1 0x64, int_st 0x6C, int_ena 0x70,
-  int_clr 0x74, link 0x80, peri_sel 0xA8) and the IN channel at the base; OUT
-  link `start` is bit 21, IN link `start` is bit 22 because of `auto_ret`.
-- I2S TX/RX register offsets and every `TX_CONF1`/`TX_CONF`/`TX_TDM_CTRL` bit.
-- Timer group offsets and `tnconfig` bits (`USE_XTAL` 9, `ALARM_EN` 10,
-  `DIVCNT_RST` 12 write-trigger, `DIVIDER` [28:13], `AUTORELOAD` 29,
-  `INCREASE` 30, `EN` 31).
-- SDHOST IDMAC descriptor ring arithmetic and the two-stage clock divider: from
-  XTAL (40 MHz) the target reaches 400 kHz for probe and 20 MHz for operation;
-  50 MHz is unreachable, so the target must not advertise
-  `SDMMC_BUS_WIDTH_50MHZ` (it does not, and only D0 is wired anyway).
-- I2S clock divider: every supported rate lands within 1 ppm of 256×rate, and
-  all `x`, `y`, `z` fit in their 9-bit fields.
-- PSRAM MMU arithmetic: `_psrambssstart` 0x3c080000 (page 8) → `psramend`
-  0x3c800020 (page 128), 121 entries, physical pages 0–120, within the 128-page
-  chip.
-- PSRAM timing replayed against an emulated octal chip: core clock sel 2 (160
-  MHz), PSRAM div 2 (80 MHz), DIN mode 0x04924924, DIN num 0, TIMING_CALI 0x0A,
-  flash restored to div 2.
-
----
-
-## 11. What remains
-
-### A. Hardware bring-up — the only real work left
-
-Run in cascade order. Each step has a specific failure signature.
-
-1. **crt0 entry** — ROM jumps to `0x4037802c` (in `.iram`), `a1` set by hand,
-   the IROM MMU window armed, `.bss` and `.psrambss` zeroed, `WINDOW_BASE` = 0.
-   crt0 prints `R I P M G` through the ROM's `ets_write_char_uart`; the ROM's own
-   console is on the USB-serial in download mode, but after a flash boot it is
-   UART0, which this board does not route to the USB connector — so the trace may
-   not be visible on `/dev/ttyACM0` and the panel is the real indicator.
-2. **PSRAM octal bring-up** at 80 MHz. `dbg_hw_info()` reports "PSRAM:
-   responding / not responding". Highest-risk item: ESP-IDF reaches 80 MHz with
-   a timing sweep Rockbox cannot run; we use ESP-IDF's own fallback config
-   (`{din_mode 4, din_num 0, extra_dummy 2}` for core 160 MHz / module 80 MHz
-   DTR), which is the configuration ESP-IDF ships when the sweep fails — so it
-   is verified, not merely plausible.
-3. **MMU pages 8–128 mapped**, audiobuffer reads PSRAM.
-4. **Panel lights up** — PCA9557 CS/RST (init order is forced: I²C → expander →
-   display), GPSPI FIFO, active-low PWM.
-5. **Audio plays** — GDMA 20-bit descriptor window, `OUT_DONE` vs `OUT_EOF`,
-   ROM cache trampoline.
-6. **SD card mounts** — IDMAC owner bits, `INTMASK` polarity (a set bit *unmasks*),
-   clock divider.
-7. **USB enumerates** — PHY mux, FIFO sizing, endpoint budget at runtime,
-   possibly `exchg_pins`.
-8. **Buttons / touch / battery / RTC** — FT6336 calibration, AXP173 REG 0x46 PEK
-   semantics.
-
-Highest-risk assumptions, and where each now stands:
-
-1. **ROM cache trampoline — resolved statically.** Downloaded
-   `esp-rom-elfs` (`esp32s3_rev0_rom.elf`) and disassembled the real functions.
-   Each published address is `l32r a9, <addr>; jx a9`, and the callee is
-   `entry a1, 48` … `retw.n` reading its arguments from a2/a3 — exactly what
-   `rom_cache.S` assumes. `rom_cache_internal_table_ptr` (0x3fceffc4) is a
-   `.data.interface.cache` section of the ROM image, so the mask ROM initialises
-   it before jumping to our image. Still untested: `rfe` after a manual
-   `WINDOW_BASE` write.
-2. **PSRAM timing — resolved.** `mspi_timing_tuning_configs.h` gives
-   default_config_id 5 = {din_mode 4, din_num 0, extra_dummy 2} for 160 MHz core /
-   80 MHz module DTR; `mspi_timing_tuning_ll.h` writes exactly those into 0xC0,
-   0xC4 and 0xBC (TIMING_CALI bit 1, extra dummy bits [4:2]). Rockbox matches.
-   The clock-divider formula (CLKCNT_N/H/L at 23:16, 15:8, 7:0) also matches.
-   MR8 (bl=3, bt=0) is written by ESP-IDF and not by Rockbox — worth adding.
-3. **Interrupt slots — resolved.** ESP-IDF's `esp_cpu_intr.c` for esp32s3 lists
-   level-1 slots as 0-10, 12, 13, 17, 18. Rockbox uses 1, 2, 3, 5, 8, 9.
-4. **`exchg_pins` — resolved.** MeowKit runs TinyUSB on the OTG port (MSC+CDC+HID)
-   and never sets the swap, so the default polarity is right for this module.
-5. **Touch calibration — resolved.** The reference firmware's `CTP_Class` uses
-   `CTP_REVERS_XY=1`, `CTP_REVERS_XPOS=1`, `CTP_REVERS_YPOS=0`, i.e. display
-   x = 320 − raw(0x05/0x06), display y = raw(0x03/0x04). Rockbox's
-   `DEFAULT_TOUCHSCREEN_CALIBRATION` computes the same thing.
-
-Five bugs found while doing this, all fixed:
-
-- `rom_cache.S` never copied the ROM function's return value. A windowed callee
-  returns in the caller's a(N+2), so `callx4` returns in a6; `xt_rom_call`
-  returned a2, which still held the function pointer. `cache_dcache_line_size()`
-  is the only caller that reads it.
-- `backlight-xtensa.c` used a 0x10 LEDC channel stride and a 0x04 timer stride.
-  Channels are five words wide (0x14) and timers two (0x08), so channel 7's
-  writes landed on channel 5's conf1. `ledc_reg.h`: LSCH7_CONF0 = 0x8c.
-- `vectors.S` claimed the window vector at 0x000 is shared with the level-1
-  interrupt. It is not: window vectors run 0x000–0x17C and level 2 starts at
-  0x180. The gaps were linker padding (zeros); they are now self-loop traps.
-- `usb_core.c` indexed `hex[16]` with a bitmask of up to six drivers (≤ 63).
-  Masked to four bits.
-- **The entry point was in the IROM window.** `ets_run_flash_bootloader` in the
-  mask ROM calls `Cache_Dbus_MMU_Set` and never `Cache_Ibus_MMU_Set`; only
-  `ets_run_direct_boot` maps the instruction side. ESP-IDF's bootloader is
-  IRAM-only for exactly this reason. `.startup` is now in `.iram`, and
-  `irom-map.c` arms the IROM entries before anything in `.text` runs.
-- **IROM and DROM shared MMU entry 0.** The 512 MMU entries index one shared
-  32 MB linear range (`(vaddr & 0x1FFFFFF) >> 16`), so `0x42000020` and
-  `0x3C000020` were the same entry and their mappings overwrote each other.
-  `IROMORIG` is now `0x42900020` (entry 144), above the entries DROM and the
-  codec/plugin buffers claim, and `app.lds` asserts it.
-
-### B. Simulator interactive pass
-
-`cd /tmp/rbsim && ./rockboxui` with a real SDL window. Walk menus, the EQ, the
-colour picker, the time screen and the USB screen to confirm the keymap behaves
-as the mock predicted. Headless runs boot but cannot inject key events.
-
-### C. Upstreaming
-
-98 commits ahead of `upstream/master`, tree clean, both builds clean. Needs the
-Gerrit review flow. `tools/builds.pm` has `status => 1` for meowkits3; raise to
-2 when the board boots, 3 when it is usable day to day.
-
-### D. Small optional items
-
-- Report the `usb_core.c` `hex[]` overflow upstream.
-- Consider adding SDHOST card presence to `dbg_hw_info()` — risky, it needs a
-  real transaction.
-- `DEFAULT_TOUCHSCREEN_CALIBRATION` in `meowkits3.h` is inferred from the panel
-  rotation (`x' = LCD_WIDTH − y`, `y' = x`). Unverified on hardware.
-- The touchscreen is polled every tick; if the bus proves contended, poll every
-  other tick.
-
----
-
-## 12. Facts worth not re-deriving
-
-- **Boot**: the mask ROM loader is sufficient. It reads the image header at flash
-  offset 0, copies the RAM segments, maps the flash MMU windows and jumps to the
-  entry point. It does **not** bring up external PSRAM — that is Rockbox's job,
-  before `mmu_init()`.
-- **No interrupt vector table in the usual sense.** No `wsr.excb`, no
-  `wsr.intbase`, no `enableint`. `wsr.vecbase` works (`XCHAL_HAVE_VECBASE 1`).
-  Level 1 is reached through the exception vectors at VECBASE+0x300 (kernel) and
-  +0x340 (user), selected by PS.UM.
-- **Windowed context switching is impossible** on this core config: no REGB
-  option, so `mtsr`/`mfsr`/`spills`/`spillw` are invalid opcodes. Hence
-  `-mabi=call0`, and hence `lib/xtensa_support` supplying the libgcc helpers
-  Rockbox would otherwise need.
-- **Cache maintenance is ROM-only.** No cache instructions exist on this core
-  config (`probeD`, `flushD`, `lockD`, `rdtag`, `wttag`, `rinvalidate`,
-  `binvalidate` are all invalid) and there is no memory-mapped cache control.
-  `firmware/target/xtensa/rom_cache.S` is the trampoline; the addresses are in
-  `components/esp_rom/esp32s3/ld/esp32s3.rom.ld` and do not move between ROM
-  revisions. `callx4` sets CALLINC as part of the call, so nothing has to be
-  arranged at startup beyond pinning `WINDOW_BASE`.
-- **binutils gotcha**: an `l32r` referencing a linker-script-defined symbol
-  directly triggers an internal error (`ldlang.c 1074`). Keep the literal as a
-  `.word` in the same section. Also `jmp` is not a valid mnemonic on this core —
-  use `j`.
-- **In a linker script**, an assignment to `.` whose expression contains a bare
-  absolute constant is treated as an absolute section address, and region usage
-  is then computed from that address instead of the section size — a spurious
-  overflow of roughly the region origin. Use `ORIGIN()`/`LENGTH()`.
-- **Anything the DMA writes back must be `volatile`.** A descriptor's owner bit
-  changes through a store the compiler cannot see; an empty spin loop on it gets
-  folded into a single test.
-- **GDMA descriptors must be in internal SRAM** (20-bit address register, window
-  based at `0x3FC00000`). Buffers may be in PSRAM but need explicit cache
-  maintenance. `GDMA_MAX_DESC_LEN` is 4095.
-- **SDHOST completion is the descriptor owner bits, not an interrupt.** The IDMAC
-  clears a descriptor's owner bit when it retires it; `RINTSTS` `DATA_OVER` only
-  means the card sent data.
-- **I2C is a command-list machine.** `op_code`: 6 RSTART, 1 WRITE, 3 READ, 2 STOP,
-  4 END; the controller stops at STOP or END. In master mode the slave address and
-  R/W bit are part of TX RAM, so `byte_num` counts them. A read is split so the
-  master ACKs every byte but the last. The byte-at-a-time API
-  (`i2c_start`/`i2c_outb`/`i2c_inb`) cannot be implemented at all; the target uses
-  the transaction-level API and the synchronous entry points are wrappers over
-  `i2c_async_queue()`.
-- **The I2S module clock is XTAL (40 MHz)** when `SCLK_SEL` is 0, independent of
-  `cpu_frequency`.
-- **AXP173 PEK status is in REG 0x46**, not 0x44 (which is ACIN/VBUS). The status
-  bits latch and are cleared by writing 1. REG 0x36 bit 3 ("auto power off when
-  the press outlasts the off time") is set at reset; a bare write of only the
-  on/off fields clears it and removes the hardware safety net. `power_off()` must
-  command REG 0x32 bit 7 — the SoC cannot cut its own supply.
-- **Backlight is active low** and GPIO 42 is routed to LEDC low-speed channel 7
-  through the GPIO matrix (`LEDC_LS_SIG_OUT7_IDX = 80`). With 9-bit resolution
-  and `hpoint = 512`, a duty of 512 means "always high" = off.
-- **`DEFAULT_STACK_SIZE` is 0x1000** for xtensa (`firmware/asm/xtensa/thread.h`),
-  larger than m68k/mips because the level-1 handler runs on the interrupted
-  thread's stack.
-- **Configure target**: `--target=133` (`meowkit-esp32s3`), `target_id = 126`,
-  `MODEL_NUMBER 133`, output `rockbox.esp32s3`.
-- **esptool 4.7.0** supports `image_info`, `write_flash`, `chip_id`, `flash_id`
-  but **not** `chip_info`.
-
----
-
-## 13. Reference material on disk
-
-| Path | What it is |
-|---|---|
-| `/tmp/espidf` | Full ESP-IDF checkout — the authoritative register headers |
-| `/tmp/meowkit` | Stock MeowKit firmware; `src/bsp/config.h` is the pin map |
-| `/tmp/baremetal` | SDK-free ESP32-S3 reference, SVD-derived headers |
-| `/tmp/tunecfg_s3.h` | ESP-IDF PSRAM/flash timing config tables |
-| `/tmp/psram_octal.c` | ESP-IDF octal PSRAM implementation |
-| `/tmp/axp_ds.pdf` / `/tmp/axp_ds.txt` | AXP173 datasheet (`pdftotext -layout`) |
-| `/tmp/rbbuild3` | Working native build directory |
-| `/tmp/rbsim` | Working simulator build directory |
-| `/tmp/rbtest/prefix/xtensa-esp-elf` | The working toolchain |
-| `/tmp/*test/` | Host mock tests (see §4) |
-
-If a header is missing from `/tmp/espidf`, fetch it:
+`tools/esp-stage2` writes the same layout from a prebuilt ESP-IDF bootloader:
 
 ```sh
-curl -sL https://raw.githubusercontent.com/espressif/esp-idf/v5.2.5/components/soc/esp32s3/register/soc/<name>_reg.h
+make flash-stage2 ESPBOOT=~/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/bootloader_qio_80m.elf ESPPORT=/dev/ttyACM0
 ```
 
-(raw.githubusercontent has been intermittently returning 404 for these paths;
-the local checkout is more reliable.)
+Two things learned the hard way:
+
+1. **The partition table has to say APP.** The first version of `esp-stage2`
+   wrote `app0` as type 2 (`BOOTLOADER`) instead of type 0 (`APP`), so the loader
+   never found an application. `PARTITIONS` in the script is now
+   `(0, 0, 0x10000, 0x330000, "app0")`.
+
+2. **The PlatformIO prebuilt bootloader does not run on this board.** With it at
+   0x0 the mask ROM prints, on every attempt:
+
+   ```
+   ESP-ROM:esp32s3-20210327
+   rst:0x7 (TG0WDT_SYS_RST), boot:0xb (SPI_FAST_FLASH_BOOT)
+   SPIWP:0xee
+   mode:QIO, clock div:2
+   load:0x3fce3808,len:0x4bc
+   ets_loader.c 78
+   ```
+
+   and then the watchdog resets. A normal ESP32-S3 boot prints one `load:` line
+   per segment followed by `entry 0x...`; here only the first segment is loaded.
+   The stock bootloader extracted from `meowkit-s3-v1.0.2.bin` (entry
+   `0x403c98d8`, DROM len `0x44c`) is the known-good one and is the one to use.
+
+**How to tell whether crt0 actually ran.** RTC slow memory survives a reset, so
+crt0 stamps `0xC0FFEE01` at `0x50000D60` immediately after `boot_trace_start()`. If
+a probe reads that value, this build's crt0 executed. Under the PlatformIO
+bootloader it never did.
+
+**RTC slow memory is not uniformly writable.** A whole-8KB stamp of `0x5A5A5A5A`
+landed on zero words. `0x50000D80` and `0x50000E40` silently drop stores and read
+back whatever an older run left. The slots `bootlog.c` uses — `0x0000` log, `0x0C00`
+live, `0x0C80` hist, `0x0D40` diag, `0x0E80` exception, `0x1004` log length — are
+verified to stick. Do not place new markers anywhere else.
+
+**USB access caveat.** Once the stock firmware is running it claims the
+USB-Serial-JTAG, and esptool can no longer connect (`No serial data received`).
+Toggling DTR/RTS from a Python script made the device disappear from USB
+entirely. To flash again the board has to be put in download mode by hand
+(hold BOOT while tapping RESET) or the stock firmware has to be replaced.
+
+---
+
+## 7. Open problems, in priority order
+
+1. **No way to flash right now.** The board is running the stock firmware, which
+   claims the USB-Serial-JTAG; esptool cannot connect. Get the board into
+   download mode (BOOT + RESET) before the next flash.
+2. **Boot reaches the UI then hangs/resets.** Exception seen at a `retw.n` with
+   `exccause = 0` (ILLEGAL_INSTRUCTION). The epc1 value shifts between runs
+   (0x42947ce8, 0x42947cf2, 0x42947d36) — non-deterministic, which points at a
+   window/PS state problem rather than a fixed code bug.
+   - Prime suspect: `store_context()` masking PS with `-16` instead of `-17`,
+     leaving `EXCM` set in a saved context.
+   - Second suspect: the interruptee's `OWB` is not preserved by the handler exit
+     (`0xFFFF0000` zeroes bits 8-11, so OWB becomes 0). ESP-IDF restores PS
+     verbatim. Consider doing the same.
+3. **SD mount is flaky after a chip reset** (7 / 1 / 0 across runs). The card
+   stays powered; CMD0 may not be recovering it from a data-transfer state.
+4. **Audio (I2S + GDMA) not started.** GDMA trigger ids: I2S0 = 3, I2S1 = 4,
+   SPI2 = 0, SPI3 = 1. Descriptors must be in internal SRAM (20-bit register
+   based at 0x3FC00000); buffers may be in PSRAM with explicit cache
+   maintenance.
+5. **Bring-up scaffolding still present**: `test_pattern()`, `probe_control_lines()`,
+   `boot_trace` calls in filetype/dircache paths, the RETW probe.
+6. **SPI is at 20 MHz polled**; the reference firmware uses 80 MHz with DMA.
+
+---
+
+## 8. Uncommitted changes
+
+`git status` at HEAD `6bbab13605` shows modifications to:
+
+```
+AGENTS.md
+apps/filetypes.c                 (boot markers '1'..'5' around filetype_init)
+apps/main.c                      (boot markers, tick_task_thread)
+firmware/asm/xtensa/thread.c     (store/load_context, xt_ctx_hist instrumentation)
+firmware/common/dircache.c       (yield markers)
+firmware/export/config/meowkits3.h (USB OTG defines removed)
+firmware/target/xtensa/backlight-xtensa.c
+firmware/target/xtensa/bootlog.c
+firmware/target/xtensa/gpio-xtensa.h
+firmware/target/xtensa/i2c-xtensa.c
+firmware/target/xtensa/i2s-xtensa.c
+firmware/target/xtensa/lcd-xtensa.c
+firmware/target/xtensa/pca9557.{c,h}
+firmware/target/xtensa/sdmmc-xtensa.c
+firmware/target/xtensa/spi-xtensa.{c,h}
+firmware/target/xtensa/st7789.c
+firmware/target/xtensa/system-xtensa.c
+firmware/target/xtensa/usb-xtensa.c   (stub)
+firmware/target/xtensa/vectors.S      (RETW probe + window instrumentation)
+```
+
+Display fixes already landed and worth remembering:
+- `MS_DLEN` must be the **exact** bit count (`n*8 - 1` for the actual byte count),
+  not rounded up to 32-bit words — padding corrupts CASET/RASET argument parsing.
+- `RAMWR` (0x2C) must be sent before pixel data; without it the panel discards
+  everything (this was the "random noise" symptom).
+- `MADCTL` = 0xB0, not 0xB8 (LovyanGFX rotation entry 3 = MAD_MV|MAD_MY|MAD_ML;
+  `rgb_order=false` contributes no BGR bit).
+- LCD CS is asserted once in `st7789_init()` and never toggled (the reference
+  firmware has `pin_cs = -1`; CS goes through the PCA9557 expander and toggling it
+  costs ~480 I²C transactions per frame).
+
+---
+
+## 9. Immediate next actions
+
+**Follow section 0 (the plan).** Concretely, right now:
+
+1. Extract ESP-IDF's esp32s3 MSPI/PSRAM HAL and the timing-tuning table, and
+   rewrite `firmware/target/xtensa/psram-xtensa.c` to follow it, sweep included.
+   Test with the bulk-write probe already in `lcd_init` (markers `E`..`F`).
+2. Only after PSRAM bulk writes are reliable, move the level-1 handler to
+   ESP-IDF's `_xt_lowint1` / `_xt_context_save` / `_xt_user_exit`.
+3. Then audio.
+
+Legacy items still worth doing:
+
+1. Set `#define XT_RET_PROBE 0` in `vectors.S` and remove the marker code.
+2. Change `store_context`'s PS mask from `-16` to `-17` (clear EXCM too).
+3. Consider restoring PS verbatim at the handler exit like ESP-IDF, instead of
+   masking OWB/CALLINC.
+4. Re-flash, run `/tmp/probe7.py`, and check whether boot gets past
+   `read_viewers_config_init` (markers `dom12L` in the boot log).
+5. Then: SD robustness, then audio.
+
+---
+
+## 10. Session update: boot unblocked, one ABI question left
+
+### What was wrong with the previous conclusion
+
+The claim in §6b that "the ESP-IDF stage-2 bootloader never reaches crt0" was
+**an artefact of a bad probe address**. The marker was `0x50000D60`, which
+`boot_trace_start()` deliberately zeroes. Re-probing at `0x50000D64` (the stage
+letter) shows crt0 runs to completion under the stock bootloader.
+
+The real reason the board was boot-looping was self-inflicted:
+`ESP_STAGE2_BOOTLOADER` was `1` in `meowkits3.h` while the image was flashed at
+`0x0` under the mask ROM. The mask ROM does not arm the IROM MMU entries, so the
+first call into `.text` faults, the bring-up trap loops, and the watchdog resets.
+`ESP_STAGE2_BOOTLOADER` is now `0` and the mask-ROM path is the one in use.
+
+### Fixed this session
+
+1. **crt0's window pin was a regression and has been removed.** It wrote
+   `WINDOWSTART=0`, `WINDOWBASE=0`, `PS=0x40000`. With no window marked live, no
+   overflow ever fires, no base-save area is ever written, and `retw` reads an
+   uninitialised frame. Both loaders leave a consistent state; leaving it alone
+   is correct. See AGENTS.md §11.
+2. **crt0 now masks interrupts** (`wsr intenable, 0`) before installing the bring-up
+   vectors. ESP-IDF's stage-2 loader leaves `INTENABLE` set, and a stray level-1
+   interrupt landing in `diag_trap` looked exactly like an IllegalInstruction.
+3. **The tick slot was never unmasked.** `system_init()` zeroes `INTENABLE`; only
+   the GDMA slots were re-enabled. `tick_start()` now sets bit `XT_SLOT_TIMERG1`.
+4. **The asm tick handler incremented the wrong global** (`xt_exc_cause` via a
+   stale literal) instead of `current_tick`. It now bumps `current_tick` and
+   mirrors it into the RTC live block.
+
+With those, on the mask-ROM path: crt0 reaches stage `G`, PSRAM and the MMU come
+up, the SD card initialises (`CMD41` OCR `0x00ff8000`), the scheduler runs
+(`switch_thread` iterating, threads sleeping/waking) and a full 320x240 frame is
+pushed over SPI (4842 chunks). No exception. The panel is lit but shows black —
+not yet investigated.
+
+### The one open question
+
+Enabling the tick makes things *worse*: the run dies early with a corrupted
+window. The mechanism is that the tick handler's `rfe` sets `PS.EXCM=1`, and on
+this core config `ENTRY` then faults.
+
+Measured in isolation (minimal image, `callx8` into a callee that does
+`entry a1,48` … `retw.n`):
+
+- `PS = 0x60520` (EXCM=0, what the loader leaves) → callee runs, returns.
+- `PS = 0x60530` (EXCM=1) → callee never executes. `WSR.PS` really does set the
+  bit (read back `0x60530`), so this is not a silently ignored write.
+- Fails at every recursion depth including 1, with `WINDOWSTART` forced to
+  `0x1 / 0xf / 0xff / 0xffff`, and with the window handler bodies placed inline
+  at the vector offsets exactly as ESP-IDF's `xtensa_vectors.S` does rather than
+  behind a `j` trampoline.
+
+So the windowed ABI's prerequisite (EXCM=1) appears unreachable with the window
+state the loader hands us — yet earlier builds of Rockbox ran for tens of
+thousands of ticks, which suggests EXCM=1 *is* reachable in the real firmware and
+something else about the minimal test is wrong. That contradiction is the thing
+to resolve next.
+
+### Suggested next step
+
+Stop hand-rolling the interrupt and context-switch paths and port ESP-IDF's
+verbatim, as §4 already outlines:
+
+- `_xt_lowint1` (frame alloc + `_xt_context_save` + dispatch),
+- `_xt_context_save` / `_xt_context_restore` with `SPILL_ALL_WINDOWS`,
+- `_xt_user_exit` as the single resume path, so the switch ends in `rfe` and
+  `PS.EXCM` is established by hardware rather than by `wsr ps`.
+
+Rockbox's `switch_thread()` currently calls `thread_store_context()` and
+`thread_load_context()` as ordinary C functions and returns through the
+compiler's `retw`, which is why the saved window state can never be made
+consistent. FreeRTOS enters the scheduler through a syscall exception instead,
+so the hardware captures `a0/a1/PS/PC` as a coherent frame — that is the shape to
+move to.

@@ -44,12 +44,14 @@ import tempfile
 PARTITION_OFFSET = 0x8000
 APP_OFFSET = 0x10000
 
-# type, subtype, offset, size, label
+# ESP-IDF partition types (esp_partition.h): APP = 0, DATA = 1, BOOTLOADER = 2.
+# App subtypes: FACTORY = 0x00, OTA_0 = 0x10. The loader boots the factory app
+# when otadata is empty, so app0 must be type 0 / subtype 0.
 PARTITIONS = [
     (1, 2, 0x9000, 0x6000, "nvs"),
     (1, 0, 0xE000, 0x2000, "otadata"),
-    (2, 0, 0x10000, 0x330000, "app0"),
-    (2, 1, 0x340000, 0x330000, "app1"),
+    (0, 0, 0x10000, 0x330000, "app0"),
+    (0, 0x10, 0x340000, 0x330000, "app1"),
     (1, 130, 0x670000, 0x180000, "spiffs"),
     (1, 3, 0x7F0000, 0x10000, "coredump"),
 ]
@@ -110,7 +112,8 @@ def main():
         print("bootloader image: %s (%d bytes)" % (bl, os.path.getsize(bl)))
 
     parts = build_partition_table()
-    parts_path = "partitions.bin"
+    parts_path = os.path.join(os.path.dirname(os.path.abspath(args.image)),
+                              "partitions.bin")
     with open(parts_path, "wb") as f:
         f.write(parts)
     print("partition table: %s (%d bytes), app0 at 0x%x" % (parts_path, len(parts), APP_OFFSET))

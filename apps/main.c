@@ -178,8 +178,13 @@ static void tick_task_thread(void)
      * The registered tick tasks (button polling, backlight timeout, ...) run
      * from a thread instead, so nothing in the interrupt path nests into C code
      * that rotates the register window. */
+    unsigned int rounds = 0;
+    boot_trace('K');                  /* tick thread is running */
     while (true)
     {
+        rtc_bump(8);
+        if ((++rounds % 20) == 0)
+            boot_trace('T');
         sleep(HZ/2);
         call_tick_tasks();
     }
@@ -262,6 +267,7 @@ int main(void)
     /* no calls INIT_ATTR functions after this point anymore!
      * see definition of INIT_ATTR in config.h */
     CHART(">root_menu");
+    boot_trace('G');
     root_menu();
 }
 
@@ -428,16 +434,25 @@ static void init(void)
 #ifdef HAVE_REMOTE_LCD
     lcd_remote_init();
 #endif
+    boot_phase(3);
     FOR_NB_SCREENS(i)
         global_status.font_id[i] = FONT_SYSFIXED;
     font_init();
+    boot_phase(4);
     show_logo_boot();
     button_init();
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
+    boot_phase(2);
     powermgmt_init();
     backlight_init();
+    /* Rockbox leaves the lights as the bootloader set them. On this target the mask
+     * ROM is the bootloader and sets nothing, so the panel would stay dark until the
+     * backlight thread's own timeout logic ran. Light it here so the boot logo and the
+     * dircache progress are actually visible.
+     */
+    backlight_on();
     unicode_init();
 #ifdef HAVE_MULTIVOLUME
     init_volume_names();
@@ -450,6 +465,7 @@ static void init(void)
 #endif
     lang_init(core_language_builtin, language_strings,
               LANG_LAST_INDEX_IN_ARRAY);
+    boot_phase(6);
 #ifdef DEBUG
     debug_init();
 #endif
@@ -464,7 +480,11 @@ static void init(void)
     gui_sync_skin_init();
     sb_skin_init();
     viewportmanager_init();
+    boot_trace('v');
+    boot_phase(11);
+
     storage_init();
+    boot_trace('q');
     pcm_init();
     dsp_init();
     settings_reset();
@@ -482,7 +502,10 @@ static void init(void)
     filetype_init();
     playlist_init();
     shortcuts_init();
+
+    boot_phase(19);
     audio_init();
+
     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
     settings_apply_skins();
 
@@ -532,7 +555,9 @@ static void init(void)
     power_init();
 
     enable_irq();
+    boot_phase(1);
 #if defined(CPU_ARM_CLASSIC)
+
     enable_fiq();
 #endif
     /* current_tick should be ticking by now */
@@ -546,19 +571,25 @@ static void init(void)
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
 
     unicode_init();
+    boot_trace('L');
     lcd_init();
+    boot_trace('M');
 #ifdef HAVE_REMOTE_LCD
     lcd_remote_init();
 #endif
     FOR_NB_SCREENS(i)
         global_status.font_id[i] = FONT_SYSFIXED;
+    boot_trace('O');
     font_init();
+    boot_trace('Q');
 
     settings_reset();
+    boot_trace('R');
 
     CHART(">show_logo");
     show_logo_boot();
     CHART("<show_logo");
+    boot_phase(5);
     lang_init(core_language_builtin, language_strings,
               LANG_LAST_INDEX_IN_ARRAY);
 
@@ -575,6 +606,7 @@ static void init(void)
 #endif
 
     adc_init();
+    boot_phase(7);
 
     usb_init();
 #if CONFIG_USBOTG == USBOTG_ISP1362
@@ -585,6 +617,7 @@ static void init(void)
 
     backlight_init();
     button_init();
+    boot_phase(8);
 
     /* Don't initialize power management here if it could incorrectly
      * measure battery voltage, and it's not needed for charging. */
@@ -593,7 +626,9 @@ static void init(void)
     powermgmt_init();
 #endif
 
+    boot_phase(9);
 #if CONFIG_TUNER
+
     radio_init();
 #endif
     prng_init();  /* After RTC */
@@ -606,10 +641,18 @@ static void init(void)
      * Must be done before any code uses the multi-screen API */
     gui_syncstatusbar_init(&statusbars);
     sb_skin_init();
-    gui_sync_skin_init();
-    viewportmanager_init();
+    boot_trace('g');
+    boot_phase(10);
 
+    gui_sync_skin_init();
+    boot_trace('G');
+    viewportmanager_init();
+    boot_trace('v');
     rc = storage_init();
+    boot_trace('R');
+    boot_phase(12);
+
+    boot_trace_hex((unsigned)rc);
     CHART("<storage_init");
     if(rc)
     {
@@ -661,8 +704,11 @@ static void init(void)
 
     if (!mounted)
     {
+        boot_trace('p');
         rc = disk_mount_all();
         boot_trace('M');
+    boot_phase(13);
+
         boot_trace_hex((unsigned)rc);
         if (rc<=0)
         {
@@ -724,12 +770,21 @@ static void init(void)
         }
     }
 
+    boot_trace('1');
     pcm_init();
-    dsp_init();
+    boot_trace('2');
+    boot_phase(14);
 
+    dsp_init();
+    boot_trace('p');
+
+    boot_trace('s');
     CHART(">settings_load");
     settings_load();
     CHART("<settings_load");
+    boot_phase(15);
+
+    boot_trace('L');
 
 #if defined(BUTTON_REC) || \
     (CONFIG_KEYPAD == GIGABEAT_PAD) || \
@@ -752,10 +807,16 @@ static void init(void)
     CHART(">init_battery_tables");
     init_battery_tables();
     CHART("<init_battery_tables");
+    boot_phase(16);
+
+    boot_trace('b');
 #ifdef HAVE_DIRCACHE
     CHART(">init_dircache(true)");
     rc = init_dircache(true);
     CHART("<init_dircache(true)");
+    boot_phase(17);
+
+    boot_trace('c');
 #ifdef HAVE_TAGCACHE
     if (rc < 0)
         tagcache_remove_statefile();
@@ -765,15 +826,20 @@ static void init(void)
     CHART(">settings_apply(true)");
     settings_apply(true);
     CHART("<settings_apply(true)");
+    boot_phase(18);
+
+    boot_trace('a');
 #ifdef HAVE_DIRCACHE
     CHART(">init_dircache(false)");
     init_dircache(false);
     CHART("<init_dircache(false)");
+    boot_trace('d');
 #endif
 #ifdef HAVE_TAGCACHE
     CHART(">init_tagcache");
     init_tagcache();
     CHART("<init_tagcache");
+    boot_trace('t');
 #endif
 
 #ifdef HAVE_EEPROM_SETTINGS
@@ -787,14 +853,19 @@ static void init(void)
     }
 #endif
     playlist_init();
+    boot_trace('o');
     tree_mem_init();
+    boot_trace('m');
     filetype_init();
+    boot_trace('f');
 
     shortcuts_init();
+    boot_trace('y');
 
     CHART(">audio_init");
     audio_init();
     CHART("<audio_init");
+    boot_trace('A');
     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
 
 #ifdef HAVE_WIFI
@@ -824,6 +895,9 @@ static void init(void)
     CHART("<settings_apply_skins");
     settings_apply_skins();
     CHART(">settings_apply_skins");
+    boot_trace('e');
+    boot_phase(20);
+    boot_trace('Z');
 }
 
 #ifdef CPU_PP

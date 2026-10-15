@@ -257,6 +257,7 @@ static bool dma_finished(const struct sdmmc_ctl *ctl, int n)
  */
 void ICODE_ATTR sdmmc_irq(void)
 {
+    static int traced;
     uint32_t pending = rd(SDMMC_MINTSTS)
                      & (CMD_ERR_MASK | DATA_ERR_MASK | INT_CMD_DONE | INT_DATA_OVER);
     if (pending)
@@ -272,19 +273,40 @@ void ICODE_ATTR sdmmc_irq(void)
     if (pending || dma) {
         sdmmc_ctl.events |= pending;
         sdmmc_ctl.dma_events |= dma;
+        if (traced < 8) {
+            traced++;
+            boot_trace('i');
+            boot_trace_hex(pending);
+            boot_trace_hex(dma);
+        }
     }
 }
 
-/* Block until the ISR has latched an event. Bounded so a wedged peripheral cannot
- * hang the boot. Returns false on timeout. */
-static bool sdmmc_wait_event(struct sdmmc_ctl *ctl)
+/* Block until the ISR has latched an event, and consume it so the next call waits
+ * for something new. Without the consume, a latched CMD_DONE makes every later
+ * "wait" return immediately and the caller's spin budget is spent in microseconds.
+ * Bounded so a wedged peripheral cannot hang the boot. Returns false on timeout. */
+static bool sdmmc_wait_event(struct sdmmc_ctl *ctl, uint32_t *status, uint32_t *dma)
 {
     for (int tick = 0; tick < 2 * HZ; tick++) {
-        if (ctl->events || ctl->dma_events)
+        sdmmc_irq();                    /* poll + latch + clear, in-thread */
+        uint32_t s = ctl->events;
+        uint32_t d = ctl->dma_events;
+
+        if (s || d) {
+            ctl->events = 0;
+            ctl->dma_events = 0;
+            *status = s;
+            *dma = d;
+            rtc_bump(5);
             return true;
+        }
+
         udelay(10000 / HZ);
     }
 
+    rtc_bump(6);
+    boot_trace('t');
     return false;
 }
 
@@ -320,6 +342,11 @@ static int sdmmc_submit_command(void *controller,
                                 struct sdmmc_host_response *resp)
 {
     struct sdmmc_ctl *ctl = controller;
+
+    boot_trace('C');
+    boot_trace_hex((unsigned)cmd->command);
+    boot_trace_hex((unsigned)cmd->flags);
+    rtc_bump(4);
 
     uint32_t cmdreg = 0;
     uint32_t events;
@@ -389,6 +416,10 @@ static int sdmmc_submit_command(void *controller,
         wr(SDMMC_BYTCNT, bytes);
         wr(SDMMC_BLKSIZ, cmd->block_len);
         wr(SDMMC_DBADDR, (uint32_t)(uintptr_t)ctl->desc);
+        /* ESP-IDF's sdmmc_ll_enable_dma is the pair that actually starts the IDMAC:
+         * ctrl.dma_enable, ctrl.use_internal_dma, bmod.enable and bmod.fb. Without
+         * bmod.enable the descriptor is armed but the FSM never fetches it.
+         */
         wr(SDMMC_BMOD, BMOD_ENABLE | BMOD_FIXED_BURST);
         wr(SDMMC_IDINTEN, DMA_TI | DMA_RI | DMA_NI);
         wr(SDMMC_CTRL, rd(SDMMC_CTRL) | CTRL_DMA_ENABLE | CTRL_USE_IDMAC);
@@ -406,6 +437,7 @@ static int sdmmc_submit_command(void *controller,
 
     wr(SDMMC_CMDARG, cmd->argument);
     wr(SDMMC_CMD, cmdreg | (cmd->command << CMD_INDEX_SHIFT) | CMD_START);
+    rtc_bump(10);
 
     /* The FSM suspends when it reaches a descriptor the host has not armed yet. */
     if (SDMMC_DATA_PRESENT(cmd->flags))
@@ -418,14 +450,53 @@ static int sdmmc_submit_command(void *controller,
      * latched copy the ISR made. The only register polled here is STATUS, which
      * is a level, not a latch, so it cannot race with the ISR.
      */
+    int spins = 0;
+    uint32_t status = 0, dma = 0;
     while (true) {
-        if (!sdmmc_wait_event(ctl)) {
+        boot_trace('w');
+        boot_trace_hex((unsigned)spins);
+        rtc_bump(16);
+        /* Every branch that does not break must eventually see an event; an
+         * unexpected event bit would otherwise spin here forever.
+         */
+        if (++spins > 30) {
+            rc = SDMMC_STATUS_TIMEOUT;
+            if (SDMMC_DATA_PRESENT(cmd->flags)) {
+                /* The IDMAC is an AHB master with its own FSM; on a stall the
+                 * useful evidence is the interrupt latch, the FSM state in IDSTS
+                 * bits 16:13, the descriptor the engine is holding in DBADDR,
+                 * and whether the owner bit we set is still set.
+                 */
+                boot_trace('d');
+                boot_trace_hex(rd(SDMMC_IDSTS));
+                boot_trace_hex(rd(SDMMC_BMOD));
+                boot_trace_hex(rd(SDMMC_CTRL));
+                boot_trace_hex(rd(SDMMC_DBADDR));
+                boot_trace_hex(ctl->desc[0].flags);
+                boot_trace_hex(ctl->desc[0].size);
+                boot_trace_hex(ctl->desc[0].buffer);
+                /* TCBCNT is bits the CIU moved to/from the card, TBBCNT bytes the
+                 * IDMAC moved to memory. Together they separate "the card never
+                 * sent data" from "the DMA did not pick it up".
+                 */
+                boot_trace_hex(rd(SDMMC_TCBCNT));
+                boot_trace_hex(rd(SDMMC_TBBCNT));
+                boot_trace_hex(rd(SDMMC_STATUS));
+            }
+            break;
+        }
+
+        uint32_t s, d;
+        if (!sdmmc_wait_event(ctl, &s, &d)) {
             rc = SDMMC_STATUS_TIMEOUT;
             break;
         }
 
-        uint32_t status = ctl->events;
-        uint32_t dma = ctl->dma_events;
+        status |= s;
+        dma |= d;
+        boot_trace('e');
+        boot_trace_hex(status);
+        boot_trace_hex(dma);
 
         if (status & CMD_ERR_MASK) {
             rc = (status & INT_RTO) ? SDMMC_STATUS_TIMEOUT : SDMMC_STATUS_ERROR;
@@ -439,8 +510,16 @@ static int sdmmc_submit_command(void *controller,
             }
             /* DATA_OVER says the card finished sending; the owner bits say the
              * IDMAC finished writing. Both are required. */
-            if ((status & INT_DATA_OVER) && dma_finished(ctl, ndesc))
+            if (dma & DMA_ERR_MASK) {
+                rc = SDMMC_STATUS_ERROR;
                 break;
+            }
+            if (status & INT_DATA_OVER) {
+                rtc_bump(17);
+                if (dma_finished(ctl, ndesc))
+                    break;
+                rtc_bump(18);
+            }
             continue;
         }
 
@@ -456,6 +535,12 @@ static int sdmmc_submit_command(void *controller,
             }
             break;
         }
+
+        /* Nothing we recognise: the ISR latched something else (card detect,
+         * FIFO watermark, timeout). Do not spin on it.
+         */
+        rc = SDMMC_STATUS_ERROR;
+        break;
     }
 
 
@@ -473,6 +558,21 @@ static int sdmmc_submit_command(void *controller,
     if (bounced && rc == SDMMC_STATUS_OK &&
         SDMMC_DATA_DIR(cmd->flags) == SDMMC_DATA_READ)
         memcpy(cmd->buffer, sdmmc_bounce, bytes);
+
+    /* A successful block read is the common case and there are thousands of them
+     * during the dircache scan; the ring only holds 8 KB, so tracing them hides
+     * everything else. Only a failing command is worth the space.
+     */
+    if (rc != SDMMC_STATUS_OK) {
+        boot_trace('c');
+        boot_trace_hex((unsigned)cmd->command);
+        boot_trace_hex((unsigned)rc);
+    }
+    else if (spins > 1) {
+        boot_trace('o');
+        boot_trace_hex((unsigned)cmd->command);
+        boot_trace_hex((unsigned)spins);
+    }
 
     return rc;
 }
@@ -696,7 +796,11 @@ void sdmmc_host_target_init(void)
     wr(SDMMC_INTMASK, 0);
     wr(SDMMC_IDINTEN, DMA_TI | DMA_RI | DMA_NI);
     wr(SDMMC_CTRL, rd(SDMMC_CTRL) | CTRL_INT_ENABLE);
-    set_intenable(get_intenable() | (1u << XT_SLOT_SDHOST));
+    /* The level-1 handler does not dispatch C code, so the SDHOST interrupt is
+     * deliberately left masked: sdmmc_wait_event() polls and clears the status
+     * registers itself, which gives the waiting transaction the same events
+     * without needing an ISR. */
+    (void)XT_SLOT_SDHOST;
     semaphore_init(&sdmmc_sem, 1, 0);
 
     sdmmc_set_power_enabled(&sdmmc_ctl, true);

@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "rom_cache.h"
+#include "bootlog.h"
 
 extern long cpu_frequency;   /* set by system_init */
 
@@ -60,21 +61,16 @@ extern volatile unsigned int xt_irq_level_hist[64];
 extern volatile unsigned int xt_irq_caller[64];
 extern volatile unsigned int xt_irq_level_pos;
 
+static inline int set_irq_level(int level) __attribute__((always_inline));
 static inline int set_irq_level(int level)
 {
-    unsigned int ps, old, ret;
+    unsigned int ps, old;
 
     asm volatile ("rsr.ps %0" : "=r"(ps));
     old = ps & PS_INTLEVEL_MASK;
     ps = (ps & ~PS_INTLEVEL_MASK) | ((unsigned int)level & PS_INTLEVEL_MASK);
     asm volatile ("wsr.ps %0" : : "r"(ps));
     asm volatile ("rsync");          /* CSR writes need a sync before use */
-
-    asm volatile ("mov %0, a0" : "=r"(ret));
-    unsigned int p = xt_irq_level_pos & 63u;
-    xt_irq_level_hist[p] = ps;
-    xt_irq_caller[p] = ret;
-    xt_irq_level_pos = p + 1;
 
     return (int)old;
 }
@@ -154,16 +150,13 @@ static inline void core_sleep(void)
  */
 static inline void udelay(unsigned us)
 {
-    unsigned i = us * (cpu_frequency / 2000000);
+    unsigned cycles = us * (cpu_frequency / 1000000u);
+    unsigned start, now;
 
-    /* The label has to precede the decrement: with it on the branch, `1b` is the
-     * branch itself and a non-zero count never terminates. */
-    asm volatile (
-        "1:\n"
-        "addi %0, %0, -1\n"
-        "bnez %0, 1b\n"
-        : "+r"(i)
-    );
+    asm volatile ("rsr %0, ccount" : "=r"(start));
+    do {
+        asm volatile ("rsr %0, ccount" : "=r"(now));
+    } while ((int)(now - start) < (int)cycles);
 }
 
 static inline void mdelay(unsigned ms)

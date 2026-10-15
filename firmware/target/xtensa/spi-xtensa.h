@@ -44,5 +44,8 @@
 
 void spi_init(void);
 void spi_write(const unsigned char *data, int len);
+void spi_probe_edges(void);
+
+/* Set to 1 to have the next full 64-byte transfer sampled at the pin. */
 
 #endif

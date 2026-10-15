@@ -50,6 +50,7 @@
 .Lmmuinit:    .word mmu_init
 .Lpspresent:  .word psram_present
 .Lbtrace:     .word boot_trace
+.Lbstart:     .word boot_trace_start
 .Lcdcinit:    .word usb_cdc_init
 .Lfprobe:     .word frame_probe
 .Lmain:       .word main
@@ -79,6 +80,14 @@
 .Ldiagrec:    .word diag_record
 
 
+/* Record how far crt0 got. Kept deliberately short: a2/a3 are dead here. */
+    .macro  crtstage c
+    movi    a2, 0x50000D64
+    movi    a3, \c
+    s32i    a3, a2, 0
+    memw
+    .endm
+
 /* A windowed call into a C function. The first argument goes in the caller's
  * a10 and the second in a11, which is what the callee's entry reads as a2/a3
  * once the window has rotated by 8; the result comes back in the caller's a10.
@@ -89,6 +98,63 @@
  */
     .global start
 start:
+    /* Stage markers in RTC slow memory. RTC is uncached, so both words survive the
+     * reset esptool has to do before it can read them.
+     *   0x50000D60 = 0xC0FFEE01  -> the loader jumped to `start`
+     *   0x50000D64 = last stage letter reached
+     * This distinguishes "the second-stage bootloader never reached our entry"
+     * from "it reached it and crt0 died at stage X".
+     */
+    movi    a2, 0x50000D60
+    movi    a3, 0xC0FFEE01
+    s32i    a3, a2, 0
+    movi    a3, 0
+    s32i    a3, a2, 4
+    /* Clear the whole diag window (0x50000D64 .. 0x50000D8C). RTC survives the
+     * reset, so without this the "first fault" latch below would still hold the
+     * previous run's record and every probe would read the same stale fault.
+     */
+    movi    a3, 0x50000D64
+    movi    a4, 0
+1:  s32i    a4, a3, 0
+    addi    a3, a3, 4
+    movi    a5, 0x50000DA0
+    blt     a3, a5, 1b
+    /* Mask every interrupt source before anything can take a vector.
+     *
+     * ESP-IDF's second-stage bootloader runs with its own interrupts enabled
+     * (the RWDT and the flash driver's), and it does not clear INTENABLE before
+     * jumping to the image. With the diag vectors installed, a level-1 interrupt
+     * then lands in diag_trap at slot 0x340 with EXCCAUSE 0 and a stale EPC1,
+     * which looks exactly like an IllegalInstruction and hangs there forever.
+     * Clear the enables and the pending bits so nothing is taken until
+     * irq_init() programs them.
+     */
+    movi    a2, 0
+    wsr     a2, intenable
+    wsr     a2, intclear
+    rsync
+
+    /* Do NOT touch PS, WINDOWBASE or WINDOWSTART here.
+     *
+     * Both loaders jump to `start` rather than call it, so it is tempting to
+     * synthesise a root window. Measured on this core that is fatal: the loader
+     * leaves a consistent state (mask ROM: PS=0x60520, windowbase=3,
+     * windowstart=0x8; ESP-IDF stage two: PS=0x60920, windowbase=9,
+     * windowstart=0x280 - INTLEVEL 0, UM 1, CALLINC 8, WOE 1, EXCM 0 in both)
+     * and `callx8` + `entry` + `retw` works from it. Writing PS.EXCM from WSR
+     * breaks the very next `entry`: EXCM is a hardware-managed bit, set on
+     * exception *return* (rfi/rfe), and a software write leaves the core in a
+     * state where entry faults with no exception recorded. Clearing UM also
+     * faults. Rewriting WINDOWSTART to 0 leaves no window live, so no overflow
+     * ever fires and `retw` reads an uninitialised base-save area.
+     *
+     * ESP-IDF's own entry does the same thing; its crt0.o is literally
+     * `l32r a4, main ; jx a4` and touches no special register at all.
+     */
+    crtstage 'A'
+    l32r    a1, .Lstack
+
     /* Raw liveness marker. 0x3FC90000 is inside internal SRAM but below DRAMORIG,
      * so no section lives there: neither the .bss/.srambss zeroing nor esptool's
      * loader stub (0x40378000-0x4037947c) touches it.
@@ -112,6 +178,7 @@ start:
     l32r    a4, .Ldiagvec
     wsr     a4, vecbase
     rsync
+    crtstage '1'
     /* The mask ROM arms the main watchdog (TIMG0 WDT) as part of the flash boot
      * sequence. ESP-IDF's second-stage bootloader disables it; we have no second
      * stage, so a program that never feeds it gets TG0WDT_SYS_RST a few seconds
@@ -125,11 +192,13 @@ start:
     s32i    a4, a2, 0
 
     /* Own stack. Top of internal DRAM. */
+    crtstage '2'
     l32r    a1, .Lstack
     l32r    a2, .Lfprobe
     movi    a10, 0
     movi    a11, 0
     callx8  a2
+    crtstage '3'
 
     /* Nothing called us, so the register window is whatever the loader left:
      * a non-zero WINDOWBASE and a WINDOWSTART with bits for windows that were
@@ -179,6 +248,7 @@ start:
      */
     movi    a10, 'T'
     call8   entry_test
+    crtstage '4'
 
     /* 'R' - the ROM loader reached the entry point. Each marker below says how
      * far the bring-up got: 'C' after the external cache is up, 'I' after the
@@ -196,6 +266,7 @@ start:
     wsr     a2, vecbase
     movi    a10, 'V'
     call0   putchar_rom
+    crtstage '5'
 
 #if ESP_STAGE2_BOOTLOADER
     /* ESP-IDF's second-stage loader has already armed the cache MMU for the
@@ -212,6 +283,7 @@ start:
     movi    a14, 0
     movi    a15, 0
     callx8  a2
+    crtstage 'C'
 #else
     /* The ROM leaves the external instruction cache disabled and both
      * instruction buses shut, so a fetch from the IROM window faults with
@@ -426,25 +498,31 @@ start:
     movi    a11, 0
     callx8  a2
 
-    /* Liveness marker: if this value is not in the trace after a flash, the
-     * image is not actually being executed and every other read is stale.
+    /* Reset the RTC-slow ring so each run's trace is readable on its own: the
+     * ring is not cleared by a reset, so consecutive boots would otherwise
+     * concatenate into one unreadable stream.
      */
-    l32r    a6, .Ltrace
-    movi    a4, 0xDEADBEEF
-    s32i    a4, a6, 200
+    l32r    a2, .Lbstart
+    movi    a10, 0
+    movi    a11, 0
+    callx8  a2
+
+    /* Build stamp: 0xC0FFEE01 at 0x50000D60 proves this build's crt0 ran. */
+    movi    a2, 0x50000D60
+    movi    a3, 0xC0FFEE01
+    s32i    a3, a2, 0
     memw
 
-    /* First code fetched from the IROM window. 'K' means the mapping works.
-     * The return value is kept in a0 so the panic dump shows it if it does not.
+    /* RTC slow memory is not uniformly writable: 0x50000D80 and 0x50000E40
+     * silently drop stores, so a marker placed there reads back as whatever a
+     * previous run left. Only the slots bootlog.c uses (0x0000 log, 0x0C00
+     * live, 0x0C80 hist, 0x0D40 diag, 0x0E80 exception, 0x1004 length) have
+     * been verified to stick.
      */
-    movi    a10, 'T'
-    call0   putchar_rom
     l32r    a2, .Lcanary
     mov     a10, a2
     movi    a11, 0
     callx8  a2
-    movi    a10, 'K'
-    call0   putchar_rom
 
 #if XTENSA_THREAD_SELFTEST
     /* Validate the windowed context switch before the PSRAM is touched. Two
@@ -484,10 +562,12 @@ start:
      */
     movi    a10, 'P'
     call0   putchar_rom
+    crtstage 'p'
     l32r    a2, .Lpsinit
     mov     a10, a2
     movi    a11, 0
     callx8  a2
+    crtstage 'P'
     movi    a2, 'q'
     l32r    a3, .Lbtrace
     mov     a10, a2
@@ -529,6 +609,7 @@ start:
     mov     a10, a2
     movi    a11, 0
     callx8  a2
+    crtstage 'M'
     movi    a2, 'n'
     l32r    a3, .Lbtrace
     mov     a10, a2
@@ -576,6 +657,7 @@ start:
     mov     a10, a2
     movi    a11, 0
     callx8  a3
+    crtstage 'G'
     l32r    a2, .Lmain
     mov     a10, a2
     movi    a11, 0
@@ -716,6 +798,49 @@ diag_vector:
     .org diag_vector + 0x400
     .align 4
 diag_trap:
+    /* Mirror the fault into RTC slow memory so esptool can see it after the
+     * reset: +0 exccause, +4 epc1, +8 excvaddr, +12 vector slot, +16 ps.
+     * diag_record itself is .srambss, which the D-cache hides from dump_mem.
+     */
+    movi    a9, 0x50000D68
+    /* Keep the FIRST fault, not the last: a stream of them hides the one that
+     * started it. The slot field is never 0 for a real vector, so it doubles as
+     * the "already recorded" flag. The running count goes at 0x50000D84. */
+    movi    a8, 0x50000D84
+    l32i    a6, a8, 0
+    addi    a6, a6, 1
+    s32i    a6, a8, 0
+    l32i    a6, a9, 12
+    bnez    a6, 9f
+    rsr     a2, exccause
+    s32i    a2, a9, 0
+    rsr     a3, epc1
+    s32i    a3, a9, 4
+    rsr     a4, excvaddr
+    s32i    a4, a9, 8
+    s32i    a5, a9, 12
+    rsr     a2, ps
+    s32i    a2, a9, 16
+    rsr     a2, windowbase
+    s32i    a2, a9, 20
+    rsr     a2, windowstart
+    s32i    a2, a9, 24
+    /* The interrupted context's a0/a2/a3 (an exception does not rotate the
+     * window, so these registers still belong to the faulting code), then what
+     * the core actually fetched at EPC1. */
+    mov     a6, a0
+    mov     a7, a2
+    mov     a8, a3
+    s32i    a6, a9, 44
+    s32i    a7, a9, 48
+    s32i    a8, a9, 52
+    rsr     a3, epc1
+    movi    a2, 0
+    s32i    a2, a9, 40            /* clear the fetch slot first */
+    l32i    a2, a3, 0
+    s32i    a2, a9, 40
+    memw
+9:
     /* Record the first exception in diag_record[0] and a second one in
      * diag_record[1], so a double exception does not hide the original. The
      * buffer is a .srambss symbol rather than a hardcoded address: an earlier
