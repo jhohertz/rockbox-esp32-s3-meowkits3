@@ -2152,6 +2152,68 @@ Two rules for reading a fault here:
   so IDF's decoder is running on heuristics -- which makes a clean backtrace
   itself evidence that the window state is sane.
 
+### The switch is IDF's flat frame, not a hand-rolled window chain
+
+The hand-rolled "save sp, let `retw` unwind the window chain" model was the
+IDF avoidance, and it is gone. `struct regs` now *is* ESP-IDF's `XtExcFrame`,
+and there is one code path for first run and for resume:
+
+- `store_context`: fill `pc`/`a0`/`a1`/`ps`/`exit` by hand, then move `sp` to
+  the frame and `call0 _xt_context_save`, which fills a2..a15, SAR and the loop
+  registers. It is entered with `call0` because that is how IDF's own vectors
+  enter it, and it requires its caller to have put a12/a13 in the frame first
+  (`XT_STK_A12`/`XT_STK_A13`, byte offsets 60 and 64).
+- `load_context`: `sp` = frame, `rsil` to `XCHAL_EXCM_LEVEL` (this supplies
+  `PS.EXCM`, without which `rfe` is not a legal instruction, and it is a
+  user-mode instruction, so an ordinary task can use it -- which is how
+  `vPortYield` reaches the same path), `call0 _xt_context_restore`, then
+  `l32i a0, sp, XT_STK_EXIT` and `jx a0` into `_xt_user_exit`, which loads
+  PS/PC/A0/A1 from the frame and executes `rfe`.
+
+`XtExcFrame` has no `WINDOWBASE` or `WINDOWSTART` field at all. IDF never
+preserves the window chain across a switch; it flattens it. That is correct
+because every switch happens at the same call depth (`switch_thread`), so every
+thread presents the same window layout above that point and the frame's
+a2..a15 mean the same thing for all of them regardless of where `WINDOWBASE`
+happens to sit. **Depth, not base, is what has to match.**
+
+`struct regs` is declared as a bare word array in `asm/xtensa/thread.h`
+because that header is also read by the freestanding domain (codecs, plugins),
+which has no IDF include path. `asm/xtensa/thread.c` then `static_assert`s
+every offset against the real struct, so the two cannot drift apart.
+
+Two things this cost, both worth remembering:
+
+- **`_xt_context_save` destroys a12 and a13.** It copies them to
+  `XT_STK_TMP0`/`TMP1` and then uses the registers themselves as scratch.
+  Under the windowed ABI a12-a15 are callee-saved, so an inline asm block that
+  calls it must list them as clobbered; without that, GCC is told nothing about
+  a caller-saved-looking destruction of callee-saved state. Symptom was a
+  `LoadProhibited` at `EXCVADDR 0x28` several switches later, nowhere near the
+  cause. (Fixing it did not clear this particular fault -- see below -- but the
+  declaration is required regardless.)
+- **`make clean` deletes directories the build then needs.** After a clean,
+  `ar` fails with `lib/librockbox.a: No such file or directory`; the `lib`,
+  `fonts`, `icons`, `lang`, ... directories have to exist first.
+
+### Where it stands now
+
+Measured, after the flat-frame switch and a full clean rebuild:
+
+- Threads start, the tick runs (`current_tick` advancing in the breadcrumb
+  ring), and the first context switches complete without any cache or double
+  exception. The unanalyzable `ExtWbCacheError` / `double exception` class is
+  gone; the fault is now an ordinary, decodable `LoadProhibited`.
+- The remaining fault decodes precisely: `l32i a6, a7, 188` with
+  `a7 = 0xffffff6c`, giving `EXCVADDR 0x28`. It sits in
+  `check_tmo_expired_inner`, reached from `switch_thread` right after
+  `thread_store_context`. A base pointer of `0xffffff6c` is garbage, and the
+  `pc` the store wrote into the frame (`0xbdc997af`, window-encoded, so
+  nominally `0x3dc997af`) is garbage too -- i.e. `switch_thread` was entered
+  with a corrupt `a0`. The ring wraps at 96 records and the tick records
+  dominate it, so this is *not* provably the first switch; widening the ring or
+  tagging switch counts is the next step.
+
 ### A breadcrumb ring that survives the crash
 
 Some faults on this platform cannot be printed. A double exception runs
