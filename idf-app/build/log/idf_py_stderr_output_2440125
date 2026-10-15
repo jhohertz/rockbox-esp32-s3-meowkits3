@@ -1,2 +1,0 @@
-Command: ninja all
-ninja: error: '/home/jhohertz/co/rockbox/build-meowkits3/firmware/libfirmware.a', needed by 'rockbox.elf', missing and no known rule to make it
