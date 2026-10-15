@@ -1103,7 +1103,7 @@ void switch_thread(void)
 #endif
 
     /* And finally, give control to the next thread. */
-    thread_load_context(thread);
+thread_load_context(thread);
 }
 
 /*---------------------------------------------------------------------------
