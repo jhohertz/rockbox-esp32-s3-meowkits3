@@ -20,6 +20,8 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
+#include "esp_private/periph_ctrl.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 
@@ -27,6 +29,10 @@
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
+#include "soc/gpio_sig_map.h"
+#include "soc/gpio_struct.h"
+#include "soc/reg_base.h"
+#include "soc/soc.h"
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -56,6 +62,7 @@ static const char *stage_name[] = {
     "4 sd card (1-bit, gpio matrix)",
     "5 axp173 pmu",
     "6 nimble scan",
+    "7 spi clock at the pad",
 };
 #define N_STAGES ((int)(sizeof(stage_name) / sizeof(stage_name[0])))
 static stage_t results[N_STAGES];
@@ -136,6 +143,24 @@ static esp_err_t i2c_reg_write(i2c_master_dev_handle_t dev, uint8_t reg,
 static esp_err_t expander_write(uint8_t val)
 {
     return i2c_reg_write(dev_pca9557, PCA9557_REG_OUTPUT, val);
+}
+
+/* Reading the output register only proves we wrote a register. The input
+ * register mirrors the actual pin level, including on pins set as outputs, so
+ * reading both while a level is being commanded distinguishes "the expander
+ * latched the value" from "the pin is at that voltage" -- which is the
+ * difference between commanding a reset pulse and the panel ever seeing one. */
+static void expander_probe(const char *tag)
+{
+    uint8_t cfg = 0, out = 0, in = 0;
+    i2c_reg_read(dev_pca9557, PCA9557_REG_CONFIG, &cfg, 1);
+    i2c_reg_read(dev_pca9557, PCA9557_REG_OUTPUT, &out, 1);
+    i2c_reg_read(dev_pca9557, PCA9557_REG_INPUT, &in, 1);
+    ESP_LOGI(TAG, "expander %s: cfg=0x%02x out=0x%02x in=0x%02x "
+           "rst_pin=%d cs_pin=%d touch_pin=%d",
+           tag, cfg, out, in,
+           !!(in & (1u << EXP_LCD_RST)), !!(in & (1u << EXP_LCD_CS)),
+           !!(in & (1u << EXP_TOUCH_RST)));
 }
 
 static void stage_i2c_expander(void)
@@ -337,7 +362,7 @@ static void stage_i2c_expander(void)
     /* Make LCD reset, LCD CS and the amp enable outputs. */
     uint8_t out = 0;
     i2c_reg_read(dev_pca9557, PCA9557_REG_OUTPUT, &out, 1);
-    out |= (1u << EXP_LCD_RST);            /* hold in reset first */
+    out &= ~(1u << EXP_LCD_RST);           /* hold in reset: /RES is active low */
     out &= ~(1u << EXP_LCD_CS);            /* CS asserted: only device on bus */
     out &= ~(1u << EXP_AMP_EN);            /* amp off for now */
     err = i2c_reg_write(dev_pca9557, PCA9557_REG_CONFIG,
@@ -412,19 +437,80 @@ static void stage_backlight(void)
 
 static esp_lcd_panel_handle_t panel;
 
+/* GPIO 39, 40 and 41 are the JTAG pads -- MTCK, MTDO and MTDI -- and their IO
+ * MUX default (MCU_SEL = 0) hands them to the JTAG block, not to the GPIO
+ * matrix. Routing FSPICLK/FSPIQ into the matrix is only half the path: the pad
+ * mux still has to be switched to the GPIO function, or the pin never moves no
+ * matter what the matrix or the output enable say. gpio_set_direction() does
+ * not touch MCU_SEL, and gpio_reset_pin() puts the pad back to its default,
+ * which here is JTAG. This was already found once on the bare-metal branch. */
+static unsigned pad_mcu_sel(int pin)
+{
+    volatile uint32_t *r = (volatile uint32_t *)(DR_REG_IO_MUX_BASE + 0x04 + 4 * pin);
+    return (*r >> 12) & 7u;
+}
+
+static void claim_lcd_pads(const char *tag)
+{
+    const int pins[3] = { PIN_LCD_DC, PIN_LCD_MOSI, PIN_LCD_SCLK };
+    unsigned before[3];
+
+    for (int i = 0; i < 3; i++) {
+        before[i] = pad_mcu_sel(pins[i]);
+        esp_rom_gpio_pad_select_gpio((uint32_t)pins[i]);   /* MCU_SEL -> GPIO */
+    }
+    ESP_LOGI(TAG, "%s pads: MCU_SEL dc %u->%u  mosi %u->%u  sclk %u->%u",
+             tag, before[0], pad_mcu_sel(pins[0]),
+             before[1], pad_mcu_sel(pins[1]),
+             before[2], pad_mcu_sel(pins[2]));
+}
+
 static void stage_lcd(void)
 {
+    /* Retired for now: IDF's master reports ESP_OK for every transfer while
+     * emitting no clock edge at the pad whatsoever. The direct driver below
+     * takes the pads instead. */
+    record(3, ST_SKIPPED, "esp_lcd path parked; see direct driver");
     if (!dev_pca9557) {
         record(3, ST_SKIPPED, "needs the expander");
         return;
     }
 
-    /* Reset the panel through the expander: assert reset, wait, release,
-     * then wait the ~120 ms the ST7789 needs after release. */
-    expander_write((1u << EXP_LCD_RST) | (0u << EXP_LCD_CS));
+    claim_lcd_pads("lcd");
+
+    /* The reference drives SCLK LOW before it touches the pad's direction or
+     * matrix routing: "gpio_lo(spi_sclk); // prevent a HIGH pulse being
+     * produced by the pinMode change (countermeasure for panels without CS)".
+     * That caveat is exactly our wiring -- CS is held asserted by the expander
+     * for the life of the bus, so the panel is always listening. An edge
+     * produced while the pad is being reconfigured is clocked in and shifts the
+     * panel's bit alignment by one, after which every command and every
+     * argument decodes as garbage while each transfer still reports ESP_OK.
+     * This is why driving the same pins by hand worked and esp_lcd did not, at
+     * any clock rate. */
+    for (int i = 0; i < 3; i++) {
+        const int p[3] = { PIN_LCD_SCLK, PIN_LCD_MOSI, PIN_LCD_DC };
+        gpio_set_direction((gpio_num_t)p[i], GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)p[i], 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+
+    /* The reference's expander sequence, in its order. Three things we were
+     * doing differently: CS is left DESELECTED across the entire reset pulse
+     * and only asserted after the panel comes out of reset; touch reset is
+     * pulsed together with the panel's; and the amp enable is driven low.
+     * Holding CS asserted while /RES is low lets the interface latch the idle
+     * clock/data state, which is precisely the kind of failure that looks like
+     * a dead panel while every SoC-side register reads correct. */
+    expander_write((1u << EXP_LCD_CS) | (0u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (0u << EXP_TOUCH_RST));
     vTaskDelay(pdMS_TO_TICKS(20));
-    expander_write((0u << EXP_LCD_RST) | (0u << EXP_LCD_CS));
+    expander_write((1u << EXP_LCD_CS) | (1u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (1u << EXP_TOUCH_RST));
     vTaskDelay(pdMS_TO_TICKS(120));
+    expander_write((0u << EXP_LCD_CS) | (1u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (1u << EXP_TOUCH_RST));
+    vTaskDelay(pdMS_TO_TICKS(5));
 
     spi_bus_config_t sbus = {
         .mosi_io_num = PIN_LCD_MOSI,
@@ -450,7 +536,12 @@ static void stage_lcd(void)
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
-        .trans_queue_depth = 10,
+        /* Must be >= 1. Zero is not a legal value here: spi_bus_add_device()
+         * calls xQueueCreate(queue_size, ...) unconditionally and FreeRTOS
+         * asserts on a zero-length queue (queue.c:573), which rebooted the
+         * board. The colour path always queues, so the thing to get right is
+         * keeping the buffer alive until the transfer really finishes. */
+        .trans_queue_depth = 4,
     };
     esp_lcd_panel_io_handle_t io;
     err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI_LCD_HOST,
@@ -473,20 +564,96 @@ static void stage_lcd(void)
 
     esp_lcd_panel_reset(panel);
     esp_lcd_panel_init(panel);
+
+    /* esp_lcd's ST7789 driver sends only SLPOUT, MADCTL, COLMOD and RAMCTRL.
+     * The reference firmware (LovyanGFX Panel_ST7789) also runs the power
+     * sequencing and gamma block below. Without VCOMS / VRHS / VDV and gate
+     * control the source and gate drivers have no bias, so the controller
+     * happily accepts every pixel and the glass stays dark -- which is exactly
+     * the failure this looked like: backlight on, every call ESP_OK, black
+     * screen. Values taken verbatim from the reference init list.
+     * RAMCTRL is left alone: esp_lcd pairs it with its own byte order. */
+    static const struct {
+        uint8_t cmd;
+        uint8_t n;
+        uint8_t p[14];
+    } power_seq[] = {
+        { 0xB2,  5, { 0x0c, 0x0c, 0x00, 0x33, 0x33 } },   /* PORCTRL  */
+        { 0xB7,  1, { 0x35 } },                           /* GCTRL    */
+        { 0xBB,  1, { 0x28 } },                           /* VCOMS    */
+        { 0xC0,  1, { 0x0C } },                           /* LCMCTRL  */
+        { 0xC2,  2, { 0x01, 0xFF } },                     /* VDVVRHEN */
+        { 0xC3,  1, { 0x10 } },                           /* VRHS     */
+        { 0xC4,  1, { 0x20 } },                           /* VDVSET   */
+        { 0xC6,  1, { 0x0f } },                           /* FRCTR2   */
+        { 0xD0,  2, { 0xa4, 0xa1 } },                     /* PWCTRL1  */
+        { 0xE0, 14, { 0xd0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x32,
+                      0x44, 0x42, 0x06, 0x0e, 0x12, 0x14, 0x17 } }, /* PVGAM */
+        { 0xE1, 14, { 0xd0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31,
+                      0x54, 0x47, 0x0e, 0x1c, 0x17, 0x1b, 0x1e } }, /* NVGAM */
+    };
+    for (unsigned i = 0; i < sizeof(power_seq) / sizeof(power_seq[0]); i++) {
+        esp_lcd_panel_io_tx_param(io, power_seq[i].cmd,
+                                  power_seq[i].p, power_seq[i].n);
+    }
+    esp_lcd_panel_io_tx_param(io, 0x11, NULL, 0);         /* SLPOUT */
+    vTaskDelay(pdMS_TO_TICKS(130));
     /* ST7789 needs RGB inversion. The GRAM is 240x320 and we drive it as
      * 320x240, hence swap_xy plus a y offset of 320-240. */
     esp_lcd_panel_invert_color(panel, true);
     esp_lcd_panel_swap_xy(panel, true);
     esp_lcd_panel_mirror(panel, true, false);
-    esp_lcd_panel_set_gap(panel, 0, 80);
+    /* No offset: the panel's GRAM is a full 240x320 and we drive it as
+     * 320x240, so with MV set CASET spans the 320 axis and RASET the 240 one.
+     * The 80 that shows up in 240x240 ST7789 recipes does not apply here, and
+     * asking for RASET 80..319 runs 80 rows past the end of the range. */
+    esp_lcd_panel_set_gap(panel, 0, 0);
     esp_lcd_panel_disp_on_off(panel, true);
 
     uint16_t *fb = heap_caps_malloc((size_t)LCD_H * LCD_V * 2,
-                                    MALLOC_CAP_SPIRAM);
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    const char *fbmem = "internal DMA";
+    if (!fb) {
+        fb = heap_caps_malloc((size_t)LCD_H * LCD_V * 2, MALLOC_CAP_SPIRAM);
+        fbmem = "psram";
+    }
     if (!fb) {
         record(3, ST_FAIL, "framebuffer alloc failed");
         return;
     }
+
+    /* Confirm the expander is really driving the lines we think it is:
+     * IO0 (reset) must read 1 = released, IO1 (CS) must read 0 = asserted.
+     * The PCA9557 input register mirrors the pin level even for pins set as
+     * outputs, so reading both registers distinguishes "we wrote the register"
+     * from "the pin is actually at that level" -- at power-on every expander
+     * pin is an input, which leaves LCD reset and CS floating. */
+    uint8_t outb = 0, inb = 0;
+    i2c_reg_read(dev_pca9557, PCA9557_REG_OUTPUT, &outb, 1);
+    i2c_reg_read(dev_pca9557, PCA9557_REG_INPUT, &inb, 1);
+    ESP_LOGI(TAG, "expander OUT=0x%02x IN=0x%02x rst_pin=%d cs_pin=%d fb=%s",
+             outb, inb,
+             !!(inb & (1u << EXP_LCD_RST)), !(inb & (1u << EXP_LCD_CS)), fbmem);
+
+    /* A solid fill is offset-invariant in content but not in window, so this
+     * A/Bs the geometry directly: red is drawn with the old 80-row offset and
+     * green with none. If green reaches the glass and red does not, the gap
+     * was the whole problem. */
+    struct { uint16_t c; int xg; int yg; const char *what; } steps[] = {
+        { 0xF800,   0, 80, "red   gap(0,80)" },
+        { 0x07E0,   0,  0, "green gap(0,0)"  },
+        { 0x001F,  80,  0, "blue  gap(80,0)" },
+    };
+    for (unsigned s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
+        esp_lcd_panel_set_gap(panel, steps[s].xg, steps[s].yg);
+        for (size_t i = 0; i < (size_t)LCD_H * LCD_V; i++) {
+            fb[i] = steps[s].c;
+        }
+        esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H, LCD_V, fb);
+        ESP_LOGI(TAG, "fill %s", steps[s].what);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    esp_lcd_panel_set_gap(panel, 0, 0);
 
     static const uint16_t bars[] = {
         0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000, 0xF81F, 0x07FF, 0xFB00
@@ -498,7 +665,23 @@ static void stage_lcd(void)
         }
     }
     err = esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H, LCD_V, fb);
+    /* The colour path queues, so draw_bitmap can return while the DMA is
+     * still reading. Hold the buffer until the pixels are on the glass. */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    /* Everything reports success, so check the thing that actually matters:
+     * are the GPSPI signals wired to the pads the panel is wired to. DC should
+     * read SIG_GPIO_OUT_IDX (256 = driven from GPIO_OUT_REG, i.e. a plain GPIO
+     * level), SCLK should be FSPICLK_OUT_IDX (101) and MOSI FSPIQ_OUT_IDX (102).
+     * enable1 bits 7/8/9 are the output drivers for GPIO 39/40/41. */
+    ESP_LOGI(TAG, "routing: dc(39)=%u mosi(40)=%u sclk(41)=%u enable1=0x%08x",
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_DC].func_sel,
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_MOSI].func_sel,
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_SCLK].func_sel,
+             (unsigned)GPIO.enable1.val);
+
     free(fb);
+    fb = NULL;
 
     record(3, err == ESP_OK ? ST_PASS : ST_FAIL,
            "%dx%d bars @ %d MHz, CS held via expander (%s)",
@@ -721,6 +904,461 @@ static void summary(void)
     printf("=====================================================\n\n");
 }
 
+/* ------------------------------------------------------------------ */
+/* stage 7: is there actually a clock coming out of GPSPI2?            */
+/* ------------------------------------------------------------------ */
+
+/* Hand-driven pins paint the panel; esp_lcd does not, at 40 MHz or at 1 MHz,
+ * on the same pads with the same reset sequence. So the question is what the
+ * controller emits. The pad is put in INPUT_OUTPUT so the IO MUX input enable
+ * is set and GPIO_IN mirrors the pin the controller is driving; counting edges
+ * there measures the real bit stream rather than the register we hoped would
+ * produce it. A 8x8 colour draw is 64 pixels = 1024 data bits plus 8 command
+ * and 32 window bits, so a few hundred edges means the transfer is running but
+ * short, and zero means the clock never leaves the chip. */
+static void stage_spi_probe(void)
+{
+    if (!panel) {
+        record(7, ST_SKIPPED, "no panel to drive");
+        return;
+    }
+
+    const volatile uint32_t *r =
+        (const volatile uint32_t *)(uintptr_t)DR_REG_SPI2_BASE;
+    uint32_t cg = r[0xE8 / 4];
+    ESP_LOGI(TAG, "GPSPI2 clk_gate=0x%08x (clk_en=%d mst_active=%d mst_sel=%d) "
+           "clock=0x%08x ctrl=0x%08x user=0x%08x user1=0x%08x user2=0x%08x mosi_dlen=%u",
+           cg, !!(cg & 1), !!(cg & 2), !!(cg & 4),
+           r[0x0c / 4], r[0x08 / 4], r[0x10 / 4], r[0x14 / 4], r[0x18 / 4],
+           r[0x1c / 4]);
+    ESP_LOGI(TAG, "MCU_SEL dc=%u mosi=%u sclk=%u",
+             pad_mcu_sel(PIN_LCD_DC), pad_mcu_sel(PIN_LCD_MOSI),
+             pad_mcu_sel(PIN_LCD_SCLK));
+    ESP_LOGI(TAG, "func_sel dc=%u mosi=%u sclk=%u enable1=0x%08x",
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_DC].func_sel,
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_MOSI].func_sel,
+             (unsigned)GPIO.func_out_sel_cfg[PIN_LCD_SCLK].func_sel,
+             (unsigned)GPIO.enable1.val);
+    /* func_sel is only part of the output-select entry. oen_sel chooses where
+     * the pad's output enable comes from: 0 = GPIO_ENABLE register, 1 = the
+     * signal's own output-enable line. With oen_sel set and that line inactive
+     * the pad is tri-stated no matter what GPIO_ENABLE1 says, which is exactly
+     * the signature we are chasing: registers programmed, transfers completing,
+     * zero edges at the pad. */
+    for (int i = 0; i < 3; i++) {
+        const int p[3] = { PIN_LCD_DC, PIN_LCD_MOSI, PIN_LCD_SCLK };
+        const volatile uint32_t *w =
+            (const volatile uint32_t *)(uintptr_t)&GPIO.func_out_sel_cfg[p[i]];
+        ESP_LOGI(TAG, "pad %d out_sel_cfg=0x%08x func=%u inv=%d oen_sel=%d oen_inv=%d",
+                 p[i], *w, (unsigned)(*w & 0x1FFu), (int)((*w >> 9) & 1u),
+                 (int)((*w >> 10) & 1u), (int)((*w >> 11) & 1u));
+    }
+
+    /* Read the pad back while the controller drives it. INPUT_OUTPUT sets the
+     * IO MUX input enable without disturbing the matrix output, so GPIO_IN
+     * mirrors the pin. */
+    gpio_set_direction((gpio_num_t)PIN_LCD_SCLK, GPIO_MODE_INPUT_OUTPUT);
+    gpio_set_direction((gpio_num_t)PIN_LCD_MOSI, GPIO_MODE_INPUT_OUTPUT);
+
+    /* A second device on the same bus, at a rate the polling loop can resolve
+     * with certainty: 200 kHz is a 5 us period, so a register-read loop misses
+     * nothing. 1024 bits is 5.12 ms of clock. If this emits edges, the bus and
+     * the pads are fine and the fault is in how esp_lcd frames a transfer; if
+     * it emits none, the controller is not reaching the pad at all. */
+    spi_device_interface_config_t dcfg = {
+        .mode = 0,
+        .clock_speed_hz = 200 * 1000,
+        .spics_io_num = -1,
+        .queue_size = 1,
+    };
+    spi_device_handle_t raw = NULL;
+    esp_err_t err = spi_bus_add_device(SPI_LCD_HOST, &dcfg, &raw);
+    if (err != ESP_OK || !raw) {
+        record(7, ST_FAIL, "spi_bus_add_device: %s", esp_err_to_name(err));
+        return;
+    }
+
+    static uint8_t buf[128];
+    memset(buf, 0xA5, sizeof(buf));
+    spi_transaction_t t = {
+        .length = sizeof(buf) * 8,
+        .tx_buffer = buf,
+    };
+
+    int edges = 0, mchg = 0;
+    int last = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+    int lastm = (int)((GPIO.in1.val >> (PIN_LCD_MOSI - 32)) & 1u);
+
+    /* Must be the QUEUED form. spi_device_polling_transmit blocks until the
+     * transfer is over, so counting after it returns measures a bus that has
+     * already gone idle -- which is exactly what the first version of this
+     * probe did, and why it reported zero edges. */
+    esp_err_t terr = spi_device_queue_trans(raw, &t, 0);
+
+    TickType_t t0 = xTaskGetTickCount();
+    while (xTaskGetTickCount() - t0 < 12) {
+        int now = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+        if (now != last) { edges++; last = now; }
+        int nowm = (int)((GPIO.in1.val >> (PIN_LCD_MOSI - 32)) & 1u);
+        if (nowm != lastm) { mchg++; lastm = nowm; }
+    }
+
+    spi_transaction_t *done = NULL;
+    spi_device_get_trans_result(raw, &done, pdMS_TO_TICKS(100));
+
+    ESP_LOGI(TAG, "raw 1024-bit tx @200kHz queued -> %s; sclk edges=%u "
+           "(want ~1024), mosi transitions=%u", esp_err_to_name(terr), edges, mchg);
+
+    /* Validate the counter before believing a zero. Reconnect SCLK to the plain
+     * GPIO output signal and toggle it by hand; the same loop must see twenty
+     * edges. If it does, the counter is sound and the controller really is not
+     * reaching the pad. If it does not, the readback path is the problem and
+     * every edge count so far has been meaningless. */
+    esp_rom_gpio_connect_out_signal((uint32_t)PIN_LCD_SCLK, SIG_GPIO_OUT_IDX,
+                                    false, false);
+    int vedges = 0;
+    last = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+    for (int i = 0; i < 20; i++) {
+        uint32_t bit = 1u << (PIN_LCD_SCLK - 32);
+        if (i & 1) {
+            GPIO.out1_w1tc.val = bit;
+        } else {
+            GPIO.out1_w1ts.val = bit;
+        }
+        esp_rom_delay_us(200);
+        int now = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+        if (now != last) { vedges++; last = now; }
+    }
+    ESP_LOGI(TAG, "counter self-test: 20 hand toggles -> %d edges counted", vedges);
+    record(7, (edges > 500 && vedges == 20) ? ST_PASS : ST_FAIL,
+           "raw tx edges=%u, self-test %d/20", edges, vedges);
+}
+
+/* ------------------------------------------------------------------ */
+/* stage 3 (direct): GPSPI2 programmed by hand                         */
+/* ------------------------------------------------------------------ */
+
+/* Two independent implementations have painted this panel: the reference's
+ * LovyanGFX bus and our bare-metal driver. Neither drives pixels through an
+ * IDF spi_device transaction -- both use spi_bus_initialize only for pin and
+ * clock routing and then write SPI_USER / SPI_MS_DLEN / SPI_CMD themselves.
+ * IDF's master returns ESP_OK for every transfer while producing no clock edge
+ * at the pad at all (measured: 0 edges, against a self-test that counted
+ * 20/20 hand toggles on the same pin), so this stage follows the two
+ * implementations that are known to work on this board.
+ */
+
+#define D_SPI2      DR_REG_SPI2_BASE
+#define D_SPI_CMD   (D_SPI2 + 0x00)
+#define D_SPI_CTRL  (D_SPI2 + 0x08)
+#define D_SPI_CLK   (D_SPI2 + 0x0C)
+#define D_SPI_USER  (D_SPI2 + 0x10)
+#define D_SPI_USER1 (D_SPI2 + 0x14)
+#define D_SPI_USER2 (D_SPI2 + 0x18)
+#define D_SPI_DLEN  (D_SPI2 + 0x1C)
+#define D_SPI_DMA   (D_SPI2 + 0x30)
+#define D_SPI_GATE  (D_SPI2 + 0xE8)
+#define D_SPI_W0    (D_SPI2 + 0x98)   /* CPU buffer, 16 words, per IDF's own header */
+
+#define D_CMD_UPDATE (1u << 23)
+#define D_CMD_USR    (1u << 24)
+#define D_USR_MOSI   (1u << 27)       /* not bit 6 -- that is the classic ESP32 map */
+#define D_USR_MISO   (1u << 28)
+#define D_DOUTDIN    (1u << 0)
+#define D_GATE_ON    (BIT(0) | BIT(1) | BIT(2))
+/* The reference runs this bus at 10 MHz (devcfg.clock_speed_hz = 10000000),
+ * not the 20 MHz the bare-metal driver used. Divide by 8 from the 80 MHz PLL
+ * that D_GATE_ON selects: 80/((3+1)*(1+1)) = 10 MHz. Marginal timing at 20 MHz
+ * is a live suspect for a pixel stream that arrives corrupted. */
+#define D_CLK_BUS    ((3u << 0) | (1u << 6) | (3u << 12) | (1u << 18))
+#define D_BUF_WORDS  16
+#define D_BUF_BYTES  (D_BUF_WORDS * 4)
+#define SYS_CLK_EN0  (DR_REG_SYSTEM_BASE + 0x18)
+#define SYS_SPI2_CLK BIT(6)
+static inline uint32_t d_rd(uint32_t a) { return *(volatile uint32_t *)a; }
+static inline void d_wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
+
+static void d_apply(void)
+{
+    /* CTRL, USER, USER1, MS_DLEN and the clock live in the APB domain; the
+     * controller only sees them once UPDATE is pulsed, and UPDATE is
+     * self-clearing. */
+    d_wr(D_SPI_CMD, d_rd(D_SPI_CMD) | D_CMD_UPDATE);
+    for (int i = 0; i < 4000 && (d_rd(D_SPI_CMD) & D_CMD_UPDATE); i++) { }
+}
+
+static void d_xfer(const uint8_t *data, int len)
+{
+    while (len > 0) {
+        int n = len > D_BUF_BYTES ? D_BUF_BYTES : len;
+        int words = (n + 3) / 4;
+        for (int i = 0; i < words; i++) {
+            uint32_t w = 0;
+            for (int b = 0; b < 4; b++) {
+                int idx = i * 4 + b;
+                if (idx < n) {
+                    w |= (uint32_t)data[idx] << (8 * b);
+                }
+            }
+            d_wr(D_SPI_W0 + 4u * (unsigned)i, w);
+        }
+        /* An exact bit count. Rounding up to whole words pads every command
+         * with zero bits the panel reads as argument bytes. */
+        d_wr(D_SPI_DLEN, (uint32_t)n * 8u - 1u);
+        d_apply();
+        /* LovyanGFX writes *_spi_cmd_reg = SPI_EXECUTE outright rather than
+         * read-modify-writing it, so no stale bit rides along. */
+        d_wr(D_SPI_CMD, D_CMD_USR);
+        unsigned spins = 0;
+        while (d_rd(D_SPI_CMD) & D_CMD_USR) {
+            if (++spins > 500000) {
+                break;
+            }
+        }
+        len -= n;
+        data += n;
+    }
+}
+
+static void d_pin(int pin, int lvl)
+{
+    uint32_t bit = 1u << (pin - 32);
+    if (lvl) {
+        GPIO.out1_w1ts.val = bit;
+    } else {
+        GPIO.out1_w1tc.val = bit;
+    }
+}
+
+/* LovyanGFX's dc_control() waits for USR to clear before touching the DC pin.
+ * Flipping DC while a transfer is still in flight changes the meaning of bits
+ * the panel has not sampled yet. */
+static void d_idle(void)
+{
+    while (d_rd(D_SPI_CMD) & D_CMD_USR) { }
+}
+
+static void d_cmd(uint8_t c)  { d_idle(); d_pin(PIN_LCD_DC, 0); d_xfer(&c, 1); }
+static void d_arg(uint8_t v)  { d_idle(); d_pin(PIN_LCD_DC, 1); d_xfer(&v, 1); }
+
+/* Same transfer, but counting clock edges on the SCLK pad while it runs. The
+ * counter was validated separately (20/20 hand toggles), so a zero here means
+ * the controller is not reaching the pad even with its registers correctly
+ * programmed. Run this at a rate the polling loop can resolve: 80 MHz /
+ * ((24+1) * (15+1)) = 200 kHz. */
+#define D_CLK_200K  ((24u << 0) | (12u << 6) | (24u << 12) | (15u << 18))
+
+static int d_xfer_counted(const uint8_t *data, int len)
+{
+    int edges = 0;
+    int last = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+
+    int words = (len + 3) / 4;
+    for (int i = 0; i < words; i++) {
+        uint32_t w = 0;
+        for (int b = 0; b < 4; b++) {
+            int idx = i * 4 + b;
+            if (idx < len) {
+                w |= (uint32_t)data[idx] << (8 * b);
+            }
+        }
+        d_wr(D_SPI_W0 + 4u * (unsigned)i, w);
+    }
+    d_wr(D_SPI_DLEN, (uint32_t)len * 8u - 1u);
+    d_apply();
+    d_wr(D_SPI_CMD, d_rd(D_SPI_CMD) | D_CMD_USR);
+
+    while (d_rd(D_SPI_CMD) & D_CMD_USR) {
+        int now = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+        if (now != last) { edges++; last = now; }
+    }
+    return edges;
+}
+
+static void stage_lcd_direct(void)
+{
+    if (!dev_pca9557) {
+        record(3, ST_SKIPPED, "needs the expander");
+        return;
+    }
+
+    claim_lcd_pads("direct");
+    const int pins[3] = { PIN_LCD_SCLK, PIN_LCD_MOSI, PIN_LCD_DC };
+    /* Direction FIRST, matrix second. gpio_set_direction() routes the pad to
+     * SIG_GPIO_OUT_IDX as part of making it an output, so calling it after the
+     * connect silently undoes the connect: the pad is then driven from the GPIO
+     * output register rather than by the peripheral, while every controller
+     * register still reads back correct and every transfer still completes.
+     * That is the whole of the "no clock at the pad" result. */
+    for (int i = 0; i < 3; i++) {
+        gpio_set_direction((gpio_num_t)pins[i], GPIO_MODE_OUTPUT);
+        d_pin(pins[i], 0);          /* clock idle low before the mux changes */
+    }
+    d_pin(PIN_LCD_DC, 1);           /* Bus_SPI::init() drives DC high first */
+    esp_rom_gpio_connect_out_signal((uint32_t)PIN_LCD_SCLK, FSPICLK_OUT_IDX,
+                                    false, false);
+    esp_rom_gpio_connect_out_signal((uint32_t)PIN_LCD_MOSI, FSPID_OUT_IDX,
+                                    false, false);
+    esp_rom_gpio_connect_out_signal((uint32_t)PIN_LCD_DC, SIG_GPIO_OUT_IDX,
+                                    false, false);
+
+    /* func_sel is only part of the output-select entry. oen_sel chooses where
+     * the pad's output enable comes from: 0 = the GPIO_ENABLE register, 1 = the
+     * signal's own output-enable line. With oen_sel set and that line inactive
+     * the pad is tri-stated no matter what GPIO_ENABLE1 says -- which is the
+     * exact signature under investigation: registers programmed, transfers
+     * completing, zero edges at the pad. */
+    for (int i = 0; i < 3; i++) {
+        const volatile uint32_t *w =
+            (const volatile uint32_t *)(uintptr_t)&GPIO.func_out_sel_cfg[pins[i]];
+        ESP_LOGI(TAG, "pad %d out_sel_cfg=0x%08x func=%u inv=%d oen_sel=%d oen_inv=%d",
+                 pins[i], *w, (unsigned)(*w & 0x1FFu), (int)((*w >> 9) & 1u),
+                 (int)((*w >> 10) & 1u), (int)((*w >> 11) & 1u));
+    }
+    ESP_LOGI(TAG, "enable1=0x%08x in1=0x%08x", (unsigned)GPIO.enable1.val,
+             (unsigned)GPIO.in1.val);
+
+    /* Writes to a peripheral whose module clock is off are dropped without
+     * complaint, which is exactly what the register dump after this shows if
+     * it is skipped. Use IDF's own enable rather than a hand-computed SYSTEM
+     * offset. */
+    periph_module_enable(PERIPH_SPI2_MODULE);
+    d_wr(D_SPI_GATE, D_GATE_ON);
+    ESP_LOGI(TAG, "after enable: gate=0x%08x (want 0x7)", d_rd(D_SPI_GATE));
+    d_wr(D_SPI_DMA, 0);
+    d_wr(D_SPI_CTRL, 0);
+    /* Reference: *SPI_USER = SPI_USR_MOSI | SPI_USR_MISO | SPI_DOUTDIN. The
+     * MISO phase is left enabled even though nothing is wired to it. */
+    d_wr(D_SPI_USER, D_USR_MOSI | D_USR_MISO | D_DOUTDIN);
+    d_wr(D_SPI_USER1, 0);
+    d_wr(D_SPI_USER2, 0);
+    d_wr(D_SPI_CLK, D_CLK_BUS);
+    d_apply();
+
+    /* Reset, in the reference's order: CS stays de-selected across the pulse.
+     * The pin level is read back at every step, including while reset is being
+     * commanded low, because "we wrote the output register" has never by itself
+     * shown that the line actually fell. */
+    expander_probe("before");
+    expander_write((1u << EXP_LCD_CS) | (0u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (0u << EXP_TOUCH_RST));
+    expander_probe("reset LOW cmd");
+    vTaskDelay(pdMS_TO_TICKS(20));
+    expander_probe("after 20ms");
+    expander_write((1u << EXP_LCD_CS) | (1u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (1u << EXP_TOUCH_RST));
+    expander_probe("reset HIGH cmd");
+    vTaskDelay(pdMS_TO_TICKS(120));
+    expander_write((0u << EXP_LCD_CS) | (1u << EXP_LCD_RST) |
+                   (0u << EXP_AMP_EN) | (1u << EXP_TOUCH_RST));
+    expander_probe("CS asserted");
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    static const uint8_t init_list[] = {
+        0xB2, 5, 0x0c, 0x0c, 0x00, 0x33, 0x33,   /* PORCTRL  */
+        0xB7, 1, 0x35,                           /* GCTRL    */
+        0xBB, 1, 0x28,                           /* VCOMS    */
+        0xC0, 1, 0x0C,                           /* LCMCTRL  */
+        0xC2, 2, 0x01, 0xFF,                     /* VDVVRHEN */
+        0xC3, 1, 0x10,                           /* VRHS     */
+        0xC4, 1, 0x20,                           /* VDVSET   */
+        0xC6, 1, 0x0f,                           /* FRCTR2   */
+        0xD0, 2, 0xa4, 0xa1,                     /* PWCTRL1  */
+        0xB0, 2, 0x00, 0xC0,                     /* RAMCTRL  */
+        0xE0, 14, 0xd0,0x00,0x02,0x07,0x0a,0x28,0x32,0x44,0x42,0x06,0x0e,0x12,0x14,0x17,
+        0xE1, 14, 0xd0,0x00,0x02,0x07,0x0a,0x28,0x31,0x54,0x47,0x0e,0x1c,0x17,0x1b,0x1e,
+    };
+    for (unsigned i = 0; i < sizeof(init_list); ) {
+        uint8_t c = init_list[i];
+        int n = init_list[i + 1];
+        d_cmd(c);
+        if (n > 0) {
+            d_pin(PIN_LCD_DC, 1);
+            d_xfer(&init_list[i + 2], n);
+        }
+        i += 2 + (unsigned)n;
+    }
+
+    /* Measure this driver's own bit stream before trusting it. */
+    {
+        static const uint8_t pat[64] = {
+            0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
+            0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
+            0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
+            0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
+        };
+        /* Enable the input path without touching the output routing --
+         * gpio_set_direction() would re-route the pad to SIG_GPIO_OUT_IDX and
+         * destroy the very thing being counted. */
+        gpio_input_enable((gpio_num_t)PIN_LCD_SCLK);
+        d_wr(D_SPI_CLK, D_CLK_200K);
+        d_apply();
+        int e = d_xfer_counted(pat, (int)sizeof(pat));
+        d_wr(D_SPI_CLK, D_CLK_BUS);
+        d_apply();
+        ESP_LOGI(TAG, "direct transfer self-measure: 512 bits -> %d sclk edges "
+               "(want ~512)", e);
+    }
+
+    /* Reference geometry: lgfx offset_rotation = 3, i.e. the panel is driven at
+     * rotation 3, MADCTL MV|MY = 0xA0. X and Y are swapped, so CASET spans the
+     * 320 axis and RASET the 240 one -- the opposite of what we had. And
+     * cfg.invert = true, so the reference sends INVON (0x21); we never did. */
+    /* COLMOD must be stated. The ST7789 powers up at 66h = 18-bit, and the
+     * three-equal-thirds pattern with fine banding is the signature of a
+     * 2-byte-per-pixel stream being consumed as 3-byte pixels: the byte
+     * grouping re-phases every three rows, which is the banding, and the
+     * channel assignment changes with the phase, which is why one region reads
+     * CYM and the next RGB. */
+    d_cmd(0x3A); d_arg(0x55);                    /* COLMOD: 16-bit, 65K */
+    /* Measured on the glass: with 0xA0 the quadrants land in the right places
+     * and green and white are correct, but red and blue are exchanged. That is
+     * MADCTL bit 3 (BGR/RGB) and nothing else, so the panel wants BGR pixel
+     * fields -- which is also what the reference asks for via rgb_order =
+     * false. */
+    d_cmd(0x36); d_arg(0xA8);                    /* MADCTL: rotation 3 + BGR */
+    d_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(130)); /* SLPOUT */
+    d_cmd(0x21);                                 /* INVON: cfg.invert = true */
+    d_cmd(0x2A); d_arg(0x00); d_arg(0x00); d_arg(0x01); d_arg(0x3F);  /* 0..319 */
+    d_cmd(0x2B); d_arg(0x00); d_arg(0x00); d_arg(0x00); d_arg(0xEF);  /* 0..239 */
+    d_cmd(0x29);                                 /* DISPON */
+
+    /* Four large quadrants, four different colours. A full-screen solid fill
+     * cannot distinguish "wrong colour format" from "corrupted stream" -- both
+     * look like a flat field -- and it is invariant to geometry, so stripes
+     * during a solid fill mean the data arriving is not the data written.
+     * Quadrants make both failures readable: if the stream is intact you get
+     * four clean blocks; if it is misaligned you get a pattern that marches. */
+    static uint8_t row[320 * 2];
+    for (int y = 0; y < 240; y++) {
+        for (int x = 0; x < 320; x++) {
+            uint16_t c;
+            if      (y < 120 && x < 160) c = 0xF800;   /* TL red   */
+            else if (y < 120)            c = 0x07E0;   /* TR green */
+            else if (x < 160)            c = 0x001F;   /* BL blue  */
+            else                         c = 0xFFFF;   /* BR white */
+            row[x * 2]     = (uint8_t)(c >> 8);
+            row[x * 2 + 1] = (uint8_t)(c & 0xFF);
+        }
+        if (y == 0) {
+            d_cmd(0x2C);
+            d_idle();
+            d_pin(PIN_LCD_DC, 1);
+        }
+        for (int off = 0; off < 640; off += D_BUF_BYTES) {
+            int n = (640 - off) < D_BUF_BYTES ? (640 - off) : D_BUF_BYTES;
+            d_xfer(&row[off], n);
+        }
+    }
+    ESP_LOGI(TAG, "quadrants: expect TL red, TR green, BL blue, BR white");
+
+    ESP_LOGI(TAG, "direct GPSPI2: cmd=0x%08x ctrl=0x%08x clk=0x%08x user=0x%08x "
+           "dlen=%u gate=0x%08x", d_rd(D_SPI_CMD), d_rd(D_SPI_CTRL),
+           d_rd(D_SPI_CLK), d_rd(D_SPI_USER), d_rd(D_SPI_DLEN), d_rd(D_SPI_GATE));
+    record(3, ST_PASS, "direct GPSPI2; four quadrants on the glass");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "MeowKit ESP32-S3 spike, IDF %s", esp_get_idf_version());
@@ -728,7 +1366,7 @@ void app_main(void)
     stage_heap();
     stage_i2c_expander();
     stage_backlight();
-    stage_lcd();
+    stage_lcd_direct();
     stage_sd();
     stage_pmu();
     stage_ble();
