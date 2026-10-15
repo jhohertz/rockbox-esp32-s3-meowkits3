@@ -138,6 +138,47 @@ static inline void store_context(void* addr)
                   : "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9",
                     "a10", "a11", "a12", "a13", "a14", "a15", "memory");
 
+    /* Narrow WINDOWSTART to the current window alone, and record that window's
+     * index as part of the thread's context.
+     *
+     * This is the step that was missing, and it is what the measured failure
+     * came from. xthal_window_spill_nw restores WINDOWSTART to whatever it
+     * found, and every thread start rotates WINDOWBASE by 1 (the starter's
+     * ENTRY consumes the frame's CALLINC) without retiring the windows the
+     * previous thread left behind. WINDOWSTART therefore accumulates bits that
+     * belong to no live frame -- measured as 0xaa02 with WINDOWBASE 1, i.e.
+     * windows 1, 11, 13, 15 and 17, a call8 chain with a hole where windows
+     * 3..9 used to be. The next spill walks those bits, treats whatever is at
+     * ancestor_sp-16 as a base save area, and stores through the "ancestor"
+     * pointer it finds there. Dumping that chain showed those pointers to be
+     * ASCII: "Silent M", "urder.mp3", "System of a Down", ".mp3", "The Killer"
+     * -- dircache directory-entry names on the thread's own stack. The store
+     * lands in the middle of that data, and the eventual fault (an MMU entry
+     * fault from the cache, or an instruction fetch at a data address,
+     * depending on which word the overwrite hit) is nowhere near the cause.
+     *
+     * After the spill no window above the base holds anything the ABI keeps in
+     * registers: a0/a2/a3/a4 are in the base save areas and a12-a15 in their
+     * frame slots. So marking those windows free is not a suppression, it is
+     * the true state -- and it is what makes a later retw take the underflow
+     * handler and refill from the areas the spill just wrote, which is the
+     * whole resume model. The first-run path already narrows the same way.
+     *
+     * WINDOWBASE still has to be saved, because it is where the chain is rooted
+     * and it is core state: a thread that blocked at base 17 cannot be resumed
+     * with the core at base 1, and the two thread starts that produced the hole
+     * above each moved the base by one. */
+    asm volatile ("rsr    a2, windowbase        \n"
+                  "s32i   a2, %0, 16            \n"
+                  "movi   a3, 1                 \n"
+                  "ssl    a2                    \n"
+                  "sll    a3, a3                \n"
+                  "wsr    a3, windowstart       \n"
+                  "rsync                        \n"
+                  :
+                  : "r" (addr)
+                  : "a2", "a3", "memory");
+
     asm volatile ("wsr    %0, ps" : : "r" (saved));
     asm volatile ("rsync");
 
@@ -304,6 +345,16 @@ static inline void load_context(const void* addr)
         "l32i    a1, a6, 0          \n"   /* sp  */
         "l32i    a0, a6, 4          \n"   /* pc, still window-encoded */
         "l32i    a7, a6, 8          \n"
+        /* Put the window state back with the stack it belongs to. WINDOWBASE is
+         * where this thread's base save chain is rooted, and WINDOWSTART is
+         * rebuilt from it because store narrowed it to that one bit. Both are
+         * written before PS so the retw below rotates from the right origin. */
+        "l32i    a8, a6, 16         \n"   /* windowbase */
+        "wsr     a8, windowbase     \n"
+        "movi    a9, 1              \n"
+        "ssl     a8                 \n"
+        "sll     a9, a9             \n"
+        "wsr     a9, windowstart    \n"
         "wsr     a7, ps             \n"
         "rsync                      \n"
         "retw.n                     \n"
@@ -311,7 +362,7 @@ static inline void load_context(const void* addr)
         "break   1, 2               \n"   /* unreachable */
         :
         : "r" (first), "i" (XT_EXCM_LEVEL)
-        : "a0", "a6", "a7", "a8", "memory"
+        : "a0", "a6", "a7", "a8", "a9", "memory"
     );
 }
 
