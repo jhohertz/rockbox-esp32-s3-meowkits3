@@ -1407,6 +1407,59 @@ The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557
 0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
 is absent on this board.
 
+### The reference does not use IDF's SPI transaction path
+
+This decides the shape of the display driver, and it is easy to assume wrong.
+Grepping LovyanGFX's entire ESP32 platform layer for IDF's transaction API
+returns **zero hits**: no `spi_device_transmit`, `spi_device_polling_transmit`,
+`spi_device_queue_trans`, `spi_transaction_t`, `spi_device_get_trans_result`.
+
+What it uses IDF for is bus ownership and pin setup only:
+
+```c
+spi_bus_initialize(host, &buscfg, dma_channel);   // memset(&buscfg, ~0u, ...),
+                                                  // max_transfer_sz = 1,
+                                                  // flags = SPICOMMON_BUSFLAG_MASTER
+spi_bus_add_device(host, &devcfg, &handle);       // 10 MHz, spics_io_num = -1,
+                                                  // SPI_DEVICE_3WIRE | HALFDUPLEX,
+                                                  // queue_size = 1
+```
+
+and then it **overwrites the peripheral registers itself**, discarding whatever
+the driver configured:
+
+```c
+*reg(SPI_USER_REG(port))  = SPI_USR_MOSI | SPI_USR_MISO | SPI_DOUTDIN;
+*reg(SPI_CTRL_REG(port))  = 0;
+*reg(SPI_CTRL1_REG(port)) = 0;
+*reg(SPI_CTRL2_REG(port)) = 0;
+```
+
+Every transfer is hand-driven: `SPI_MS_DLEN = bitlen - 1`, `memcpy` into
+`SPI_W0` for 64 bytes or less, its own GDMA descriptor chain written to
+`SPI_DMA_OUT_LINK` above that, then `*SPI_CMD = SPI_EXECUTE` and spin on
+`SPI_USR`. DC is a plain GPIO driven through `GPIO_OUT_W1TS` / `GPIO_OUT_W1TC`,
+not a peripheral signal.
+
+Consequences:
+
+- The reference's 80 MHz figure is a statement about hand-programmed GPSPI, not
+  about `esp_lcd`. It is not evidence that `esp_lcd` works on this board.
+- A driver that programs GPSPI registers on top of an IDF-initialised bus is
+  **not** a deviation from the shipping firmware; it is what the shipping
+  firmware does. Hand-rolled transactions here are reference-faithful, and are
+  a different thing from bit-banging the clock and data lines.
+- `esp_lcd` sits on IDF's transaction layer, which the reference deliberately
+  bypasses. On this board that layer completes every transaction with `ESP_OK`
+  and clocks the pad (verified by edge counting at a rate the counter can
+  resolve), yet produces no visible image with a command sequence and byte
+  order proven correct on the same pins at the same speed.
+
+Do not run both paths in one boot to compare them. The hand-programmed path
+leaves GPSPI2 registers set, `spi_bus_initialize` then returns
+`ESP_ERR_INVALID_STATE`, and IDF layers its device state on top -- which makes
+any `esp_lcd` result uninterpretable.
+
 ### The ST7789 pixel contract, measured on the glass
 
 Established by drawing four labelled quadrants and reading the result, which is

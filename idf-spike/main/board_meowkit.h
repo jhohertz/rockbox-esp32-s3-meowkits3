@@ -45,7 +45,10 @@
 #define PIN_LCD_DC          39
 /* CS and RST are NOT GPIOs -- they are expander bits above. */
 #define SPI_LCD_HOST        SPI2_HOST
-#define LCD_PCLK_HZ         (10 * 1000 * 1000)   /* reference clock_speed_hz */
+/* Full speed, matching the stock firmware: display.hpp cfg.freq_write =
+ * 80000000. The reference proves the panel and the wiring accept 80 MHz on
+ * this board, so anything slower is a handicap we impose on ourselves. */
+#define LCD_PCLK_HZ         (80 * 1000 * 1000)
 #define LCD_H               320
 #define LCD_V               240
 
