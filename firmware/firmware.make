@@ -6,10 +6,41 @@
 #                     \/            \/     \/    \/            \/
 #
 
-INCLUDES += -I$(FIRMDIR) -I$(FIRMDIR)/export -I$(FIRMDIR)/drivers \
-			-I$(FIRMDIR)/include -I$(FIRMDIR)/kernel/include
+INCLUDES += -I$(FIRMDIR) -I$(FIRMDIR)/export -I$(FIRMDIR)/drivers
+
+# Rockbox carries replacements for libc headers, and on an ESP-IDF-backed target
+# the C library is IDF's (newlib/picolibc), not Rockbox's. The two sets collide on:
+#
+#   firmware/include:      assert.h, elf.h
+#   firmware/libc/include: ctype.h errno.h fcntl.h inttypes.h math.h stdlib.h
+#                          string.h time.h
+#
+# As plain -I those directories are searched before the toolchain's system
+# directories, so IDF's own headers resolve against Rockbox's replacements. That
+# is not a cosmetic ordering issue: components/newlib/platform_include/assert.h is
+# a shim whose whole job is `#include_next <assert.h>` to reach "newlib's own
+# unmodified assert.h", and with Rockbox first the next one it finds is
+# firmware/include/assert.h, which pulls in panic.h and never reaches the real
+# libc. The failure then surfaces somewhere unrelated -- a missing
+# ESP_STATIC_ASSERT, an unknown `FILE` -- which makes it look like a dialect or a
+# macro problem when it is an include-path problem.
+#
+# -idirafter is the precise tool: the directory is searched *after* the standard
+# system directories. IDF therefore gets the real libc, and Rockbox-only headers
+# (button.h, lcd.h, the kernel headers, config.h) are unaffected because the libc
+# does not provide those names.
+ifeq (xtensa,$(CPU))
+INCLUDES += -idirafter $(FIRMDIR)/include
+INCLUDES += -I$(FIRMDIR)/kernel/include
+else
+INCLUDES += -I$(FIRMDIR)/include -I$(FIRMDIR)/kernel/include
+endif
 ifndef APP_TYPE
+ifeq (xtensa,$(CPU))
+INCLUDES += -idirafter $(FIRMDIR)/libc/include
+else
 INCLUDES += -I$(FIRMDIR)/libc/include
+endif
 endif
 
 ifneq ($(filter reggen,$(TOOLSET)),)
