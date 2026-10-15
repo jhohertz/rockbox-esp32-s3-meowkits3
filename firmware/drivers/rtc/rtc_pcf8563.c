@@ -40,7 +40,6 @@
 #include "rtc.h"
 #include "system.h"
 #include "timefuncs.h"
-#include "bootlog.h"
 
 #define RTC_ADDR 0x51
 
@@ -66,8 +65,6 @@ static bool rtc_read_time(unsigned char *buf)
 
 void rtc_init(void)
 {
-    boot_trace('r');
-
     unsigned char ctrl1;
 
     if (i2c_readmem(RTC_ADDR, RTC_CTRL1, &ctrl1, 1) != 1)

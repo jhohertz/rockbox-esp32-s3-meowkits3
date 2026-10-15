@@ -20,11 +20,6 @@
 #include "kernel-internal.h"
 #include "system.h"
 
-/* Bring-up liveness counters (firmware/target/xtensa/bootlog.c). */
-void rtc_bump(int idx);
-void rtc_set(int idx, unsigned int v);
-void boot_trace(char c);
-
 /* Unless otherwise defined, do nothing */
 #ifndef YIELD_KERNEL_HOOK
 #define YIELD_KERNEL_HOOK() false
@@ -200,8 +195,6 @@ unsigned sleep(unsigned ticks)
     if (SLEEP_KERNEL_HOOK(ticks))
         return 0; /* Handled */
 
-    rtc_bump(7);
-    boot_trace('S');
     disable_irq();
     sleep_thread(ticks);
     switch_thread();

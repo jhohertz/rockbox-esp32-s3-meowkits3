@@ -18,10 +18,6 @@
  *
  ****************************************************************************/
 #include "config.h"
-/* Bring-up trace; remove once the xtensa kernel boots reliably. */
-#if defined(CPU_XTENSA)
-#include "bootlog.h"
-#endif
 
 #ifdef HAVE_SIGALTSTACK_THREADS
 /*
@@ -32,8 +28,6 @@
 #endif
 
 #include "thread-internal.h"
-
-/* Bring-up trace budget for the scheduler; remove with the rest of the traces. */
 #include "kernel.h"
 #include "cpu.h"
 #include "string.h"
@@ -913,8 +907,6 @@ static NO_INLINE void check_tmo_expired_inner(struct core_entry *corep)
     long next_tmo_check = tick + 60*HZ; /* minimum duration: once/minute */
     struct thread_entry *prev = NULL;
     struct thread_entry *thread = TMO_THREAD_FIRST(&corep->tmo);
-    rtc_bump(9);
-    boot_trace('M');
 
     /* If there are no processes waiting for a timeout, just keep the check
        tick from falling into the past. */
@@ -1015,34 +1007,11 @@ static FORCE_INLINE void prepare_block(struct thread_entry *current,
  * INTERNAL: Intended for use by kernel and not programs.
  *---------------------------------------------------------------------------
  */
-/* Bring-up tracing hooks, defined in firmware/target/xtensa/bootlog.c */
-extern void boot_trace(char c);
-extern volatile unsigned int xt_switch_trace[16];
-extern volatile int xt_switch_trace_n;
-static int xt_loop_n;
-
 void switch_thread(void)
 {
     const unsigned int core = CURRENT_CORE;
     struct core_entry *corep = __core_id_entry(core);
-
     struct thread_entry *thread = corep->running;
-    struct core_entry *corep0 = corep;
-    volatile unsigned int *step = (volatile unsigned int *)RTC_LOOP_ADDR;
-    step[8] = (unsigned)corep;   /* entry */
-    rtc_bump(0);
-
-    /* Bring-up trace: recorded in RTC slow memory, which survives the reset
-     * esptool has to perform, so a fault inside the switch can be matched
-     * against the pointers it was working with. */
-    if (xt_switch_trace_n < 32)
-    {
-        volatile unsigned int *rec = (volatile unsigned int *)RTC_SWITCH_ADDR;
-        rec[xt_switch_trace_n * 2] = (unsigned)corep;
-        rec[xt_switch_trace_n * 2 + 1] = (unsigned)thread;
-        xt_switch_trace_n++;
-        boot_trace('W');
-    }
 
     if (thread)
     {
@@ -1053,34 +1022,17 @@ void switch_thread(void)
         /* Check core_ctx buflib integrity */
         core_check_valid();
 #endif
-        step[9] = (unsigned)corep;   /* after store_context */
         thread_store_context(thread);
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
             thread_stkov(thread);
-        step[10] = (unsigned)corep;   /* after stkov check */
     }
 
     /* TODO: make a real idle task */
     for (;;)
     {
         disable_irq();
-        rtc_bump(1);
-
-        /* Bring-up trace: the pointers this iteration will dereference, kept in
-         * RTC slow memory so they are readable after the reset esptool needs.
-         * rec[0..2] = this iteration, rec[4..6] = at function entry.
-         */
-        {
-            volatile unsigned int *rec = (volatile unsigned int *)RTC_LOOP_ADDR;
-            rec[0] = (unsigned)corep;
-            rec[1] = (unsigned)thread;
-            rec[2] = (unsigned)xt_loop_n;
-            rec[4] = (unsigned)corep0;
-            rec[5] = (unsigned)thread;
-            rec[6] = (unsigned)xt_loop_n;
-        }
 
         /* Check for expired timeouts */
         check_tmo_expired(corep);
@@ -1088,16 +1040,12 @@ void switch_thread(void)
         RTR_LOCK(corep);
 
         if (!RTR_EMPTY(&corep->rtr))
-        {
-            boot_trace('B');
             break;
-        }
 
         thread = NULL;
 
         /* Enter sleep mode to reduce power usage */
         RTR_UNLOCK(corep);
-        rtc_bump(2);
         core_sleep(IF_COP(core));
 
         /* Awakened by interrupt or other CPU */
@@ -1143,6 +1091,7 @@ void switch_thread(void)
 
     thread->skip_count = 0; /* Reset aging counter */
 #endif /* HAVE_PRIORITY_SCHEDULING */
+
     rtr_queue_make_first(&corep->rtr, thread);
     corep->running = thread;
 
@@ -1154,9 +1103,7 @@ void switch_thread(void)
 #endif
 
     /* And finally, give control to the next thread. */
-    boot_trace('X');                  /* about to jump into thread_load_context */
     thread_load_context(thread);
-    boot_trace('Y');                  /* unreachable unless the switch returned */
 }
 
 /*---------------------------------------------------------------------------
@@ -1241,9 +1188,8 @@ unsigned int create_thread(void (*function)(void),
                            IF_COP(, unsigned int core))
 {
     struct thread_entry *thread = thread_alloc();
-    if (thread == NULL) {
+    if (thread == NULL)
         return 0;
-    }
 
     new_thread_base_init(thread, &stack, &stack_size, name
                          IF_PRIO(, priority) IF_COP(, core));
@@ -1252,18 +1198,9 @@ unsigned int create_thread(void (*function)(void),
     if (stack_words == 0)
         return 0;
 
-    boot_trace('t');
-    boot_trace_hex((unsigned)(uintptr_t)stack);
-    boot_trace_hex(stack_words);
-
     /* Munge the stack to make it easy to spot stack overflows */
-    for (unsigned int i = 0; i < stack_words; i++) {
-        if ((i & 0x3ffu) == 0u) {
-            boot_trace('M');
-            boot_trace_hex((unsigned int)((uintptr_t)stack + i * sizeof(uintptr_t)));
-        }
+    for (unsigned int i = 0; i < stack_words; i++)
         ((uintptr_t *)stack)[i] = DEADBEEF;
-    }
 
 #if NUM_CORES > 1
     /* Writeback stack munging or anything else before starting */

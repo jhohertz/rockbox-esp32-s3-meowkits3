@@ -25,9 +25,6 @@
 #define ROCKBOX_UNALIGNED(X)   ((uintptr_t)X & (sizeof(long) - 1))
 #define TOO_SMALL(LEN) ((LEN) < LBLOCKSIZE)
 
-extern void boot_trace(char c);
-extern void boot_trace_hex(unsigned int v);
-
 void memset16(void *dst, int val, size_t len)
 {
 #if defined(CPU_XTENSA)

@@ -48,11 +48,8 @@ extern void __xtensa_libgcc_window_spill(void);
 static volatile uint32_t xt_context_addr
     __attribute__((section(".srambss")));
 
-extern void boot_trace(char c);
-
 void xt_thread_start(void (*fn)(void))
 {
-    boot_trace('J');                  /* a thread body was entered */
     fn();
     thread_exit();
 }

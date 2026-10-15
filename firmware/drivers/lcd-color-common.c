@@ -86,67 +86,19 @@ static void *lcd_frameaddress_default(int x, int y)
 /* LCD init */
 void lcd_init(void)
 {
-    extern void boot_trace(char c);
-    /* Marker-per-step, because a hang inside this sequence is otherwise
-     * indistinguishable from a hang in the panel driver. */
-    boot_trace('l');
+    /* Initialize the viewport */
     lcd_set_viewport(NULL);
-    boot_trace('m');
-    boot_trace_timer();
-    boot_trace_mmu((unsigned)(uintptr_t)FBADDR(0, 0), 4);
 
-    /* Per-page probe: one store and one load on every MMU entry that mmu_init
-     * mapped, so a page that the Ext_RAM cache cannot service shows up as a
-     * stall on its own entry rather than as a bulk failure.
-     */
-    {
-        int bad = 0;
-        boot_trace('E');
-        boot_trace_extmem();
-        for (int e = 8; e <= 128; e++) {
-            volatile unsigned int *p = (volatile unsigned int *)
-                (0x3C000000u + (unsigned)e * 0x10000u);
-            p[0] = 0xC0000000u | (unsigned)e;
-            if (p[0] != (0xC0000000u | (unsigned)e)) {
-                boot_trace('!');
-                boot_trace_hex((unsigned)e);
-                boot_trace_hex(p[0]);
-                bad++;
-            }
-            if ((e & 31) == 0)
-                boot_trace('a' + (e >> 5));
-        }
-        boot_trace('F');
-        boot_trace_hex((unsigned)bad);
-        boot_trace_extmem();
-
-        /* Is the CPU still alive at all? A pure internal-SRAM busy loop with
-         * markers, no PSRAM involved. If this runs to completion, the stall is
-         * specific to the Ext_RAM path.
-         */
-        {
-            static volatile unsigned int sink[8] __attribute__((section(".srambss")));
-            boot_trace('G');
-            for (int i = 0; i < 200000; i++) {
-                sink[0] = (unsigned)i;
-                if ((i % 20000) == 0)
-                    boot_trace('g');
-            }
-            boot_trace('H');
-        }
-    }
     lcd_clear_display();
-    boot_trace('n');
+
+    /* Call device specific init */
     lcd_init_device();
-    boot_trace('o');
     scroll_init();
 }
 
 /* Clear the whole display */
 void lcd_clear_display(void)
 {
-    extern void boot_trace(char c);
-    boot_trace('a');
     struct viewport* old_vp = lcd_current_viewport;
 
     lcd_current_viewport = &default_vp;

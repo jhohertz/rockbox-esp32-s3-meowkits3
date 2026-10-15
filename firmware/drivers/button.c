@@ -24,7 +24,6 @@
 
 #include <stdlib.h>
 #include "config.h"
-#include "bootlog.h"
 #include "system.h"
 #include "button.h"
 #include "kernel.h"
@@ -219,6 +218,7 @@ static void button_tick(void)
     button_remote_post();
 
     btn = button_read(&data);
+
     check_audio_peripheral_state();
 
     /* Find out if a key has been released */
