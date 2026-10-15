@@ -1308,6 +1308,10 @@ obvious from the datasheet tables:
   DCDC2, bit6 EXTEN. Voltages are set in separate registers *before* enabling:
   DCDC1 0x26 and LDO4 0x27 are 700-3500 mV in 25 mV steps; LDO2/LDO3 share 0x28,
   1800-3300 mV in 100 mV steps, LDO2 in the high nibble. DCDC2 is 0x23.
+  **Bit 7 is not a supply enable.** It is VBUSHC, the VBUS hardware current
+  limit, and setting it clamps VBUS to about 100 mA. The ESP32-S3 browns out and
+  the USB-Serial-JTAG console disappears from the host entirely - only a physical
+  re-plug recovers it. The highest value that is safe to write is 0x4F.
 - Four read-modify-writes on 0x12 can lose bits on a loaded bus. Write the final
   value once.
 - ADC scaling: battery voltage `(hi<<4 | lo&0x0f) * 1.1` mV; charge and discharge
@@ -1368,6 +1372,40 @@ That exposed a gap in Rockbox itself: `audio_enable_speaker()` lives in
 A target with a speaker but no recording or radio therefore references a function
 that is never compiled. `audio_path.c` now guards the input-source selection with
 `#if INPUT_SRC_CAPS != 0` so the file can be built for speaker-only targets.
+
+### The PCA9557 is on LDO4, and it is invisible until that rail is at 3.3 V
+
+Established by measurement on the ESP-IDF spike, and it explains a failure that
+looks like a dead chip.
+
+After a cold board start the AXP173 leaves **REG 0x27 (LDO4) at 0x14 = 1200 mV**.
+At that voltage the PCA9557 does not acknowledge its address at all - a full
+0x08-0x77 scan returns six devices and the expander is simply not among them, at
+any address. Writing `REG 0x27 = 0x68` (3300 mV) makes it ACK, and it keeps
+ACKing. The reference BSP sets LDO4 to 3300 mV for exactly this reason, and its
+comment that the PMU "powers everything, must be first" is literal: the
+expander is unreachable until the PMU has been configured.
+
+Three traps follow from this:
+
+- **The AXP173 is not reset by an ESP32 reset.** Its registers survive a reflash
+  and a watchdog reset, so once something has raised LDO4, the expander appears
+  to work again by itself. The bug only reproduces after the board has been fully
+  power-cycled, which is what makes it look intermittent.
+- **The expander's outputs also survive.** It is powered, and its pins keep the
+  state the last firmware left them in. That is why the ST7789 renders a picture
+  even in a build that never addresses the expander: LCD CS and reset are still
+  being driven from the previous run. A working display is not evidence that the
+  expander is reachable.
+- **`ESP_ERR_INVALID_STATE` from `i2c_master_transmit_receive()` is this driver's
+  NACK indication**, not a driver or bus fault. It reads like a programming error
+  and sends you looking in the wrong place. Likewise `i2c_master_probe()` returns
+  `esp_err_t`, where **0 means the device was found** - assigning it to a `bool`
+  inverts the meaning.
+
+The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557,
+0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
+is absent on this board.
 
 ### Backlight PWM
 
