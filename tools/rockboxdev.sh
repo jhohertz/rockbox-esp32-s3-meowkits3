@@ -68,10 +68,24 @@ if [ -z $ESP_MIRROR ] ; then
     ESP_MIRROR=https://github.com/espressif/crosstool-NG/releases/download
 fi
 
+if [ -z $ESP_IDF_MIRROR ] ; then
+    ESP_IDF_MIRROR=https://github.com/espressif/esp-idf.git
+fi
+
 # Release tag of the Espressif Xtensa toolchain to install (see
 # build_xtensa_toolchain below, which explains why this one is not built from
 # GNU sources). Override with RBDEV_ESP_TOOLCHAIN or --esp-toolchain=.
 esp_tag="${RBDEV_ESP_TOOLCHAIN:-esp-14.2.0_20260121}"
+
+# Release tag of ESP-IDF to install for the Xtensa target (see build_esp_idf
+# below, which explains why the port needs the SDK and not merely a toolchain).
+# Override with RBDEV_ESP_IDF or --esp-idf=; skip with --no-esp-idf.
+esp_idf_tag="${RBDEV_ESP_IDF:-v5.5.5}"
+esp_idf_core="${RBDEV_ESP_IDF_CORE:-esp32s3}"
+esp_idf="yes"
+if [ -n "$RBDEV_ESP_IDF_SKIP" ]; then
+    esp_idf="no"
+fi
 
 # These are the tools this script requires and depends upon.
 reqtools="gcc g++ xz bzip2 gzip $make patch makeinfo automake libtool autoconf flex bison"
@@ -422,6 +436,97 @@ build_xtensa_toolchain () {
         exit 1
     fi
     echo "ROCKBOXDEV: xtensa-$core-elf is ready"
+}
+
+# Install ESP-IDF itself.
+#
+# This is not a toolchain, it is the vendor SDK the ESP32-S3 port links against,
+# and it is required rather than optional for two reasons.
+#
+# First, Bluetooth on this silicon is not separable from IDF. The controller is
+# a prebuilt blob (components/bt/controller/lib_esp32c3_family/esp32s3/
+# libbtdm_app.a) and the stack's OS abstraction layer (components/bt/common/osi/
+# -- alarm.c, future.c, fixed_queue.c, allocator.c) is built directly on
+# FreeRTOS and esp_timer. There is no route to BLE that does not include IDF.
+#
+# Second, it is simply less work. PSRAM bring-up, the flash MMU, cache
+# maintenance, the SDHOST IDMAC, GPSPI, the I2C command-list machine and GDMA
+# descriptor plumbing are each a solved, vendor-maintained driver here, and each
+# cost days to get right by hand on the bare-metal branch (see the
+# baremetal-pre-idf tag).
+#
+# The checkout lives under $prefix so that $prefix stays the single "everything
+# Rockbox needs" root. Note that IDF's installer fetches its own version-pinned
+# copy of the Xtensa toolchain under IDF_TOOLS_PATH (default ~/.espressif).
+# That is deliberate: sourcing IDF's export.sh puts the matching toolchain on
+# PATH, and that is the one to build the port with. The archive installed by
+# build_xtensa_toolchain above remains available for building without IDF.
+#
+# $1 core (esp32, esp32s2, esp32s3, ...)
+# $2 release tag
+build_esp_idf () {
+    core="$1"
+    tag="$2"
+
+    stepname=${RESTART_STEP:-esp-idf}
+    if ! check_restart "$stepname"; then
+        echo "ROCKBOXDEV: Skipping step '$stepname' as requested per RBDEV_RESTART"
+        return
+    fi
+    echo "ROCKBOXDEV: Starting step '$stepname'"
+
+    logfile="$builddir/build-esp-idf.log"
+    echo "ROCKBOXDEV: logging to $logfile"
+    rm -f "$logfile"
+
+    if test ! -d "$builddir"; then
+        mkdir -p "$builddir"
+    elif test ! -w "$builddir"; then
+        echo "ROCKBOXDEV: No write permission for $builddir"
+        exit
+    fi
+
+    # IDF's own installer checks for these too, but its failure mode is cryptic,
+    # so name the missing tool up front.
+    for t in git cmake ninja python3; do
+        if test -z "`findtool $t`"; then
+            echo "ROCKBOXDEV: \"$t\" is required to install ESP-IDF."
+            missingtools="yes"
+        fi
+    done
+    if [ -n "$missingtools" ]; then
+        echo "ROCKBOXDEV: Please install the missing tools and re-run the script."
+        exit 1
+    fi
+
+    idfdir="$prefix/esp-idf"
+
+    if [ -d "$idfdir/.git" ]; then
+        echo "ROCKBOXDEV: Skipping clone of ESP-IDF: $idfdir already exists"
+        echo "ROCKBOXDEV: (if that checkout is not $tag, remove it and re-run)"
+    else
+        echo "ROCKBOXDEV: cloning ESP-IDF $tag"
+        echo "ROCKBOXDEV: this is a large checkout: the Bluetooth controller, PHY,"
+        echo "ROCKBOXDEV: coex and WiFi libraries are submodules, and several of"
+        echo "ROCKBOXDEV: them are prebuilt archives rather than sources."
+        run_cmd "$logfile" git clone --depth 1 --branch "$tag" \
+            --recurse-submodules --shallow-submodules "$ESP_IDF_MIRROR" "$idfdir"
+    fi
+
+    # An interrupted clone leaves a directory with a .git but no tree, which
+    # otherwise fails much later with a confusing cmake error.
+    if test ! -f "$idfdir/tools/idf.py"; then
+        echo "ROCKBOXDEV: ESP-IDF checkout at $idfdir looks incomplete: no tools/idf.py"
+        echo "ROCKBOXDEV: delete it and re-run this script"
+        exit 1
+    fi
+
+    # install.sh is idempotent: it re-uses anything already in IDF_TOOLS_PATH.
+    echo "ROCKBOXDEV: installing ESP-IDF tools for '$core'"
+    run_cmd "$logfile" bash "$idfdir/install.sh" "$core"
+
+    echo "ROCKBOXDEV: ESP-IDF $tag is ready at $idfdir"
+    echo "ROCKBOXDEV: use it with:  . $idfdir/export.sh"
 }
 
 # check if the following should be executed or not, depending on RBDEV_RESTART variable:
@@ -803,6 +908,8 @@ usage () {
     echo "  --dlwhere=DIR       Set download directory (same as RBDEV_DOWNLOAD env var)"
     echo "  --builddir=DIR      Set build directory (same as RBDEV_BUILD env var)"
     echo "  --esp-toolchain=TAG Espressif Xtensa release tag to install (same as RBDEV_ESP_TOOLCHAIN env var)"
+    echo "  --esp-idf=TAG       ESP-IDF release tag to install for xtensa (same as RBDEV_ESP_IDF env var)"
+    echo "  --no-esp-idf        Do not install ESP-IDF (toolchain only; no Bluetooth support)"
     echo "  --makeflags=FLAGS   Set make flags (same as MAKEFLAGS env var)"
     exit 1
 }
@@ -845,6 +952,14 @@ case $i in
         esp_tag="${i#*=}"
         shift
         ;;
+    --esp-idf=*)
+        esp_idf_tag="${i#*=}"
+        shift
+        ;;
+    --no-esp-idf)
+        esp_idf="no"
+        shift
+        ;;
     *)
         echo "Unknown option '$i'"
         exit 1
@@ -880,6 +995,7 @@ echo "Build dir          : $builddir (set RBDEV_BUILD or use --builddir= to chan
 echo "Make options       : $MAKEFLAGS (set MAKEFLAGS or use --makeflags= to change)"
 echo "Restart step       : $RBDEV_RESTART (set RBDEV_RESTART or use --restart= to change)"
 echo "Target arch        : $RBDEV_TARGET (set RBDEV_TARGET or use --target= to change)"
+echo "ESP-IDF tag        : $esp_idf_tag for $esp_idf_core (set RBDEV_ESP_IDF or use --esp-idf= to change; --no-esp-idf to skip)"
 
 # Verify download directory
 if test -d "$dlwhere"; then
@@ -916,7 +1032,7 @@ if [ -z "$RBDEV_TARGET" ]; then
     echo "i   - mips     (Jz47xx/x1000 based players)"
     echo "x   - arm-linux  (Generic Linux ARM: Samsung ypr0, Linux-based Sony NWZ)"
     echo "y   - mips-linux  (Generic Linux MIPS: eg the many HiBy-OS targets)"
-    echo "e   - xtensa      (ESP32 family, e.g. ESP32-S3-WROOM-1-N16R8; installs the Espressif prebuilt toolchain)"
+    echo "e   - xtensa      (ESP32 family, e.g. ESP32-S3-WROOM-1-N16R8; installs the Espressif prebuilt toolchain and ESP-IDF)"
     echo "separate multiple targets with spaces"
     echo "(Example: \"m a i\" will build m68k, arm, and mips)"
     echo ""
@@ -1059,6 +1175,12 @@ do
             # -mdynconfig=. Rockbox's configure picks the tool by prefix, so use
             # the per-core name (xtensa-esp32s3-elf-) for the build.
             build_xtensa_toolchain "esp32s3" "$esp_tag"
+            if [ "$esp_idf" = "yes" ]; then
+                build_esp_idf "$esp_idf_core" "$esp_idf_tag"
+            else
+                echo "ROCKBOXDEV: skipping ESP-IDF as requested (--no-esp-idf)"
+                echo "ROCKBOXDEV: without it the ESP32-S3 port cannot build Bluetooth"
+            fi
             ;;
         *)
             echo "ROCKBOXDEV: Unsupported architecture option: $arch"
