@@ -2080,20 +2080,77 @@ The rule is therefore not "is this object big and inert". It is "does this objec
 contain something a core can be executing on", and the only safe way to answer it
 is to check the object for a stack, not the archive for a size.
 
-### Still open: a cache fault in the thread-exit path
+### The memory layout, measured rather than assumed
 
-The next fault after the switch started working is a different one and is not a
-threading bug. When the dircache thread finishes its scan and exits through
-`xt_thread_start` -> `thread_exit()` -> `thread_exit_final()`, the core takes a
-`Cache error` with sub-reason `MMU entry fault`, EXCCAUSE 7. It is deterministic:
-same registers and same `EXCVADDR` on every boot, with `A2`/`A3`/`A10` all holding
-the exiting thread's `thread_entry` and `A6` holding `audiobuffer + 0x60`, i.e. an
-address in the PSRAM window. `EXCVADDR` itself is ordinary internal DRAM, which is
-what makes it odd -- the D-cache MMU on esp32s3 indexes internal memory as well as
-Ext_RAM, so either an entry for DRAM0 has been overwritten or a dirty line from a
-PSRAM page is being evicted through an entry that is no longer valid. Nothing in
-the tree writes the MMU table any more (`mmu-xtensa.c` is gone), so the suspect is
-whatever IDF arms for `.ext_ram.bss` versus what the dircache scan touches.
+The esp32s3 has **one** MMU table, not two: `DR_REG_MMU_TABLE` at `0x600C5000`,
+512 entries of 32 bits, stride 4. `mmu_ll.h` reads and writes it as
+`DR_REG_MMU_TABLE + entry_id * 4` with `entry_id = (vaddr & SOC_MMU_VADDR_MASK)
+>> 16` and `SOC_MMU_VADDR_MASK = 0x1FFFFFF`
+(`components/soc/esp32s3/include/soc/ext_mem_defs.h`). Consequences that are
+easy to get wrong:
+
+- The index is the **masked address**, not the offset from the window base.
+- `0x3C000000` and `0x42000000` both mask to entry 0, so the data window
+  (`drom0_0_seg`, `0x3C000020`) and the instruction window (`iram0_2_seg`,
+`0x42000020`) are two views of the *same* linear pages, backed by one entry.
+  A page is flash or PSRAM for both buses at once; there is no per-bus target.
+- Entry bits: 15 = target (0 flash, 1 PSRAM), 14 = invalid, 0-13 = physical
+  64 KB page. `SOC_MMU_VALID` is literally 0.
+
+What IDF actually arms for this build, dumped from the table at `app_main`:
+
+| entries | target | physical | what lives there |
+|---|---|---|---|
+| 0..7 | flash | 10..17 | `.flash.text` at `0x42000020` (482 KB) |
+| 8..16 | flash | 1..9 | `.flash.rodata` at `0x3C080020` (529 KB) |
+| 17..144 | **PSRAM** | 0..127 | `.ext_ram.bss` -- 128 pages = exactly the 8 MB |
+| 145..511 | invalid (`0x4000`) | -- | nothing |
+
+`_ext_ram_bss_start = 0x3c110000`, `_ext_ram_bss_end = 0x3c6d127c`. The
+`.ext_ram.dummy` section in `sections.ld` is what pushes PSRAM past the flash
+rodata: `extern_ram_seg` and `drom0_0_seg` share origin `0x3c000020` and the same
+bus, so the dummy advances the location counter by the rodata size and aligns to
+64 KB. Rockbox's buffers land inside the armed range: `audiobuffer` at
+`0x3c14d2c0` (entry 20), `codecbuf` at `0x3c54d2c0` (84), `pluginbuf` at
+`0x3c64d2c0` (100).
+
+Verified by touching it rather than by reading the linker script: writing
+`0x5a5a5a5a` at `audiobuffer + 0x60` and reading it back works, and a task
+diffing all 512 entries every 200 ms across the whole boot saw **zero** changes.
+
+### "MMU entry fault" names a reason, not an address
+
+The panic text comes from `EXTMEM_MMU_ENTRY_FAULT_ST` in
+`components/esp_system/port/soc/esp32s3/cache_err_int.c`, whose entry in the
+decode table is:
+
+    { .bit = EXTMEM_MMU_ENTRY_FAULT_ST, .msg = "MMU entry fault error",
+      .fault_addr_reg = 0, .fault_size_reg = 0 }
+
+`fault_addr_reg = 0` means **there is no fault address register for this error**,
+so the `EXCVADDR` in the register dump is whatever that register last happened to
+hold. IDF says the equivalent outright for the sibling bit: "The following
+backtrace may not indicate the code that caused Cache invalid access". Chasing
+the printed `EXCVADDR` and the printed backtrace sent this investigation a long
+way down the wrong path -- the address looked like a `thread_entry` slot and a
+register holding `audiobuffer + 0x60` looked like a PSRAM access, and neither was
+the cause.
+
+The fault was real; the reporting was not. A windowed-ABI context switch that did
+not carry `WINDOWBASE` was storing through garbage "ancestor" pointers and
+corrupting the affected thread's own stack data. The cache error was that
+corrupted data being used later, somewhere else entirely. See "The context switch
+model: save the stack pointer, then unwind" for the fix and for the ASCII-shaped
+chain that proved it.
+
+Two rules for reading a fault here:
+
+- A cache-error panic gives a *reason*, not an address. Trust the reason and the
+  register contents; ignore `EXCVADDR`.
+- If the backtrace says `CORRUPTED`, the stack is the suspect, not the reporter.
+  This toolchain emits no `.xtensa-debug-module.ext-frame-info` sections at all,
+  so IDF's decoder is running on heuristics -- which makes a clean backtrace
+  itself evidence that the window state is sane.
 
 ### Codecs, plugins and the image format
 
