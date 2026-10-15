@@ -51,6 +51,28 @@ Build flow for a target:
 2. `firmware/export/config.h` includes `config/<model>.h` based on that `-D`.
 3. `autoconf.h` gets `ARCH`, `ARCH_VERSION`, `ARCH_PROFILE` — see §3.
 
+### The xtensa build links through ESP-IDF
+
+On the `esp32-s3-idf` branch the pipeline above stops at the archives. Rockbox
+compiles everything, produces `lib/librockbox.a` plus the `CORE_LIBS` archives,
+writes their paths to `idf-app/rockbox_libs.cmake`, and then runs `idf.py build`,
+which links those archives with the IDF components and owns the linker script, the
+startup, the cache/MMU and PSRAM bring-up, the C library and FreeRTOS.
+
+The ordering is forced, not chosen: `idf.py reconfigure` has to run *before* Rockbox
+compiles, because `tools/idf-flags` harvests the flags for IDF's headers from
+`compile_commands.json` in IDF's build tree — a hand-kept include list would follow
+`sdkconfig` only by hand and would fail as a code bug (header found, `CONFIG_` define
+missing). `tools/configure` performs that reconfigure and writes `$(BUILDDIR)/idf.make`,
+which `root.make` includes. Because `rockbox_libs.cmake` is generated *after* IDF has
+been configured, `root.make` touches `idf-app/main/CMakeLists.txt` to make ninja
+re-run CMake; `CMAKE_CONFIGURE_DEPENDS` cannot be used here, because IDF generates
+its own ninja graph and the file then appears as an output twice.
+
+Build with the IDF environment sourced: `. ~/esp/esp-idf/export.sh && make`.
+
+Read "Two compilation domains", below, before changing any flag set.
+
 ---
 
 ## 2. Target tree layout
@@ -1680,7 +1702,81 @@ table whose MCLK is 256 * rate agrees.
 REG00 is a reset **hold**, not a pulse: 0xff holds every block in reset and the chip
 only starts when it is released with 0x41.
 
+### Two compilation domains: the firmware, and the freestanding executables
+
+A codec and a plugin are not object files in the firmware. They are separate
+executables: each gets its own crt0 (`lib/rbcodec/codecs/codec_crt0.c`,
+`apps/plugins/plugin_crt0.c`), its own run of `apps/plugins/plugin.lds` (the same
+file preprocessed with `-DCODEC` or `-DPLUGIN`), and a link of its own objects plus
+a few archives plus `-lgcc` — **no C library at all**.
+
+Their C library is a jump table. The firmware hands a codec a `struct codec_api *ci`
+and a plugin a `struct plugin_api *pi`, and `libcodec.a` defines libc-*named*
+functions as thunks through it:
+
+```c
+void   *memcpy(void *d, const void *s, size_t n) { return ci->memcpy(d, s, n); }
+#undef  strlen
+size_t  codec_strlen(const char *s)               { return ci->strlen(s); }
+```
+
+Everything libc-shaped that is *not* in that table has to be resolved at compile
+time by Rockbox's own libc headers, which are deliberately macro-based so that no
+call is emitted:
+
+```c
+firmware/libc/include/stdlib.h:  #define abs(x) ((int)ABS(x))   /* labs, llabs */
+firmware/include/assert.h:       #define assert(e) ... panicf("Assertion failed: ...")
+```
+
+On this target the firmware links ESP-IDF's C library; the freestanding domain must
+not. `tools/root.make` therefore carries two flag sets:
+
+| flag set | used by | libc-replacement dirs | IDF flags |
+|---|---|---|---|
+| `CFLAGS` | `firmware/`, `apps/`, most of `lib/rbcodec` | `-idirafter` — lose to the system libc | yes |
+| `FREESTAND_CFLAGS` | codecs, plugins | `-I` — win, as on every other target | **none** |
+
+`firmware/firmware.make` takes `firmware/include` and `firmware/libc/include` off
+`INCLUDES` entirely for xtensa and hands each domain the form it needs
+(`LIBC_HDR_AFTER`, `LIBC_HDR_FIRST`); `codecs.make` and `plugins.make` build their
+flags from `FREESTAND_CFLAGS`.
+
+What it looks like when the domains leak:
+
+- System libc headers in a codec TU → `abs` ×24, `labs`, `llabs` and
+  `__assert_func` ×15 undefined at codec link time. Those names stop being macros
+  and become real calls into a library that is not in the link.
+- `libtremor/ctype.c` conflicting with picolibc's `_ctype_`: tremor ships its own
+  ctype table, which agrees with Rockbox's `ctype.h` and not with picolibc's.
+- `HAVE_SYSTEM_LIBC` defined in the *target* config instead of per domain →
+  `firmware/include/file.h` reaches for `<unistd.h>`, which resolves to the
+  toolchain's copy inside a `-ffreestanding` TU whose include order shadows the
+  `sys/cdefs.h` that copy depends on. One header line, 24 000 parse errors. It is
+  now supplied by `root.make` to the firmware domain only.
+
+`PPCFLAGS` — `SOURCES` preprocessing, linker scripts, and `mkdepfile` — is a
+firmware-domain thing, built from `BASE_CFLAGS` plus `LIBC_HDR_AFTER` plus **only**
+IDF's `-I` directories. The invariant is about *defines*: a `SOURCES` file is a C
+preprocessor program, and if IDF's `CONFIG_*` names reached it, IDF's configuration
+would start deciding which Rockbox files get compiled. The include directories are
+required, because `mkdepfile` scans under `-MG`, which does not fail on an
+unresolved include — it emits the name as written, and `addtargetdir.pl` turns
+`esp_err.h` into `$(BUILDDIR)/esp_err.h`, a prerequisite with no rule.
+
+Changing a flag set does not force a rebuild: `make.dep` tracks headers, not
+command lines. After touching these variables, delete the domain's objects
+(`lib/rbcodec/codecs/`, `apps/plugins/`) and `make.dep`.
+
+Verified: 43 codecs and a `.rock` (clock, with bitmaps and the plugin lib) build and
+link; codec objects carry zero IDF flags and firmware objects carry them all.
+
 ### Codecs, plugins and the image format
+
+> **Superseded on this branch.** The image is now produced by ESP-IDF's own
+> `esp_app_format`/`esptool_py` components via `idf.py build`; Rockbox no longer
+> packs it, and `tools/esp-elf2image` belongs to the bare-metal branch tagged
+> `baremetal-pre-idf`. What still applies is the linker-script contract below.
 
 `apps/plugins/plugin.lds` is a second linker script, run per codec and per plugin.
 It needs a `CPU_XTENSA` branch, and `CODEC_ORIGIN` it computes has to equal the
