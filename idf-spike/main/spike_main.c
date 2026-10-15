@@ -450,6 +450,53 @@ static unsigned pad_mcu_sel(int pin)
     return (*r >> 12) & 7u;
 }
 
+/* Compare the hardware state between the path that paints and the path that
+ * does not. Everything here is read from the peripheral, not from what we
+ * asked for: the IO MUX pad register (function select, input enable, pulls,
+ * drive strength), the GPIO matrix output-select entry (function, invert,
+ * output-enable source), the output-enable bit, the actual pad level, and the
+ * matrix input slots for the GPSPI signals. The input slots matter because
+ * writing only the output half leaves the controller unable to see the bus. */
+static void pin_state_dump(const char *tag)
+{
+    static const int pins[] = { PIN_LCD_DC, PIN_LCD_MOSI, PIN_LCD_SCLK, PIN_LCD_BL };
+    ESP_LOGI(TAG, "pin state (%s):", tag);
+    for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        int p = pins[i];
+        uint32_t mux = *(volatile uint32_t *)(uintptr_t)(DR_REG_IO_MUX_BASE + 0x04 + 4 * p);
+        const volatile uint32_t *osc =
+            (const volatile uint32_t *)(uintptr_t)&GPIO.func_out_sel_cfg[p];
+        unsigned en = p < 32 ? (unsigned)((GPIO.enable >> p) & 1u)
+                             : (unsigned)((GPIO.enable1.val >> (p - 32)) & 1u);
+        unsigned ov = p < 32 ? (unsigned)((GPIO.out >> p) & 1u)
+                             : (unsigned)((GPIO.out1.val >> (p - 32)) & 1u);
+        unsigned iv = p < 32 ? (unsigned)((GPIO.in >> p) & 1u)
+                             : (unsigned)((GPIO.in1.val >> (p - 32)) & 1u);
+        ESP_LOGI(TAG, "  pin %2d mux=0x%08x mcu_sel=%u ie=%u pu=%u pd=%u drv=%u"
+               " | out_sel=0x%08x func=%u oen_sel=%u | en=%u out=%u in=%u",
+                 p, mux, (unsigned)((mux >> 12) & 7u), (unsigned)((mux >> 9) & 1u),
+                 (unsigned)((mux >> 8) & 1u), (unsigned)((mux >> 7) & 1u),
+                 (unsigned)((mux >> 10) & 3u), *osc, (unsigned)(*osc & 0x1FFu),
+                 (unsigned)((*osc >> 10) & 1u), en, ov, iv);
+    }
+    static const int sigs[] = { FSPICLK_OUT_IDX, FSPID_OUT_IDX };
+    for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+        const volatile uint32_t *isc =
+            (const volatile uint32_t *)(uintptr_t)&GPIO.func_in_sel_cfg[sigs[i]];
+        ESP_LOGI(TAG, "  signal %d in_sel=0x%02x in_inv=%u", sigs[i],
+                 (unsigned)(*isc & 0x3Fu), (unsigned)((*isc >> 6) & 1u));
+    }
+    if (dev_pca9557) {
+        uint8_t cfg = 0, outb = 0, inb = 0;
+        i2c_reg_read(dev_pca9557, PCA9557_REG_CONFIG, &cfg, 1);
+        i2c_reg_read(dev_pca9557, PCA9557_REG_OUTPUT, &outb, 1);
+        i2c_reg_read(dev_pca9557, PCA9557_REG_INPUT, &inb, 1);
+        ESP_LOGI(TAG, "  expander cfg=0x%02x out=0x%02x in=0x%02x rst=%d cs=%d",
+                 cfg, outb, inb, !!(inb & (1u << EXP_LCD_RST)),
+                 !(inb & (1u << EXP_LCD_CS)));
+    }
+}
+
 static void claim_lcd_pads(const char *tag)
 {
     const int pins[3] = { PIN_LCD_DC, PIN_LCD_MOSI, PIN_LCD_SCLK };
@@ -463,6 +510,33 @@ static void claim_lcd_pads(const char *tag)
              tag, before[0], pad_mcu_sel(pins[0]),
              before[1], pad_mcu_sel(pins[1]),
              before[2], pad_mcu_sel(pins[2]));
+}
+
+/* Count SCLK edges on the pad while a transfer is running. The counter must
+ * not touch the pad's direction -- gpio_set_direction() re-routes the pad to
+ * SIG_GPIO_OUT_IDX and would disconnect the very signal being measured -- so
+ * only gpio_input_enable() is used, which sets the IO MUX input bit and leaves
+ * the output routing alone. Pinned to the other core so it runs in parallel
+ * with the transfer instead of starving it. At 80 MHz a polling loop misses
+ * most edges, so the number is a lower bound; zero versus non-zero is the
+ * signal being looked for. */
+static volatile int s_cnt_run;
+static volatile int s_cnt_done;
+static volatile int s_cnt_edges;
+
+static void edge_counter_task(void *arg)
+{
+    (void)arg;
+    gpio_input_enable((gpio_num_t)PIN_LCD_SCLK);
+    int last = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+    int n = 0;
+    while (s_cnt_run) {
+        int now = (int)((GPIO.in1.val >> (PIN_LCD_SCLK - 32)) & 1u);
+        if (now != last) { n++; last = now; }
+    }
+    s_cnt_edges = n;
+    s_cnt_done = 1;
+    vTaskDelete(NULL);
 }
 
 static void stage_lcd(void)
@@ -642,8 +716,59 @@ static void stage_lcd(void)
              outb, inb,
              !!(inb & (1u << EXP_LCD_RST)), !(inb & (1u << EXP_LCD_CS)), fbmem);
 
-    /* The same four quadrants the direct driver drew, so the two paths are
-     * directly comparable. Expect TL red, TR green, BL blue, BR white. */
+    /* Content bisect. The pin state is now known to be equivalent between the
+     * two paths, so the remaining variable is what esp_lcd puts in the
+     * transfer. Make this path byte-for-byte equivalent to the driver that
+     * paints, changing only the transport. Three things differ from esp_lcd's
+     * defaults:
+     *   - RAMCTRL: IDF sends 0x00,0xF0 ("big endian" per its own comment);
+     *     the reference and the working driver send 0x00,0xC0.
+     *   - MADCTL: written directly as the measured 0xA8 instead of composed
+     *     from swap_xy / mirror / rgb_ele_order.
+     *   - pixel bytes: esp_lcd_panel_io_tx_color ships the raw memory of a
+     *     uint16_t buffer, which on little-endian Xtensa is LOW byte first.
+     *     The working driver sent high byte first, so the buffer is built here
+     *     as explicit big-endian pairs.
+     * If this paints, the transport is fine and our esp_lcd configuration was
+     * the fault. If it stays black, the difference is IDF's spi_device + DMA
+     * path itself. */
+    static const struct {
+        uint8_t cmd;
+        uint8_t n;
+        uint8_t p[14];
+    } ref_seq[] = {
+        { 0xB2,  5, { 0x0c, 0x0c, 0x00, 0x33, 0x33 } },   /* PORCTRL  */
+        { 0xB7,  1, { 0x35 } },                           /* GCTRL    */
+        { 0xBB,  1, { 0x28 } },                           /* VCOMS    */
+        { 0xC0,  1, { 0x0C } },                           /* LCMCTRL  */
+        { 0xC2,  2, { 0x01, 0xFF } },                     /* VDVVRHEN */
+        { 0xC3,  1, { 0x10 } },                           /* VRHS     */
+        { 0xC4,  1, { 0x20 } },                           /* VDVSET   */
+        { 0xC6,  1, { 0x0f } },                           /* FRCTR2   */
+        { 0xD0,  2, { 0xa4, 0xa1 } },                     /* PWCTRL1  */
+        { 0xE0, 14, { 0xd0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x32,
+                      0x44, 0x42, 0x06, 0x0e, 0x12, 0x14, 0x17 } },
+        { 0xE1, 14, { 0xd0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31,
+                      0x54, 0x47, 0x0e, 0x1c, 0x17, 0x1b, 0x1e } },
+        { 0x3A,  1, { 0x55 } },                           /* COLMOD   */
+        { 0xB0,  2, { 0x00, 0xC0 } },                     /* RAMCTRL, reference value */
+        { 0x36,  1, { 0xA8 } },                           /* MADCTL, measured value */
+        { 0x21,  0, { 0x00 } },                           /* INVON    */
+        { 0x2A,  4, { 0x00, 0x00, 0x01, 0x3F } },         /* CASET 0..319 */
+        { 0x2B,  4, { 0x00, 0x00, 0x00, 0xEF } },         /* RASET 0..239 */
+        { 0x11,  0, { 0x00 } },                           /* SLPOUT   */
+        { 0x29,  0, { 0x00 } },                           /* DISPON   */
+    };
+    for (unsigned i = 0; i < sizeof(ref_seq) / sizeof(ref_seq[0]); i++) {
+        esp_lcd_panel_io_tx_param(io, ref_seq[i].cmd,
+                                  ref_seq[i].n ? ref_seq[i].p : NULL,
+                                  ref_seq[i].n);
+    }
+    vTaskDelay(pdMS_TO_TICKS(130));
+
+    /* Big-endian pixel pairs written straight into the buffer esp_lcd ships
+     * verbatim, matching the working driver's byte order. */
+    uint8_t *be = (uint8_t *)fb;
     for (int y = 0; y < LCD_V; y++) {
         for (int x = 0; x < LCD_H; x++) {
             uint16_t c;
@@ -651,10 +776,19 @@ static void stage_lcd(void)
             else if (y < LCD_V / 2)                  c = 0x07E0;
             else if (x < LCD_H / 2)                  c = 0x001F;
             else                                     c = 0xFFFF;
-            fb[y * LCD_H + x] = c;
+            be[(y * LCD_H + x) * 2]     = (uint8_t)(c >> 8);
+            be[(y * LCD_H + x) * 2 + 1] = (uint8_t)(c & 0xFF);
         }
     }
+    s_cnt_edges = 0;
+    s_cnt_done = 0;
+    s_cnt_run = 1;
+    xTaskCreatePinnedToCore(edge_counter_task, "edgecnt", 3072, NULL, 12, NULL, 1);
     err = esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H, LCD_V, fb);
+    s_cnt_run = 0;
+    while (!s_cnt_done) { vTaskDelay(1); }
+    ESP_LOGI(TAG, "esp_lcd draw_bitmap: %d sclk edges counted (lower bound)",
+             s_cnt_edges);
     /* The colour path queues, so draw_bitmap can return while the DMA is
      * still reading. Hold the buffer until the pixels are on the glass. */
     vTaskDelay(pdMS_TO_TICKS(1500));
@@ -673,6 +807,7 @@ static void stage_lcd(void)
     free(fb);
     fb = NULL;
 
+    pin_state_dump("esp_lcd, black screen");
     record(3, err == ESP_OK ? ST_PASS : ST_FAIL,
            "esp_lcd quadrants %dx%d @ %d MHz (%s)",
            LCD_H, LCD_V, LCD_PCLK_HZ / 1000000, esp_err_to_name(err));
@@ -1345,6 +1480,7 @@ __attribute__((unused)) static void stage_lcd_direct(void)
     ESP_LOGI(TAG, "direct GPSPI2: cmd=0x%08x ctrl=0x%08x clk=0x%08x user=0x%08x "
            "dlen=%u gate=0x%08x", d_rd(D_SPI_CMD), d_rd(D_SPI_CTRL),
            d_rd(D_SPI_CLK), d_rd(D_SPI_USER), d_rd(D_SPI_DLEN), d_rd(D_SPI_GATE));
+    pin_state_dump("direct GPSPI2, paints correctly");
     record(3, ST_PASS, "direct GPSPI2; four quadrants on the glass");
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
@@ -1356,6 +1492,11 @@ void app_main(void)
     stage_heap();
     stage_i2c_expander();
     stage_backlight();
+    /* esp_lcd only. Running the direct driver first leaves GPSPI2 registers
+     * hand-programmed, and spi_bus_initialize then reports ESP_ERR_INVALID_STATE
+     * while esp_lcd layers its own device setup on top of that state. Until
+     * this is isolated there is no way to tell an esp_lcd fault from
+     * cross-contamination between the two paths. */
     stage_lcd();
     stage_sd();
     stage_pmu();
