@@ -1961,6 +1961,63 @@ threads must both be blocked at a point where their frame chain is intact on
 their own stack, which is exactly what a Rockbox thread is when it is in
 `sleep()`, `mutex_wait()` or `queue_recv()`.
 
+### What the rewrite found, measured rather than inferred
+
+`asm/xtensa/thread.c` was rewritten to the model above: `struct regs` is now
+`{sp, pc, ps, start}`, `store_context` spills and saves three words, and
+`load_context` restores three words and falls into `switch_thread`'s own `retw`.
+The disassembly of the resume path is exactly FreeRTOS's solicited-frame shape:
+`l32i a1/a0/a7` then `wsr.ps` then `retw.n`. Three separate real bugs came out of
+that work, each found by measurement and each worth recording because none of
+them is obvious from the source:
+
+1. **`xthal_window_spill_nw()` is a call0-ABI leaf.** Its exit is `ret.n`, which
+   is why `portasm.S` calls it with `call0`. Calling it as an ordinary C function
+   hands it the *encoded* `a0` that `call8` leaves behind, and `ret.n` does not
+   strip that encoding, so the core jumps to the raw value. The whole reported
+   fault was that: `PC 0x82051fdb`, `EXCVADDR 0x82051fd8` — a plausible address
+   with bit 31 still on it. It has to be reached with `callx0` from asm, and the
+   literal has to be emitted in the same section as the code (`l32r sym` across
+   the flash/IRAM gap is out of range).
+2. **`callx0` overwrites `a0`.** `a0` must be read into a C variable *before* the
+   spill call, not after it. Saving it afterwards stores the spill's own return
+   address, which is not window-encoded, so the resume path jumps into the middle
+   of `switch_thread`. Printing the saved context is what showed this: the stored
+   `pc` read `420518b6` (inside `switch_thread`, which starts at `42051880`)
+   instead of the caller's encoded return address.
+3. **A thread started with `jx` has no return address.** `a0` at that moment is
+   whatever the outgoing thread had in it — here the `0xdeadbeef` stack canary —
+   and the starter's `entry` then takes a window overflow whose handler walks up
+   from that value as if it were a frame. The fault was a store at `0xdeadbecf`,
+   i.e. `0xdeadbeef - 0x20`, which is `addix8 a9, a?, -0x20` in the underflow
+   handler. Entering the starter with `callx8` instead gives it a genuine frame,
+   and `CALLINC 8` comes from the call itself rather than from a hand-written
+   `PS`. Note the argument moves with the window: a `callx8` callee sees its
+   `a2`/`a3` as the caller's `a10`/`a11`.
+
+Two things that were tried and did **not** help, so they are not in the code:
+
+- Pinning `WINDOWBASE` to 0 for the first run. The window arithmetic is relative
+  to `WINDOWBASE`, so an absolute value is not needed and pinning it makes the
+  first thread's frames agree with nothing. FreeRTOS never writes it.
+- Restricting `WINDOWSTART` to the current window before calling the starter.
+  Byte-identical failure.
+
+**What is still open.** The resume half of the model works — the saved `pc` is
+now correctly window-encoded and the unwind reaches the intended instruction. The
+first run does not: a thread started from inside `switch_thread` has the
+*outgoing* thread's frames above it in the window chain, so the spill and the
+overflow handler walk past its root frame and store through the other thread's
+stack pointer. The visible symptom after the first switch is a double exception
+giving `EXCVADDR` inside thread 0's stack while `a1` is already the new thread's,
+and then a second double exception inside the ROM's `ets_write_char` — the window
+state is bad enough that even console output cannot run. FreeRTOS solves this by
+making the first run look like an *interrupt entry* and returning through
+`_xt_user_exit`/`rfe`, which restores the whole window from a fabricated
+`XtExcFrame`; a cooperative `retw`-only switch has no equivalent, because
+whether the underflow handler runs at all is decided by `WINDOWSTART`, which
+C-level code cannot set to a value that is both correct and thread-local.
+
 ### Codecs, plugins and the image format
 
 > **Superseded on this branch.** The image is now produced by ESP-IDF's own
