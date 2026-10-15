@@ -112,7 +112,20 @@ PPCFLAGS += -DHAVE_SYSTEM_LIBC
 # include -- it emits the name as written, and addtargetdir.pl then turns
 # `esp_err.h` into $(BUILDDIR)/esp_err.h, a prerequisite with no rule, which is a
 # hard make error rather than a missing dependency.
-PPCFLAGS += $(filter -I%,$(IDF_CFLAGS))
+PPCFLAGS += $(filter -I%,$(IDF_CFLAGS)) -Wno-undef
+
+# One more ordering case, and this one is a name collision rather than a
+# preference. A firmware object that reaches an ESP-IDF driver can pull IDF's
+# FreeRTOS headers, and FreeRTOS.h includes <queue.h> to get its own queue API.
+# Rockbox has a queue.h as well, in firmware/kernel/include, and the firmware
+# domain puts that directory on the path ahead of IDF's. The two files even share
+# a guard name (QUEUE_H), so IDF's is skipped entirely and every FreeRTOS type
+# declared after it comes out unknown -- reported as errors inside IDF's
+# idf_additions.h, which reads like a broken toolchain and is really two
+# projects' headers arriving at the same name. Objects in that group are compiled
+# with IDF's search path leading; none of them use Rockbox's queue API.
+IDF_FIRST_CFLAGS = $(IDF_CFLAGS) $(BASE_CFLAGS) $(LIBC_HDR_AFTER) \
+                   -DHAVE_SYSTEM_LIBC -Wno-undef
 endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 
@@ -434,7 +447,15 @@ ROCKBOX_ARCHIVE := $(BUILDDIR)/lib/librockbox.a
 $(ROCKBOX_ARCHIVE): $$(OBJ)
 	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
 
-ROCKBOX_LINK_LIBS := $(ROCKBOX_ARCHIVE) $(CORE_LIBS)
+# VOICESPEEXLIB is not a codec: it is the second copy of libspeex that
+# apps/voice_thread.c links against, built with VOICESPEEXFLAGS (no -DCODEC, no
+# -ffunction-sections, -DROCKBOX_VOICE_CODEC) so the voice path can call the
+# decoder directly from the firmware. Rockbox's own link rule listed it
+# explicitly (see the rockbox.elf rule above); dropping it here showed up as
+# undefined reference to `speex_decode_int' rather than as anything that named
+# the cause. It has to be a prerequisite of the generated cmake file as well as
+# linked, because nothing else in the tree builds it.
+ROCKBOX_LINK_LIBS := $(ROCKBOX_ARCHIVE) $(CORE_LIBS) $(VOICESPEEXLIB)
 
 # Hand the archive list to CMake rather than writing it in idf-app: which archives
 # exist depends on what the Rockbox configuration enables (rbcodec, skin_parser,

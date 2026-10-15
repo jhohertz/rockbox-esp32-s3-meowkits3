@@ -35,9 +35,15 @@ idf_component_register(
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         esp_driver_gpio
+        esp_driver_gptimer
+        esp_driver_sdmmc
         esp_mm
         esp_timer
+        sdmmc
         log
+    # Rockbox's statics go to PSRAM, not to the 337 KB of internal DRAM IDF
+    # gives the image. See rockbox_memory.lf for what stays behind, and why.
+    LDFRAGMENTS rockbox_memory.lf
 )
 
 # Normal archive semantics, deliberately: the linker pulls only the objects it

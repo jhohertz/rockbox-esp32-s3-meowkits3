@@ -173,21 +173,16 @@ static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 
 static void tick_task_thread(void)
 {
-    /* The bare-metal level-1 ISR on this core was a leaf: it only advanced
-     * current_tick, so the registered tick tasks (button polling, backlight
-     * timeout, ...) had to run from a thread instead of from the interrupt,
-     * because C code nested inside an exception frame cannot rotate the
-     * register window on a core with no REGB option.
-     *
-     * Under ESP-IDF the interrupt path belongs to IDF and C ISRs are ordinary,
-     * so this thread becomes redundant as soon as tick_start() is reimplemented
-     * on a gptimer alarm. It stays for now because nothing else calls
-     * call_tick_tasks().
-     */
+    /* The tick functions do not run from the interrupt on this core. They are
+     * ordinary C -- button polling does I2C, which ends in a semaphore wait --
+     * and a Rockbox semaphore wait switches threads, which an exception frame
+     * on a core with no REGB option cannot do (see the xtensa tick for the
+     * failure). The gptimer alarm advances current_tick only, so the clock is
+     * hardware-accurate while the work happens here, in thread context. */
     while (true)
     {
         sleep(HZ/2);
-        call_tick_tasks();
+        run_tick_tasks();
     }
 }
 

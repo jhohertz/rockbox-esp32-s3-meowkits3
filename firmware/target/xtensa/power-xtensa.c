@@ -23,8 +23,8 @@
 #include "powermgmt.h"
 #include "tick.h"
 #include "axp173.h"
+#include "i2c.h"
 #include "xtensa.h"
-#include "bootlog.h"
 
 /* milliVolt at 0%, 10%, ... 100% */
 unsigned short battery_level_disksafe = 3400;
@@ -58,15 +58,31 @@ void ICODE_ATTR feed_rwdt(void);
 
 void power_init(void)
 {
-    boot_trace('U');                /* power_init entered */
     /* The bootloader enables the RTC watchdog with a timeout sized for itself.
      * Keeping it and feeding it from the tick is the only freeze protection this
      * target has. */
     if (rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & RWDT_EN_BIT)
         tick_add_task(feed_rwdt);
 
-    /* TEMP: AXP173 bring-up disabled to isolate the fault */
-    boot_trace('W');                /* PMU responding */
+    /* The PMU is the power supply, so this is not a monitoring call that can be
+     * skipped: cold, the chip leaves LDO4 at 1.2 V, and LDO4 feeds the PCA9557
+     * that holds the LCD reset and chip select -- below about 2 V the expander
+     * does not answer on the bus at all, so every display and touch operation
+     * that follows fails in a way that looks like a display problem. DCDC1 feeds
+     * the SoC and LDO2/LDO3 the rest of the board, including the card slot.
+     *
+     * This call was commented out during bare-metal fault isolation and never
+     * put back. The trace line below is why nobody noticed: it printed 'W'
+     * ("PMU responding") unconditionally, so the boot log kept reporting a
+     * healthy PMU while no rail was being configured.
+     *
+     * i2c_init() first: nothing else on this target brings the I2C master up
+     * before the expander does, and pca9557_init() calls it again for bus
+     * recovery, which it is written to tolerate.
+     */
+    i2c_init();
+    axp173_init();
+
 }
 
 void power_off(void)

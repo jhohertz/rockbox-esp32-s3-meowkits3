@@ -29,30 +29,24 @@
  * firmware domain only.
  */
 
-/* Boot through ESP-IDF's second-stage bootloader instead of letting the mask ROM
- * jump straight into Rockbox. The stage-2 loader does the cache-MMU arming for the
- * flash-mapped segments, enables the external caches, configures the MSPI pads and
- * the watchdog, and then jumps to our entry point - all of which crt0 otherwise has
- * to hand-roll. It is a prebuilt windowed-ABI binary (see tools/esp-stage2), so
- * nothing has to be built for it.
+/* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz.
  *
- * When this is set, the image is flashed at the app partition offset (0x10000) with
- * the bootloader at 0x0 and a partition table at 0x8000.
+ * This has to agree with CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ in the IDF project,
+ * because IDF is what actually sets the clock. It cannot be derived from
+ * sdkconfig.h here: this header is pulled in by every domain and by the
+ * SOURCES preprocessor, and IDF's CONFIG_* names must not reach either (see
+ * the PPCFLAGS note in tools/root.make). system-xtensa.c asserts the match
+ * instead, in a firmware-domain TU where sdkconfig.h is reachable.
  */
-#define ESP_STAGE2_BOOTLOADER 0
-
-/* Bring-up test for the windowed-ABI thread switch, run from crt0 before the
- * kernel is up. See xtensa_thread_selftest() in firmware/asm/xtensa/thread.c.
- * Remove once the kernel is running real threads.
- */
-#define XTENSA_THREAD_SELFTEST 0
-
-/* Core runs at 240 MHz; the APB/peripheral bus is 80 MHz. */
 #define CPU_FREQ 240000000
 
-/* The core can be clocked down to 160 or 80 MHz without touching any peripheral:
- * see set_cpu_frequency() in firmware/target/xtensa/system-xtensa.c. */
-#define HAVE_ADJUSTABLE_CPU_FREQ
+/* Not set, on purpose. Rockbox's cpu_boost() exists to call
+ * set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
+ * IDF moves the analog regulator bias (dbias) along with the core clock via
+ * REGI2C and the ROM's PVT calibration, which Rockbox cannot reproduce. Hand
+ * writing CPUPERIOD_SEL and the LDO slave count is the kind of change that
+ * browns out the chip instead of failing visibly. Power management, if wanted,
+ * goes through IDF's esp_pm DFS rather than around it. */
 
 /* LCD: ST7789. The panel's GRAM is 240x320, but the reference firmware drives it
  * rotated 90 degrees (LovyanGFX offset_rotation = 3), so it is used as 320x240. */
@@ -84,27 +78,41 @@
 #define MAX_BRIGHTNESS_SETTING     255
 #define DEFAULT_BRIGHTNESS_SETTING 200
 
-/* The framebuffer cannot live in .bss: the static data region is capped at 337 KB
- * and the framebuffer alone is 150 KB. Put it in PSRAM via the linker. */
-#define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".framebuffer")))
-
-/* Likewise the big statics that are only ever touched by the CPU. app.lds places
- * .psrambss in the PSRAM part of the external cache window, mmu-xtensa.c maps its
- * pages, and crt0 zeroes it after psram_init() has run. Taking these out of the
- * 337 KB region is what leaves room for the USB transfer buffers and the GDMA
- * rings, which have to stay in internal SRAM because DMA cannot reach PSRAM.
+/*
+ * Big statics go to PSRAM.
+ *
+ * Both of these used to name sections of Rockbox's own linker script
+ * (.framebuffer, .psrambss), which this path does not have. Naming a section
+ * nothing in the script claims does not fail: the linker keeps it as an orphan
+ * and drops it wherever its default rules happen to put it, which on this
+ * script was between IDF's flash regions -- and IDF's script then refuses the
+ * result with "the gap between .flash.rodata and .flash.tdata must not exist".
+ * That is the shape every one of these mistakes takes here, so the rule is:
+ * name a section IDF's script knows about, or name none.
+ *
+ * .ext_ram.bss is that section: IDF's script places it in PSRAM and its startup
+ * zeroes it, provided CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is set in the
+ * IDF project.
+ *
+ * The 337 KB internal DRAM cannot hold the framebuffer (150 KB) or the locale
+ * and unicode tables, and taking them out is what leaves room for the transfer
+ * buffers and DMA rings, which do have to stay internal because GDMA's
+ * descriptor window cannot reach PSRAM.
  *
  * The simulator has no PSRAM, so there the attribute stays empty.
  */
 #ifndef SIMULATOR
-#define PSRAM_BSS_ATTR __attribute__ ((section(".psrambss")))
+#define PSRAM_BSS_ATTR      __attribute__ ((section(".ext_ram.bss")))
+#define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".ext_ram.bss")))
 #endif
 
 #define CONFIG_STORAGE STORAGE_SD
 
-/* One SDHOST slot, wired for 1-bit. There is no card-detect line, so the drive is
- * not removable: a card has to be present at boot. */
-#define SDMMC_HOST_NUM_SD_CONTROLLERS 1
+/* No SDMMC_HOST_NUM_SD_CONTROLLERS here on purpose. That define is what pulls in
+ * Rockbox's generic SDHOST protocol layer (drivers/sdmmc_host.c) and expects the
+ * target to supply a set of controller ops. On this target the controller is
+ * driven by ESP-IDF's own SD driver, so target/xtensa/sd-idf.c implements the
+ * sd_* device entry points directly and the generic layer is not built. */
 
 #define BOOTDIR "/.rockbox"
 

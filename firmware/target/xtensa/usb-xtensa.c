@@ -33,7 +33,6 @@
 #include "power.h"
 #include "usb.h"
 #include "axp173.h"
-#include "bootlog.h"
 
 /*
  * VBUS is the only insertion signal available on this board, and it is on the
@@ -56,7 +55,6 @@ static void usb_vbus_monitor(void)
 
 void usb_init_device(void)
 {
-    boot_trace('U');
 
     create_thread(usb_vbus_monitor, vbus_stack, sizeof(vbus_stack), 0,
                   "usb vbus" IF_PRIO(, PRIORITY_SYSTEM) IF_COP(, CPU));
