@@ -24,8 +24,11 @@ OTHER_INC += -I$(RBCODECLIB_DIR)/codecs/lib
 CODEC_LIBS := $(CODECLIB) $(FIXEDPOINTLIB) $(ARMSUPPORTLIB)
 
 # compile flags for codecs
-CODECFLAGS := $(CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
-            -I$(RBCODECLIB_DIR)/codecs -I$(RBCODECLIB_DIR)/codecs/lib -DCODEC
+# FREESTAND_CFLAGS rather than CFLAGS: a codec is a separate executable with no C
+# library in its link, so it must be compiled against Rockbox's libc headers (and
+# with no SDK flags of any kind), not the platform library the firmware links.
+CODECFLAGS := $(FREESTAND_CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
+			 -I$(RBCODECLIB_DIR)/codecs -I$(RBCODECLIB_DIR)/codecs/lib -DCODEC
 
 ifdef APP_TYPE
  CODECLDFLAGS = $(SHARED_LDFLAGS)

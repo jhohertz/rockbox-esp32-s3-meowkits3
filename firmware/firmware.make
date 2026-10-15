@@ -25,19 +25,33 @@ INCLUDES += -I$(FIRMDIR) -I$(FIRMDIR)/export -I$(FIRMDIR)/drivers
 # ESP_STATIC_ASSERT, an unknown `FILE` -- which makes it look like a dialect or a
 # macro problem when it is an include-path problem.
 #
-# -idirafter is the precise tool: the directory is searched *after* the standard
-# system directories. IDF therefore gets the real libc, and Rockbox-only headers
-# (button.h, lcd.h, the kernel headers, config.h) are unaffected because the libc
-# does not provide those names.
+# -idirafter is the precise tool for the firmware domain: the directory is
+# searched *after* the standard system directories, so IDF reaches the real libc,
+# and Rockbox-only headers (button.h, lcd.h, the kernel headers, config.h) are
+# unaffected because the libc does not provide those names.
+#
+# What will not work is putting them on INCLUDES in either form, because INCLUDES
+# is shared with the other compilation domain: codecs and plugins are freestanding
+# executables with no C library in their link, and they need these very same
+# directories ahead of everything (see the domain comment in tools/root.make). So
+# the two directories come off INCLUDES entirely and are handed to each domain in
+# the form that domain needs:
+#
+#   LIBC_HDR_AFTER  firmware domain -- searched after the system directories, so
+#                   IDF's headers resolve against the real libc
+#   LIBC_HDR_FIRST  freestanding domain -- searched first, exactly as on every
+#                   other target in the tree
 ifeq (xtensa,$(CPU))
-INCLUDES += -idirafter $(FIRMDIR)/include
 INCLUDES += -I$(FIRMDIR)/kernel/include
+LIBC_HDR_AFTER := -idirafter $(FIRMDIR)/include
+LIBC_HDR_FIRST := -I$(FIRMDIR)/include
 else
 INCLUDES += -I$(FIRMDIR)/include -I$(FIRMDIR)/kernel/include
 endif
 ifndef APP_TYPE
 ifeq (xtensa,$(CPU))
-INCLUDES += -idirafter $(FIRMDIR)/libc/include
+LIBC_HDR_AFTER += -idirafter $(FIRMDIR)/libc/include
+LIBC_HDR_FIRST += -I$(FIRMDIR)/libc/include
 else
 INCLUDES += -I$(FIRMDIR)/libc/include
 endif
