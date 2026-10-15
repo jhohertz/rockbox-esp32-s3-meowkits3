@@ -1,3 +1,0 @@
-Command: ninja all
-ninja: error: build.ninja:23507: /home/jhohertz/co/rockbox/idf-app/rockbox_libs.cmake is defined as an output multiple times
-
