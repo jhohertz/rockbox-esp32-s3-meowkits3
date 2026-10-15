@@ -14,7 +14,13 @@ ffs.c
 memset16.c
 #endif
 
-#if (CONFIG_PLATFORM & PLATFORM_NATIVE) || defined(HAVE_ROCKBOX_C_LIBRARY)
+/* Rockbox's own memcpy/memset/strlen exist to fill in for a C library. When the
+ * platform links one (ESP-IDF on xtensa) they must not be built: asm/memcpy.c is
+ * written against Rockbox's libc internals -- it takes _PTR, which comes from
+ * firmware/libc/include/sys/cdefs.h via Rockbox's string.h -- so against a real
+ * libc it fails to compile, and even if it did the definitions would collide with
+ * the library's own. Same reasoning as the libc block in firmware/SOURCES. */
+#if !defined(HAVE_SYSTEM_LIBC) && ((CONFIG_PLATFORM & PLATFORM_NATIVE) || defined(HAVE_ROCKBOX_C_LIBRARY))
 #if defined(CPU_ARM_CLASSIC)
 arm/memcpy.S
 arm/memmove.S

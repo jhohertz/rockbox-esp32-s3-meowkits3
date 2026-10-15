@@ -29,29 +29,33 @@ PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(CFLAGS)) # cygwin sdl-config fix
 ifeq (xtensa,$(CPU))
 -include $(BUILDDIR)/idf.make
 #
-# IDF's flags go *first*, which is the opposite of what looks natural, and the
-# reason is header shadowing. Rockbox carries replacements for libc names --
-# firmware/include/assert.h, firmware/libc/include/stdio.h and friends -- and
-# those directories are on the include path ahead of IDF's. IDF headers include
-# those same names expecting newlib, so with Rockbox first:
+# Ordering is the whole problem here, and it cuts both ways:
 #
-#   esp_assert.h: #include "assert.h"  -> Rockbox's, which pulls in panic.h
-#   esp_timer.h : esp_timer_dump(FILE *stream) -> FILE unknown, Rockbox's
-#                  stdio.h is not newlib's
+#   - IDF's headers must get the real C library.
+#     components/newlib/platform_include/assert.h is a shim whose entire job is
+#     `#include_next <assert.h>` to reach "newlib's own unmodified assert.h". If
+#     Rockbox's firmware/include is a plain -I, the next assert.h it finds is
+#     Rockbox's, which pulls in panic.h and never reaches the libc. The failure
+#     then surfaces as an unrelated parse error inside IDF (a missing
+#     ESP_STATIC_ASSERT, an unknown `FILE`), which is why it reads like a dialect
+#     problem and is not.
+#   - Rockbox's headers must keep their own names. With IDF's flags first,
+#     apps/main.c's `#include "rtc.h"` landed on IDF's deprecated
+#     esp_hw_support/include/soc/esp32s3/rtc.h, and rtc_init() became an implicit
+#     declaration.
 #
-# and the failure surfaces as an unrelated parse error inside IDF (a missing
-# ESP_STATIC_ASSERT), which is why it looks like a dialect problem and is not.
-#
-# IDF owns the C library on this target, so its include order wins and Rockbox's
-# libc headers simply stop being reached. Rockbox-only headers (config.h,
-# system.h, panic.h, the kernel headers) are unaffected: newlib does not provide
-# those names, so they still resolve from firmware/include.
+# firmware/include holds both assert.h (which must lose to the libc) and rtc.h
+# (which must win over IDF), so no permutation of -I flags settles it. What does
+# settle it is -idirafter on the two directories that hold libc replacements, done
+# in firmware/firmware.make: those are searched after the standard system
+# directories, so IDF reaches the real libc, while every other Rockbox directory
+# stays ahead of IDF's.
 #
 # -Wno-undef is not cosmetic either. Rockbox builds with -Wundef, and IDF headers
 # test generated sdkconfig names bare (`#if CONFIG_COMPILER_OPTIMIZATION_PERF`,
 # `#if __clang__`), which produces hundreds of warnings per file. IDF's headers
 # are not ours to fix.
-CFLAGS = $(IDF_CFLAGS) $(INCLUDES) $(DEFINES) $(GCCOPTS) -Wno-undef
+CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS) $(IDF_CFLAGS) -Wno-undef
 endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 
@@ -316,6 +320,7 @@ $(LINKROM): $(ROMLDS)
 	$(call PRINTS,PP $(@F))
 	$(call preprocess2file,$<,$@,)
 
+ifneq (xtensa,$(CPU))
 # Note: make sure -Wl,--gc-sections comes before -T in the linker options.
 # Having the latter first caused crashes on (at least) mini2g.
 $(BUILDDIR)/rockbox.elf : $$(OBJ) $(FIRMLIB) $(VOICESPEEXLIB) $(CORE_LIBS) $$(LINKRAM)
@@ -339,14 +344,62 @@ $(BUILDDIR)/rockbox.bin : $(BUILDDIR)/rockbox.elf
 
 $(BUILDDIR)/rombox.bin : $(BUILDDIR)/rombox.elf
 	$(call PRINTS,OC $(@F))$(call objcopy,$<,$@)
+endif # !xtensa
 
-ifeq (arch_xtensa,$(ARCH))
-# An ESP32 image is built from the ELF, not from the objcopy binary: the
-# bootloader needs a segment table, and objcopy would have to span the gap
-# between the two flash windows (0x3C000020 to 0x42000020), which produces a
-# ~100 MB file of zeros.
-$(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.elf $(FLASHFILE)
-	$(call PRINTS,PACK $(notdir $@)) $(MKFIRMWARE) $< $@
+ifeq (xtensa,$(CPU))
+#### ESP-IDF-backed link ####
+#
+# Rockbox compiles and archives; ESP-IDF links. IDF owns the linker script, the
+# startup (call_start_cpu0 -> esp_startup_start_app -> app_main), the cache/MMU
+# and PSRAM bring-up, the C library and FreeRTOS. Those are precisely the things
+# the bare-metal branch had to reimplement by hand, and doing it again here would
+# be the entire difficulty of the port for no benefit. The bare-metal link lives
+# on the tagged branch (baremetal-pre-idf).
+#
+# Consequence worth stating: Rockbox's own linker script (app.lds), crt0 and
+# tools/esp-elf2image are not used on this path.
+
+IDFDIR ?= $(ROOTDIR)/idf-app
+IDF_PROJECT ?= rockbox
+IDFPY ?= idf.py
+
+# Everything Rockbox compiled that is not already an archive, in one archive.
+#
+# $(OBJ) is only the apps/ and other non-library sources -- a few dozen objects.
+# The firmware sources live in FIRMLIB_OBJ and are already archived in
+# libfirmware.a, which is a member of CORE_LIBS. Building librockbox.a from
+# $(OBJ) alone and then excluding libfirmware.a from the link (on a duplicate
+# symbol concern that does not apply here -- the two sets are disjoint) left every
+# firmware symbol unreachable and the IDF link failed on a single undefined
+# reference. Both are needed.
+ROCKBOX_ARCHIVE := $(BUILDDIR)/lib/librockbox.a
+
+$(ROCKBOX_ARCHIVE): $$(OBJ)
+	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+
+ROCKBOX_LINK_LIBS := $(ROCKBOX_ARCHIVE) $(CORE_LIBS)
+
+# Hand the archive list to CMake rather than writing it in idf-app: which archives
+# exist depends on what the Rockbox configuration enables (rbcodec, skin_parser,
+# utf8proc and fixedpoint are all conditional), so a list maintained in two places
+# would silently link a stale set.
+$(IDFDIR)/rockbox_libs.cmake: $(ROCKBOX_LINK_LIBS)
+	$(call PRINTS,GEN $(@F))
+	$(SILENT)echo '# generated by tools/root.make -- do not edit' > $@
+	$(SILENT)echo 'set(ROCKBOX_LIBS' >> $@
+	$(SILENT)for l in $(ROCKBOX_LINK_LIBS); do echo "    $$l" >> $@; done
+	$(SILENT)echo ')' >> $@
+	# Nudge CMake to re-run. IDF builds the ninja graph itself, so registering the
+	# generated file via CMAKE_CONFIGURE_DEPENDS makes ninja see it as an output
+	# twice and refuse to build at all. Touching a file CMake already tracks is the
+	# nudge that works, and it has to happen here rather than in CMake: this file is
+	# generated after IDF has already been configured.
+	$(SILENT)touch $(IDFDIR)/main/CMakeLists.txt
+
+$(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake
+	$(call PRINTS,IDF $(@F))
+	$(SILENT)cd $(IDFDIR) && $(IDFPY) build
+	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).bin $@
 else
 $(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE)
 	$(call PRINTS,SCRAMBLE $(notdir $@)) $(MKFIRMWARE) $< $@

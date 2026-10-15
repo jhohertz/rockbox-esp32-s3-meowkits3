@@ -23,11 +23,24 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <fcntl.h>
+/* config.h has to be in scope before the conditional below, not after it:
+ * HAVE_SYSTEM_LIBC comes from the target config, and a translation unit such as
+ * common/zip.c includes file.h before anything else pulls config.h in, so testing
+ * it earlier silently selects neither branch. */
+#include "config.h"
 #ifdef WIN32
 /* this has SEEK_SET et al */
 #include <stdio.h>
+#elif defined(HAVE_SYSTEM_LIBC)
+/* SEEK_SET/SEEK_CUR/SEEK_END belong to <unistd.h> in a POSIX libc. Rockbox's own
+ * libc defines them in its fcntl.h, which is why no other target needs this --
+ * and it must stay conditional, because Rockbox's libc has no unistd.h at all and
+ * including one here would break every native build. Only a target that links a
+ * system C library (ESP-IDF on xtensa) needs it, and callers such as
+ * buffering.c and common/zip.c use lseek() with these constants without including
+ * anything else. */
+#include <unistd.h>
 #endif
-#include "config.h"
 #include "fs_defines.h"
 #include "gcc_extensions.h"
 

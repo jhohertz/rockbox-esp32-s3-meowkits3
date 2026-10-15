@@ -1,0 +1,2 @@
+source /home/jhohertz/co/rockbox/idf-app/build/gdbinit/symbols
+source /home/jhohertz/co/rockbox/idf-app/build/gdbinit/connect
