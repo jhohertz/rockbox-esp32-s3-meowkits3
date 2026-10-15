@@ -43,10 +43,18 @@ static const char TAG[] = "rbtick";
 
 static gptimer_handle_t tick_timer;
 
+#ifdef ROCKBOX_SCAN_TRACE
+extern void scan_trace(int tag, unsigned long a, unsigned long b, unsigned long c);
+#endif
+
 static bool IRAM_ATTR tick_alarm(gptimer_handle_t timer,
                                  const gptimer_alarm_event_data_t *edata,
                                  void *user_ctx)
 {
+#ifdef ROCKBOX_SCAN_TRACE
+    scan_trace(60, current_tick, 0, 0);
+#endif
+
     (void)timer;
     (void)edata;
     (void)user_ctx;
