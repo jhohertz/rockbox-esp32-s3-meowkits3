@@ -298,6 +298,21 @@ static inline int xt_init_frame(struct regs* ctx)
 static inline void load_context(const void* addr)
 {
     int first = xt_init_frame((struct regs *)(uintptr_t)addr);
+
+#ifdef ROCKBOX_SCAN_TRACE
+    extern void scan_trace(int tag, unsigned long a, unsigned long b,
+                           unsigned long c);
+    /* tag 39: which context is about to be installed, whether it is a first
+       run, and the sp it will run on. The sp identifies the thread by its
+       stack, which the thread pointer alone does not. */
+    scan_trace(39, (unsigned long)(uintptr_t)addr, (unsigned long)first,
+               ((const struct regs *)(uintptr_t)addr)->sp);
+    /* tag 43: where this thread will resume. A blocked thread's pc is the
+       return address inside whatever primitive put it to sleep, so this names
+       the primitive. */
+    scan_trace(43, ((const struct regs *)(uintptr_t)addr)->pc,
+               ((const struct regs *)(uintptr_t)addr)->wb, 0);
+#endif
     xt_context_addr = (uint32_t)(uintptr_t)addr;
 
     asm volatile(
