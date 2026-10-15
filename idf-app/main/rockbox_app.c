@@ -52,18 +52,6 @@ extern unsigned char rockbox_stack[];
 
 static const char TAG[] = "rockbox";
 
-/* Rockbox's scheduler checks a canary word at the bottom of every thread
- * stack, and for thread 0 the kernel does not write it: on every native target
- * crt0 fills the main stack with DEADBEEF before C starts (see
- * firmware/target/mips/ingenic_x1000/crt0.S, which does exactly this). There is
- * no crt0 on this path -- IDF owns startup -- so the check finds whatever was
- * left there and switch_thread() reports a stack overflow on a thread that has
- * not used a byte of its stack. The word it actually found was 0xa5a5a5a5:
- * FreeRTOS's prvInitialiseNewTask() memsets the whole stack buffer with
- * tskSTACK_FILL_BYTE (FreeRTOS-Kernel/tasks.c:1044). That settles the order as
- * well -- the canary has to be written after the task is created, or FreeRTOS
- * overwrites it. Writing it at the bottom of a buffer the task is already
- * running in is safe: the task's own frame sits at the top of it. */
 static void fill_stack_canary(void)
 {
     extern unsigned char stackbegin[];
@@ -91,8 +79,7 @@ static void rockbox_task(void *arg)
 }
 
 void app_main(void)
-{
-    /* The task control block is ours too. pvPortMalloc would put it in the
+{    /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing
      * Rockbox is guaranteed to have is its own task: if the heap is exhausted
      * at startup the failure is a missing symbol at link time rather than a
