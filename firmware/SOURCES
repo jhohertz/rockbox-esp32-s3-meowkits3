@@ -335,7 +335,9 @@ common/adler32.c
 common/inflate.c
 
 /* Standard library */
-#if (CONFIG_PLATFORM & PLATFORM_NATIVE) || defined(HAVE_ROCKBOX_C_LIBRARY)
+/* HAVE_SYSTEM_LIBC: the platform's own C library is linked (ESP-IDF on xtensa),
+ * so Rockbox's replacements must not be compiled alongside it. */
+#if !defined(HAVE_SYSTEM_LIBC) && ((CONFIG_PLATFORM & PLATFORM_NATIVE) || defined(HAVE_ROCKBOX_C_LIBRARY))
 libc/atoi.c
 libc/strtol.c
 libc/strtoul.c
@@ -667,14 +669,13 @@ target/coldfire/ata-as-coldfire.S
  * one translation unit. Remove together with the bare-metal startup files. */
 target/xtensa/idf-probe.c
 
-target/xtensa/crt0.S
-target/xtensa/irom-map.c
-target/xtensa/psram-xtensa.c
-target/xtensa/mmu-xtensa.c
-target/xtensa/rom_cache.c
+/* The bare-metal startup is not used on this path and is not built: ESP-IDF owns
+ * the entry point, the vectors, the cache/MMU arming, the PSRAM bring-up and the
+ * core timer. That whole layer lives on the tagged branch baremetal-pre-idf.
+ *
+ * Deliberately absent: crt0.S, vectors.S, irom-map.c, mmu-xtensa.c,
+ * psram-xtensa.c, rom_cache.c, timer-xtensa.c, irq-xtensa.c. */
 target/xtensa/bootlog.c
-target/xtensa/vectors.S
-target/xtensa/irq-xtensa.c
 target/xtensa/system-xtensa.c
 target/xtensa/power-xtensa.c
 target/xtensa/timer-xtensa.c

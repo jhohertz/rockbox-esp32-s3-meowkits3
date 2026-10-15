@@ -10,6 +10,20 @@
 
 #define CONFIG_CPU ESP32S3
 
+/* ESP-IDF supplies the C library (newlib/picolibc) and links it normally, so
+ * Rockbox's own libc must not be built for this target. It defines the same
+ * names -- memcpy, strlen, qsort, mktime, errno accessors and the rest -- and
+ * with both archives on the link line the implementation a call lands on depends
+ * on archive order rather than on intent, which is the kind of bug that shows up
+ * as behaviour rather than as a link error.
+ *
+ * This is consistent with the include-path side of the same decision: on this
+ * arch firmware/include and firmware/libc/include are passed with -idirafter, so
+ * IDF's headers already win for assert.h, ctype.h, errno.h, math.h, stdlib.h,
+ * string.h, time.h and friends.
+ */
+#define HAVE_SYSTEM_LIBC
+
 /* Boot through ESP-IDF's second-stage bootloader instead of letting the mask ROM
  * jump straight into Rockbox. The stage-2 loader does the cache-MMU arming for the
  * flash-mapped segments, enables the external caches, configures the MSPI pads and

@@ -642,12 +642,17 @@ xtensacc () {
  # are plain callx8 (the ROM is windowed), and the context switch has to spill -
  # which is what the window vectors in firmware/target/xtensa/vectors.S provide.
  #
- # The freestanding assumptions in CCOPTS no longer hold: ESP-IDF supplies the C
- # library (newlib) and links it normally, and IDF's headers require its dialect
- # (C17 -- esp_assert.h defines ESP_STATIC_ASSERT as `static_assert`, which under
- # gnu11 is not a keyword). tools/idf-flags contributes IDF's -std, so the one in
- # CCOPTS has to go or the two fight. Same idiom the hosted targets already use.
- GCCOPTS=`echo $CCOPTS | sed -e s/\ -ffreestanding// -e s/\ -nostdlib// -e s/\ -std=gnu11//`
+ # ESP-IDF supplies the C library and links the application, so -nostdlib and
+ # -ffreestanding stay in CCOPTS: they are link-time options as far as the
+ # firmware is concerned (Rockbox no longer links it), and the codec and plugin
+ # links are separate freestanding executables with their own crt0. Dropping them
+ # made those links pull in the toolchain's own crt0.o and fail with "multiple
+ # definition of '_start'" against lib/rbcodec/codecs/codec_crt0.c.
+ #
+ # Only the dialect is overridden, and it has to be: IDF's headers require C17
+ # (esp_assert.h defines ESP_STATIC_ASSERT as `static_assert`, which under gnu11 is
+ # not a keyword). tools/idf-flags contributes IDF's -std.
+ GCCOPTS=`echo $CCOPTS | sed -e s/\ -std=gnu11//`
  GCCOPTS="$GCCOPTS -mlongcalls"
  GCCOPTS="$GCCOPTS -ffunction-sections -mtext-section-literals"
  GCCOPTIMIZE="-fomit-frame-pointer"
@@ -5094,3 +5099,24 @@ include \$(TOOLSDIR)/root.make
 EOF
 
 echo "Created Makefile"
+
+if [ "$t_cpu" = "xtensa" ]; then
+  # Rockbox compiles its own sources against ESP-IDF's headers, so it needs the
+  # exact flags IDF uses for its own. They are harvested from IDF's build rather
+  # than written out here, and they have to exist before make parses the Makefile
+  # -- CFLAGS consumes IDF_CFLAGS at parse time -- which is why this runs in
+  # configure and cannot be a make rule.
+  idfbuild="$rootdir/idf-app/build"
+  if [ ! -f "$idfbuild/compile_commands.json" ]; then
+      echo "Configuring ESP-IDF project (idf-app) ..."
+      ( cd "$rootdir/idf-app" && idf.py reconfigure >/dev/null )
+  fi
+  if [ -f "$idfbuild/compile_commands.json" ]; then
+      "$rootdir/tools/idf-flags" "$idfbuild" -o idf.make || exit 1
+      echo "Created idf.make"
+  else
+      echo "WARNING: no ESP-IDF compile flags were produced."
+      echo "WARNING: this target builds on ESP-IDF; source its environment"
+      echo "WARNING: (source ~/esp/esp-idf/export.sh) before running configure."
+  fi
+fi
