@@ -1027,6 +1027,14 @@ static FORCE_INLINE void prepare_block(struct thread_entry *current,
  */
 void switch_thread(void)
 {
+#ifdef RB_DIAG_NO_SWITCH
+    /* Bisect: never perform a context switch. Rockbox threads
+     * busy-wait instead, but current_tick still advances, so timeouts
+     * still expire and the system still makes progress. If the OS tick
+     * survives this, the switch is what kills it. */
+    return;
+#endif
+
     const unsigned int core = CURRENT_CORE;
     struct core_entry *corep = __core_id_entry(core);
     struct thread_entry *thread = corep->running;
