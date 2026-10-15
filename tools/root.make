@@ -13,8 +13,51 @@ DEFINES = -DROCKBOX -DMEMORYSIZE=$(MEMORYSIZE) $(TARGET) \
 	$(EXTRA_DEFINES) # <-- -DSIMULATOR or not
 INCLUDES = -I$(BUILDDIR) -I$(BUILDDIR)/lang $(TARGET_INC)
 
-CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS)
-PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(CFLAGS)) # cygwin sdl-config fix
+# There are two compilation domains in a Rockbox build, and on most targets they
+# are the same. On an ESP-IDF target they are not, and conflating them breaks the
+# second one silently.
+#
+#   firmware domain   firmware/, apps/, most of lib/rbcodec. These objects end up
+#                     in the firmware image, so on this target they are linked
+#                     against the platform C library and have to see its headers.
+#
+#   freestanding      lib/rbcodec/codecs/ and apps/plugins/. A codec or a plugin
+#       domain        is a separate executable with its own crt0, its own linker
+#                     script and no C library in its link at all -- just -lgcc.
+#                     Its "C library" is a jump table: the firmware hands it a
+#                     struct codec_api / struct plugin_api of function pointers,
+#                     and libcodec.a defines libc-*named* functions as thunks
+#                     through it (memcpy, strcpy, strcmp, strcat, codec_strlen).
+#                     Everything else libc-shaped has to be resolved at compile
+#                     time by Rockbox's own libc headers, which are deliberately
+#                     macro-based so no call is emitted: `#define abs(x)
+#                     ((int)ABS(x))`, and assert() expanding to panicf(). Get that
+#                     wrong and abs()/llabs()/__assert_func become real calls to a
+#                     library that is not in the link.
+#
+# BASE_CFLAGS is what every target has always used, and it is what the
+# freestanding domain must keep. CFLAGS is the firmware domain's, and on this
+# target it gains IDF's flags.
+BASE_CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS)
+CFLAGS = $(BASE_CFLAGS)
+# Built from BASE_CFLAGS, not from CFLAGS. Both variables are recursively
+# expanded, so deriving PPCFLAGS from CFLAGS "before" IDF is added to it does not
+# capture the earlier value -- it re-expands at use time and picks the IDF flags
+# up anyway. That matters because a SOURCES file is a C preprocessor program: if
+# IDF's CONFIG_ defines reach it, IDF's configuration starts deciding which
+# Rockbox files get compiled.
+#
+# LIBC_HDR_AFTER is in it because preprocessing is a firmware-domain activity and
+# those directories are no longer on INCLUDES on this target: apps/rbcodecconfig.h
+# includes file.h, which lives in firmware/include, and preprocessing that file
+# with a path that omits it fails at parse time, before any rule runs.
+PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(BASE_CFLAGS) $(LIBC_HDR_AFTER)) # cygwin sdl-config fix
+
+# The freestanding domain: Rockbox's include order, Rockbox's defines, Rockbox's
+# warning and codegen policy, and nothing belonging to any external SDK.
+# LIBC_HDR_FIRST is empty except on targets that move the libc-replacement
+# directories off INCLUDES; see firmware/firmware.make.
+FREESTAND_CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_FIRST)
 
 # ESP-IDF-backed targets compile their own sources with Rockbox's build, but the
 # files that reach IDF drivers have to see IDF's headers and IDF's generated
@@ -22,10 +65,6 @@ PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(CFLAGS)) # cygwin sdl-config fix
 # instead of being duplicated here: they follow sdkconfig and shift whenever a
 # component is enabled or disabled, and a hand-kept list fails as a code bug
 # (header found, CONFIG_ define missing).
-#
-# Deliberately appended after PPCFLAGS is derived: SOURCES preprocessing must not
-# see IDF's CONFIG_ defines, or IDF's configuration could start deciding which
-# Rockbox files get compiled.
 ifeq (xtensa,$(CPU))
 -include $(BUILDDIR)/idf.make
 #
@@ -46,16 +85,34 @@ ifeq (xtensa,$(CPU))
 #
 # firmware/include holds both assert.h (which must lose to the libc) and rtc.h
 # (which must win over IDF), so no permutation of -I flags settles it. What does
-# settle it is -idirafter on the two directories that hold libc replacements, done
-# in firmware/firmware.make: those are searched after the standard system
-# directories, so IDF reaches the real libc, while every other Rockbox directory
-# stays ahead of IDF's.
+# settle it is -idirafter on the two directories that hold libc replacements, and
+# only for the firmware domain: the freestanding domain has no system libc to
+# reach, and needs those headers ahead of everything instead. Both are set in
+# firmware/firmware.make.
 #
 # -Wno-undef is not cosmetic either. Rockbox builds with -Wundef, and IDF headers
 # test generated sdkconfig names bare (`#if CONFIG_COMPILER_OPTIMIZATION_PERF`,
 # `#if __clang__`), which produces hundreds of warnings per file. IDF's headers
 # are not ours to fix.
-CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS) $(IDF_CFLAGS) -Wno-undef
+#
+# HAVE_SYSTEM_LIBC is defined here rather than in the target's config header for
+# the same reason the include directories are split: it describes what the link
+# contains, and only this domain's link contains a C library. The freestanding
+# domain must not see it -- see the note in config/meowkits3.h. PPCFLAGS carries it
+# too because that is where firmware/SOURCES and firmware/asm/SOURCES get their
+# `#if`s evaluated.
+CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_AFTER) $(IDF_CFLAGS) -DHAVE_SYSTEM_LIBC -Wno-undef
+PPCFLAGS += -DHAVE_SYSTEM_LIBC
+#
+# Include directories, and only include directories, do go to PPCFLAGS. The
+# invariant that matters is that IDF's CONFIG_ defines must not reach a SOURCES
+# file, because that would let IDF's configuration decide which Rockbox files get
+# compiled; IDF's search paths decide nothing of the kind. They are needed because
+# mkdepfile scans with PPCFLAGS under -MG, which does not fail on an unresolved
+# include -- it emits the name as written, and addtargetdir.pl then turns
+# `esp_err.h` into $(BUILDDIR)/esp_err.h, a prerequisite with no rule, which is a
+# hard make error rather than a missing dependency.
+PPCFLAGS += $(filter -I%,$(IDF_CFLAGS))
 endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 

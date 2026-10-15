@@ -10,19 +10,24 @@
 
 #define CONFIG_CPU ESP32S3
 
-/* ESP-IDF supplies the C library (newlib/picolibc) and links it normally, so
- * Rockbox's own libc must not be built for this target. It defines the same
- * names -- memcpy, strlen, qsort, mktime, errno accessors and the rest -- and
- * with both archives on the link line the implementation a call lands on depends
- * on archive order rather than on intent, which is the kind of bug that shows up
- * as behaviour rather than as a link error.
+/* HAVE_SYSTEM_LIBC -- ESP-IDF supplies the C library (newlib/picolibc) and links
+ * it normally, so Rockbox's own libc must not be built alongside it: it defines
+ * the same names (memcpy, strlen, qsort, mktime, errno accessors and the rest),
+ * and with both archives on the link line the implementation a call lands on
+ * depends on archive order rather than on intent, which is the kind of bug that
+ * shows up as behaviour rather than as a link error.
  *
- * This is consistent with the include-path side of the same decision: on this
- * arch firmware/include and firmware/libc/include are passed with -idirafter, so
- * IDF's headers already win for assert.h, ctype.h, errno.h, math.h, stdlib.h,
- * string.h, time.h and friends.
+ * It is deliberately not defined here. A config header is pulled in by every
+ * domain in the build, and this target has two: the firmware, which links the
+ * platform library, and codecs and plugins, which are separate executables with no
+ * C library in their link at all, whose C library is the codec_api / plugin_api
+ * jump table. Defining it here made the freestanding domain behave as though it
+ * linked picolibc too -- firmware/include/file.h reached for <unistd.h>, which
+ * resolved to the toolchain's copy inside a -ffreestanding translation unit whose
+ * include order shadows the sys/cdefs.h that copy depends on, and one header line
+ * turned into thousands of parse errors. tools/root.make supplies it to the
+ * firmware domain only.
  */
-#define HAVE_SYSTEM_LIBC
 
 /* Boot through ESP-IDF's second-stage bootloader instead of letting the mask ROM
  * jump straight into Rockbox. The stage-2 loader does the cache-MMU arming for the

@@ -1,0 +1,54 @@
+Command: ninja all
+[0/1] Re-running CMake...
+-- Component directory /home/jhohertz/esp/esp-idf/components/esp_blockdev does not contain a CMakeLists.txt file. No component will be added
+-- Minimal build - OFF
+-- Building ESP-IDF components for target esp32s3
+-- ESP-TEE is currently supported only on the esp32c6;esp32h2;esp32c5 SoCs
+-- Project sdkconfig file /home/jhohertz/co/rockbox/idf-app/sdkconfig
+Loading defaults file /home/jhohertz/co/rockbox/idf-app/sdkconfig.defaults...
+warning: unknown kconfig symbol 'SDMMC_USE_GPIO_MATRIX' assigned to 'y' in /home/jhohertz/co/rockbox/idf-app/sdkconfig.defaults
+-- Compiler supported targets: xtensa-esp-elf
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- USING O3
+-- App "rockbox" version: baremetal-pre-idf-9-g23431db9c9
+-- Adding linker script /home/jhohertz/co/rockbox/idf-app/build/esp-idf/esp_system/ld/memory.ld
+-- Adding linker script /home/jhohertz/co/rockbox/idf-app/build/esp-idf/esp_system/ld/sections.ld.in
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.api.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.bt_funcs.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.libgcc.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.wdt.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.version.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.ble_cca.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.ble_test.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.libc.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/esp_rom/esp32s3/ld/esp32s3.rom.newlib.ld
+-- Adding linker script /home/jhohertz/esp/esp-idf/components/soc/esp32s3/ld/esp32s3.peripherals.ld
+-- Components: app_trace app_update bootloader bootloader_support bt cmock console cxx driver efuse esp-tls esp_adc esp_app_format esp_bootloader_format esp_coex esp_common esp_driver_ana_cmpr esp_driver_bitscrambler esp_driver_cam esp_driver_dac esp_driver_gpio esp_driver_gptimer esp_driver_i2c esp_driver_i2s esp_driver_isp esp_driver_jpeg esp_driver_ledc esp_driver_mcpwm esp_driver_parlio esp_driver_pcnt esp_driver_ppa esp_driver_rmt esp_driver_sdio esp_driver_sdm esp_driver_sdmmc esp_driver_sdspi esp_driver_spi esp_driver_touch_sens esp_driver_tsens esp_driver_twai esp_driver_uart esp_driver_usb_serial_jtag esp_eth esp_event esp_gdbstub esp_hal_ieee802154 esp_hid esp_http_client esp_http_server esp_https_ota esp_https_server esp_hw_support esp_lcd esp_local_ctrl esp_mm esp_netif esp_netif_stack esp_partition esp_phy esp_pm esp_psram esp_ringbuf esp_rom esp_security esp_system esp_timer esp_vfs_console esp_wifi espcoredump esptool_py fatfs freertos hal heap http_parser idf_test ieee802154 json log lwip main mbedtls mqtt newlib nvs_flash nvs_sec_provider openthread partition_table perfmon protobuf-c protocomm pthread rt sdmmc soc spi_flash spiffs tcp_transport touch_element ulp unity usb vfs wear_levelling wifi_provisioning wpa_supplicant xtensa
+-- Component paths: /home/jhohertz/esp/esp-idf/components/app_trace /home/jhohertz/esp/esp-idf/components/app_update /home/jhohertz/esp/esp-idf/components/bootloader /home/jhohertz/esp/esp-idf/components/bootloader_support /home/jhohertz/esp/esp-idf/components/bt /home/jhohertz/esp/esp-idf/components/cmock /home/jhohertz/esp/esp-idf/components/console /home/jhohertz/esp/esp-idf/components/cxx /home/jhohertz/esp/esp-idf/components/driver /home/jhohertz/esp/esp-idf/components/efuse /home/jhohertz/esp/esp-idf/components/esp-tls /home/jhohertz/esp/esp-idf/components/esp_adc /home/jhohertz/esp/esp-idf/components/esp_app_format /home/jhohertz/esp/esp-idf/components/esp_bootloader_format /home/jhohertz/esp/esp-idf/components/esp_coex /home/jhohertz/esp/esp-idf/components/esp_common /home/jhohertz/esp/esp-idf/components/esp_driver_ana_cmpr /home/jhohertz/esp/esp-idf/components/esp_driver_bitscrambler /home/jhohertz/esp/esp-idf/components/esp_driver_cam /home/jhohertz/esp/esp-idf/components/esp_driver_dac /home/jhohertz/esp/esp-idf/components/esp_driver_gpio /home/jhohertz/esp/esp-idf/components/esp_driver_gptimer /home/jhohertz/esp/esp-idf/components/esp_driver_i2c /home/jhohertz/esp/esp-idf/components/esp_driver_i2s /home/jhohertz/esp/esp-idf/components/esp_driver_isp /home/jhohertz/esp/esp-idf/components/esp_driver_jpeg /home/jhohertz/esp/esp-idf/components/esp_driver_ledc /home/jhohertz/esp/esp-idf/components/esp_driver_mcpwm /home/jhohertz/esp/esp-idf/components/esp_driver_parlio /home/jhohertz/esp/esp-idf/components/esp_driver_pcnt /home/jhohertz/esp/esp-idf/components/esp_driver_ppa /home/jhohertz/esp/esp-idf/components/esp_driver_rmt /home/jhohertz/esp/esp-idf/components/esp_driver_sdio /home/jhohertz/esp/esp-idf/components/esp_driver_sdm /home/jhohertz/esp/esp-idf/components/esp_driver_sdmmc /home/jhohertz/esp/esp-idf/components/esp_driver_sdspi /home/jhohertz/esp/esp-idf/components/esp_driver_spi /home/jhohertz/esp/esp-idf/components/esp_driver_touch_sens /home/jhohertz/esp/esp-idf/components/esp_driver_tsens /home/jhohertz/esp/esp-idf/components/esp_driver_twai /home/jhohertz/esp/esp-idf/components/esp_driver_uart /home/jhohertz/esp/esp-idf/components/esp_driver_usb_serial_jtag /home/jhohertz/esp/esp-idf/components/esp_eth /home/jhohertz/esp/esp-idf/components/esp_event /home/jhohertz/esp/esp-idf/components/esp_gdbstub /home/jhohertz/esp/esp-idf/components/esp_hal_ieee802154 /home/jhohertz/esp/esp-idf/components/esp_hid /home/jhohertz/esp/esp-idf/components/esp_http_client /home/jhohertz/esp/esp-idf/components/esp_http_server /home/jhohertz/esp/esp-idf/components/esp_https_ota /home/jhohertz/esp/esp-idf/components/esp_https_server /home/jhohertz/esp/esp-idf/components/esp_hw_support /home/jhohertz/esp/esp-idf/components/esp_lcd /home/jhohertz/esp/esp-idf/components/esp_local_ctrl /home/jhohertz/esp/esp-idf/components/esp_mm /home/jhohertz/esp/esp-idf/components/esp_netif /home/jhohertz/esp/esp-idf/components/esp_netif_stack /home/jhohertz/esp/esp-idf/components/esp_partition /home/jhohertz/esp/esp-idf/components/esp_phy /home/jhohertz/esp/esp-idf/components/esp_pm /home/jhohertz/esp/esp-idf/components/esp_psram /home/jhohertz/esp/esp-idf/components/esp_ringbuf /home/jhohertz/esp/esp-idf/components/esp_rom /home/jhohertz/esp/esp-idf/components/esp_security /home/jhohertz/esp/esp-idf/components/esp_system /home/jhohertz/esp/esp-idf/components/esp_timer /home/jhohertz/esp/esp-idf/components/esp_vfs_console /home/jhohertz/esp/esp-idf/components/esp_wifi /home/jhohertz/esp/esp-idf/components/espcoredump /home/jhohertz/esp/esp-idf/components/esptool_py /home/jhohertz/esp/esp-idf/components/fatfs /home/jhohertz/esp/esp-idf/components/freertos /home/jhohertz/esp/esp-idf/components/hal /home/jhohertz/esp/esp-idf/components/heap /home/jhohertz/esp/esp-idf/components/http_parser /home/jhohertz/esp/esp-idf/components/idf_test /home/jhohertz/esp/esp-idf/components/ieee802154 /home/jhohertz/esp/esp-idf/components/json /home/jhohertz/esp/esp-idf/components/log /home/jhohertz/esp/esp-idf/components/lwip /home/jhohertz/co/rockbox/idf-app/main /home/jhohertz/esp/esp-idf/components/mbedtls /home/jhohertz/esp/esp-idf/components/mqtt /home/jhohertz/esp/esp-idf/components/newlib /home/jhohertz/esp/esp-idf/components/nvs_flash /home/jhohertz/esp/esp-idf/components/nvs_sec_provider /home/jhohertz/esp/esp-idf/components/openthread /home/jhohertz/esp/esp-idf/components/partition_table /home/jhohertz/esp/esp-idf/components/perfmon /home/jhohertz/esp/esp-idf/components/protobuf-c /home/jhohertz/esp/esp-idf/components/protocomm /home/jhohertz/esp/esp-idf/components/pthread /home/jhohertz/esp/esp-idf/components/rt /home/jhohertz/esp/esp-idf/components/sdmmc /home/jhohertz/esp/esp-idf/components/soc /home/jhohertz/esp/esp-idf/components/spi_flash /home/jhohertz/esp/esp-idf/components/spiffs /home/jhohertz/esp/esp-idf/components/tcp_transport /home/jhohertz/esp/esp-idf/components/touch_element /home/jhohertz/esp/esp-idf/components/ulp /home/jhohertz/esp/esp-idf/components/unity /home/jhohertz/esp/esp-idf/components/usb /home/jhohertz/esp/esp-idf/components/vfs /home/jhohertz/esp/esp-idf/components/wear_levelling /home/jhohertz/esp/esp-idf/components/wifi_provisioning /home/jhohertz/esp/esp-idf/components/wpa_supplicant /home/jhohertz/esp/esp-idf/components/xtensa
+-- Configuring done (2.0s)
+-- Generating done (0.3s)
+-- Build files have been written to: /home/jhohertz/co/rockbox/idf-app/build
+ninja: Jobserver mode detected: k -j8 --jobserver-auth=fifo:/tmp/.ctx-mode-YCPefW/GMfifo2477908
+[1/7] Performing build step for 'bootloader'
+ninja: Jobserver mode detected: k -j8 --jobserver-auth=fifo:/tmp/.ctx-mode-YCPefW/GMfifo2477908
+[1/1] cd /home/jhohertz/co/rockbox/idf-app/build/bootloader/esp-idf/esptool_py && /home/jhohertz/.espressif/python_env/idf5.5_py3.14_env/bin/python /home/jhohertz/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/jhohertz/co/rockbox/idf-app/build/bootloader/bootloader.bin
+Bootloader binary size 0x5710 bytes. 0x28f0 bytes (32%) free.
+[2/7] No install step for 'bootloader'
+[3/7] Completed 'bootloader'
+[4/7] Linking CXX executable rockbox.elf
+[5/7] Generating binary image from built executable
+esptool.py v4.12.0
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /home/jhohertz/co/rockbox/idf-app/build/rockbox.bin
+[6/7] cd /home/jhohertz/co/rockbox/idf-app/build/esp-idf/esptool_py && /home/jhohertz/.espressif/python_env/idf5.5_py3.14_env/bin/python /home/jhohertz/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/jhohertz/co/rockbox/idf-app/build/partition_table/partition-table.bin /home/jhohertz/co/rockbox/idf-app/build/rockbox.bin
+rockbox.bin binary size 0x33b40 bytes. Smallest app partition is 0x100000 bytes. 0xcc4c0 bytes (80%) free.
