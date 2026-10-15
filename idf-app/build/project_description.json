@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "rockbox",
-    "project_version":    "baremetal-pre-idf-8-g97f30b1d90-dirty",
+    "project_version":    "baremetal-pre-idf-9-g23431db9c9-dirty",
     "project_path":       "/home/jhohertz/co/rockbox/idf-app",
     "idf_path":           "/home/jhohertz/esp/esp-idf",
     "build_dir":          "/home/jhohertz/co/rockbox/idf-app/build",

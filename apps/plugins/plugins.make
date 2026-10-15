@@ -79,7 +79,10 @@ $(foreach dir,$(PLUGINSUBDIRS),$(eval include $(dir)/$(notdir $(dir)).make))
 OTHER_INC += -I$(APPSDIR)/plugins -I$(APPSDIR)/plugins/lib
 
 # special compile flags for plugins:
-PLUGINFLAGS = -I$(APPSDIR)/plugins -DPLUGIN $(CFLAGS)
+# FREESTAND_CFLAGS rather than CFLAGS, for the same reason as codecs: a .rock is a
+# separate executable whose C library is the plugin_api jump table, so it compiles
+# against Rockbox's libc headers and nothing else.
+PLUGINFLAGS = -I$(APPSDIR)/plugins -DPLUGIN $(FREESTAND_CFLAGS)
 
 # single-file plugins depend on their respective .o
 $(ROCKS1): $(BUILDDIR)/%.rock: $(BUILDDIR)/%.o
