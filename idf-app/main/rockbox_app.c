@@ -27,6 +27,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
+extern void scan_trace_early_dump(void);
+
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
  * the one file whose job is to stay small. It never returns. */
@@ -79,7 +81,11 @@ static void rockbox_task(void *arg)
 }
 
 void app_main(void)
-{    /* The task control block is ours too. pvPortMalloc would put it in the
+{
+    /* Print what the previous boot was doing when it died, before this
+     * one has a chance to overwrite the ring. */
+    scan_trace_early_dump();
+    /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing
      * Rockbox is guaranteed to have is its own task: if the heap is exhausted
      * at startup the failure is a missing symbol at link time rather than a

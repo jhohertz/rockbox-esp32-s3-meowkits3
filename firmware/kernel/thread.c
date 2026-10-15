@@ -36,6 +36,19 @@
 #endif
 #include "core_alloc.h"
 
+/* TEMPORARY bring-up instrumentation, paired with ROCKBOX_SCAN_TRACE and
+ * firmware/target/xtensa/scan_trace.c. Tags 40..42 bracket the three parts of
+ * a context switch so a trace that stops mid-switch says which part. Delete
+ * along with the define. */
+#ifdef ROCKBOX_SCAN_TRACE
+extern void scan_trace(int tag, unsigned long a, unsigned long b,
+                       unsigned long c);
+#define STRACE(t,a,b,c) scan_trace((t),(unsigned long)(a),(unsigned long)(b), \
+                                   (unsigned long)(c))
+#else
+#define STRACE(t,a,b,c) do {} while (0)
+#endif
+
 #if (CONFIG_PLATFORM & PLATFORM_HOSTED)
 #include <errno.h>
 #endif
@@ -1022,7 +1035,9 @@ void switch_thread(void)
         /* Check core_ctx buflib integrity */
         core_check_valid();
 #endif
+        STRACE(40, thread, core, 0);
         thread_store_context(thread);
+        STRACE(41, thread, 0, 0);
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
@@ -1102,6 +1117,7 @@ void switch_thread(void)
     profile_thread_started(THREAD_ID_SLOT(thread->id));
 #endif
 
+    STRACE(42, thread, core, 0);
     /* And finally, give control to the next thread. */
 thread_load_context(thread);
 }
