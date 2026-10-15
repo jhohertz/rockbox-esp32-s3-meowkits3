@@ -6,7 +6,6 @@
  * this file only reports the raw levels and the touch state.
  ****************************************************************************/
 #include "config.h"
-#include "bootlog.h"
 #include "xtensa.h"
 
 #include "system.h"

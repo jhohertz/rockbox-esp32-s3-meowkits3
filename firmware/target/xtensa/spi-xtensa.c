@@ -30,7 +30,6 @@
  ****************************************************************************/
 #include "config.h"
 #include "xtensa.h"
-#include "bootlog.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
 
@@ -59,70 +58,6 @@ static void spi_apply_config(void)
  * receiving a stream that is longer or shorter than the buffer we filled.
  * The clock is dropped to 1 MHz so a software loop can resolve individual edges.
  */
-#define SPI_PROBE_1M      ((15u << 0) | (7u << 6) | (15u << 12) | (4u << 18))
-
-void spi_probe_edges(void)
-{
-    static const unsigned char pat[SPI_BUF_BYTES] = {
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01,
-        0xFF,0x00,0xF0,0x0F, 0xC3,0x3C,0x80,0x01
-    };
-    unsigned prev = 0, pm = 0;
-    int edges = 0, iters = 0, mtrans = 0;
-    char wf[120];
-    int wn = 0;
-
-    wr(SPI_CLOCK, SPI_PROBE_1M);
-    spi_apply_config();
-
-    for (int i = 0; i < SPI_BUF_WORDS; i++)
-        wr(SPI_W0 + 4 * (unsigned)i, (uint32_t)pat[i * 4] |
-                                        ((uint32_t)pat[i * 4 + 1] << 8) |
-                                        ((uint32_t)pat[i * 4 + 2] << 16) |
-                                        ((uint32_t)pat[i * 4 + 3] << 24));
-
-    wr(SPI_MS_DLEN, SPI_BUF_BYTES * 8 - 1);
-    spi_apply_config();
-    wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_USR);
-
-    while (rd(SPI_CMD) & SPI_CMD_USR) {
-        unsigned in1 = gpio_read(GPIO_IN1);
-        unsigned s = (in1 >> (PIN_LCD_SCLK - 32)) & 1u;
-        unsigned m = (in1 >> (PIN_LCD_MOSI - 32)) & 1u;
-
-        if (s && !prev)
-            edges++;
-        prev = s;
-
-        if (m != pm) {
-            pm = m;
-            if (wn < 120) wf[wn++] = m ? '1' : '0';
-            mtrans++;
-        }
-
-        if (++iters > 200000)
-            break;
-    }
-
-    wr(SPI_CLOCK, SPI_CLK_20M);
-    spi_apply_config();
-
-    boot_trace('E');
-    boot_trace_hex((unsigned)edges);      /* clock periods actually emitted */
-    boot_trace_hex((unsigned)iters);      /* loop iterations = transfer length */
-    boot_trace_hex(rd(SPI_CLOCK));
-    boot_trace_hex((unsigned)mtrans);
-    boot_trace('W');
-    for (int i = 0; i < wn; i++)
-        boot_trace(wf[i]);
-}
-
 void spi_init(void)
 {
     wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | SYSTEM_SPI2_CLK_EN);
@@ -154,30 +89,23 @@ void spi_init(void)
     spi_apply_config();
 }
 
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_calls;
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_chunks;
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_stuck;
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_spins;
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_maxlen;
-__attribute__((section(".srambss"))) volatile unsigned int xt_spi_iter_max;
-__attribute__((section(".srambss"))) volatile unsigned int rtc_maxlen;
+volatile unsigned int xt_spi_calls;
+volatile unsigned int xt_spi_chunks;
+volatile unsigned int xt_spi_stuck;
+volatile unsigned int xt_spi_spins;
+volatile unsigned int xt_spi_maxlen;
+volatile unsigned int xt_spi_iter_max;
 
 void spi_write(const unsigned char *data, int len)
 {
     static unsigned stuck;
 
     xt_spi_calls++;
-    rtc_bump(27);                      /* spi_write entries */
-    rtc_set(30, (unsigned)len);        /* last len seen */
-    rtc_set(19, 0);                    /* iterations of this call */
-    rtc_set(18, 0);                    /* max len seen so far */
     *(volatile unsigned int *)0x50001b50 = (unsigned)xt_spi_calls;
     *(volatile unsigned int *)0x50001b64 = 1;   /* entered */
     if ((unsigned)len > xt_spi_maxlen)
         xt_spi_maxlen = (unsigned)len;
     if (xt_spi_calls < 8) {
-        boot_trace('x');
-        boot_trace_hex((unsigned)len);
     }
     while (len > 0) {
         int words = (len + 3) / 4;
@@ -190,11 +118,6 @@ void spi_write(const unsigned char *data, int len)
          * bytes, so CASET/RASET never receive the window they were given.
          */
         int n = len < words * 4 ? len : words * 4;
-        rtc_set(21, (unsigned)len);    /* remaining len at this iteration */
-        rtc_set(22, (unsigned)n);      /* what this iteration consumes */
-        rtc_bump(19);                  /* iterations of this call */
-        if ((unsigned)len > rtc_maxlen) rtc_maxlen = (unsigned)len;
-        rtc_bump(28);                  /* FIFO fills issued */
 
         for (int i = 0; i < words; i++) {
             uint32_t w = 0;
@@ -225,13 +148,9 @@ void spi_write(const unsigned char *data, int len)
             if (++spins > 200000) {
                 stuck++;
                 xt_spi_stuck++;
-                boot_trace('s');
-                boot_trace_hex(rd(SPI_CMD));
-                boot_trace_hex(rd(SPI_MS_DLEN));
                 break;
             }
         }
-        rtc_bump(29);                  /* transfers retired */
         *(volatile unsigned int *)0x50001b64 = 3;   /* transfer finished */
         *(volatile unsigned int *)0x50001b68 = spins;
         xt_spi_chunks++;

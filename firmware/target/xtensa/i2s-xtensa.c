@@ -23,7 +23,6 @@
  *    same thing on every descriptor it hands to a DMA engine.
  ****************************************************************************/
 #include "config.h"
-#include "bootlog.h"
 
 #include "system.h"
 #include "string.h"
@@ -57,9 +56,12 @@ static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
 
 /* Ring of two descriptors, one per half of the ping-pong pair. */
-/* .srambss, not .bss: GDMA takes the descriptor address from a 20-bit register
- * based at 0x3FC00000, so a descriptor in the PSRAM window loses its high bits.
- * app.lds puts .srambss in internal SRAM.
+/* GDMA takes the descriptor address from a 20-bit register based at
+ * 0x3FC00000, so a descriptor in the PSRAM window loses its high bits. Plain
+ * .bss is already the answer under ESP-IDF: it is placed in the internal DRAM
+ * segment. The .srambss attribute named a section of Rockbox's own linker
+ * script, which this path does not use - and a section name nothing declares
+ * is not a request. Same for the buffers below.
  *
  * volatile: the DMA writes the descriptor back after it transmits the buffer, so the
  * owner bit changes through a store the compiler cannot see. The handler reads it to
@@ -67,9 +69,9 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  *
  * cur is not volatile: it is only touched by the handler and by sink_play, and the
  * interrupt mask means the handler cannot run while sink_play is inside the lock. */
-static volatile struct gdma_desc desc[2] __attribute__((aligned(4), section(".srambss")));
+static volatile struct gdma_desc desc[2] __attribute__((aligned(4)));
 /* GDMA requires a 4-byte aligned buffer address */
-static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4), section(".srambss")));
+static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)));
 
 /* cur is the half that is free to write. When DONE fires, the half that just
  * finished transmitting is cur ^ 1, so the mixer's next frame goes into cur. */
@@ -250,15 +252,11 @@ void i2s_init(void)
         udelay(1);
         guard--;
     }
-    boot_trace('U');
-    boot_trace_hex(rd(I2S_TX_CONF));
 
     gdma_init();
-    boot_trace('G');
 
 #ifdef HAVE_RECORDING
     i2s_rx_init();
-    boot_trace('g');
 #endif
 }
 
@@ -328,12 +326,8 @@ void i2s_rx_init(void)
         udelay(1);
         guard--;
     }
-    boot_trace('R');
-    boot_trace_hex(rd(I2S0_RX_CONF));
 
     program_rx_div();
-    boot_trace('r');
-    boot_trace_hex(rd(I2S0_RX_CONF));
 }
 #endif /* HAVE_RECORDING */
 
@@ -465,22 +459,17 @@ static void sink_set_freq(uint16_t freq)
 
 static void sink_init(void)
 {
-    boot_trace('i');
     i2s_init();
-    boot_trace('I');
 
     audiohw_preinit();
-    boot_trace('P');
 
     /* Reset and configure the ADC before the first rate is programmed, so the
      * clock registers land on a chip that has actually been reset. */
 #ifdef HAVE_RECORDING
     es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]);
-    boot_trace('E');
 #endif
 
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
-    boot_trace('F');
 }
 
 struct pcm_sink builtin_pcm_sink = {

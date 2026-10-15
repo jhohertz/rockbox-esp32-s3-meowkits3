@@ -32,8 +32,13 @@
 /* MeowKit wiring (bsp/config.h): the ES7210's data out is GPIO 3, and its
  * BCLK/WS are the same pins the ES8311 is driven from. */
 
-static volatile struct gdma_desc rx_desc[2] __attribute__((aligned(4), section(".srambss")));
-static unsigned char rx_buf[2][GDMA_RX_CHUNK] __attribute__((aligned(4), section(".srambss")));
+/* Plain .bss: under ESP-IDF that is internal DRAM, which is what GDMA needs
+ * (its descriptor address comes from a 20-bit window based at 0x3FC00000, so
+ * a PSRAM address loses its high bits). The .srambss section belonged to
+ * Rockbox's own linker script; naming a section IDF's script does not claim
+ * makes the object an orphan and opens a gap IDF then refuses to flash. */
+static volatile struct gdma_desc rx_desc[2] __attribute__((aligned(4)));
+static unsigned char rx_buf[2][GDMA_RX_CHUNK] __attribute__((aligned(4)));
 
 /* The descriptor the engine is expected to be filling. Re-armed immediately after
  * it is retired, which is always before the ring wraps back around to it. */

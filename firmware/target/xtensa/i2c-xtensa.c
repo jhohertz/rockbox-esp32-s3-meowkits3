@@ -42,7 +42,6 @@
 #include "i2c-async.h"   /* i2c_descriptor definition */
 #include "gpio-xtensa.h"
 #include "xtensa.h"
-#include "bootlog.h"
 
 #define DR_REG_I2C_BASE 0x60013000
 #define SYSTEM_PERIP_RST_EN0 0x600C0020
@@ -528,7 +527,6 @@ static void sync_callback(int status, i2c_descriptor *d)
  */
 static int sync_run(i2c_descriptor *desc)
 {
-    boot_trace('j');                    /* i2c transaction requested */
     desc->callback = sync_callback;
     desc->arg = 0;
     desc->next = NULL;
@@ -542,8 +540,6 @@ static int sync_run(i2c_descriptor *desc)
     /* __i2c_async_submit runs the transaction to completion before returning, so
      * the callback has already fired by the time the queue call does.
      */
-    boot_trace('z');
-    boot_trace_hex((unsigned)cb_status);
     return cb_done ? cb_status : I2C_STATUS_ERROR;
 }
 

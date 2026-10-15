@@ -142,9 +142,10 @@ extern void rolo_restart(const unsigned char* source, unsigned char* dest,
 #else
 
 /* explicitly put this code in iram, ICODE_ATTR is defined to be null for some
-   targets that are low on iram, like the gigabeat F/X */
+   targets that are low on iram, like the gigabeat F/X, and for the ones that
+   have no instruction RAM region of their own to put it in */
 void rolo_restart(const unsigned char* source, unsigned char* dest,
-                  long length) __attribute__ ((section(".icode")));
+                  long length) ICODE_ATTR;
 void rolo_restart(const unsigned char* source, unsigned char* dest,
                   long length)
 {

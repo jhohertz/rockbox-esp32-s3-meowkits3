@@ -1,6 +1,5 @@
 #include "config.h"
 #include "system.h"
-#include "bootlog.h"
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
@@ -30,9 +29,7 @@
  * how many cycles the compiler happens to put in the loop body. */
 static void delay_ms(int ms)
 {
-    boot_trace('d');
     udelay(ms * 1000);
-    boot_trace('D');
 }
 
 /* CS lives on the PCA9557, not on a GPIO. Toggling it per transfer costs a full
@@ -92,35 +89,22 @@ void st7789_init(void)
     };
 
     /* Reset sequence, in the order the reference firmware performs it. */
-    boot_trace('J');                        /* st7789_init entered */
     pca9557_write(IOEXP_LCD_CS, 1);        /* deselect */
-    boot_trace('1');
     pca9557_write(IOEXP_TOUCH_RST, 0);
-    boot_trace('2');
     pca9557_write(IOEXP_LCD_RST, 0);       /* assert reset */
-    boot_trace('3');
     delay_ms(20);
-    boot_trace('4');
     pca9557_write(IOEXP_LCD_RST, 1);       /* release */
-    boot_trace('5');
     pca9557_write(IOEXP_TOUCH_RST, 1);
-    boot_trace('6');
     delay_ms(120);                          /* ST7789 needs ~120 ms after release */
-    boot_trace('K');                        /* reset sequence done */
 
     cs_assert();
-    boot_trace('7');
 
     /* The expander's input register mirrors the state of every pin, outputs
      * included, so this is the only external proof that the CS/RST writes landed.
      * Expected: bit0 RST=1, bit1 CS=0, bit3 PA=0, bit6 TOUCH_RST=1.
      */
-    boot_trace('S');
-    boot_trace_hex((unsigned)pca9557_status());
 
-    boot_trace('N');                        /* about to call spi_init */
     spi_init();
-    boot_trace('n');                        /* spi_init returned */
 
     for (int i = 0; i < (int)sizeof(init_list); ) {
         uint8_t c = init_list[i];
@@ -129,7 +113,6 @@ void st7789_init(void)
         i += 2 + n;
     }
 
-    boot_trace('P');
 
     cmd(CMD_SLPOUT, 0, 0);
     delay_ms(130);
@@ -141,8 +124,6 @@ void st7789_init(void)
     cmd(CMD_INVON, 0, 0);
     cmd(CMD_DISPON, 0, 0);
 
-    boot_trace('s');
-    boot_trace_hex((unsigned)pca9557_status());
 }
 
 void st7789_display_off(void)

@@ -84,13 +84,6 @@ extern long cpu_frequency;   /* set by system_init */
 #define HIGHEST_IRQ_LEVEL   15
 #define DISABLE_INTERRUPTS  15
 
-/* Bring-up probe: the last 32 PS values written by the masking helpers. If the
- * tick interrupt stops being taken, the culprit has to be a level left raised
- * here. */
-extern volatile unsigned int xt_irq_level_hist[64];
-extern volatile unsigned int xt_irq_caller[64];
-extern volatile unsigned int xt_irq_level_pos;
-
 static inline int set_irq_level(int level) __attribute__((always_inline));
 static inline int set_irq_level(int level)
 {

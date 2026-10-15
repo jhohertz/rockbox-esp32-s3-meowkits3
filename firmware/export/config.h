@@ -1214,10 +1214,16 @@ Lyre prototype 1 */
 #elif (CONFIG_CPU == JZ4732 || CONFIG_CPU == JZ4760B) && !defined(PLUGIN) && !defined(CODEC)
 # define USE_IRAM
 
-/* Xtensa: the vector table and its handler have to be on the instruction bus, and
- * the jump from the table to the handler cannot reach the flash cache window. */
-#elif defined(CPU_XTENSA) && !defined(PLUGIN) && !defined(CODEC)
-# define USE_IRAM
+/* Not Xtensa, and this is the second time that has been wrong. It was added
+ * because Rockbox's own vector table had to sit on the instruction bus and the
+ * jump from it could not reach the flash cache window. Under ESP-IDF there is
+ * no Rockbox vector table, and IDF owns instruction-bus placement (IRAM_ATTR).
+ *
+ * Leaving it on is worse than dead. USE_IRAM turns ICODE_ATTR/IBSS_ATTR into
+ * .icode/.srambss, sections IDF's linker script does not claim, so every object
+ * that uses them becomes an orphan placed by default rules -- and IDF's script
+ * then fails the link over the gap that opens between its flash regions. The
+ * bare-metal reason for the attribute died with vectors.S. */
 #endif
 
 #endif /* (CONFIG_PLATFORM & PLATFORM_NATIVE) */
@@ -1231,7 +1237,10 @@ Lyre prototype 1 */
  * reachable at their data-bus alias 0x3FC8xxxx. Verified on hardware with a
  * load_ram probe: s32i at 0x40378100 succeeds, l16ui at the same address traps.
  * So only code and its literal pools may live on the instruction bus; "internal
- * RAM" data still belongs on the data bus. */
+ * RAM" data still belongs on the data bus.
+ *
+ * Kept for the day USE_IRAM comes back for this target, which it is not on: see
+ * the note above where USE_IRAM is decided. */
 #  define ICONST_ATTR   __attribute__ ((section(".data")))
 #  define IDATA_ATTR    __attribute__ ((section(".data")))
 #  define IBSS_ATTR     __attribute__ ((section(".srambss")))
@@ -1565,6 +1574,31 @@ Lyre prototype 1 */
 
 #if defined(PCM_NATIVE_BITDEPTH) && (PCM_NATIVE_BITDEPTH > 16)
 #define WANT_SWVOL_32
+#endif
+
+/*
+ * Names the C library already owns.
+ *
+ * A firmware linked against a system C library and RTOS shares a link line with
+ * code written long after Rockbox chose these names. Rockbox's kernel sleep()
+ * and IDF's esp_hw_support rtc_init() both collide: each side defines one, both
+ * archives get pulled, and the link fails with "multiple definition".
+ *
+ * Letting the linker pick is worse than the error. sleep() would be the worst
+ * of the two: Rockbox's takes a tick count and libc's takes seconds, so the
+ * wrong one silently turns every wait into either a no-op or a multi-second
+ * stall, in code that never looks wrong.
+ *
+ * Renaming Rockbox's is the safe direction. Every Rockbox caller is in this
+ * tree and includes config.h; IDF's callers are not reachable from here, and
+ * IDF keeps its own spelling. The freestanding executables -- codecs and
+ * plugins -- link no C library at all and do not get HAVE_SYSTEM_LIBC, so they
+ * are untouched; their calls go through the plugin_api jump table, where the
+ * name is a struct member and not a symbol.
+ */
+#ifdef HAVE_SYSTEM_LIBC
+#define sleep       rockbox_sleep
+#define rtc_init    rockbox_rtc_init
 #endif
 
 #endif /* __CONFIG_H__ */

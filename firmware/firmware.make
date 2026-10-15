@@ -69,6 +69,15 @@ OTHER_SRC += $(FIRMLIB_SRC)
 
 FIRMLIB = $(BUILDDIR)/firmware/libfirmware.a
 
+# The xtensa target files that reach an ESP-IDF driver whose headers pull
+# FreeRTOS have to be compiled with IDF's include path leading -- see
+# IDF_FIRST_CFLAGS in tools/root.make for why that order is a correctness issue
+# and not a style one. Add to this list when a target file starts including
+# anything that pulls FreeRTOS.h.
+ifeq (xtensa,$(CPU))
+$(BUILDDIR)/firmware/target/xtensa/sd-idf.o: CFLAGS := $(IDF_FIRST_CFLAGS)
+endif
+
 ifeq ($(SYSFONT),)
 SYSFONT = 08-Schumacher-Clean
 endif
