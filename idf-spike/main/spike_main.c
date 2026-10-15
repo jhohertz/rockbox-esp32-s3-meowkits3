@@ -1191,11 +1191,16 @@ __attribute__((unused)) static void stage_spi_probe(void)
 #define D_USR_MISO   (1u << 28)
 #define D_DOUTDIN    (1u << 0)
 #define D_GATE_ON    (BIT(0) | BIT(1) | BIT(2))
-/* The reference runs this bus at 10 MHz (devcfg.clock_speed_hz = 10000000),
- * not the 20 MHz the bare-metal driver used. Divide by 8 from the 80 MHz PLL
- * that D_GATE_ON selects: 80/((3+1)*(1+1)) = 10 MHz. Marginal timing at 20 MHz
- * is a live suspect for a pixel stream that arrives corrupted. */
-#define D_CLK_BUS    ((3u << 0) | (1u << 6) | (3u << 12) | (1u << 18))
+/* Full speed, matching the reference: cfg.freq_write = 80000000, which its own
+ * comment describes as "max 80MHz, rounded to 80MHz divided by an integer" --
+ * i.e. divide by one. clk_equ_sysclk (bit 31) selects the source undivided,
+ * and D_GATE_ON has already put that source on the 80 MHz PLL.
+ *
+ * FIFO-only transfers are immune to the 80 MHz DMA tail corruption the
+ * reference guards against (Bus_SPI.cpp:561-566), because there is no DMA read
+ * to corrupt. If whole frames ever go over GDMA, the burst-enable rule there
+ * becomes mandatory. */
+#define D_CLK_BUS    (1u << 31)
 #define D_BUF_WORDS  16
 #define D_BUF_BYTES  (D_BUF_WORDS * 4)
 #define SYS_CLK_EN0  (DR_REG_SYSTEM_BASE + 0x18)
@@ -1492,12 +1497,12 @@ void app_main(void)
     stage_heap();
     stage_i2c_expander();
     stage_backlight();
-    /* esp_lcd only. Running the direct driver first leaves GPSPI2 registers
-     * hand-programmed, and spi_bus_initialize then reports ESP_ERR_INVALID_STATE
-     * while esp_lcd layers its own device setup on top of that state. Until
-     * this is isolated there is no way to tell an esp_lcd fault from
-     * cross-contamination between the two paths. */
-    stage_lcd();
+    /* Aligned with the reference: IDF owns the bus and the pins, transactions
+     * are driven by hand. esp_lcd is parked -- it sits on IDF's transaction
+     * layer, which the reference deliberately bypasses because it cannot reach
+     * the DMA burst-enable bits that corrupt the tail of a large 80 MHz
+     * transfer. */
+    stage_lcd_direct();
     stage_sd();
     stage_pmu();
     stage_ble();
