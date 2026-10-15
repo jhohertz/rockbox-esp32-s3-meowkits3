@@ -21,14 +21,14 @@
 #include <stdint.h>
 
 #define SCAN_TRACE_MAGIC 0x42534e41u   /* "BSNA" */
-#define SCAN_TRACE_N     96             /* records, four words each */
+#define SCAN_TRACE_N     256            /* records, four words each */
 
 struct scan_ring
 {
     uint32_t magic;
     uint32_t seq;
     uint32_t head;
-    uint32_t rec[SCAN_TRACE_N][4];
+    uint32_t rec[SCAN_TRACE_N][6];
 };
 
 /* .noinit keeps this out of the image and out of the startup zeroing, and lands
@@ -49,7 +49,8 @@ void scan_trace(int tag, unsigned long a, unsigned long b, unsigned long c)
     r[0] = ++ring.seq;
     r[1] = (uint32_t)tag;
     r[2] = (uint32_t)a;
-    r[3] = (uint32_t)b ^ (uint32_t)c; /* two arguments beat one; the tag says which */
+    r[3] = (uint32_t)b;
+    r[4] = (uint32_t)c;
 }
 
 /* Called from app_main() before anything Rockbox owns exists, so what it reads
@@ -66,15 +67,22 @@ void scan_trace_early_dump(void)
 
     /* Oldest slot first, so the tail of the output is the last thing the dead
      * boot recorded before it faulted. */
-    for (unsigned n = 0; n < SCAN_TRACE_N; n++)
+    /* Only the tail is printed: the ring is deliberately deeper than the
+     * print, because the tick record floods it and the interesting record is
+     * usually the last non-tick one. */
+#define SCAN_TRACE_SHOW 256
+    for (unsigned n = SCAN_TRACE_N > SCAN_TRACE_SHOW
+                   ? SCAN_TRACE_N - SCAN_TRACE_SHOW : 0;
+         n < SCAN_TRACE_N; n++)
     {
         unsigned i = (ring.head + n) % SCAN_TRACE_N;
         const uint32_t *r = ring.rec[i];
 
         if (r[1] == 0)
             continue;
-        esp_rom_printf("  %5u  t%02d  %08lx %08lx\n", (unsigned)r[0],
-                       (int)r[1], (unsigned long)r[2], (unsigned long)r[3]);
+        esp_rom_printf("  %5u t%02d %08lx %08lx %08lx\n", (unsigned)r[0],
+                       (int)r[1], (unsigned long)r[2], (unsigned long)r[3],
+                       (unsigned long)r[4]);
     }
 
     /* One dump per crash, so a clean boot does not keep repeating it. The
@@ -84,5 +92,5 @@ void scan_trace_early_dump(void)
     ring.seq   = 0;
     ring.head  = 0;
     for (unsigned i = 0; i < SCAN_TRACE_N; i++)
-        ring.rec[i][0] = ring.rec[i][1] = ring.rec[i][2] = ring.rec[i][3] = 0;
+        for (unsigned k = 0; k < 6; k++) ring.rec[i][k] = 0;
 }
