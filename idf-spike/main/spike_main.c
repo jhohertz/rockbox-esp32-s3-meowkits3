@@ -242,14 +242,15 @@ static void stage_i2c_expander(void)
         ESP_LOGI(TAG, "bus scan: %d device(s)", found);
     }
 
-    /* The expander is absent from the scan while six other devices answer. The
-     * obvious explanation is that the rail feeding it is off: the AXP173 runs
-     * straight from the battery and answers, but everything downstream of one
-     * of its DO outputs will not. Read the output-enable register, turn on the
-     * rails the reference firmware uses, and scan again.
+    /* The expander is absent from the scan while six other devices answer. It
+     * is clearly powered enough to keep driving the LCD CS it was last told to
+     * assert (the panel takes data), so the question is whether its supply is
+     * actually at 3.3 V. The AXP173's voltage registers POR to values far below
+     * that and the reference BSP writes them explicitly before enabling.
      *
-     * REG 0x12: bit0 DCDC1, bit1 LDO4, bit2 LDO2, bit3 LDO3, bit4 DCDC2,
-     * bit6 EXTEN. Voltages are set in separate registers before enabling.
+     * REG 0x26 DCDC1, 0x27 LDO4: 700-3500 mV, 25 mV steps -> 3300 = 0x68
+     * REG 0x28 LDO2/LDO3: 1800-3300 mV, 100 mV steps -> 3300 = 0xFF
+     * REG 0x12 output enable: bit0 DCDC1, 1 LDO4, 2 LDO2, 3 LDO3, 4 DCDC2, 6 EXTEN
      */
     {
         i2c_device_config_t axp_early = {
@@ -259,27 +260,66 @@ static void stage_i2c_expander(void)
         };
         i2c_master_dev_handle_t axp;
         if (i2c_master_bus_add_device(i2c_bus, &axp_early, &axp) == ESP_OK) {
-            uint8_t en = 0;
-            if (i2c_master_transmit_receive(axp, &(uint8_t){0x12}, 1, &en, 1, 1000)
-                    == ESP_OK) {
-                ESP_LOGI(TAG, "AXP173 REG12 before = 0x%02x", en);
-                uint8_t want = en | 0x0Fu;   /* DCDC1, LDO4, LDO2, LDO3 */
-                uint8_t d[2] = { 0x12, want };
-                i2c_master_transmit(axp, d, 2, 1000);
-                ESP_LOGI(TAG, "AXP173 REG12 -> 0x%02x", want);
-                vTaskDelay(pdMS_TO_TICKS(50));
-                int found2 = 0;
-                for (int a = 0x08; a <= 0x77; a++) {
-                    if (i2c_master_probe(i2c_bus, (uint8_t)a, 100) == ESP_OK) {
-                        if (a == ADDR_PCA9557) {
-                            ESP_LOGI(TAG, "  PCA9557 now ACKs at 0x19");
-                        }
-                        found2++;
-                    }
+            static const uint8_t dump[] = {
+                0x00, 0x01, 0x12, 0x23, 0x26, 0x27, 0x28, 0x30, 0x31, 0x32
+            };
+            for (unsigned i = 0; i < sizeof(dump); i++) {
+                uint8_t v = 0;
+                if (i2c_master_transmit_receive(axp, &dump[i], 1, &v, 1, 1000) == ESP_OK) {
+                    ESP_LOGI(TAG, "AXP REG %02x = %02x", dump[i], v);
                 }
-                ESP_LOGI(TAG, "bus scan after power-up: %d device(s)", found2);
-            } else {
-                ESP_LOGW(TAG, "could not read AXP173 REG12");
+            }
+
+            /* Match the reference BSP exactly, then re-scan. */
+            static const uint8_t set[][2] = {
+                { 0x26, 0x68 }, { 0x27, 0x68 }, { 0x28, 0xFF },
+            };
+            for (unsigned i = 0; i < sizeof(set) / sizeof(set[0]); i++) {
+                i2c_master_transmit(axp, set[i], 2, 1000);
+            }
+            /* REG 0x12 bit 7 is VBUSHC, the VBUS hardware current limit. It is
+             * NOT a supply enable and setting it clamps VBUS to ~100 mA, which
+             * browns out the ESP32-S3 and drops the USB link outright -- this
+             * cost a board re-plug to recover. Never write bit 7 here; the
+             * highest legal value is 0x4F (EXTEN). */
+            static const uint8_t tries[] = { 0x0F, 0x4F, 0x0F };
+            for (unsigned i = 0; i < sizeof(tries); i++) {
+                uint8_t d[2] = { 0x12, tries[i] };
+                i2c_master_transmit(axp, d, 2, 1000);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                esp_err_t p = i2c_master_probe(i2c_bus, ADDR_PCA9557, 300);
+                ESP_LOGI(TAG, "REG12=0x%02x -> pca9557 %s", tries[i],
+                         p == ESP_OK ? "ACK" : "no ack");
+            }
+
+            /* Power-cycle the rail: a chip in a latched state only recovers if
+             * its supply actually drops. */
+            uint8_t off[2] = { 0x12, 0x03 };
+            i2c_master_transmit(axp, off, 2, 1000);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            uint8_t on[2] = { 0x12, 0x0F };
+            i2c_master_transmit(axp, on, 2, 1000);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            ESP_LOGI(TAG, "after rail power-cycle: pca9557 %s",
+                     i2c_master_probe(i2c_bus, ADDR_PCA9557, 300) == ESP_OK
+                         ? "ACK" : "no ack");
+
+            /* LDO4 is the expander's supply: it came up at 0x14 = 1200 mV and
+             * the expander did not ACK until it was raised to 0x68 = 3300 mV.
+             * Confirm by driving it back down and watching the ACK track the
+             * rail -- but only as far as 2.5 V. Dropping it to its boot value of
+             * 1.2 V risks brown-ing whatever else hangs off LDO4, and the board
+             * has already been off USB once this session. */
+            static const uint8_t ldo4[][2] = {
+                { 0x27, 0x48 }, { 0x27, 0x68 }, { 0x27, 0x48 }, { 0x27, 0x68 },
+            };
+            for (unsigned i = 0; i < sizeof(ldo4) / sizeof(ldo4[0]); i++) {
+                uint16_t mv = 700 + (uint16_t)ldo4[i][1] * 25;
+                i2c_master_transmit(axp, ldo4[i], 2, 1000);
+                vTaskDelay(pdMS_TO_TICKS(60));
+                ESP_LOGI(TAG, "LDO4=%u mV -> pca9557 %s", mv,
+                         i2c_master_probe(i2c_bus, ADDR_PCA9557, 300) == ESP_OK
+                             ? "ACK" : "no ack");
             }
         }
     }
