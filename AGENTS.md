@@ -1407,6 +1407,123 @@ The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557
 0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
 is absent on this board.
 
+### The ST7789 pixel contract, measured on the glass
+
+Established by drawing four labelled quadrants and reading the result, which is
+the only instrument that separates a colour-format error from a geometry error:
+a full-screen solid fill is invariant to rotation, window offsets and byte
+order, so stripes or banding during a solid fill mean the data arriving is not
+the data written.
+
+| item | value | how it was pinned |
+|---|---|---|
+| `COLMOD` (0x3A) | **`0x55` must be sent** | the ST7789 powers up at `66h` = 18-bit |
+| pixel format | 16-bit RGB565, **high byte first** | quadrants land correctly once COLMOD is set |
+| `MADCTL` (0x36) | **`0xA8`** = MV \| MY \| BGR | with `0xA0` green and white are correct but red and blue are exchanged, which isolates bit 3 |
+| window with MV set | CASET `0..319`, RASET `0..239` | MV swaps the axes; the un-swapped pair is wrong |
+| `INVON` (0x21) | send it | reference sets `cfg.invert = true` |
+| bus clock | **10 MHz**, not 20 | reference `devcfg.clock_speed_hz = 10000000` |
+| `SPI_USER` | `0x18000001` = `USR_MOSI \| USR_MISO \| DOUTDIN` | reference writes exactly this, MISO phase left on |
+| `SPI_CTRL` | `0` | reference writes `*SPI_CTRL = 0` |
+| `SPI_CMD` | plain write of `USR`, not read-modify-write | reference `*_spi_cmd_reg = SPI_EXECUTE` |
+| DC switching | wait for `USR` to clear first | reference `dc_control()` spins on `SPI_USR` before touching the pin |
+| DC before `pinMode` | drive it high first | reference `Bus_SPI::init()` calls `dc_control(true)` then `pinMode` |
+
+The signature of **not sending `COLMOD`** is worth memorising: three equal
+thirds down the screen, fine 1–2 pixel banding, one region reading cyan/yellow/
+magenta and the next red/green/blue. A 2-byte stream consumed as 3-byte pixels
+re-phases every three rows (the banding) and changes channel assignment with
+each phase (the palette flip).
+
+FIFO packing is not a variable: IDF's `spi_ll_write_buffer` does a little-endian
+`memcpy` into `data_buf[]`, LovyanGFX does `memcpy((void*)spi_w0_reg, data,
+aligned_len)`, and hand-packing `w |= data[i] << (8*b)` is the same thing. Byte
+*N* of the buffer is wire byte *N* in all three.
+
+The reference never sends `COLMOD` in its init script, which initially looked
+like licence to omit it. It does not: LovyanGFX sets colour depth outside the
+script, and omitting it on this panel produces the three-thirds pattern above.
+
+### gpio_set_direction() silently undoes GPIO matrix routing
+
+`gpio_set_direction(pin, GPIO_MODE_OUTPUT)` routes the pad to
+`SIG_GPIO_OUT_IDX` as part of making it an output. So calling it **after**
+`esp_rom_gpio_connect_out_signal()` (or after `spi_bus_initialize`) replaces the
+peripheral signal with the plain GPIO output register, and nothing downstream
+reports the problem: the peripheral's registers all read back correct, every
+transfer completes with `ESP_OK`, and the pad never moves.
+
+Order is therefore **direction first, matrix second**. The state is directly
+readable — `GPIO.func_out_sel_cfg[pin]` shows `func_sel` (9 bits), `inv_sel`,
+`oen_sel`, `oen_inv_sel`. A pad correctly connected to GPSPI2 clock reads
+`func=101` (`FSPICLK_OUT_IDX`); a clobbered one reads `func=256`
+(`SIG_GPIO_OUT_IDX`).
+
+The same trap invalidates measurements: enabling the input path with
+`gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT)` re-routes the output too, so
+an edge-counting probe written that way destroys the signal it is trying to
+count. Use `gpio_input_enable()`, which sets only the IO MUX `FUN_IE` bit.
+
+Verified by counting clock edges on the pad while the controller runs: a
+512-bit transfer gives 1020 counted edges (both edges per bit) with the routing
+correct, and 0 with it clobbered. Validate the counter before believing a zero
+— toggle the pin by hand and confirm the same loop counts it.
+
+### The ST7789 needs three unrelated things before it shows anything
+
+Three independent faults each produced the same symptom: backlight on, every
+call returning `ESP_OK`, black glass. All three had to be fixed before the panel
+displayed anything. None of them is visible from the SoC side — every transfer
+completes and reports success throughout.
+
+1. **The LCD pads are JTAG pads.** GPIO 39/40/41 are `MTCK`/`MTDO`/`MTDI` and
+   come out of reset with `MCU_SEL = 0`, which connects them to the JTAG block
+   rather than to the GPIO matrix. Routing `FSPICLK`/`FSPID` into the matrix and
+   enabling the output driver accomplishes nothing while that is true: the pad is
+   owned by something else. `gpio_set_direction()` writes only the enable bits,
+   and `gpio_reset_pin()` restores the pad's *default* function, which here is
+   JTAG. `esp_rom_gpio_pad_select_gpio()` is the call that actually moves the
+   pad. Verified by reading bits 14:12 of `IO_MUX_BASE + 0x04 + 4*pin`: `0 -> 1`.
+   The pad registers for 39/40/41 are named `PERIPHS_IO_MUX_MTCK/MTDO/MTDI_U` at
+   0xa0/0xa4/0xa8, which coincides with the usual `0x04 + 4*pin` formula, so the
+   formula is safe for these three.
+2. **CS must be de-selected across the panel reset pulse.** Both the reference
+   BSP and our bare-metal driver drive CS high, pulse reset, wait, and only then
+   assert CS. Holding CS asserted while `/RES` is low lets the interface latch
+   the idle clock/data state, after which the panel ignores everything. This was
+   the last of the three to be found, and it is the one that is easy to dismiss
+   as stylistic.
+3. **`esp_lcd`'s ST7789 driver does not run the power sequencing.**
+   `esp_lcd_panel_st7789.c` sends only SLPOUT, MADCTL, COLMOD and RAMCTRL.
+   Without PORCTRL (0xB2), GCTRL (0xB7), VCOMS (0xBB), LCMCTRL (0xC0), VDVVRHEN
+   (0xC2), VRHS (0xC3), VDVSET (0xC4), FRCTR2 (0xC6), PWCTRL1 (0xD0) and both
+   gamma tables (0xE0, 0xE1), the source and gate drivers have no bias, so the
+   controller happily stores every pixel and the glass stays dark. Values are in
+   LovyanGFX `Panel_ST7789.hpp` in the reference tree, and are identical to the
+   list our bare-metal `st7789.c` already used.
+
+The expander sequence worth copying verbatim from the reference: make CS, RST,
+PA_EN and TOUCH_RST outputs; drive CS high and RST/PA_EN/TOUCH_RST low; 20 ms;
+RST and TOUCH_RST high; 120 ms; CS low. Touch reset is pulsed *with* the panel
+reset, before the display init runs.
+
+Two things that made this debuggable rather than guesswork:
+
+- The PCA9557 input register mirrors the pin level even for pins configured as
+  outputs, so reading it distinguishes "we wrote the output register" from "the
+  pin is actually at that level".
+- Setting a pad to `GPIO_MODE_INPUT_OUTPUT` and reading `GPIO_IN` while driving
+  it proves the pad toggles, independent of whatever the matrix is routed to.
+  Bit 7 of `GPIO.in1` is GPIO 39, 8 is 40, 9 is 41.
+
+`trans_queue_depth` in `esp_lcd_panel_io_spi_config_t` must be >= 1:
+`spi_bus_add_device()` calls `xQueueCreate(queue_size, ...)` unconditionally and
+FreeRTOS asserts on a zero-length queue, which reboots the board.
+
+The reference also keeps the backlight physically off (GPIO high, active low)
+until after `Lcd.init()` and `fillScreen()` complete, and only then attaches
+LEDC — so a duty glitch during attach can never be seen. Worth matching.
+
 ### Backlight PWM
 
 GPIO 42 is not a plain output: it is routed to LEDC low-speed channel 7 through the
