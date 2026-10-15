@@ -2018,6 +2018,83 @@ making the first run look like an *interrupt entry* and returning through
 whether the underflow handler runs at all is decided by `WINDOWSTART`, which
 C-level code cannot set to a value that is both correct and thread-local.
 
+### How a thread actually gets started, and why user mode is not optional
+
+The first-run problem the section above describes was solved by giving the thread
+the one context shape the ABI already treats as self-rooted: the frame an
+exception entry builds. `xt_init_frame()` in `asm/xtensa/thread.c` lays an
+`XtExcFrame` (from IDF's `xtensa_context.h`) at the top of the thread's stack, and
+`load_context()` leaves it the way FreeRTOS leaves one on its
+`.L_frxt_dispatch_stk` path:
+
+```c
+rsil  a7, XCHAL_EXCM_LEVEL   /* PS.EXCM set, so rfe is legal; user-mode insn */
+callx0 _xt_context_restore   /* SAR, LBEG/LEND/LCOUNT, a2-a15 from the frame */
+l32i  a0, a1, XT_STK_EXIT    /* the frame's exit field */
+jx    a0                     /* -> _xt_user_exit -> rfe */
+```
+
+Four things about that are worth knowing before trying it yourself:
+
+- **`PS_UM` must be set in the frame.** ESP-IDF implements
+  `_KernelExceptionVector` as `break 1, 0` -- an explicit "unhandled kernel
+  exception" stub, at `xtensa_vectors.S:624` -- because nothing of its own runs at
+  ring 0 after startup. A thread started without UM takes its first level-1
+  interrupt (the tick, in practice) into that stub and dies with a BREAK and a
+  perfectly intact backtrace underneath. With UM set the tick and every device
+  interrupt go to the user vector, which IDF does implement.
+- **`wsr.ps` from a task is fine.** The reason IDF uses `rsil` rather than
+  `rsr`/`wsr` is atomicity, not privilege: `vPortYield` itself does `rsr a2, PS`
+  then `wsr a2, PS` in ordinary task context. So Rockbox's `store_context` and the
+  resume path keep their `wsr ps` and stay legal in user mode.
+- **`WINDOWSTART` is narrowed to the current window before the restore**, which is
+  what the real entry vectors do once they have spilled. It is load-bearing twice:
+  it stops the spill and the window handlers from walking into the previous
+  thread's windows, and it is the flag that makes a later `retw` take a window
+  underflow and refill from the base save areas the spill wrote.
+- **The frame's argument goes in `a6`, not `a2`.** The starter is entered as if it
+  had been `call4`'d (`PS_CALLINC(1)`), so its `a2` is the *caller's* `a6`. This is
+  the same convention `pxPortInitialiseStack()` uses; getting it wrong hands the
+  thread function a garbage pointer.
+
+That this works is not inferred. Six threads now start, run, block and resume:
+the probe in `switch_thread()` showed first runs with `start` set to
+`dircache_thread`, `scroll_thread`, `backlight_thread`, `power_thread` and
+`storage_thread`, followed by resumes with correctly window-encoded return
+addresses into `yield()` and `sleep()`. The dircache thread drives real SD
+`readdir` traffic, times out, and returns -- which is normal Rockbox behaviour
+(`dircache_thread` breaks out of its loop on `SYS_TIMEOUT`) and was previously
+unreachable.
+
+### A thread stack hiding inside a "data" object
+
+`rockbox_memory.lf` had `scroll_engine` and `playlist` on the PSRAM list because
+they look like inert data by size (26 KB and 7.6 KB). They were moved back. Both
+objects also contain a thread stack -- `scroll_engine.c:196` has
+`static long scroll_stack[]` and `playlist.c:217` has `playlist_stack` -- and the
+archive-level entry moves the whole `.bss` including them. The symptom was a
+deterministic `Cache error` / `MMU entry fault` the first time the scheduler
+resumed one of those threads, with the same `EXCVADDR` on every boot.
+
+The rule is therefore not "is this object big and inert". It is "does this object
+contain something a core can be executing on", and the only safe way to answer it
+is to check the object for a stack, not the archive for a size.
+
+### Still open: a cache fault in the thread-exit path
+
+The next fault after the switch started working is a different one and is not a
+threading bug. When the dircache thread finishes its scan and exits through
+`xt_thread_start` -> `thread_exit()` -> `thread_exit_final()`, the core takes a
+`Cache error` with sub-reason `MMU entry fault`, EXCCAUSE 7. It is deterministic:
+same registers and same `EXCVADDR` on every boot, with `A2`/`A3`/`A10` all holding
+the exiting thread's `thread_entry` and `A6` holding `audiobuffer + 0x60`, i.e. an
+address in the PSRAM window. `EXCVADDR` itself is ordinary internal DRAM, which is
+what makes it odd -- the D-cache MMU on esp32s3 indexes internal memory as well as
+Ext_RAM, so either an entry for DRAM0 has been overwritten or a dirty line from a
+PSRAM page is being evicted through an entry that is no longer valid. Nothing in
+the tree writes the MMU table any more (`mmu-xtensa.c` is gone), so the suspect is
+whatever IDF arms for `.ext_ram.bss` versus what the dircache scan touches.
+
 ### Codecs, plugins and the image format
 
 > **Superseded on this branch.** The image is now produced by ESP-IDF's own
