@@ -18,11 +18,18 @@
  *
  ****************************************************************************/
 
+#ifdef HAVE_SYSTEM_LIBC
+#include <string.h>
+#include <xtensa_context.h>
+#endif
+
 /*
- * A thread's first run is handled inside load_context: the window is reset, sp
- * is set to the top of the thread's stack, and control is handed to
- * xt_thread_start(), which runs the thread and calls thread_exit() if it ever
- * returns. GCC has no naked attribute on Xtensa, so there is no start_thread().
+ * A thread's first run is handled inside load_context: xt_init_frame() lays an
+ * exception frame at the top of the thread's stack and load_context() leaves it
+ * through ESP-IDF's own exit dispatcher, which is how a thread gets a window
+ * chain that belongs to it alone. The frame's pc is xt_thread_start(), which
+ * runs the thread and calls thread_exit() if it ever returns. GCC has no naked
+ * attribute on Xtensa, so there is no start_thread().
  *
  * Everything else is the sp-only model described in asm/xtensa/thread.h: spill,
  * save sp/pc/ps, and let the retw chain refill the registers from the resumed
@@ -67,12 +74,21 @@ void xt_thread_start(void (*fn)(void))
  * needs an exception. */
 extern void xthal_window_spill_nw(void);
 
+/* ESP-IDF's own exception plumbing, reused for a thread's first run. Both are
+ * already in the image: the vectors use them for every real interrupt. */
+extern void _xt_context_restore(void);
+extern void _xt_user_exit(void);
+
 #define XT_PS_INTLEVEL_MASK 0x0000000Fu
 #define XT_PS_EXCM_MASK     0x00000010u
 #define XT_PS_WOE_MASK      0x00040000u
 #define XT_PS_CALLINC_MASK  0x00030000u
 #define XT_PS_CALLINC_8     0x00020000u
-#define XT_EXCM_LEVEL       1u
+#define XT_PS_CALLINC_4     0x00010000u
+#define XT_PS_UM            0x00000020u
+/* XCHAL_EXCM_LEVEL for this core. store_context raises to it before the
+ * spill; load_context raises to it with rsil so that rfe is legal. */
+#define XT_EXCM_LEVEL       3u
 
 /*---------------------------------------------------------------------------
  * Store non-volatile context.
@@ -164,87 +180,114 @@ static inline void store_context(void* addr)
  * Load non-volatile context, or start the thread if it has not run yet.
  *---------------------------------------------------------------------------
  */
+/*---------------------------------------------------------------------------
+ * A thread that has never run: build the frame the ABI expects.
+ *---------------------------------------------------------------------------
+ *
+ * Such a thread cannot be entered from here by jump or by call. Either leaves
+ * the *outgoing* thread's frames above it in the window chain, so the spill and
+ * the window handlers walk past its root frame and do their stores through the
+ * other thread's stack pointer. That is not a detail that can be patched: the
+ * chain above a call frame is the caller, and the caller belongs to somebody
+ * else.
+ *
+ * The ABI does have a self-rooted shape, and it is the one an exception entry
+ * builds. ESP-IDF's vectors already know how to fill it in and how to leave it,
+ * so this is the same two-step FreeRTOS uses on its first-run path,
+ * _frxt_dispatch's .L_frxt_dispatch_stk:
+ *
+ *     call0 _xt_context_restore    SAR, LBEG/LEND/LCOUNT and a2-a15 come
+ *                                  from the frame at sp
+ *     l32i  a0, sp, XT_STK_EXIT
+ *     ret                          the exit dispatcher restores a0, a1, PC and
+ *                                  PS from the frame and executes rfe
+ *
+ * rfe needs PS.EXCM set. rsil to XCHAL_EXCM_LEVEL supplies it and is a user-mode
+ * instruction, so it is legal from an ordinary task -- which is exactly how
+ * vPortYield reaches the same path.
+ *
+ * The frame is XtExcFrame from xtensa_context.h, the layout IDF's own vectors
+ * use, and XT_STK_FRMSZ already includes the interruptee's base save area and
+ * the spill scratch space, rounded to 16.
+ */
+static inline int xt_init_frame(struct regs* ctx)
+{
+    XtExcFrame *f;
+    uint32_t top = ctx->sp;
+    uint32_t fn  = ctx->start;
+
+    if (fn == 0)
+        return 0;                   /* already running: this is a resume */
+    ctx->start = 0;
+
+    f = (XtExcFrame *)((top - XT_STK_FRMSZ) & ~0xFu);
+    memset(f, 0, sizeof *f);
+
+    f->exit = (uint32_t)(uintptr_t)&_xt_user_exit;
+    f->pc   = (uint32_t)(uintptr_t)&xt_thread_start;
+    /* PS_UM, and that is not a style choice. ESP-IDF implements
+       _KernelExceptionVector as `break 1, 0` -- an explicit "unhandled kernel
+       exception" stub -- because nothing of its own ever runs at ring 0 after
+       startup. A thread started without UM therefore dies on its first level-1
+       interrupt, which is what this build was showing: PC in _xt_kernel_exc,
+       "BREAK instr", and a perfectly intact backtrace underneath it. With UM
+       set the tick and every device interrupt go to the user vector, which IDF
+       does implement. vPortYield writes PS with wsr from a task, so the resume
+       path stays legal in user mode too.
+
+       CALLINC 1 makes the starter's ENTRY rotate a single window, which is what
+       puts the argument in the callee's a2. rfe clears EXCM whatever the frame
+       says. This is the same value FreeRTOS gives a task's first frame. */
+    f->ps   = XT_PS_UM | XT_PS_EXCM_MASK | XT_PS_WOE_MASK | XT_PS_CALLINC_4;
+    f->a0   = 0;                    /* xt_thread_start never returns */
+    f->a1   = top;                  /* the frame is deallocated by the exit */
+    /* The starter is entered as if it had been call4'd, so its a2 is the
+     * caller's a6. This is the same convention FreeRTOS uses for a task's first
+     * frame; getting it wrong hands the thread function a garbage pointer. */
+    f->a6   = fn;
+
+    ctx->sp = (uint32_t)(uintptr_t)f;
+    return 1;
+}
+
+/*---------------------------------------------------------------------------
+ * Load non-volatile context, or start the thread if it has not run yet.
+ *---------------------------------------------------------------------------
+ */
 static inline void load_context(const void* addr)
 {
+    int first = xt_init_frame((struct regs *)(uintptr_t)addr);
     xt_context_addr = (uint32_t)(uintptr_t)addr;
 
     asm volatile(
         "j 3f                       \n"
         ".align 4                   \n"
         "10: .long xt_context_addr  \n"
-        "11: .long xt_thread_start  \n"
+        "11: .long _xt_context_restore \n"
     "3:                             \n"
         "l32r    a6, 10b            \n"
         "l32i    a6, a6, 0          \n"
-        "l32i    a7, a6, 12         \n"
+        "mov     a7, %0             \n"
         "beqz    a7, 1f             \n"
 
-        /* First run. There is no frame to unwind into, so the thread is entered
-         * rather than resumed.
-         *
-         * WINDOWBASE and WINDOWSTART are left exactly as they are. They are a
-         * per-core rotating counter, and windowed code is position-independent
-         * with respect to them: the retw chain on this thread's stack works
-         * because the frames relate to each other, not because they sit at some
-         * absolute window number. Pinning WINDOWBASE to 0 makes the very first
-         * thread's frames agree with nothing, and every later resume of a thread
-         * that was saved at a different window base returns through a window the
-         * arithmetic does not line up with -- which is what it looked like here:
-         * retw landing on the raw encoded a0 instead of the decoded address.
-         * FreeRTOS never writes these either.
-         *
-         * What does have to be set is PS: WOE on, INTLEVEL and EXCM off, and
-         * CALLINC 8, because the starter is windowed C and windowed C entered
-         * with CALLINC 0 reserves no base save area -- every later overflow
-         * handler then reads garbage as the ancestor stack pointer. CALLINC 0 is
-         * what the call0 form of this file wanted; under ESP-IDF the ABI is
-         * windowed and 8 is the only legal entry. */
-        "rsr     a7, ps             \n"
-        "movi    a8, -32            \n"   /* clear INTLEVEL and EXCM */
-        "and     a7, a7, a8         \n"
-        "movi    a8, 3              \n"
-        "slli    a8, a8, 16         \n"
-        "movi    a9, -1             \n"
-        "xor     a9, a9, a8         \n"
-        "and     a7, a7, a9         \n"
-        "movi    a9, 2              \n"
-        "slli    a9, a9, 16         \n"
-        "or      a7, a7, a9         \n"
-        "movi    a8, 4                \n"
-        "slli    a8, a8, 16             \n"
-        "or      a7, a7, a8             \n"   /* PS.WOE */
-        "wsr     a7, ps             \n"
-        "movi    a7, 0              \n"
-        "wsr     a7, sar            \n"
-        "wsr     a7, lcount         \n"
-        "rsync                      \n"
-        "l32r    a6, 10b            \n"
-        "l32i    a6, a6, 0          \n"
-        "l32i    a1, a6, 0          \n"   /* top of the thread's stack */
-        /* The starter is entered with a real windowed call, so its argument is
-         * the caller's a10. Clearing the entry point makes a later
-         * load_context() resume the thread instead of restarting it, as the MIPS
-         * and SPARC implementations do. */
-        "l32i    a10, a6, 12        \n"   /* fn, in the caller's a10 */
-        "movi    a7, 0              \n"
-        "s32i    a7, a6, 12         \n"
+        /* First run. sp already points at the frame xt_init_frame built. */
+        "l32i    a1, a6, 0          \n"
+        /* Narrow WINDOWSTART to the current window, which is what the real
+         * entry vectors do once they have spilled. It is load-bearing twice: it
+         * stops the spill and the window handlers from walking into the
+         * previous thread's windows, and it is the flag that makes a later retw
+         * take a window underflow and refill from the base save areas the spill
+         * wrote. */
+        "rsr     a7, windowbase     \n"
+        "movi    a8, 1              \n"
+        "ssl     a7                 \n"
+        "sll     a8, a8             \n"
+        "wsr     a8, windowstart    \n"
+        "rsil    a7, %1             \n"   /* PS.EXCM set, so rfe is legal */
         "l32r    a7, 11b            \n"
-        /* callx8, not jx. A jump leaves a0 holding whatever the outgoing thread
-         * had in it -- here the 0xdeadbeef stack canary -- and the starter's
-         * ENTRY then takes a window overflow whose handler walks up from that
-         * value as if it were a frame: the fault was a store at 0xdeadbecf, i.e.
-         * 0xdeadbeef - 0x20, which is addix8 a9, a?, -0x20 in the underflow
-         * handler. A real windowed call gives the starter a genuine frame with a
-         * genuine return address, and CALLINC 8 comes from the call itself.
-         *
-         * The argument moves with the window: a callx8 callee sees its a2/a3 as
-         * the caller's a10/a11, so fn goes in a10. */
-        "callx8  a7                 \n"
-        /* xt_thread_start runs the thread and calls thread_exit(), which never
-         * returns. If it somehow does, falling into the resume path below would
-         * be worse than stopping here. */
-        "2:                         \n"
-        "break   1, 2               \n"
+        "callx0  a7                 \n"   /* _xt_context_restore, frame at sp */
+        "l32i    a0, a1, 0          \n"   /* XT_STK_EXIT is the frame's first word */
+        "jx      a0                 \n"   /* -> _xt_user_exit -> rfe */
 
     "1:                             \n"
         /* Resume. Nothing is restored except the stack pointer, the encoded a0
@@ -253,9 +296,8 @@ static inline void load_context(const void* addr)
          * each retw on the way out rotates the window, and the underflow handler
          * refills a0/a2/a3/a4 from the base save area of the frame being left,
          * which the spill filled and the sleeping thread's stack has held ever
-         * since. WINDOWBASE and WINDOWSTART are deliberately not touched; they
-         * are that handler's input, and a synthetic value makes it refill from
-         * areas that were never written.
+         * since. WINDOWBASE and WINDOWSTART are deliberately not touched here;
+         * they are that handler's input.
          *
          * The retw itself is switch_thread's epilogue, which is why nothing may
          * follow this asm in the function. */
@@ -264,7 +306,12 @@ static inline void load_context(const void* addr)
         "l32i    a7, a6, 8          \n"
         "wsr     a7, ps             \n"
         "rsync                      \n"
-        : : "r" (addr) : "a0", "a6", "a7", "a8", "a9", "a10"
+        "retw.n                     \n"
+        "2:                         \n"
+        "break   1, 2               \n"   /* unreachable */
+        :
+        : "r" (first), "i" (XT_EXCM_LEVEL)
+        : "a0", "a6", "a7", "a8", "memory"
     );
 }
 
