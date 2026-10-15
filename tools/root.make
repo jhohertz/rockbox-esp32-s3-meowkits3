@@ -15,6 +15,44 @@ INCLUDES = -I$(BUILDDIR) -I$(BUILDDIR)/lang $(TARGET_INC)
 
 CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS)
 PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(CFLAGS)) # cygwin sdl-config fix
+
+# ESP-IDF-backed targets compile their own sources with Rockbox's build, but the
+# files that reach IDF drivers have to see IDF's headers and IDF's generated
+# sdkconfig.h. The flags are harvested from IDF's own build by tools/idf-flags
+# instead of being duplicated here: they follow sdkconfig and shift whenever a
+# component is enabled or disabled, and a hand-kept list fails as a code bug
+# (header found, CONFIG_ define missing).
+#
+# Deliberately appended after PPCFLAGS is derived: SOURCES preprocessing must not
+# see IDF's CONFIG_ defines, or IDF's configuration could start deciding which
+# Rockbox files get compiled.
+ifeq (xtensa,$(CPU))
+-include $(BUILDDIR)/idf.make
+#
+# IDF's flags go *first*, which is the opposite of what looks natural, and the
+# reason is header shadowing. Rockbox carries replacements for libc names --
+# firmware/include/assert.h, firmware/libc/include/stdio.h and friends -- and
+# those directories are on the include path ahead of IDF's. IDF headers include
+# those same names expecting newlib, so with Rockbox first:
+#
+#   esp_assert.h: #include "assert.h"  -> Rockbox's, which pulls in panic.h
+#   esp_timer.h : esp_timer_dump(FILE *stream) -> FILE unknown, Rockbox's
+#                  stdio.h is not newlib's
+#
+# and the failure surfaces as an unrelated parse error inside IDF (a missing
+# ESP_STATIC_ASSERT), which is why it looks like a dialect problem and is not.
+#
+# IDF owns the C library on this target, so its include order wins and Rockbox's
+# libc headers simply stop being reached. Rockbox-only headers (config.h,
+# system.h, panic.h, the kernel headers) are unaffected: newlib does not provide
+# those names, so they still resolve from firmware/include.
+#
+# -Wno-undef is not cosmetic either. Rockbox builds with -Wundef, and IDF headers
+# test generated sdkconfig names bare (`#if CONFIG_COMPILER_OPTIMIZATION_PERF`,
+# `#if __clang__`), which produces hundreds of warnings per file. IDF's headers
+# are not ours to fix.
+CFLAGS = $(IDF_CFLAGS) $(INCLUDES) $(DEFINES) $(GCCOPTS) -Wno-undef
+endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 
 TOOLS = $(TOOLSDIR)/rdf2binary $(TOOLSDIR)/convbdf \

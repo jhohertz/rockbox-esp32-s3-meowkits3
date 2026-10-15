@@ -48,8 +48,26 @@ extern long cpu_frequency;   /* set by system_init */
  * rsr.intlevel / wsr.intlevel do not exist on the esp32s3 core config, so PS has
  * to be read and written as a whole.
  */
+#ifdef ESP_PLATFORM
+/*
+ * ESP-IDF provides xtensa/corebits.h, which defines PS_INTLEVEL_MASK and PS_WOE
+ * itself. Defining them here as well collides as soon as an IDF xtensa header
+ * reaches the same translation unit (via FreeRTOSConfig.h -> xtensa_config.h ->
+ * xtensa_context.h -> corebits.h). The values agree -- corebits.h has
+ * PS_WOE_MASK 0x00040000 and PS_INTLEVEL_MASK 0x0000000F -- so this is a name
+ * collision rather than a disagreement, but taking IDF's is the only option that
+ * works in both orders: corebits.h defines them unguarded, so an #ifndef here
+ * would not suppress it.
+ *
+ * The masking helpers below are transitional too. On the IDF path interrupt
+ * masking and the tick belong to FreeRTOS, and this whole block goes away with
+ * the bare-metal startup.
+ */
+#include <xtensa/corebits.h>
+#else
 #define PS_INTLEVEL_MASK 0x0000000F
 #define PS_WOE           0x00040000
+#endif
 
 #define HIGHEST_IRQ_LEVEL   15
 #define DISABLE_INTERRUPTS  15

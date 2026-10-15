@@ -669,6 +669,10 @@ target/coldfire/ata-as-coldfire.S
 
 #elif defined(CPU_XTENSA)
 
+/* Build-integration probe: proves Rockbox's config and IDF's config compile in
+ * one translation unit. Remove together with the bare-metal startup files. */
+target/xtensa/idf-probe.c
+
 target/xtensa/crt0.S
 target/xtensa/irom-map.c
 target/xtensa/psram-xtensa.c

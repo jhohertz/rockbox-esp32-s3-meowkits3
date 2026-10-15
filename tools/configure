@@ -640,7 +640,14 @@ xtensacc () {
  # Staying on the toolchain's default ABI means libgcc links normally, ROM calls
  # are plain callx8 (the ROM is windowed), and the context switch has to spill -
  # which is what the window vectors in firmware/target/xtensa/vectors.S provide.
- GCCOPTS="$CCOPTS -mlongcalls"
+ #
+ # The freestanding assumptions in CCOPTS no longer hold: ESP-IDF supplies the C
+ # library (newlib) and links it normally, and IDF's headers require its dialect
+ # (C17 -- esp_assert.h defines ESP_STATIC_ASSERT as `static_assert`, which under
+ # gnu11 is not a keyword). tools/idf-flags contributes IDF's -std, so the one in
+ # CCOPTS has to go or the two fight. Same idiom the hosted targets already use.
+ GCCOPTS=`echo $CCOPTS | sed -e s/\ -ffreestanding// -e s/\ -nostdlib// -e s/\ -std=gnu11//`
+ GCCOPTS="$GCCOPTS -mlongcalls"
  GCCOPTS="$GCCOPTS -ffunction-sections -mtext-section-literals"
  GCCOPTIMIZE="-fomit-frame-pointer"
  endian="little"
