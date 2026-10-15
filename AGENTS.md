@@ -1771,6 +1771,63 @@ command lines. After touching these variables, delete the domain's objects
 Verified: 43 codecs and a `.rock` (clock, with bitmaps and the plugin lib) build and
 link; codec objects carry zero IDF flags and firmware objects carry them all.
 
+The leak that found this rule: `system-target.h` including `<xtensa/hal.h>` for
+whole-cache maintenance. That header only exists on IDF's include path, so every
+codec failed to compile while the firmware was fine. `system-target.h` is in
+*both* domains, so anything it includes must be reachable in both. It now takes
+IDF's headers under `HAVE_SYSTEM_LIBC` and plain declarations otherwise.
+Codecs reach the cache through `codec_api`'s jump table (`ci->commit_dcache()`),
+never by calling the C function, so declarations are enough — and a codec that
+called one directly would fail at link, which is better than a silent no-op.
+
+---
+
+### What ESP-IDF owns, and what the tree must stop pretending to do
+
+The bare-metal startup is gone from this branch: `crt0.S`, `vectors.S`,
+`irom-map.c`, `mmu-xtensa.c`, `psram-xtensa.c`, `rom_cache.c`, `irq-xtensa.c`,
+`timer-xtensa.c`, `app.lds`, `tools/esp-elf2image`, `tools/esp-stage2`. All of it
+is on the tag `baremetal-pre-idf`, and everything in §10–§11 above describes
+that branch, not this one.
+
+`timer-xtensa.c` is the instructive deletion. It armed the core timer and
+installed its own interrupt slot — which is precisely what a guest of FreeRTOS
+may not do, since IDF owns VECBASE and the interrupt allocator. So the Rockbox
+tick currently has **no implementation on this branch**: `tick_start()` is
+unresolved, and `apps/main.c` runs a thread that calls `call_tick_tasks()` every
+`HZ/2` as a stopgap. The replacement is a `gptimer` alarm (`esp_driver_gptimer`,
+`driver/gptimer.h`) whose callback calls `tick()`; with IDF owning the vectors,
+C code may run in the ISR, so the "keep the level-1 ISR a leaf" rule from §10
+no longer applies here and the stopgap thread can go.
+
+Cache maintenance now has two routes, both IDF's:
+
+| Need | Route |
+|---|---|
+| range (DMA buffers, descriptors) | `esp_cache_msync()` in `cache-xtensa.h` |
+| whole cache | `xthal_dcache_all_writeback[_inv]()` from the xtensa HAL |
+
+`esp_cache_msync()` rejects C2M and M2C in the same call, so commit-then-discard
+is two calls in that order. It also enforces cache-line alignment unless
+`ESP_CACHE_MSYNC_FLAG_UNALIGNED` is passed; Rockbox hands over 12-byte
+descriptors, so the flag is always set.
+
+`tools/idf-flags` has a trap worth knowing: it decides what counts as "the
+project" from the build directory it is given, not from `IDF_PATH`. An earlier
+version used `IDF_PATH`, so running it without `export.sh` in the environment
+silently harvested some arbitrary **IDF component's** flags — common components
+only, no driver includes — and the symptom was a Rockbox file failing on
+`#include "esp_cache.h"` while the generated `idf.make` looked well-formed.
+Adding a component to `idf-app/main/CMakeLists.txt` (`PRIV_REQUIRES`) therefore
+requires re-running `idf-flags` (and `idf.py reconfigure` first, so
+`compile_commands.json` reflects it).
+
+One upstream bug found here: `sdmmc_host_init()` assigned `host->present`, a
+member that is itself `#ifdef HAVE_HOTSWAP`, while all five other uses of it were
+guarded. Every target that uses `sdmmc_host` happens to define `HAVE_HOTSWAP`,
+so it never surfaced. A target with a soldered-down card reader (this one) has
+no presence to track, so the assignment is now guarded like the rest.
+
 ### Codecs, plugins and the image format
 
 > **Superseded on this branch.** The image is now produced by ESP-IDF's own
@@ -1985,6 +2042,11 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
 
 ## 10. Gotchas
 
+> Bare-metal branch material. These describe the `baremetal-pre-idf` tree, where
+> Rockbox owned the vectors, the cache and the timer. On `esp32-s3-idf`, ESP-IDF
+> owns all three; the ISA and pad-level findings still apply, the interrupt and
+> startup ones do not.
+
 - `SOURCES` files are preprocessed by the *target* compiler, so a `#if` in them
   is evaluated per-target. Editing one without a build dir configured gives
   nothing useful.
@@ -2054,6 +2116,9 @@ For runtime register state see §9, "Reading runtime register state".
 ---
 
 ## 11. How the image is entered, and what the entry code may not touch
+
+> Bare-metal branch material — see the note at §10. Under ESP-IDF the entry is
+> `app_main()` and none of this is Rockbox's problem.
 
 Established by instrumenting `crt0.S` with markers in RTC slow memory and by
 flashing purpose-built minimal images, rather than by reading the ROM.
