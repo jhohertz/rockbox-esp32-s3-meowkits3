@@ -88,6 +88,7 @@ static void rockbox_task(void *arg)
  * delivery as a whole is dead -- two very different bugs. */
 volatile unsigned rb_late_hits;
 volatile unsigned rb_late_err;
+volatile unsigned rb_core0_ps, rb_core0_ie, rb_core0_ip;
 
 static bool IRAM_ATTR rb_late_cb(gptimer_handle_t timer,
                                  const gptimer_alarm_event_data_t *edata,
@@ -114,6 +115,7 @@ static void rb_late_probe(void *arg)
     };
 
     (void)arg;
+    rb_core0_ps = 0xa5a5a5a5u;   /* the task exists and reached its body */
     /* Start well after the tick is known to have stopped (~0.5 s in). */
     vTaskDelay(pdMS_TO_TICKS(2000));
 
@@ -130,8 +132,17 @@ static void rb_late_probe(void *arg)
     if (rb_late_err != ESP_OK)
         return;
     rb_late_err = gptimer_start(tm);
+
+    /* This task is pinned to core 0 and is not Rockbox code, so what it sees
+     * in PS and INTENABLE is core 0's real state as seen from outside the
+     * Rockbox paths that are under suspicion. */
     for (;;)
+    {
+        asm volatile ("rsr %0, ps" : "=r"(rb_core0_ps));
+        asm volatile ("rsr %0, intenable" : "=r"(rb_core0_ie));
+        asm volatile ("rsr %0, interrupt" : "=r"(rb_core0_ip));
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 void app_main(void)
@@ -145,6 +156,8 @@ void app_main(void)
      * at startup the failure is a missing symbol at link time rather than a
      * silent no-show. */
     static StaticTask_t rockbox_tcb;
+
+    xTaskCreatePinnedToCore(rb_late_probe, "lateprobe", 4096, NULL, 2, NULL, 0);
 
     TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
         rockbox_task, "rockbox", ROCKBOX_STACK_WORDS, NULL,

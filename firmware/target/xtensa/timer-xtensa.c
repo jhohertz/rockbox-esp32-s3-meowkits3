@@ -146,10 +146,17 @@ void vApplicationTickHook(void)
                     last_h0 = handled[0];
                 }
                 scan_trace(66, rearmed, stalled, handled[0]);
+                /* The registers the hardware actually compares against. In
+                 * period mode these advance on their own; target_val reads 0
+                 * and tells you nothing. If alarm 0's real compare is frozen
+                 * while alarm 1's runs, the peripheral's state machine for
+                 * core 0 is the thing that stopped. */
+                scan_trace(67, sys[0x74 / 4], sys[0x78 / 4], sys[0x7c / 4]);
                 {
                     extern volatile unsigned rb_late_hits;
                     extern volatile unsigned rb_late_err;
-                    scan_trace(64, rb_late_hits, rb_late_err, 0);
+                    extern volatile unsigned rb_core0_ps, rb_core0_ie, rb_core0_ip;
+                    scan_trace(64, rb_core0_ps, rb_core0_ie, rb_core0_ip);
                 }
             }
         }
