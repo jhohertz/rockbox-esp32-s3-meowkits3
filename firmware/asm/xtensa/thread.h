@@ -21,50 +21,51 @@
 /*
  * Xtensa under the windowed ABI.
  *
- * A thread's live state is not a list of registers. Every call frame on the
- * thread's stack already reserves a 16-byte base save area, and the window
- * overflow/underflow handlers use it: window N's a0, a2, a3 and a4 live in the
- * base save area of window N-1's frame, at (ancestor sp - 16)..(ancestor sp -
- * 4). Spill the windows before switching and the whole call chain is on the
- * thread's own stack. From then on the only thing that identifies where the
- * thread stopped is its stack pointer -- the registers come back by itself,
- * refilled by the underflow handlers as the thread unwinds.
+ * The save area below is ESP-IDF's own exception frame, XtExcFrame from
+ * xtensa_context.h -- the same structure IDF builds on every level-1 interrupt
+ * and every task switch, and the same one _xt_context_save,
+ * _xt_context_restore and _xt_user_exit already know how to fill in and leave.
+ * It is spelled out in words here rather than included because this header is
+ * also read by the freestanding domain (codecs and plugins), which has no IDF
+ * include path; the .c file static_asserts the correspondence.
  *
- * So that is what is saved: sp, the a0 that RETW needs to leave the switch
- * frame, PS, and WINDOWBASE. This is the same set FreeRTOS saves for a
- * solicited (i.e. cooperative, non-interrupt) yield -- see XT_SOL_PC / XT_SOL_PS
- * in its portasm.S, and _frxt_dispatch's solicited path, which restores exactly
- * those and then executes retw. Saving a0-a15 as well, which is what a call0
- * port does, is not a longer version of the same thing: it overwrites a window
- * the hardware is about to refill from memory that is already correct.
+ * This replaces an earlier design that saved only sp/pc/ps/WINDOWBASE and let
+ * the window underflow handlers refill the registers as the thread unwound.
+ * That model needs the resumed thread's window *chain* to still be live in the
+ * hardware window slots, and any other thread that ran in between overwrites
+ * them. It also needs a8 and a9 -- the registers _WindowUnderflow8 uses to find
+ * the base save area -- to survive the switch, which is exactly what a switch
+ * wants to use them for. IDF does not do that. It flattens:
+ * _xt_context_restore loads a2..a15 straight out of the frame and never touches
+ * WINDOWBASE or WINDOWSTART. There is no such field in the frame at all.
  *
- * WINDOWBASE has to travel with the thread even though WINDOWSTART does not.
- * It is core state, not thread state, and the two are only consistent as a pair:
- * a thread that blocked at depth N has its base save areas laid out relative to
- * base N, and resuming it with the core sitting at base M makes every retw on
- * the way out rotate from the wrong origin. Narrowing WINDOWSTART alone is not
- * enough for that reason, and the failure it leaves behind is not local -- the
- * spill walks WINDOWSTART bits that no longer correspond to live frames, reads
- * whatever the thread has at ancestor_sp-16 as a base save area, and stores
- * through the "ancestor" pointer it finds there.
- *
- * WINDOWSTART itself needs no field: it is narrowed to the single bit of the
- * saved base at every store, so it is a pure function of WINDOWBASE.
+ * Flattening is correct here for the same reason it is correct for FreeRTOS:
+ * every switch happens at the same call depth (switch_thread), so every thread
+ * presents the same window layout above that point, and the frame's a2..a15
+ * mean the same thing for all of them no matter where WINDOWBASE happens to
+ * sit. Depth, not base, is what has to match.
  */
+
+/* >= sizeof(XtExcFrame)/4, with slack. Asserted in the .c file. */
+#define XT_FRAME_WORDS 40
+
 struct regs
 {
-    uint32_t sp;      /* stack pointer of the switch_thread frame */
-    uint32_t pc;      /* a0 exactly as the windowed ABI encoded it */
-    uint32_t ps;      /* PS with INTLEVEL and EXCM cleared, CALLINC 8 */
+    uint32_t sp;      /* stack pointer at the switch; before a thread has run
+                       * this is the top of its stack */
     uint32_t start;   /* entry point, zero once the thread has run */
-    uint32_t wb;      /* WINDOWBASE the chain is rooted at */
+    uint32_t frame[XT_FRAME_WORDS];   /* XtExcFrame */
 };
 
-#define XT_SP    0
-#define XT_PC    4
-#define XT_PS    8
-#define XT_START 12
-#define XT_WB    16
+/* Fixed prefix of XtExcFrame, in words. Mirrors xtensa_context.h; the .c file
+ * asserts each one against the real struct. */
+#define XT_F_EXIT   0
+#define XT_F_PC     1
+#define XT_F_PS     2
+#define XT_F_A0     3
+#define XT_F_A1     4
+#define XT_F_A2     5
+#define XT_F_A6     9
 
 /* The level-1 handler runs on the interrupted thread's stack: its own frame,
  * then the dispatch, the GDMA completion path and the mixer chain that the
