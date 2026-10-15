@@ -78,6 +78,16 @@ def extract(entry):
         if arg in ("-o", "-MF", "-MT", "-MQ", "-include"):
             skip_next = True
             continue
+        if arg.startswith("-Werror"):
+            # IDF builds its own sources with -Werror=all. Inheriting that would
+            # put IDF's warning policy on Rockbox's sources and turn Rockbox's own
+            # warnings into build failures it never opted into (29 of them on the
+            # first full build, all -Werror=char-subscripts in apps/ and
+            # lib/rbcodec). Warning *policy* stays Rockbox's; the -Wno-* flags IDF
+            # contributes are kept, because they suppress warnings originating in
+            # IDF's own headers, and Rockbox's later -Wall/-Wextra re-enable
+            # anything IDF relaxed for its own benefit anyway.
+            continue
         if os.path.normpath(arg) == src:
             continue
         keep.append(arg)
