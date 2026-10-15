@@ -671,14 +671,16 @@ target/xtensa/idf-probe.c
 
 /* The bare-metal startup is not used on this path and is not built: ESP-IDF owns
  * the entry point, the vectors, the cache/MMU arming, the PSRAM bring-up and the
- * core timer. That whole layer lives on the tagged branch baremetal-pre-idf.
+ * core timer. That whole layer lives on the tagged branch baremetal-pre-idf,
+ * along with crt0.S, vectors.S, irom-map.c, mmu-xtensa.c, psram-xtensa.c,
+ * rom_cache.c, irq-xtensa.c and app.lds.
  *
- * Deliberately absent: crt0.S, vectors.S, irom-map.c, mmu-xtensa.c,
- * psram-xtensa.c, rom_cache.c, timer-xtensa.c, irq-xtensa.c. */
+ * timer-xtensa.c is absent for the same reason: it armed the core timer and
+ * installed its own interrupt slot, which is not something a guest of FreeRTOS
+ * may do. The Rockbox tick comes back with the threading step. */
 target/xtensa/bootlog.c
 target/xtensa/system-xtensa.c
 target/xtensa/power-xtensa.c
-target/xtensa/timer-xtensa.c
 #if CONFIG_I2C == I2C_XTENSA
 target/xtensa/i2c-xtensa.c
 target/xtensa/pca9557.c

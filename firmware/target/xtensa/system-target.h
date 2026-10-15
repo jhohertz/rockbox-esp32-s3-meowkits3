@@ -9,8 +9,20 @@
 #define SYSTEM_TARGET_H
 
 #include <stdint.h>
-#include "rom_cache.h"
-#include "bootlog.h"
+#ifdef HAVE_SYSTEM_LIBC
+#include <xtensa/hal.h>
+#include "cache-xtensa.h"
+#else
+/* The freestanding domain - codecs and plugins, linked by plugin.lds against a
+ * jump table rather than a C library - has no ESP-IDF to include and no DMA of
+ * its own. It reaches the cache through codec_api/plugin_api (ci->commit_dcache
+ *()), which the firmware side fills in with the real thing. These declarations
+ * exist so this header still parses there; a codec that called one directly
+ * would fail at link time, which is the correct outcome rather than a silent
+ * no-op. */
+void xthal_dcache_all_writeback(void);
+void xthal_dcache_all_writeback_inv(void);
+#endif
 
 extern long cpu_frequency;   /* set by system_init */
 
@@ -183,26 +195,26 @@ static inline void mdelay(unsigned ms)
 }
 
 /*
- * Cache maintenance has to go through the ROM. This core config has no cache
- * instructions - probeD, flushD, lockD, rdtag, wttag, rinvalidate and
- * binvalidate are all invalid opcodes on the esp32s3 dynconfig - so there is no
- * way to flush or invalidate a line from Rockbox itself. The ROM functions are
- * reached by absolute address through xt_rom_call().
+ * Whole-cache maintenance. Under ESP-IDF this belongs to the xtensa HAL: the
+ * esp32s3 core config has no cache instructions of its own (probeD, flushD,
+ * lockD, rdtag, wttag, rinvalidate and binvalidate are all invalid opcodes on
+ * this dynconfig), and libxt_hal.a carries the sequences that work. The bare-
+ * metal route - calling the mask ROM's Cache_* entry points by absolute
+ * address - is on the tagged branch.
  *
  * Internal SRAM (0x3FC88000-0x3FD00000, which is exactly SOC_DMA_LOW/SOC_DMA_HIGH)
- * is served by the L1 D-cache, so anything a DMA touches there needs maintenance:
- * commit before the DMA reads, invalidate before the CPU reads back. ESP-IDF does
- * the same thing with esp_cache_msync(), including on every SDHOST descriptor.
+ * is served by the L1 D-cache, so anything a DMA touches there needs
+ * maintenance. That case is per-range, not whole-cache, and lives in
+ * cache-xtensa.h.
  */
 static inline void commit_dcache(void)
 {
-    xt_rom_call(ROM_CACHE_WRITEBACK_ALL, 0, 0);
+    xthal_dcache_all_writeback();
 }
 
 static inline void commit_discard_dcache(void)
 {
-    xt_rom_call(ROM_CACHE_WRITEBACK_ALL, 0, 0);
-    xt_rom_call(ROM_CACHE_INVALIDATE_DCACHE_ALL, 0, 0);
+    xthal_dcache_all_writeback_inv();
 }
 
 static inline void commit_discard_idcache(void)

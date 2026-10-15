@@ -21,7 +21,6 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "config.h"
-#include "bootlog.h"
 #include "system.h"
 #include "kernel.h"
 #include "thread.h"

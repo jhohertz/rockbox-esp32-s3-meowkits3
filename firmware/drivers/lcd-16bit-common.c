@@ -30,9 +30,6 @@
 /* Clear the current viewport */
 void lcd_clear_viewport(void)
 {
-    extern void boot_trace(char c);
-    extern void boot_trace_hex(unsigned int v);
-    boot_trace('D');                  /* entered */
     struct viewport *vp = lcd_current_viewport;
     fb_data *dst, *dst_end;
     int x, y, width, height;
@@ -48,8 +45,6 @@ void lcd_clear_viewport(void)
 
     dst = FBADDR(x, y);
     dst_end = FBADDR(x + width - 1 , y + height - 1);
-    boot_trace_hex((unsigned)(uintptr_t)dst);
-    boot_trace_hex((unsigned)(uintptr_t)dst_end);
 
     if (vp->drawmode & DRMODE_INVERSEVID)
     {
@@ -74,28 +69,14 @@ void lcd_clear_viewport(void)
         }
         else
         {
-            int rows = 0;
-            boot_trace('2');
-            boot_trace_hex((unsigned)len);
-            extern void boot_trace_mmu(unsigned int vaddr, int pages);
-            boot_trace('A');
-            boot_trace_mmu((unsigned)(uintptr_t)dst, 12);
-            boot_trace('a');
             do
             {
                 memset16(dst, vp->bg_pattern, len);
                 dst += step;
-                rows++;
-                if ((rows & 15) == 0) {
-                    boot_trace('r');
-                    boot_trace_hex((unsigned)(uintptr_t)dst);
-                }
             }
             while (dst <= dst_end);
         }
     }
-
-    boot_trace('E');                  /* clear loop finished */
 
     if (vp == &default_vp)
         lcd_scroll_stop();

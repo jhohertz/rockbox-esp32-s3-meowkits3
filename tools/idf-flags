@@ -35,25 +35,45 @@ import os
 DROP_EXACT = {"-c", "-MMD", "-MD", "-MG"}
 
 
-def pick_entry(entries):
-    """Choose a C entry from the project itself, not from IDF's own components.
+def pick_entry(entries, project_root):
+    """Choose the app component's entry: it is compiled as C, with the project's
+    own include directory and the component set the app actually declared.
 
-    A project entry is the one whose flags a Rockbox file would want: it is
-    compiled as C, with the app's include path and the full component set.
+    This used to key off IDF_PATH to decide what counted as "the project", which
+    silently harvested some random IDF component's flags whenever the tool was
+    run without export.sh in the environment - the include set then contained
+    the common components only, and a Rockbox file including, say,
+    esp_cache.h failed with "No such file" while the flags file looked fine.
+    The project root is now derived from the build directory that was passed in,
+    and a missing app entry is an error rather than a guess.
     """
     c_entries = [e for e in entries if e["file"].endswith(".c")]
     if not c_entries:
         sys.exit("idf-flags: compile_commands.json has no C entries")
 
-    # Prefer an entry that is not inside IDF itself: those are the ones that also
-    # carry the project's own include directories.
-    idf_path = os.environ.get("IDF_PATH", "")
-    project = [e for e in c_entries if not (idf_path and e["file"].startswith(idf_path))]
-    pool = project or c_entries
+    def command_of(e):
+        return e.get("command") or " ".join(e.get("arguments", []))
+
+    # Sources the project itself compiles. Generated files that live inside the
+    # build tree (project_elf_src_*.c, x509_crt_bundle, ...) are excluded: they
+    # are compiled with the whole component set linked in, which is wider than
+    # what an ordinary app source sees, and picking them would hand Rockbox
+    # include directories for components the app never declared.
+    app = [e for e in c_entries
+           if e["file"].startswith(project_root + os.sep)
+           and os.sep + "build" + os.sep not in e["file"]]
+
+    if not app:
+        sys.exit(
+            "idf-flags: no compile entry for a source under %s.\n"
+            "The build directory passed in does not belong to a project whose "
+            "sources IDF compiled, so there is no app-component flag set to "
+            "harvest. Run 'idf.py build' (or reconfigure) in the project first."
+            % project_root)
 
     # Shortest command = the least per-file decoration, so the result is the
-    # common flag set rather than one file's extras.
-    return min(pool, key=lambda e: len(e.get("command") or " ".join(e.get("arguments", []))))
+    # component's common flag set rather than one file's extras.
+    return min(app, key=lambda e: len(command_of(e)))
 
 
 def extract(entry):
@@ -115,7 +135,7 @@ def main(argv):
     with open(ccc) as f:
         entries = json.load(f)
 
-    flags = extract(pick_entry(entries))
+    flags = extract(pick_entry(entries, os.path.dirname(build)))
 
     # sdkconfig.h is generated into the build tree and IDF headers include it by
     # name, so the directory has to be reachable even though it is not a source

@@ -19,9 +19,6 @@
  *
  ****************************************************************************/
 #include "config.h"
-#ifdef CPU_XTENSA
-#include "bootlog.h"
-#endif
 #include <stdio.h>
 #include <errno.h>
 #include "string-extra.h"
@@ -1273,14 +1270,6 @@ static void sab_process_sub(struct sab *sabp)
             /* else an immediate-contents directory scan */
 
             int rc = uncached_readdir_internal(streamp, infop, fatentp);
-#ifdef CPU_XTENSA
-            /* Bring-up progress tick: one dot per 200 directory entries, so a
-             * long scan on a big card is distinguishable from a stalled one.
-             */
-            static int scan_ticks;
-            if (++scan_ticks % 200 == 0)
-                boot_trace('.');
-#endif
             if (rc <= 0)
             {
                 if (rc < 0)
@@ -2022,10 +2011,6 @@ static void dircache_thread(void)
 {
     struct queue_event ev;
 
-#ifdef CPU_XTENSA
-    boot_trace('D');
-#endif
-
     /* calls made within the loop reopen the lock */
     dircache_lock();
 
@@ -2051,10 +2036,6 @@ static void dircache_thread(void)
 
         bool realloced;
         int rc = prepare_build(&realloced);
-#ifdef CPU_XTENSA
-        boot_trace('B');
-        boot_trace_hex((unsigned)rc);
-#endif
         if (rcp)
             *rcp = rc;
 
@@ -2063,9 +2044,6 @@ static void dircache_thread(void)
 
         trigger_cpu_boost();
         build_volumes();
-#ifdef CPU_XTENSA
-        boot_trace('V');
-#endif
 
         /* if it was reallocated, compact it */
         if (realloced)

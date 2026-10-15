@@ -28,9 +28,6 @@
 #include "dir.h"
 #include "rb_namespace.h"
 #include "disk.h"
-#if defined(CPU_XTENSA)
-#include "bootlog.h"   /* bring-up trace only; see firmware/target/xtensa/bootlog.c */
-#endif
 #include "panic.h"
 
 #if defined(HAVE_BOOTDATA) && !defined(SIMULATOR) && !defined(BOOTLOADER)
@@ -166,20 +163,11 @@ bool disk_init(IF_MD_NONVOID(int drive))
     unsigned char *sector = dc_get_buffer();
     if (!sector)
         return false;
-#if defined(CPU_XTENSA)
-    boot_trace('B');
-    boot_trace_hex((unsigned)(uintptr_t)sector);
-#endif
 
     /* Query logical sector size */
     struct storage_info *info = (struct storage_info*) sector;
     storage_get_info(IF_MD_DRV(drive), info);
     sector_t num_sectors = info->num_sectors;
-#if defined(CPU_XTENSA)
-    boot_trace('b');
-    boot_trace_hex((unsigned)num_sectors);
-    boot_trace_hex((unsigned)info->sector_size);
-#endif
 #ifdef DEFAULT_VIRT_SECTOR_SIZE
     unsigned int sector_size = info->sector_size;
 #endif
@@ -206,9 +194,6 @@ bool disk_init(IF_MD_NONVOID(int drive))
 
     memset(sector, 0, DC_CACHE_BUFSIZE);
     storage_read_sectors(IF_MD(drive,) 0, 1, sector);
-#if defined(CPU_XTENSA)
-    boot_trace('R');
-#endif
 
     bool init = false;
 
@@ -421,15 +406,9 @@ int disk_mount(int drive)
 
     if (!disk_init(IF_MD(drive)))
     {
-#if defined(CPU_XTENSA)
-        boot_trace('i');
-#endif
         disk_writer_unlock();
         return 0;
     }
-#if defined(CPU_XTENSA)
-    boot_trace('I');
-#endif
 
     struct partinfo *pinfo = &part[IF_MD_DRV(drive)*MAX_PARTITIONS_PER_DRIVE];
 #ifdef MAX_VIRT_SECTOR_SIZE
@@ -441,9 +420,6 @@ int disk_mount(int drive)
 
     if (!fat_mount(IF_MV(volume,) IF_MD(drive,) 0))
     {
-#if defined(CPU_XTENSA)
-        boot_trace('f');
-#endif
 #ifdef MAX_VIRT_SECTOR_SIZE
         disk_sector_multiplier[drive] = fat_get_bytes_per_sector(IF_MV(volume)) / LOG_SECTOR_SIZE(drive);
 #endif
@@ -530,9 +506,6 @@ int disk_mount_all(void)
     /* reset all mounted partitions */
     volume_onunmount_internal(IF_MV(-1));
     fat_init();
-#if defined(CPU_XTENSA)
-    boot_trace('q');
-#endif
 
     /* mark all volumes as free */
     for (int i = 0; i < NUM_VOLUMES; i++)
@@ -541,17 +514,7 @@ int disk_mount_all(void)
     for (int i = 0; i < NUM_DRIVES; i++)
     {
         if (storage_present(i))
-        {
-#if defined(CPU_XTENSA)
-            boot_trace('Q');
-            boot_trace_hex((unsigned)i);
-#endif
             mounted += disk_mount(i);
-#if defined(CPU_XTENSA)
-            boot_trace('q');
-            boot_trace_hex((unsigned)mounted);
-#endif
-        }
     }
 
     disk_writer_unlock();

@@ -18,7 +18,6 @@
  *
  ****************************************************************************/
 #include "storage.h"
-#include "bootlog.h"
 #include "kernel.h"
 #include "ata_idle_notify.h"
 #include "usb.h"
@@ -288,7 +287,6 @@ static inline void storage_thread_init(void)
 
 int storage_init(void)
 {
-
     int rc=0;
 
 #ifdef HAVE_SDMMC_HOST
