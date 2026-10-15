@@ -46,8 +46,18 @@
  * sit. Depth, not base, is what has to match.
  */
 
-/* >= sizeof(XtExcFrame)/4, with slack. Asserted in the .c file. */
-#define XT_FRAME_WORDS 40
+/* The frame has to be sized for what IDF *writes*, not for what the struct
+ * declares. On esp32s3 sizeof(XtExcFrame) is 112 bytes, but XCHAL_HAVE_FP is 1
+ * and _xt_context_save does `addi a2, a1, XT_STK_EXTRA` (112) then
+ * `call0 xthal_save_extra_nw`, which stores the FP register file there. IDF
+ * therefore allocates XT_STK_FRMSZ = 192 bytes, and the struct has no `extra`
+ * member at all on this config -- so an assert against sizeof(XtExcFrame)
+ * passes while the real requirement is 192. Sizing this from the struct
+ * overran struct regs by 32 bytes and landed on the thread_entry fields that
+ * follow it: stack, name, tmo_tick, rtr, tmo.next. The visible symptom was the
+ * timeout list walking into a float register that happened to hold a stack
+ * address. Asserted against XT_STK_FRMSZ in the .c file. */
+#define XT_FRAME_WORDS 48   /* 192 bytes = XT_STK_FRMSZ */
 
 struct regs
 {

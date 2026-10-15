@@ -2196,6 +2196,90 @@ Two things this cost, both worth remembering:
   `ar` fails with `lib/librockbox.a: No such file or directory`; the `lib`,
   `fonts`, `icons`, `lang`, ... directories have to exist first.
 
+### The frame must be sized for what IDF writes, not for XtExcFrame
+
+`sizeof(XtExcFrame)` on esp32s3 is **112 bytes**. `XT_STK_FRMSZ` -- the amount
+IDF actually allocates -- is **192**. The gap is the coprocessor state:
+`XCHAL_HAVE_FP` is 1, and `_xt_context_save` ends with
+`addi a2, a1, XT_STK_EXTRA` (112) then `call0 xthal_save_extra_nw`, which
+stores the FP register file at frame byte 112 and on. On this config the struct
+has **no `extra` member at all**, so an assert written as
+`sizeof(XtExcFrame) <= frame` passes while the real requirement is 192 bytes.
+
+Sizing the frame from the struct overran `struct regs` by 32 bytes and landed
+on the `thread_entry` fields that follow it -- `stack` (168), `name` (172),
+`tmo_tick` (176), `rtr` (180), `tmo.next` (188). The visible symptom was the
+timeout list walking into a bogus node: `l32i a6, a7, 188` with
+`a7 = 0xffffff6c`, i.e. `THREAD_FROM(node, tmo)` where the node pointer was
+`0x28` -- a float register that happened to hold a stack address, read back as
+a list link. `head == tail` said one node; the node's `next` said otherwise.
+
+Rule: **assert against `XT_STK_FRMSZ`, never `sizeof(XtExcFrame)`.**
+
+### a0's top two bits are the window increment, and `rfe` does not reconstruct them
+
+In the windowed ABI `callw` stores the return address in a0 with **bits 31:30
+replaced by CALLINC** -- not flagged alongside the address, *overwritten*. So
+the address's own top bits are gone. `retw` reconstructs them; `_xt_user_exit`
+does not: it writes the frame's pc straight to EPC_1 and `rfe` jumps to that
+value verbatim.
+
+Masking bit 31 alone is wrong -- it leaves bit 30 wrong, and the fault comes
+back as `InstrFetchProhibited` at `0x020522f3` with `EXCVADDR` one below.
+ESP-IDF's own decoder (`esp_cpu_utils.h`, `esp_cpu_process_stack_pc`) maps the
+pair back with `(pc & 0x3fffffff) | 0x40000000`, which is valid because every
+executable region on this chip -- flash .text at 0x42xxxxxx, IRAM at
+0x4037xxxx, the PSRAM codec window -- has bits 31:30 equal to 01.
+
+So the two frame slots take different forms of the same word: `pc` gets the
+mapped-back address, `a0` keeps the value verbatim.
+
+### `_xt_context_save` destroys a12 and a13
+
+It copies them to `XT_STK_TMP0`/`TMP1` and then uses the registers themselves
+as scratch. Under the windowed ABI a12-a15 are callee-saved, so inline asm
+that calls it must list a12/a13 as clobbered. Without that, GCC is told nothing
+about a caller-saved-looking destruction of callee-saved state, and whatever it
+parked there is silently lost.
+
+### The tick: a hand-rolled gptimer was the last IDF avoidance here
+
+Rockbox's clock used to come from its own gptimer alarm. It now comes from
+FreeRTOS's own tick: `CONFIG_FREERTOS_HZ=100` (Rockbox's `HZ` is 100) plus
+`CONFIG_FREERTOS_USE_TICK_HOOK=y`, and `vApplicationTickHook()` advances
+`current_tick` -- on core 0 only, because SMP FreeRTOS ticks on both cores and
+counting on both would double the clock. `tick_start()` now only checks that
+the kernel agrees with `HZ`.
+
+Measured, before and after, with the breadcrumb ring:
+
+- With the private gptimer: `current_tick` stopped at 46 while `INTENABLE` was
+  unchanged (0x1300132e) and the timer's raw counter was still counting. The
+  interrupt was armed and simply never delivered.
+- With the tick hook: core **1**'s hook fires forever; core **0**'s stops at
+  48. `INTENABLE` on core 0 is identical (`0x1300032e`) at the last core-0 tick
+  and at every later switch, and `PS` is clean there (`0x00060020`: INTLEVEL 0,
+  EXCM clear, UM set). So it is not a masking problem.
+- **Independent of the SD card**: with `sd_init()` stubbed out the core-0 tick
+  still stops, at 39. That hypothesis is dead.
+
+Still open. What is established is the shape of the remaining fault: one core's
+tick interrupt stops being delivered while its enable bit stays set and its
+PS says interrupts are allowed.
+
+### Two build traps found on the way
+
+- **`make clean` deletes directories the build then needs.** After a clean,
+  `ar` fails with `lib/librockbox.a: No such file or directory`; `lib`, `fonts`,
+  `icons`, `lang` and friends have to be recreated by hand.
+- **`sdkconfig.defaults` only applies when `sdkconfig` is regenerated.** Adding
+  a line to the defaults and rebuilding changes nothing; the existing
+  `idf-app/sdkconfig` wins. Delete it to pick the new defaults up.
+- `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n`: Rockbox owns core 0 outright
+  and, when every Rockbox thread is blocked, waits for the next tick inside the
+  FreeRTOS task rather than returning from it, so that core's idle task never
+  runs and never feeds the watchdog.
+
 ### Where it stands now
 
 Measured, after the flat-frame switch and a full clean rebuild:
