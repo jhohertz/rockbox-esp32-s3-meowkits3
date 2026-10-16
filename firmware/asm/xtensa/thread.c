@@ -115,6 +115,24 @@ static inline void load_context(const void* addr)
  * Setting it at each entry point makes the pointer a fact rather than a
  * bookkeeping guess.
  */
+/* Which context the kernel believes is running, as an opaque pointer.
+ *
+ * The OS binding needs to ask this before it lets a task run Rockbox code: a
+ * gate given without the kernel having selected that thread must not proceed,
+ * or the task executes under another thread's identity. Measured on this board
+ * as 759 disagreements in one boot, and as the filesystem writer lock being
+ * held by one thread while another queued as a writer against it.
+ *
+ * Returns the context rather than the thread_entry because thread 0's
+ * context.thread is deliberately unset, and the context is what the gate is
+ * keyed on anyway. */
+void *rb_thread_running_context(void)
+{
+    struct core_entry *corep = __core_id_entry(CURRENT_CORE);
+
+    return corep->running ? (void *)&corep->running->context : NULL;
+}
+
 void rb_thread_set_running(void *thread)
 {
     struct core_entry *corep;

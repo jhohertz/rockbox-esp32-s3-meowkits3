@@ -148,7 +148,15 @@ static void rb_task_body(void *arg)
     struct regs *ctx = ref->ctx;
     void (*fn)(void) = (void (*)(void))(uintptr_t)ctx->start;
 
-    xSemaphoreTake((SemaphoreHandle_t)ctx->gate, portMAX_DELAY);
+    /* Same rule as the handoff: hold the gate only when the kernel has actually
+     * selected this thread, so a stray first give cannot start a thread under
+     * someone else's identity. */
+    for (;;)
+    {
+        xSemaphoreTake((SemaphoreHandle_t)ctx->gate, portMAX_DELAY);
+        if (rb_thread_running_context() == (void *)ctx)
+            break;
+    }
 
     /* We now hold the CPU. Tell the kernel before the thread does anything
      * that might exit, block or panic. */
@@ -288,11 +296,28 @@ void rb_thread_handoff(struct regs *in)
 
     if (self != NULL && self != in)
     {
-        xSemaphoreTake((SemaphoreHandle_t)self->gate, portMAX_DELAY);
+        /* The gate is an exclusive token meaning "the kernel has selected you".
+         * It can be given without that being true -- a give from a path that did
+         * not go through switch_thread(), or a second give while the holder
+         * still holds it -- and a task that proceeds anyway then runs Rockbox
+         * code under another thread's identity. Measured on this board: the
+         * kernel's running-thread and the executing task disagreed 759 times in
+         * one boot, and the result was a thread queueing as a writer against a
+         * lock it already held, i.e. waiting on itself forever.
+         *
+         * So re-check on every wake and go back to sleep unless the kernel has
+         * actually picked us. Running late is recoverable; running as the wrong
+         * thread is not. */
+        for (;;)
+        {
+            xSemaphoreTake((SemaphoreHandle_t)self->gate, portMAX_DELAY);
+            if (rb_thread_running_context() == (void *)self)
+                break;
+        }
 
-        /* Resumed. Whoever gave that gate meant us to be running, and the
-         * kernel's own notion is set by whichever core did the giving -- which
-         * is not necessarily the core we land on. Re-assert it. */
+        /* Resumed, and selected. Whoever gave that gate meant us to be running,
+         * and the kernel's own notion is set by whichever core did the giving --
+         * which is not necessarily the core we land on. Re-assert it. */
         rb_thread_set_running(self->thread);
     }
 }
