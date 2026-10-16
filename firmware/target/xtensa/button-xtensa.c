@@ -11,6 +11,8 @@
 #include "system.h"
 #include "button.h"
 #include "gpio-xtensa.h"
+#include "mrsw_lock.h"     /* TEMPORARY filesystem-lock probe */
+#include <stdio.h>         /* TEMPORARY bring-up logging */
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"
@@ -90,6 +92,32 @@ void touchscreen_enable_device(bool en)
 
 int button_read_device(int *data)
 {
+    /* TEMPORARY: once a second, report who holds the filesystem lock. The play
+     * attempt deadlocks with no panic and no output at all, which means the
+     * only way to see it is to ask the lock directly while it is wedged. The
+     * dircache thread takes the writer lock and then blocks on its queue with
+     * TIMEO_BLOCK, and nothing in this tree releases held MRSW locks across a
+     * wait -- so an idle dircache thread should show count<0, owner dircache,
+     * and a growing waiter list. If instead count is 0 and the waiters are
+     * empty, the lock is innocent and the stall is elsewhere. */
+    {
+        static int fsdiag;
+        extern struct mrsw_lock file_internal_mrsw;
+
+        if (++fsdiag >= 1)   /* every call: this path is rare */
+        {
+            char owner[20];
+            int waiters = 0;
+            int count;
+
+            fsdiag = 0;
+            count = mrsw_debug_state(&file_internal_mrsw, owner, sizeof owner,
+                                     &waiters);
+            printf("FSLOCK: count=%d owner=%s waiters=%d\n",
+                   count, owner, waiters);
+        }
+    }
+
     int b = 0;
 
     /* Active low: pressed reads 0 */

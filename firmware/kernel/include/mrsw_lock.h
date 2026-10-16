@@ -46,6 +46,14 @@ struct mrsw_lock
 };
 
 void mrsw_init(struct mrsw_lock *mrsw);
+
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+/* TEMPORARY bring-up: read the lock's state without being its owner. Returns
+ * mrsw->count (>0 readers, <0 writer, 0 free), the owner's name, and the number
+ * of waiters. */
+int mrsw_debug_state(const struct mrsw_lock *mrsw, char *owner_name, int sz,
+                     int *waiters);
+#endif
 void mrsw_read_acquire(struct mrsw_lock *mrsw);
 void mrsw_read_release(struct mrsw_lock *mrsw);
 void mrsw_write_acquire(struct mrsw_lock *mrsw);
