@@ -59,12 +59,24 @@ static void spi_apply_config(void)
 #define SIG_GPIO_OUT_IDX 256
 #endif
 
-#define SPI_CLK_1M      ((15u << 0) | (7u << 6) | (15u << 12) | (4u << 18))
-/* 80 MHz / (24+1) / (15+1) = 200 kHz, a 5 us period. A register-read loop runs
-   in a few hundred nanoseconds, so at this rate the loop cannot step over an
-   edge: the count is a true lower bound rather than a sampling artefact. */
-#define SPI_CLK_200K    ((15u << 0) | (7u << 6) | (15u << 12) | (24u << 18))
-#define SPI_CLK_20M     ((1u << 0) | (0u << 6) | (1u << 12) | (1u << 18))
+/* SPI_CLOCK on ESP32-S3 is CLKCNT_N[17:12] | CLKCNT_H[11:6] | CLKCNT_L[5:0],
+ * with CLK_EQU_SYSCLK at bit 31. There is no pre-divider field. The macros this
+ * file used to carry wrote (1u << 18) and (24u << 18), which are above N and
+ * therefore land in reserved bits and do nothing -- so the intended
+ * "80/(pre+1)/(n+1)" division never happened, and worse, SPI_CLK_20M decoded to
+ * N=1 H=0 L=1. The hardware requires N >= H >= L >= 1; H < L yields a malformed
+ * clock waveform rather than a slow one, which on the glass is banding and noise
+ * over a solid fill, not a geometry error.
+ *
+ * Period is N+1 source cycles, the high phase H+1 and the low phase L+1, so
+ * 80 MHz / 4 = 20 MHz is N=3, H=1, L=1.
+ */
+#define SPI_CLK_20M     ((3u << 12) | (1u << 6) | (1u << 0))
+/* Slowest legal divider: 80 / 64 = 1.25 MHz, N=63 H=32 L=1. 200 kHz is not
+ * reachable on this block because there is no pre-divider. */
+#define SPI_CLK_1M25    ((63u << 12) | (32u << 6) | (1u << 0))
+
+
 
 /* Measure the bit stream at the pin. A 64-byte transfer must produce exactly 512
  * clock edges; anything else means MS_DLEN is not being honoured and the panel is
@@ -109,7 +121,16 @@ void spi_init(void)
 
     if (!initialised)
     {
-        esp_err_t e = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+        /* SPI_DMA_DISABLED, deliberately. We need spi_bus_initialize() for the
+         * clock and pin routing and nothing else, and AUTO allocates a GDMA
+         * channel plus the burst-read configuration. LovyanGFX's Bus_SPI.cpp:561
+         * records that a DMA burst read at 1:1 with the APB clock corrupts the
+         * tail of any transfer whose length is not a multiple of 4 -- and our
+         * command and argument transfers are 1, 2, 5 and 14 bytes, all of which
+         * have a remainder. We drive the CPU buffer, not the DMA, so there is
+         * nothing for that erratum to corrupt, but there is also no reason to
+         * keep the variable in the experiment. */
+        esp_err_t e = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_DISABLED);
         if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
             printf("spi_init: spi_bus_initialize: %d\n", (int)e);
         e = spi_bus_add_device(SPI2_HOST, &devcfg, &spi_dev);
@@ -153,14 +174,17 @@ void spi_init(void)
 
     /* Write-only master transfer. WR_BIT_ORDER = 0, RD_BIT_ORDER = 0. */
     wr(SPI_CTRL, 0);
-    wr(SPI_USER, SPI_USR_MOSI);
+    wr(SPI_USER, SPI_USR_MOSI | SPI_USR_MISO | SPI_USR_DOUTDIN);
     wr(SPI_USER1, 0);
 
     /* spi_clk = the 80 MHz source, divided. 80/(2*2) = 20 MHz. The reference
      * drives this panel at 80 MHz, but that path uses DMA; the polled CPU-buffer
      * path is proven at 20 MHz first.
      */
-    wr(SPI_CLOCK, SPI_CLK_20M);
+    /* Leave SPI_CLOCK to IDF. spi_bus_add_device() already programmed a legal
+     * divider for the 20 MHz in its device config, and every hand-written value
+     * this file has used for it has been malformed. Writing our own here only
+     * clobbers the one setting IDF got right. */
 
     wr(SPI_MS_DLEN, SPI_BUF_BYTES * 32 - 1);
     spi_apply_config();
@@ -181,6 +205,19 @@ volatile unsigned int xt_spi_iter_max;
 volatile unsigned xt_spi_edges;
 volatile unsigned xt_spi_mosi_chg;
 volatile int spi_edge_probe;
+
+/* Spin until the controller has finished clocking. The reference's
+ * dc_control() does exactly this before it touches the DC pin: if DC changes
+ * while a transfer is still shifting out, the panel samples the remaining
+ * bytes under the wrong register-select and the command/data stream
+ * desynchronises -- which on the glass is banding and noise over a solid fill,
+ * not a clean geometry error. */
+void spi_wait_idle(void)
+{
+    for (int i = 0; i < 200000; i++)
+        if (!(rd(SPI_CMD) & SPI_CMD_USR))
+            return;
+}
 
 void spi_write(const unsigned char *data, int len)
 {
@@ -213,7 +250,10 @@ void spi_write(const unsigned char *data, int len)
 
         wr(SPI_MS_DLEN, (unsigned)n * 8u - 1u);
         spi_apply_config();
-        wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_USR);
+        /* Plain write, not read-modify-write: the reference does
+         * `*_spi_cmd_reg = SPI_EXECUTE`. The UPDATE bit latched above is still
+         * self-clearing, and OR-ing a stale read back in re-triggers it. */
+        wr(SPI_CMD, SPI_CMD_USR);
 
         /* USR is self-clearing: it drops when the transfer completes. Bounded so
            a stalled transfer is countable rather than a silent hang -- an
@@ -290,7 +330,7 @@ void spi_edge_probe_run(void)
     for (i = 0; i < 64; i++)
         pat[i] = 0xA5;
 
-    wr(SPI_CLOCK, SPI_CLK_200K);
+    wr(SPI_CLOCK, SPI_CLK_1M25);
     spi_apply_config();
 
     xt_spi_edges = 0;
@@ -301,15 +341,17 @@ void spi_edge_probe_run(void)
     spi_write(pat, sizeof(pat));
     spi_edge_probe = 0;
 
-    printf("spi probe: 512 bits @200kHz -> sclk edges=%u (want >=512), "
+    printf("spi probe: 512 bits @1.25MHz -> sclk edges=%u (want >=512), "
            "mosi chg=%u, stuck=%u\n",
            xt_spi_edges, xt_spi_mosi_chg, xt_spi_stuck);
-    printf("spi probe: spins max=%u total=%u (2.56ms is thousands; ~0 means "
+    printf("spi probe: spins max=%u total=%u (0.41ms at 1.25MHz is hundreds; ~0 means "
            "the controller clocked nothing)\n", xt_spi_iter_max, xt_spi_spins);
     printf("spi probe: clock=0x%08x ms_dlen=%u user=0x%08x user1=0x%08x "
            "ctrl=0x%08x clk_gate=0x%08x cmd=0x%08x\n",
-           rd(SPI_CLOCK), rd(SPI_MS_DLEN), rd(SPI_USER), rd(SPI_USER1),
-           rd(SPI_CTRL), rd(SPI_CLK_GATE), rd(SPI_CMD));
+           (unsigned)rd(SPI_CLOCK), (unsigned)rd(SPI_MS_DLEN),
+           (unsigned)rd(SPI_USER), (unsigned)rd(SPI_USER1),
+           (unsigned)rd(SPI_CTRL), (unsigned)rd(SPI_CLK_GATE),
+           (unsigned)rd(SPI_CMD));
 
     /* Validate the counter. If this does not read 20 then the readback path is
      * the problem and the number above means nothing. */
@@ -335,9 +377,9 @@ void spi_edge_probe_run(void)
     wr(SPI_ADDR, 0x5a5a5a5au);
     printf("spi probe: addr write 0x5a5a5a5a -> read 0x%08x  "
            "perip_clk_en0=0x%08x (bit6=%d) en1=0x%08x\n",
-           rd(SPI_ADDR), rd(XT_SYSTEM_BASE + 0x18),
+           (unsigned)rd(SPI_ADDR), (unsigned)rd(XT_SYSTEM_BASE + 0x18),
            (int)((rd(XT_SYSTEM_BASE + 0x18) >> 6) & 1u),
-           rd(XT_SYSTEM_BASE + 0x1c));
+           (unsigned)rd(XT_SYSTEM_BASE + 0x1c));
 
     gpio_matrix_out(PIN_LCD_SCLK, SIG_FSPICLK_OUT);
     wr(SPI_CLOCK, clock_save);

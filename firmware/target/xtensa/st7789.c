@@ -22,7 +22,10 @@
  * rgb_order = false contributing MAD_BGR = 0x00:
  *   MAD_MV(0x20) | MAD_MY(0x80) | MAD_ML(0x10) = 0xB0
  * The GRAM is 240x320; this is what makes it behave as a 320x240 panel. */
-#define MADCTL_VALUE  0xB0
+/* Measured on this glass: 0xA8 = MV | MY | BGR. 0xB0 leaves MP set and BGR
+ * clear, which the contract records as "green and white are correct but red
+ * and blue are exchanged". */
+#define MADCTL_VALUE  0xA8
 
 /* The panel only needs a lower bound on the reset and sleep-out timings, so a
  * generous delay is fine; udelay() is bounded by the core clock rather than by
@@ -45,6 +48,9 @@ static void cs_assert(void)
 
 static void dc(int data)
 {
+    /* Do not move the pin while the controller is still clocking. See
+     * spi_wait_idle(). */
+    spi_wait_idle();
     gpio_write_pin(PIN_LCD_DC, data);
 }
 
