@@ -694,3 +694,48 @@ that `pluginbuf` and every skin allocation through it are provably untouched:
 Revised scope: `firmware/lc-rock.c` (bounds check, `read()` target,
 `lc_get_header()`) and `apps/codecs.c` (the two `codecbuf` comparisons).
 `apps/plugin.c` needs **no change**.
+
+## Update: there is a non-core route after all — a target-supplied loader
+
+`firmware/SOURCES` selects the loader by `CONFIG_BINFMT`:
+
+```
+#if CONFIG_BINFMT == BINFMT_ROCK
+lc-rock.c
+```
+
+and hosted targets already replace it wholesale -- `target/hosted/lc-unix.c`,
+`target/hosted/game_console/3ds/lc-3ds.c`. So a target supplying its own
+`lc_open()` is existing Rockbox practice, not a new mechanism invented for
+ESP32-S3.
+
+That is a better shape than the `LC_DATA_ADDR` macro, because the window split
+is a property of *how this target loads images*, and it belongs in a target file
+rather than threaded through shared code. It also turns out to be necessary
+rather than merely tidy: a single contiguous `read(fd, hdr.load_addr, copy_size)`
+cannot fill two disjoint windows at all, so the loader genuinely has to become
+segment-aware on this target. A translation macro would not have been enough.
+
+Plan:
+
+- `firmware/target/xtensa/lc-xtensa.c` -- a loader that copies the executable
+  segment to the instruction window and the data/bss segments to the data
+  window, and returns a handle whose header is read through the data window.
+- `apps/plugins/plugin.lds`, xtensa branch only -- place `.text` in the
+  instruction region and `.data`/`.bss` in the data region. It already carries
+  per-arch `#if` branches and an `IRAM` region for exactly this kind of split.
+- `firmware/SOURCES` -- exclude `lc-rock.c` for xtensa and add the target file.
+  SOURCES is preprocessed per target and is already full of `#if` on CPU and
+  CONFIG, so this is idiomatic for that file.
+- `memory-xtensa-syms.S` -- `codecbuf` becomes the instruction-window base, with
+  a data-window companion for the segments that need it.
+
+`apps/codecs.c`, `apps/plugin.c` and `firmware/lc-rock.c` are **untouched**, so
+no other target can be affected even in principle.
+
+Open question this raises, worth answering before writing code: `pluginbuf` is
+the skin arena and must stay in the data window, but plugins also execute. So
+the same segment split has to apply to the plugin region too, or plugins keep
+their current broken state. Splitting the two problems is still the right order
+-- codecs first, plugins as a follow-on -- but the linker work is common to
+both, so it is worth designing the `plugin.lds` change once.
