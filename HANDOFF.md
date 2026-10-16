@@ -849,3 +849,79 @@ does; (3) never will.
 - Cosmetic defect still open: the `playlist` thread prints without its status
   suffix. Harmless for reading states but it should be fixed before this output
   is trusted for anything subtle.
+
+## Root cause of the play hang: a woken thread is not a reachable thread
+
+Three readouts, taken in the same instant while the UI sat at "Loading...":
+
+    FSLOCK: count=-1 owner=buffering waiters=2
+    who : owner=buffering/running waiting=[main(W), playlist cachectrl(W)]
+    THREADS: main=blk@0x3fcb6bbc ... codec=run audio=blk@0x3fca5684 buffering=run
+
+`buffering` holds the filesystem writer lock and reports `/running` -- its
+`blocker` is NULL, so Rockbox believes it should be executing. It never resumes.
+Both waiters are `(W)`, i.e. queued as writers, so nothing can slip past.
+
+The reason is structural, and it is in `firmware/kernel/thread.c:422`:
+
+```c
+static NO_INLINE void core_schedule_wakeup(struct thread_entry *thread)
+{
+    core_rtr_add(corep, thread);
+#if NUM_CORES > 1
+    if (core != CURRENT_CORE)
+        core_wake(core);
+#endif
+}
+```
+
+On a single-core build, waking a thread adds it to the runnable list and
+notifies *nobody*. `core_wake()` is declared in kernel/include/thread.h:136 but
+is compiled out unless NUM_CORES > 1, and this target does not define it.
+
+Meanwhile the whole port contains exactly one `xSemaphoreGive`:
+target/xtensa/thread-idf.c:163, inside the voluntary handoff. So a gate is given
+only when a currently-running thread happens to call `switch_thread()` *and* the
+kernel then selects that particular thread.
+
+For upstream Rockbox that is correct: the arch switch is a context swap the
+kernel performs, so "eligible at the next voluntary switch" and "will run" are
+the same statement. Under the gated-task model they are not. A woken thread's
+FreeRTOS task is in the Blocked state pending on its gate, and no amount of
+Rockbox bookkeeping can dispatch it. The chain is then self-sustaining: the
+unreachable thread holds the writer lock, and every thread that could have
+reached a `switch_thread()` capable of handing it the gate is queued behind it.
+
+This is the same family as the `corep->running` bug fixed earlier -- both are
+places where the port assumed FreeRTOS and Rockbox agreed about who is running
+when in fact only one of them can dispatch.
+
+## The fix, and the trap in it
+
+The port needs an *eager* wake: when a thread is added to the RTR list, its gate
+must be given. There is no single-core hook for that today, so it needs a small
+gated call in `core_schedule_wakeup()` to a target-supplied function; the target
+can map a `thread_entry` to its gate because `rb_thread_ref` already carries a
+`thread` pointer (added with the `corep->running` fix).
+
+**The trap:** the gate cannot become a "you are now running" signal, because
+eager gives and the existing handoff gives would race, and two Rockbox threads
+would believe they are the running one simultaneously -- which breaks the single
+invariant the whole cooperative scheduler rests on. The gate has to be a *hint
+to re-check*, with the task verifying against Rockbox's own state before
+proceeding and returning to pending if it is not the selected thread. A binary
+semaphore makes surplus gives harmless (it saturates at 1), which is what makes
+that shape viable.
+
+Worth noting before anyone implements it: this is the first change in the port
+that needs a new hook in shared kernel code rather than a target file. The
+rationale is above; it must be gated so no other target compiles a different
+instruction, and the honest framing is that the port changed the dispatch
+contract and therefore owes the kernel a notification the old contract did not
+need.
+
+## Dead scaffolding to remove
+
+`switch_thread()` begins with `#ifdef RB_DIAG_NO_SWITCH ... return; #endif` -- a
+bisect leftover that is not defined anywhere, but is a `return` at the top of the
+scheduler's entry point. It should go before this tree is shown to anyone.
