@@ -62,6 +62,10 @@ static void rb_task_body(void *arg)
 
     xSemaphoreTake((SemaphoreHandle_t)ctx->gate, portMAX_DELAY);
 
+    /* We now hold the CPU. Tell the kernel before the thread does anything
+     * that might exit, block or panic. */
+    rb_thread_set_running(ref->thread);
+
     fn();
 
     thread_exit();
@@ -164,5 +168,12 @@ void rb_thread_handoff(struct regs *in)
     xSemaphoreGive((SemaphoreHandle_t)in->gate);
 
     if (self != NULL && self != in)
+    {
         xSemaphoreTake((SemaphoreHandle_t)self->gate, portMAX_DELAY);
+
+        /* Resumed. Whoever gave that gate meant us to be running, and the
+         * kernel's own notion is set by whichever core did the giving -- which
+         * is not necessarily the core we land on. Re-assert it. */
+        rb_thread_set_running(self->thread);
+    }
 }
