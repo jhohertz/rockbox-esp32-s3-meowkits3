@@ -925,3 +925,96 @@ need.
 `switch_thread()` begins with `#ifdef RB_DIAG_NO_SWITCH ... return; #endif` -- a
 bisect leftover that is not defined anywhere, but is a `return` at the top of the
 scheduler's entry point. It should go before this tree is shown to anyone.
+
+## Design note: the wake hook, and why preemption is already safe
+
+Confirmed constraint from the application side: FreeRTOS preempting a Rockbox
+task is acceptable, because the only other things that run are drivers, which
+need to preempt anyway. Rockbox's own task/thread expectations still have to be
+respected.
+
+Checking that against the gate lifecycle turns up something important, and it is
+worth stating explicitly because it removes a fear that would otherwise have
+driven the design:
+
+**The gate already makes FreeRTOS preemption harmless, for free.**
+
+Every path into Rockbox code requires the task to hold its own gate:
+
+ - `rb_task_body()` takes `ctx->gate` before calling `fn()` (thread-idf.c:63)
+ - resumption after a switch happens inside `rb_thread_handoff()`, immediately
+   after `xSemaphoreTake(self->gate)` (thread-idf.c:167)
+
+A task that does not hold the gate is therefore sitting in FreeRTOS's Blocked
+state on that semaphore. So at most one Rockbox task can ever be outside a
+gate-wait at a time, which means:
+
+ - FreeRTOS can preempt the running Rockbox task, but the only things it can
+   switch *to* are idle and driver tasks -- never another Rockbox task.
+ - Time slicing between Rockbox threads cannot happen, and does not need to.
+ - Rockbox's "exactly one thread in the kernel" invariant is enforced by the
+   gate, not by pinning and not by priority.
+
+So the user's answer is already true of the current design. Preemption is not
+the risk here and needs no new work. Which is a relief, because it means the fix
+can stay small.
+
+## The one gap, stated precisely
+
+The gate is an exclusive token meaning *"you are the thread the scheduler
+selected"*. It is given in exactly one place, `rb_thread_handoff()`, reached only
+from `load_context()`, reached only from `switch_thread()`, which runs only when
+the *current* thread blocks voluntarily.
+
+`core_schedule_wakeup()` (thread.c:431) adds the woken thread to the RTR list and
+notifies nobody on a single-core build. So a wake makes a thread runnable in
+Rockbox's eyes while its task remains Blocked in FreeRTOS, and it can only be
+rescued by the current holder choosing to block.
+
+Observed exactly that: `running=tick` with `owner=buffering` and `buffering=run`
+(unblocked, so in RTR) -- a runnable thread holding the filesystem writer lock
+that nothing can dispatch.
+
+## Why the obvious fix is wrong
+
+Giving the woken thread's gate eagerly would resume it inside
+`rb_thread_handoff()` at the line that does `rb_thread_set_running(self->thread)`
+-- while the current thread is still executing Rockbox code. Two threads would
+believe they are the selected one, which destroys the single invariant the gate
+exists to maintain. The gate must stay exclusive; a wake cannot hand it out.
+
+## Candidate designs
+
+**A. Arch-supplied notify macro, woken task drives the reschedule.**
+Three gated lines in `core_schedule_wakeup()` calling `THREAD_WAKE_NOTIFY(thread)`
+defined in `asm/xtensa/thread.c` -- the same shape as `THREAD_STARTUP_INIT`, which
+six arches already define and thread.c:1312 invokes. The woken task is nudged and
+then *verifies* against the kernel before proceeding, re-blocking if it is not the
+selected thread. Needs the gate to become "check with the scheduler" rather than
+"you are selected", which is a real semantic change to the handoff and the
+riskiest part.
+
+**B. Nudge the holder instead of the woken thread.**
+The wake sets a "reschedule pending" flag and arranges for the *current* holder to
+run `switch_thread()` promptly, e.g. by having the tick hook raise a dedicated
+signaller. Keeps the gate's meaning untouched, which is a large point in its
+favour. But it still depends on the holder cooperating, so it does not fix a holder
+that never blocks -- it only shrinks that window to one tick.
+
+**C. Hybrid: B's untouched semantics, plus a watchdog nudge.**
+Keep the gate exclusive. Add the gated `THREAD_WAKE_NOTIFY()` hook, whose arch
+implementation does nothing to the gate and instead pokes a dedicated
+highest-priority dispatcher task that calls `switch_thread()` on the next
+scheduling point. FreeRTOS preemption -- which we have established is safe -- does
+the rest.
+
+Recommendation: **C**, because it is the only option that leaves the gate's meaning
+alone, and the gate is the one piece of this design that is demonstrably correct.
+A changes the semantics of the thing that works; C adds a nudge beside it. If C
+proves insufficient -- i.e. a holder really can sit in Rockbox code indefinitely --
+then A becomes necessary and should be done deliberately rather than as a first
+attempt.
+
+All three need the same three gated core lines. That is the whole extent of the
+core change under every option, and with `#ifdef THREAD_WAKE_NOTIFY` no other arch
+compiles a different instruction.
