@@ -186,6 +186,14 @@ static int codec_load_ram(struct codec_api *api)
     c_hdr = lc_get_header(curr_handle);
     hdr   = c_hdr ? &c_hdr->lc_hdr : NULL;
 
+    printf("codec: hdr=%p magic=0x%x want 0x%x tid=%u want %u "
+           "load=%p codecbuf=%p end=%p limit=%p\n",
+           (void *)hdr,
+           hdr ? hdr->magic : 0u, (unsigned)CODEC_MAGIC,
+           hdr ? hdr->target_id : 0u, (unsigned)TARGET_ID,
+           hdr ? hdr->load_addr : NULL, (void *)codecbuf,
+           hdr ? hdr->end_addr : NULL, (void *)(codecbuf + CODEC_SIZE));
+
     if (hdr == NULL
         || (hdr->magic != CODEC_MAGIC
 #ifdef HAVE_RECORDING
@@ -199,6 +207,7 @@ static int codec_load_ram(struct codec_api *api)
 #endif
         )
     {
+        printf("codec: header REJECTED\n");
         logf("codec header error");
         lc_close(curr_handle);
         curr_handle = NULL;
@@ -223,7 +232,18 @@ static int codec_load_ram(struct codec_api *api)
     *(c_hdr->api) = api;
 
     logf("Codec: calling entrypoint");
-    return c_hdr->entry_point(CODEC_LOAD);
+    /* If "entering" appears and "returned" does not, the codec loaded fine and
+     * the fault is in running it where it sits -- which on this target means
+     * executing out of the PSRAM window, the one thing about the codec path
+     * that has never been confirmed on hardware. If neither appears, the play
+     * never reached the loader and the hang is upstream of codecs entirely. */
+    printf("codec: entering entry_point at %p (CODEC_LOAD)\n",
+           (void *)c_hdr->entry_point);
+    {
+        int rc = c_hdr->entry_point(CODEC_LOAD);
+        printf("codec: entry_point returned %d\n", rc);
+        return rc;
+    }
 }
 
 #if defined(HAVE_CODEC_BUFFERING)
@@ -253,9 +273,20 @@ int codec_load_file(const char *plugin, struct codec_api *api)
 
     codec_get_full_path(path, plugin);
 
+    /* Reaching here at all is the question: a play attempt produced no console
+     * output whatsoever, which means the failure is upstream of codec_load_ram()
+     * and this is the first place the codec path is even named. logf() goes to
+     * Rockbox's internal buffer, not the console, so the existing diagnostics
+     * here are invisible on this target. */
+    printf("codec: load_file '%s' (codecbuf=%p size=%d)\n",
+           path, (void *)codecbuf, (int)CODEC_SIZE);
+
     curr_handle = lc_open(path, codecbuf, CODEC_SIZE);
 
+    printf("codec: lc_open -> %p\n", (void *)curr_handle);
+
     if (curr_handle == NULL) {
+        printf("codec: cannot read file\n");
         logf("Codec: cannot read file");
         return CODEC_ERROR;
     }

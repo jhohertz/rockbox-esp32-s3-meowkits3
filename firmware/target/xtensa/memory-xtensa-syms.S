@@ -57,38 +57,35 @@ audiobuffer:
     .globl audiobufend
 audiobufend:
 
+    /* End of everything this file puts in PSRAM, and of the rest of
+     * .ext_ram.bss that IDF places here. Checked against codecbuf at boot: the
+     * codec and plugin buffers are pinned to a fixed address to agree with
+     * plugin.lds, so nothing can be left to grow into them unnoticed. */
+    .globl rb_ext_ram_end
+rb_ext_ram_end:
+
     /*
      * Codec and plugin load buffers.
      *
-     * apps/codecs.c compares the loaded image's declared load address against
-     * &codecbuf and refuses the codec if they differ, and plugin.lds gives each
-     * codec and plugin a fixed CODEC_ORIGIN computed from MEMORYSIZE,
-     * CODEC_SIZE and PLUGIN_BUFFER_SIZE. On the bare-metal branch both sides
-     * came from the same constants, so they agreed. Here the first is wherever
-     * IDF's script happens to put this, and the second is still a literal in
-     * plugin.lds -- so they do not agree and no codec will load.
+     * Pinned, not placed. See XT_CODECBUF_ADDR in memory-xtensa.h for the
+     * derivation and for why this side and apps/plugins/plugin.lds have to
+     * produce the same number: apps/codecs.c and apps/plugin.c reject a loaded
+     * image whose declared load address is not these symbols, and the images
+     * are linked against plugin.lds's CODEC_ORIGIN / PLUGIN_ORIGIN.
      *
-     * Left unfixed on purpose rather than papered over: making it work means
-     * either emitting a relocatable codec image and relocating it at load, or
-     * feeding the address of this buffer into the codec link. Both are worth
-     * doing deliberately. Until then this keeps the firmware linkable; it is
-     * not a working codec path.
+     * They are absolute symbols rather than .space in .ext_ram.bss, which is
+     * what the bare-metal script effectively did. The cost of that is that no
+     * section reserves the range, so the overlap check against rb_ext_ram_end
+     * at boot is what stands between a correct layout and silent corruption of
+     * the codec image. The gain is that the address no longer depends on how
+     * large IDF decides to make everything before it.
      */
     .globl codecbuf
-codecbuf:
-    .space CODEC_SIZE
+    .set codecbuf, XT_CODECBUF_ADDR
     .globl pluginbuf
-pluginbuf:
-    .space PLUGIN_BUFFER_SIZE
-
-    /* rolo.c: the end of the region a firmware image may be loaded into. The
-     * bare-metal script put it just past the codec and plugin buffers, at the
-     * top of usable PSRAM, and it stays there. Firmware self-update through
-     * rolo is not implemented on this path -- writing a new app image belongs
-     * with IDF's OTA API, not with copying bytes to a fixed address and
-     * jumping -- but the symbol is part of what the firmware links against. */
+    .set pluginbuf, XT_PLUGINBUF_ADDR
     .globl loadaddress
-loadaddress:
+    .set loadaddress, XT_LOADADDRESS_ADDR
 
 /*
  * Thread 0's stack, and therefore the stack every Rockbox thread runs on: the

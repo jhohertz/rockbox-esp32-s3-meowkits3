@@ -33,6 +33,7 @@
  ****************************************************************************/
 
 #include "config.h"
+#include <stdio.h>
 
 #include <stdlib.h>     /* abort(): esp_cache.h used to drag it in, cache_hal.h does not */
 
@@ -53,6 +54,21 @@ _Static_assert(CPU_FREQ ==
 
 void system_init(void)
 {
+    /* The codec and plugin buffers are pinned to a fixed address so that this
+     * side agrees with the CODEC_ORIGIN / PLUGIN_ORIGIN that plugin.lds gives
+     * the images -- apps/codecs.c rejects anything else. Because they are
+     * absolute symbols rather than .space, no section reserves the range, so
+     * the only thing standing between a growing .ext_ram.bss and silent
+     * corruption of a loaded codec is this check. Loud beats corrupt. */
+    {
+        extern char rb_ext_ram_end[];
+        extern unsigned char codecbuf[];
+
+        if ((unsigned long)rb_ext_ram_end > (unsigned long)codecbuf)
+            printf("MEMORY: .ext_ram.bss ends %p, past pinned codecbuf %p\n",
+                   (void *)rb_ext_ram_end, (void *)codecbuf);
+    }
+
     /* udelay() in system-target.h counts core cycles, so it needs the frequency
      * the core is actually on. IDF picked it in sdkconfig; reading it back from
      * the hardware would mean re-deriving IDF's clock tree, which is what this
