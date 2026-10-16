@@ -3351,3 +3351,49 @@ thread_exit_final -> THREAD_PANICF -> abort`. `thread_exit_final()` is
 that abandoning the current thread never comes back — which the FreeRTOS task
 model does not honour. The panel now renders Rockbox's own panic screen, so this
 is visible on the glass as well as the console.
+
+## Codecs load now; they cannot execute from either window as things stand
+
+Two separate facts, both measured this session, and they conflict.
+
+**The load path is fully working.** With `codecbuf` pinned to the address
+`plugin.lds` computes (see `XT_CODECBUF_ADDR` in `memory-xtensa.h`), a codec from
+the card validates completely:
+
+```
+codec: lc_open -> 0x3c680020
+codec: hdr=... magic=0x52434f44 want 0x52434f44   ("RCOD")
+        tid=126 want 126
+        load=0x3c680020 codecbuf=0x3c680020
+        end=0x3c6f146c limit=0x3c780020
+codec: entering entry_point at 0x3c6803f0
+```
+
+**It cannot be executed from the data window.** Entering that address gives
+`InstructionFetchError` with `PC == EXCVADDR` -- the first instruction never
+fetches. `0x3C000020` is `DROMORIG`, the data-cache window.
+
+**It cannot be used as data from the instruction window either.** Moving
+`codecbuf`/`pluginbuf` to `0x42000020` (`IROMORIG`) makes the codecs link and
+fetch there, but then anything touching those buffers as *data* faults at boot:
+
+```
+A2 = 0x42780020 (pluginbuf)   EXCVADDR = 0x4278003c   EXCCAUSE = 3 (LoadStoreError)
+```
+
+The two windows share MMU entries -- index is `(vaddr & 0x1FFFFFF) >> 16`, and
+they differ by exactly `0x06000000` -- but the *bus* still decides what is legal:
+fetch only from `0x42…`, load/store only from `0x3c…`.
+
+So the fix is not a base address. It is splitting the two roles: images stay
+linked at the instruction-window address, and every data access to `codecbuf` /
+`pluginbuf` -- `lc_open`'s `read()` into `hdr.load_addr`, the bounds checks in
+`apps/codecs.c` and `apps/plugin.c`, and the codec's own heap at
+`&codecbuf[codec_size]` -- has to go through a data-window alias. That touches
+core files, so it wants a deliberate pass rather than a patch.
+
+`CONFIG_SPIRAM_XIP_FROM_PSRAM` / `FETCH_INSTRUCTIONS` / `RODATA` are enabled and
+do work -- the firmware's own `.text` now runs from `0x4202xxxx` on PSRAM, and
+there are no regressions -- but they do not by themselves make a freshly loaded
+image fetchable, because IDF only re-maps ranges that were in the image at link
+time.

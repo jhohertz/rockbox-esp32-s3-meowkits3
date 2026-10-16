@@ -37,6 +37,7 @@
 /* Define LOGF_ENABLE to enable logf output in this file */
 /*#define LOGF_ENABLE*/
 #include "logf.h"
+#include <stdio.h>   /* TEMPORARY bring-up logging */
 
 /* macros to enable logf for queues
    logging on SYS_TIMEOUT can be disabled */
@@ -461,9 +462,13 @@ static void load_codec(const struct codec_load_info *ev_data)
     struct codec_load_info data = *ev_data;
     bool const encoder = type_is_encoder(data.afmt);
 
+    printf("load_codec: afmt=%d enc=%d hid=%d codec_type=%d\n",
+           (int)data.afmt, (int)encoder, data.hid, (int)codec_type);
+
     if (codec_type != AFMT_UNKNOWN)
     {
         /* Must have unloaded it first */
+        printf("load_codec: a codec is ALREADY LOADED, returning\n");
         logf("a codec is already loaded");
         if (data.hid >= 0)
             bufclose(data.hid);
@@ -491,8 +496,12 @@ static void load_codec(const struct codec_load_info *ev_data)
     {
         /* Either not a valid handle or the buffer method failed */
         const char *codec_fn = get_codec_filename(data.afmt);
+        printf("load_codec: codec_fn=%s\n", codec_fn ? codec_fn : "(null)");
         if (codec_fn)
+        {
             status = codec_load_file(codec_fn, &ci);
+            printf("load_codec: codec_load_file -> %d\n", status);
+        }
     }
 
     /* Types must agree */

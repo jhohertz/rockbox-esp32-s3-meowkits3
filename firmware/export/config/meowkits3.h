@@ -136,6 +136,15 @@
  * Rockbox still has somewhere to allocate. */
 #define DIRCACHE_LIMIT   (1024*1024*2) /* 2 MB of the 4 MB arena */
 
+/* TEMPORARY: Rockbox's own thread invariants, off by default and compiled out
+ * as `do {} while (0)`. One of them -- "UPPT->wrong thread" in
+ * wakeup_thread_transfer() -- asserts precisely what we are crashing on: that
+ * the thread releasing a priority-inheriting object is the thread recorded as
+ * its owner. With the check off that violation walks a garbage pointer and dies
+ * as a bare LoadProhibited; with it on the kernel names the thread itself.
+ * Remove once the thread seam is settled. */
+#define THREAD_EXTRA_CHECKS 1
+
 #define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000
 
