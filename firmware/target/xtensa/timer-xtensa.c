@@ -85,8 +85,28 @@ void tick_start(unsigned int interval_in_ms)
 
 /* SMP FreeRTOS ticks on both cores; Rockbox runs on one, so counting on both
  * would double the clock. */
+extern unsigned int thread_bookkeeping_check(void);
+static unsigned int bk_bad;
+
 void vApplicationTickHook(void)
 {
+    /* TEMPORARY: police core 0's running-thread pointer (see
+       thread_bookkeeping_check in thread-common.c). */
+    if (!bk_bad)
+    {
+        extern void scan_trace(int tag, unsigned long a, unsigned long b,
+                               unsigned long c);
+        static unsigned int bk_n;
+        unsigned int bad = thread_bookkeeping_check();
+
+        bk_n++;
+        if (bad)
+        {
+            bk_bad = bad;
+            scan_trace(92, bad, (unsigned long)current_tick, bk_n);
+        }
+    }
+
 #ifdef ROCKBOX_SCAN_TRACE
     {
         static unsigned hook_n;
@@ -107,6 +127,27 @@ void vApplicationTickHook(void)
          * interrupt stop being delivered" is answered by the hardware
          * rather than by inference. */
         if ((hook_n & 63u) == 0)
+        {
+            /* TEMPORARY: the panic reporter for the current crash is the
+               EXTMEM MMU_ENTRY_FAULT status bit, which carries no address. The
+               table was verified intact at storage-init time, so re-verify it
+               from the other core while the system is running: if it is still
+               clean when the fault happens, the faulting address is not in the
+               PSRAM window at all. */
+            const volatile unsigned int* mmu =
+                (const volatile unsigned int*)0x600C5000;
+            for (unsigned int i = 16; i < 144; i++)
+            {
+                unsigned int v = mmu[i];
+                if ((v & 0x4000u) || !(v & 0x8000u))
+                {
+                    scan_trace(94, i, v, current_tick);
+                    break;
+                }
+            }
+        }
+
+        if ((hook_n & 63u) == 1)
         {
             static volatile unsigned *const sys =
                 (volatile unsigned *)0x60023000;

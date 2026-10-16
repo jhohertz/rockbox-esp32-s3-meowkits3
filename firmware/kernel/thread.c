@@ -1048,6 +1048,18 @@ void switch_thread(void)
         /* Check core_ctx buflib integrity */
         core_check_valid();
 #endif
+        /* TEMPORARY: core 0 polices its own running-thread pointer at every
+           switch. The corruption is not caused by the switch -- the pointer is
+           valid on entry to one and nonsense after the thread has run a while
+           -- so checking it here bounds the writer to the code that ran in
+           between, instead of whatever access finally trips over it. */
+        {
+            extern unsigned int thread_bookkeeping_check(void);
+            unsigned int bad = thread_bookkeeping_check();
+
+            if (bad)
+                STRACE(93, bad, thread, current_tick);
+        }
         STRACE(40, thread, thread->id, thread->state);
         thread_store_context(thread);
         STRACE(41, thread, thread->context.frame[XT_F_PC],

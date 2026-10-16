@@ -336,3 +336,23 @@ int thread_get_debug_info(unsigned int thread_id,
 
     return ret;
 }
+
+/* TEMPORARY diagnostic, remove with the rest of the bring-up tracing.
+
+   Core 0's scheduler bookkeeping is being corrupted by something that is not a
+   context switch: the last switch records a perfectly good thread pointer, and
+   by the time the thread reaches cancel_cpu_boost(), __cores[0].running points
+   into the audiobuffer in the PSRAM window. Core 1's tick hook still runs, and
+   __cores is plain DRAM that both cores can see, so the corruption can be
+   caught close to the moment it happens instead of at whatever access finally
+   trips over it. */
+unsigned int thread_bookkeeping_check(void)
+{
+    struct thread_entry* r = __core_id_entry(0)->running;
+
+    if (r != NULL && (r < __thread_entries ||
+                      r >= __thread_entries + MAXTHREADS))
+        return (unsigned int)(uintptr_t)r;
+
+    return 0;
+}

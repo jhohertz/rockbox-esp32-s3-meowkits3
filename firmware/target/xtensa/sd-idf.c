@@ -127,6 +127,33 @@ int sd_init(void)
     sd_ready = true;
     ESP_LOGI(TAG, "SD card up: %d x %d byte sectors, %d MHz, %d-bit",
              card.csd.capacity, card.csd.sector_size, host.max_freq_khz, slot.width);
+
+    /* TEMPORARY: the flash MMU is a 512-entry table of 32-bit values at
+       0x600C5000, indexed by the masked address (vaddr & 0x1FFFFFF) >> 16, with
+       bit 15 = target (1 = PSRAM), bit 14 = invalid, bits 13:0 = physical page.
+       Rockbox's .ext_ram.bss starts at entry 17, so anything past the flash
+       window has to be a valid PSRAM entry or the access faults. */
+    {
+        const volatile uint32_t* mmu = (const volatile uint32_t*)0x600C5000;
+        int i, bad = 0, first = -1;
+        for (i = 16; i < 144; i++)
+        {
+            uint32_t v = mmu[i];
+            if (v & 0x4000u)          /* invalid entry */
+            {
+                if (first < 0)
+                    first = i;
+                bad++;
+            }
+        }
+        ESP_LOGI(TAG, "MMU 16..143: %d invalid, first invalid entry %d", bad,
+                 first);
+        for (i = 16; i < 26; i++)
+            ESP_LOGI(TAG, "  MMU[%d] = %08x (%s page %d)", i, mmu[i],
+                     (mmu[i] & 0x4000u) ? "INVALID" :
+                     (mmu[i] & 0x8000u) ? "PSRAM" : "flash",
+                     (int)(mmu[i] & 0x3fffu));
+    }
     return 0;
 }
 
