@@ -184,14 +184,13 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  * measured both ways, InstructionFetchError from 0x3c... and LoadStoreError
  * from 0x42...
  *
- * So the split is read-only against writable, not code against data. .text,
- * .literal and .rodata go to the instruction window, where l32r can read the
- * pools that sit with the code (loads from 0x42... work -- the firmware's own
- * .text has run there since CONFIG_SPIRAM_FETCH_INSTRUCTIONS was enabled, and
- * it is full of l32r). .header, .data and .bss stay in the data window, which
- * is the only place a store is served; .header is written by codec_load_ram()
- * and plugin_load()
- * when they fill in the api pointer, so it cannot move up with the code.
+ * So what splits is fetched against merely-accessed. .text and .literal go to
+ * the instruction window: they are the only things a core fetches, and l32r
+ * needs its pools within PC-relative reach of the code. .header, .rodata, .data
+ * and .bss stay in the data window, which is the only place a store is served.
+ * .header is written by codec_load_ram() and plugin_load() when they fill in
+ * the api pointer, and .rodata has to stay writable too -- see the note on its
+ * section below.
  *
  * Because the windows alias, the two halves must occupy *different* physical
  * pages, so the text halves are carved from the gap below codecbuf rather than
@@ -280,10 +279,19 @@ SECTIONS
 #endif
     } > TEXT_REGION
 
+    /* .rodata stays in the data window even though it is read-only by
+     * convention. Only .text and .literal need the instruction window, because
+     * those are fetched; .rodata is merely loaded, which both windows serve.
+     *
+     * It also has to stay writable. On every other target PLUGIN_RAM *is* RAM,
+     * so a codec writing through a non-const pointer into .rodata is undefined
+     * but harmless, and old codec source does it. Putting .rodata where only
+     * loads are served turned that latent habit into a LoadStoreError -- seen
+     * here as a store to 0x42618cfe from inside the aac decoder. */
     .rodata :
     {
         *(.rodata*)
-    } > TEXT_REGION
+    } > PLUGIN_RAM
 
     .data :
     {
