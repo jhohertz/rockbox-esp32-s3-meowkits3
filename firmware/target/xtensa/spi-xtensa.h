@@ -65,5 +65,9 @@ void spi_probe_edges(void);
  * the controller started a transfer that did not finish. */
 extern volatile unsigned int xt_spi_calls;
 extern volatile unsigned int xt_spi_stuck;
+extern volatile unsigned xt_spi_edges;
+extern volatile unsigned xt_spi_mosi_chg;
+extern volatile unsigned xt_spi_dc_chg;
+extern volatile int spi_edge_probe;
 
 #endif
