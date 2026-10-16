@@ -4317,6 +4317,14 @@ fi
     # other target.
     memory=8 # always
     xtensacc
+    # A loaded codec is linked into two disjoint windows (see the CPU_XTENSA note
+    # in apps/plugins/plugin.lds), so a flat binary would have to span the
+    # 0x06000000 gap between them -- which is how objcopy emits a 100 MB file of
+    # zeros. The ELF program headers already describe both segments exactly,
+    # including the bss extent, so ship a stripped ELF and let
+    # firmware/target/xtensa/lc-xtensa.c place each segment through the window
+    # that can actually be written to.
+    PLUGIN_USE_ELF="yes"
     # ESP-IDF packages the image (its CMake produces the flashable app bin), so
     # there is no Rockbox-side image packer. tools/esp-elf2image belonged to the
     # bare-metal path and is on the tagged branch.

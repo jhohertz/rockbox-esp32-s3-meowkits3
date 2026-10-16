@@ -2,6 +2,14 @@
 #include "config.h"
 #include "cpu.h"
 
+#ifdef CPU_XTENSA
+/* The text/data window split below and the buffer symbols in the firmware's
+ * own linker fragments have to agree exactly -- apps/codecs.c and apps/plugin.c
+ * reject a loaded image whose load_addr is not codecbuf or pluginbuf -- so the
+ * numbers live in one place. */
+#include "memory-xtensa.h"
+#endif
+
 /* These output formats should be in the config-files */
 
 #ifdef CPU_COLDFIRE
@@ -162,6 +170,45 @@ OUTPUT_FORMAT(elf32-xtensa-le)
 #define PLUGIN_ORIGIN (CODEC_ORIGIN + CODEC_SIZE)
 #endif
 
+#ifdef CPU_XTENSA
+/* ESP32-S3 reaches external RAM through two cache windows that index the same
+ * MMU entries and so alias the same physical pages: 0x42000000 and 0x3C000000
+ * are both entry 0. They differ in what the hardware will do through them --
+ * the 0x42... instruction window serves fetches and loads but faults on a
+ * store, the 0x3c... data window serves loads and stores but faults on a
+ * fetch. That is why no single base address can host a loaded image: this was
+ * measured both ways, InstructionFetchError from 0x3c... and LoadStoreError
+ * from 0x42...
+ *
+ * So the split is read-only against writable, not code against data. .text,
+ * .literal and .rodata go to the instruction window, where l32r can read the
+ * pools that sit with the code (loads from 0x42... work -- the firmware's own
+ * .text has run there since CONFIG_SPIRAM_FETCH_INSTRUCTIONS was enabled, and
+ * it is full of l32r). .header, .data and .bss stay in the data window, which
+ * is the only place a store is served; .header is written by codec_load_ram()
+ * and plugin_load()
+ * when they fill in the api pointer, so it cannot move up with the code.
+ *
+ * Because the windows alias, the two halves must occupy *different* physical
+ * pages, so the text halves are carved from the gap below codecbuf rather than
+ * placed at the same offset as their data. Measured across all 43 codecs the
+ * largest .text+.literal+.rodata is 182 KB and the largest .data+.bss is
+ * 362 KB, so 512 KB each is comfortable, and rb_ext_ram_end leaves 208 KB
+ * below the lower of the two.
+ *
+ * CODEC_ORIGIN and PLUGIN_ORIGIN are deliberately untouched: apps/codecs.c and
+ * apps/plugin.c compare a loaded image's load_addr against codecbuf and
+ * pluginbuf, and those symbols stay exactly where they were. */
+#define CODEC_TEXT_ORIGIN \
+    (CODEC_ORIGIN - XT_CODEC_TEXT_SIZE + XT_IROM_OFF)
+#define PLUGIN_TEXT_ORIGIN \
+    (CODEC_ORIGIN - XT_CODEC_TEXT_SIZE - XT_PLUGIN_TEXT_SIZE + XT_IROM_OFF)
+
+#define TEXT_REGION PLUGIN_TEXT
+#else
+#define TEXT_REGION PLUGIN_RAM
+#endif
+
 #ifdef CODEC
 #define THIS_LENGTH CODEC_SIZE
 #define THIS_ORIGIN CODEC_ORIGIN
@@ -176,6 +223,18 @@ OUTPUT_FORMAT(elf32-xtensa-le)
 #define THIS_ORIGIN PLUGIN_ORIGIN
 #endif
 
+#ifdef CPU_XTENSA
+/* Overlays and the imgvdecoder blob are plugins as far as this script is
+ * concerned, so they share the plugin text half. */
+#ifdef CODEC
+#define THIS_TEXT_LENGTH XT_CODEC_TEXT_SIZE
+#define THIS_TEXT_ORIGIN CODEC_TEXT_ORIGIN
+#else
+#define THIS_TEXT_LENGTH XT_PLUGIN_TEXT_SIZE
+#define THIS_TEXT_ORIGIN PLUGIN_TEXT_ORIGIN
+#endif
+#endif
+
 #if defined(USE_IRAM) && (!defined(IRAMORIG) || !defined(IRAMSIZE))
 # error "USE_IRAM is set, but no IRAM region is defined!"
 #endif
@@ -183,6 +242,9 @@ OUTPUT_FORMAT(elf32-xtensa-le)
 MEMORY
 {
    PLUGIN_RAM : ORIGIN = THIS_ORIGIN, LENGTH = THIS_LENGTH
+#ifdef CPU_XTENSA
+   PLUGIN_TEXT : ORIGIN = THIS_TEXT_ORIGIN, LENGTH = THIS_TEXT_LENGTH
+#endif
 #if defined(USE_IRAM)
    PLUGIN_IRAM : ORIGIN = IRAMORIG, LENGTH = IRAMSIZE
 #endif
@@ -212,12 +274,12 @@ SECTIONS
         *(.glue_7)
         *(.glue_7t)
 #endif
-    } > PLUGIN_RAM
+    } > TEXT_REGION
 
     .rodata :
     {
         *(.rodata*)
-    } > PLUGIN_RAM
+    } > TEXT_REGION
 
     .data :
     {
