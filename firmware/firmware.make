@@ -77,6 +77,7 @@ FIRMLIB = $(BUILDDIR)/firmware/libfirmware.a
 ifeq (xtensa,$(CPU))
 $(BUILDDIR)/firmware/target/xtensa/sd-idf.o: CFLAGS := $(IDF_FIRST_CFLAGS)
 $(BUILDDIR)/firmware/target/xtensa/spi-xtensa.o: CFLAGS := $(IDF_FIRST_CFLAGS)
+$(BUILDDIR)/firmware/target/xtensa/paniclog.o: CFLAGS := $(IDF_FIRST_CFLAGS)
 endif
 
 ifeq ($(SYSFONT),)
