@@ -105,16 +105,24 @@ void vApplicationTickHook(void)
      *
      * xTaskGetTickCount() is a single global counter advanced exactly once per
      * tick regardless of which core delivers it, so mirroring it is correct
-     * whichever core gets the hook. CONFIG_FREERTOS_HZ is pinned to 100, which
-     * is the 10 ms tick every Rockbox tick consumer already assumes.
+     * whichever core gets the hook.
      *
-     * It is placed first, rather than last, because the diagnostic block below
-     * samples one tick in eight and returns early. With the assignment after
-     * that return, current_tick advanced at 12.5 Hz in jumps of eight: buttons
-     * needed to be held to register, elapsed time crawled, and every Rockbox
-     * timeout fired eight times late -- which is also what made runnable threads
-     * look stranded in the run queue. Never let instrumentation gate the clock. */
-    current_tick = (long)xTaskGetTickCount();
+     * The two clocks do not run at the same rate, and they must not be forced to
+     * agree. Rockbox's HZ is 100 and is not a per-target knob (kernel/include/
+     * tick.h), but ESP-IDF defaults FreeRTOS to 1000 Hz and a great many IDF
+     * components -- the wireless stack especially -- are written against that
+     * granularity. Pinning configTICK_RATE_HZ to 100 to suit Rockbox would bend
+     * the operating system around one application and would come back the moment
+     * Bluetooth is enabled. So the OS keeps its native rate and this seam divides
+     * down to Rockbox's.
+     *
+     * The divisor is derived from the two macros rather than written as a literal
+     * 10, and the #error makes a non-integral ratio a build failure instead of a
+     * clock that quietly runs at the wrong speed. */
+#if (configTICK_RATE_HZ % HZ) != 0
+#error "configTICK_RATE_HZ must be an integer multiple of Rockbox HZ"
+#endif
+    current_tick = (long)(xTaskGetTickCount() / (configTICK_RATE_HZ / HZ));
     /* TEMPORARY: police core 0's running-thread pointer (see
        thread_bookkeeping_check in thread-common.c). */
     if (!bk_bad)
