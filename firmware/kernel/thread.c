@@ -1303,6 +1303,20 @@ unsigned int create_thread(void (*function)(void),
     thread->context.sp = (typeof (thread->context.sp))(stack + stack_size);
     THREAD_STARTUP_INIT(core, thread, function);
 
+    /* TEMPORARY: xt_thread_start is entered with its argument = the thread
+       pointer rather than a function. Record what create_thread was actually
+       handed, by thread, so the bad call site names itself. */
+    {
+        extern void scan_trace_sticky_once(int, unsigned long, unsigned long,
+                                           unsigned long);
+        /* A real entry point lives in the flash or IRAM instruction windows,
+           both above 0x40000000. Anything below is data. */
+        if ((unsigned long)(uintptr_t)function < 0x40000000UL)
+            scan_trace_sticky_once(6, (unsigned long)(uintptr_t)thread,
+                                   (unsigned long)(uintptr_t)function,
+                                   (unsigned long)(uintptr_t)name);
+    }
+
     int oldlevel = disable_irq_save();
     LOCK_THREAD(thread);
 

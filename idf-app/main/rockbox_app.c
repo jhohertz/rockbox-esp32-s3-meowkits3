@@ -63,11 +63,37 @@ static void fill_stack_canary(void)
     w[0] = 0xdeadbeefu;
 }
 
+/* TEMPORARY diagnostic: take the level-4 cache-error path out of the picture.
+ *
+ * IDF's esp_cache_err_int_init() routes three sources to INUM 25
+ * (ETS_MEMACCESS_ERR_INUM): the illegal-access source plus one access-error
+ * source per core. Level 4 is not serviceable from C -- xtensa_vectors.S jumps
+ * straight into the panic handler -- so the report carries a cause string
+ * decoded from the cache status register and a backtrace of whatever the core
+ * happened to be doing when the interrupt arrived. Measured here, both cores
+ * were in waiti and the fault address registers stayed zero for this cause.
+ *
+ * Clearing INTENABLE bit 25 removes that path but leaves the *sources* enabled,
+ * so the status bits still latch and the core-1 poller still sees them. If the
+ * fault is a CPU access, the core takes its own MemmoryManagement exception
+ * (EXCCAUSE 7) instead, which the exception handler reports with a real EPC1
+ * and EXCVADDR. If nothing is reported and the system keeps running, the
+ * interrupt was the only consequence of the fault at all. */
+static void mask_cache_error_int(void)
+{
+    uint32_t ie;
+
+    asm volatile ("rsr %0, intenable" : "=r"(ie));
+    ie &= ~(1u << 25);                  /* ETS_MEMACCESS_ERR_INUM */
+    asm volatile ("wsr %0, intenable" :: "r"(ie));
+}
+
 static void rockbox_task(void *arg)
 {
     (void)arg;
 
     fill_stack_canary();
+    mask_cache_error_int();
 
     ESP_LOGI(TAG, "entering rockbox main()");
     main();
