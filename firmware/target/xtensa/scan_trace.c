@@ -28,6 +28,11 @@ struct scan_ring
     uint32_t magic;
     uint32_t seq;
     uint32_t head;
+    /* Slots that do not rotate. The ring is 256 deep and the tick floods it, so
+     * an event that happens once near boot (a thread's first run, say) is gone
+     * long before the dump. These keep only the most recent value per tag. */
+#define SCAN_STICKY_N 8
+    uint32_t sticky[SCAN_STICKY_N][5];
     uint32_t rec[SCAN_TRACE_N][6];
 };
 
@@ -53,6 +58,37 @@ void scan_trace(int tag, unsigned long a, unsigned long b, unsigned long c)
     r[4] = (uint32_t)c;
 }
 
+/* Record into a slot the ring's rotation cannot evict. tag is taken modulo
+ * SCAN_STICKY_N, so each tag keeps only its newest value. */
+void scan_trace_sticky(int tag, unsigned long a, unsigned long b,
+                       unsigned long c)
+{
+    uint32_t *s = ring.sticky[tag % SCAN_STICKY_N];
+
+    s[0] = ring.seq;
+    s[1] = (uint32_t)tag;
+    s[2] = (uint32_t)a;
+    s[3] = (uint32_t)b;
+    s[4] = (uint32_t)c;
+}
+
+/* Like scan_trace_sticky, but the first writer wins. For naming the one bad
+ * event in a series that would otherwise overwrite it. */
+void scan_trace_sticky_once(int tag, unsigned long a, unsigned long b,
+                            unsigned long c)
+{
+    uint32_t *s = ring.sticky[tag % SCAN_STICKY_N];
+
+    if (s[1] != 0)
+        return;
+
+    s[0] = ring.seq;
+    s[1] = (uint32_t)tag;
+    s[2] = (uint32_t)a;
+    s[3] = (uint32_t)b;
+    s[4] = (uint32_t)c;
+}
+
 /* Called from app_main() before anything Rockbox owns exists, so what it reads
  * is exactly what the previous boot left behind. */
 void scan_trace_early_dump(void)
@@ -64,6 +100,17 @@ void scan_trace_early_dump(void)
 
     esp_rom_printf("TRACE from previous boot: seq=%u head=%u\n",
                    (unsigned)ring.seq, (unsigned)ring.head);
+
+    for (unsigned i = 0; i < SCAN_STICKY_N; i++)
+    {
+        const uint32_t *s = ring.sticky[i];
+
+        if (s[1] == 0)
+            continue;
+        esp_rom_printf("  STICKY s%u seq=%u %08lx %08lx %08lx\n", i,
+                       (unsigned)s[0], (unsigned long)s[2],
+                       (unsigned long)s[3], (unsigned long)s[4]);
+    }
 
     /* Oldest slot first, so the tail of the output is the last thing the dead
      * boot recorded before it faulted. */
@@ -91,6 +138,8 @@ void scan_trace_early_dump(void)
     ring.magic = 0;
     ring.seq   = 0;
     ring.head  = 0;
+    for (unsigned i = 0; i < SCAN_STICKY_N; i++)
+        for (unsigned k = 0; k < 5; k++) ring.sticky[i][k] = 0;
     for (unsigned i = 0; i < SCAN_TRACE_N; i++)
         for (unsigned k = 0; k < 6; k++) ring.rec[i][k] = 0;
 }
