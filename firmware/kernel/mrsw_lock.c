@@ -21,6 +21,50 @@
 #include <string.h>
 #include "mrsw_lock.h"
 
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+/* TEMPORARY bring-up: the recursion shortcut in mrsw_write_acquire() compares
+ * __running_self_entry() against splay.blocker.thread. On a free lock the
+ * blocker is NULL, so if the kernel ever reports no running thread the compare
+ * succeeds and count-- is applied to a lock that was never taken. These count
+ * how often that happens. */
+volatile int mrsw_null_self;      /* write_acquire seen with no running thread */
+volatile int mrsw_null_self_read; /* read_acquire seen with no running thread  */
+volatile int mrsw_recursion_hits; /* acquires that took the recursion shortcut */
+#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
+
+/* TEMPORARY bring-up: the counters say the owner/count pair desynchronises but
+ * not where. This records the last transitions with the thread that made them,
+ * so the exact handoff that leaves count<0 with a NULL owner is visible. */
+struct mrsw_evt { char op; char name[14]; short count; char nullowner; };
+volatile struct mrsw_evt mrsw_evt[40];
+volatile int mrsw_evt_i;
+
+static void mrsw_evt_log(char op, const struct thread_entry *t, int c,
+                         const struct mrsw_lock *m)
+{
+    volatile struct mrsw_evt *e;
+    int i = mrsw_evt_i;
+
+    mrsw_evt_i = (i + 1) % (int)(sizeof mrsw_evt / sizeof mrsw_evt[0]);
+    e = &mrsw_evt[i];
+    e->op = op;
+    e->name[0] = '\0';
+    if (t && t->name)
+    {
+        int j;
+        for (j = 0; j < 13 && t->name[j]; j++)
+            e->name[j] = t->name[j];
+        e->name[j] = '\0';
+    }
+    else
+    {
+        e->name[0] = '-';
+        e->name[1] = '\0';
+    }
+    e->count = (short)c;
+    e->nullowner = (m && m->splay.blocker.thread == NULL) ? 1 : 0;
+}
+
 #ifdef HAVE_PRIORITY_SCHEDULING
 
 static FORCE_INLINE void
@@ -162,6 +206,11 @@ void mrsw_read_acquire(struct mrsw_lock *mrsw)
 
     struct thread_entry *current = __running_self_entry();
 
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+    if (current == NULL)
+        mrsw_null_self_read++;
+#endif
+
     if (current == mrsw->splay.blocker.thread IF_PRIO( && mrsw->count < 0 ))
         return; /* Read request while holding write access; pass */
 
@@ -273,10 +322,20 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
 
     struct thread_entry *current = __running_self_entry();
 
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+    if (current == NULL)
+        mrsw_null_self++;
+    else if (current == mrsw->splay.blocker.thread)
+        mrsw_recursion_hits++;
+#endif
+
     if (current == mrsw->splay.blocker.thread)
     {
         /* Current thread already has write access */
         mrsw->count--;
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('R', current, mrsw->count, mrsw);
+#endif
         return;
     }
 
@@ -289,11 +348,17 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
         /* Lock is open to a writer */
         mrsw->count = -1;
         mrsw->splay.blocker.thread = current;
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('T', current, -1, mrsw);
+#endif
         corelock_unlock(&mrsw->cl);
         return;
     }
 
     /* Readers present or a writer owns it - block... */
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+    mrsw_evt_log('B', current, mrsw->count, mrsw);
+#endif
     current->retval = 0; /* indicate single-wake candidate */
 
     disable_irq();
@@ -318,6 +383,9 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
     {
         /* This thread still owns write lock */
         mrsw->count = count + 1;
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('r', __running_self_entry(), count + 1, mrsw);
+#endif
         return;
     }
 
@@ -331,11 +399,24 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
     {
         mrsw->splay.blocker.thread = NULL;
         mrsw->count = 0;
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('F', __running_self_entry(), 0, mrsw);
+#endif
     }
     else if (thread->retval == 0) /* 'count' stays -1 */
+    {
         result = mrsw_writer_wakeup_writer(mrsw, thread);
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('h', thread, mrsw->count, mrsw);
+#endif
+    }
     else                          /* 'count' becomes # of readers */
+    {
         result = mrsw_writer_wakeup_readers(mrsw, thread);
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        mrsw_evt_log('H', thread, mrsw->count, mrsw);
+#endif
+    }
 
     restore_irq(oldlevel);
     corelock_unlock(&mrsw->cl);
@@ -356,6 +437,30 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
  * kind of thing that quietly goes wrong; this keeps the knowledge in the file
  * that owns the type. */
 #include "thread-internal.h"
+
+int mrsw_debug_trace(char *out, int sz)
+{
+    const int n = (int)(sizeof mrsw_evt / sizeof mrsw_evt[0]);
+    int i, pos = 0;
+
+    if (sz <= 0)
+        return 0;
+    out[0] = '\0';
+    for (i = 0; i < n; i++)
+    {
+        const volatile struct mrsw_evt *e = &mrsw_evt[(mrsw_evt_i + i) % n];
+        int left;
+
+        if (e->op == 0)
+            continue;
+        if (pos >= sz - 40)
+            break;
+        left = sz - pos;
+        pos += snprintf(out + pos, left, "%c:%s/%d%s ", e->op, e->name,
+                        e->count, e->nullowner ? "*" : "");
+    }
+    return pos;
+}
 
 int mrsw_debug_state(const struct mrsw_lock *mrsw, char *owner_name, int sz,
                      int *waiters)

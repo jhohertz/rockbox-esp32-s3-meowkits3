@@ -168,6 +168,15 @@ else
 endif
 PLUGINLDFLAGS += $(GLOBAL_LDOPTS)
 
+# See the note in lib/rbcodec/codecs/codecs.make: on ESP32-S3 a plugin is filled
+# through the data cache window and run through the instruction cache window, so
+# an absolute call literal names the window it was linked against rather than the
+# one it executes from. PC-relative calls follow the code.
+ifeq ($(ARCH),arch_xtensa)
+ PLUGINFLAGS += -mno-longcalls
+ PLUGINLIBFLAGS += -mno-longcalls
+endif
+
 ifdef USE_LTO
  PLUGINFLAGS += -fno-builtin -ffreestanding
  PLUGINLDFLAGS += -fno-builtin -ffreestanding

@@ -30,6 +30,18 @@ CODEC_LIBS := $(CODECLIB) $(FIXEDPOINTLIB) $(ARMSUPPORTLIB)
 CODECFLAGS := $(FREESTAND_CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
 			 -I$(RBCODECLIB_DIR)/codecs -I$(RBCODECLIB_DIR)/codecs/lib -DCODEC
 
+# ESP32-S3 reaches external RAM through two cache windows that share MMU pages
+# but decode different bus ranges: instruction fetch only in the 0x42... window,
+# loads and stores only in the 0x3c... one. A codec is filled through the data
+# window and run through the instruction window, so an absolute call literal
+# names the window it was linked against rather than the one it is executing
+# from. PC-relative CALL8/CALL4/CALL12 stay in whichever window the caller is
+# running in, so longcalls are off here; if a codec ever grows past the call
+# range the link fails loudly instead of faulting on the player.
+ifeq ($(ARCH),arch_xtensa)
+CODECFLAGS += -mno-longcalls
+endif
+
 ifdef APP_TYPE
  CODECLDFLAGS = $(SHARED_LDFLAGS)
  ifneq ($(UNAME), Darwin)
