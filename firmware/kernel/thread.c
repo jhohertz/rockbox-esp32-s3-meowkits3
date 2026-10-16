@@ -1188,6 +1188,13 @@ void switch_thread(void)
     STRACE(70, thread, (unsigned int)(uintptr_t)thread->name,
            (unsigned int)(uintptr_t)thread->context.sp);
     /* And finally, give control to the next thread. */
+        /* TEMPORARY: validate the slot the scheduler is about to resume. */
+        {
+            extern unsigned int thread_slot_check(const void*);
+            unsigned int bad = thread_slot_check(thread);
+            if (bad)
+                STRACE(98, thread, bad, current_tick);
+        }
 thread_load_context(thread);
 }
 

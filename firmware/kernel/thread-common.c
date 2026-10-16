@@ -356,3 +356,28 @@ unsigned int thread_bookkeeping_check(void)
 
     return 0;
 }
+
+/* TEMPORARY diagnostic, remove with the rest of the bring-up tracing.
+
+   A range check against __thread_entries is not enough on its own: __threads
+   (the array of slot pointers) sits immediately before __thread_entries in
+   .bss, so a pointer into it passes a bare range test. The slot grid has to be
+   checked as well. Measured result: every pointer the scheduler resumes is a
+   real slot -- __thread_entries is at 0x3fcd0db8, sizeof(struct thread_entry)
+   is 308, and the values seen are exact multiples (0x738 = 6*308, 0x0). So the
+   scheduler's bookkeeping is not the source of the crash. */
+unsigned int thread_slot_check(const void* p)
+{
+    const struct thread_entry* t = (const struct thread_entry*)p;
+
+    if (t == NULL)
+        return 1;                       /* idle, legitimate */
+    if (t < __thread_entries || t >= __thread_entries + MAXTHREADS)
+        return 2;
+    if (((unsigned long)((const unsigned char*)t -
+                         (const unsigned char*)__thread_entries))
+        % sizeof(struct thread_entry))
+        return 3;                       /* between slots */
+
+    return 0;
+}
