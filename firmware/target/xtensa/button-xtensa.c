@@ -127,6 +127,11 @@ int button_read_device(int *data)
             /* Only worth the bytes when the lock is actually held */
             if (count != 0)
             {
+                extern int mrsw_debug_report(const struct mrsw_lock *,
+                                             char *, int);
+                static char rep[160];
+                mrsw_debug_report(&file_internal_mrsw, rep, sizeof rep);
+                printf("  who : %s\n", rep);
                 mrsw_debug_trace(tr, sizeof tr);
                 printf("  hist: %s\n", tr);
             }
