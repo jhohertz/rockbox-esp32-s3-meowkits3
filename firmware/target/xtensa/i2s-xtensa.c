@@ -39,6 +39,9 @@
 #include "pcm_mixer.h"
 #include "panic.h"
 
+#include <esp_intr_alloc.h>
+#include <soc/interrupts.h>
+
 #ifdef HAVE_RECORDING
 #include "es7210.h"
 #endif
@@ -78,6 +81,24 @@ static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)
 static int cur;
 static int locked;
 static bool playing;
+
+/* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
+ * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
+ * reached again and a second esp_intr_alloc() on the same source would fail. */
+static intr_handle_t tx_intr;
+
+/* gdma_irq() is defined further down with the rest of the transmit path, but the
+ * allocation that installs it happens earlier, so it has to be named first. The
+ * wrapper exists because esp_intr_alloc() invokes handlers with a void *argument.
+ * Referencing gdma_irq() here is also the only thing that keeps it out of
+ * --gc-sections, which is what silently deleted it before. */
+void ICODE_ATTR gdma_irq(void);
+
+static void gdma_tx_isr(void *arg)
+{
+    (void)arg;
+    gdma_irq();
+}
 
 static int div_integ, div_num, div_denom;
 
@@ -185,12 +206,41 @@ static void gdma_init(void)
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
 
-    /* Route the channel's interrupt to a level-1 slot and unmask the slot. The
-     * per-event mask in GDMA_TX_INT_ENA is what sink_lock/sink_unlock toggle. */
-    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_GDMA_OUT_CH0, XT_SLOT_GDMA_OUT_CH0);
-    set_intenable(get_intenable() | (1u << XT_SLOT_GDMA_OUT_CH0));
+    /* Install the completion handler through ESP-IDF.
+     *
+     * This used to route the interrupt by hand -- writing the per-source slot
+     * register at INTERRUPT_CORE0 and setting INTENABLE directly. That is the
+     * bare-metal shape, and it cannot work here: IDF owns the level-1 vector
+     * table and dispatches from its own allocation table, so a slot claimed this
+     * way has no handler registered with it. Worse, nothing in the image
+     * referenced gdma_irq(), so --gc-sections discarded the function outright
+     * (verified: it was absent from the linked ELF). The hardware unmasked an
+     * interrupt whose service routine had been optimised away, refill() never
+     * ran, the descriptor ring starved after two buffers, and playback produced
+     * neither sound nor a moving position.
+     *
+     * esp_intr_alloc() does both halves: it picks a slot IDF will dispatch, and
+     * it takes the handler's address, which keeps the symbol alive.
+     *
+     * The source is ETS_DMA_OUT_CH0_INTR_SOURCE. On ESP32-S3 the GDMA sources
+     * carry no "GDMA" in their name -- they are ETS_DMA_OUT_CH0_/ETS_DMA_IN_CH0_
+     * -- which is worth stating because the obvious grep finds nothing.
+     *
+     * No ESP_INTR_FLAG_IRAM: the handler lives in the instruction-cache window
+     * via ICODE_ATTR and is not guaranteed IRAM-resident, so it must not be
+     * called with the flash cache disabled.
+     */
+    if (!tx_intr)
+    {
+        esp_err_t err = esp_intr_alloc(ETS_DMA_OUT_CH0_INTR_SOURCE,
+                                       ESP_INTR_FLAG_LEVEL1, gdma_tx_isr,
+                                       NULL, &tx_intr);
+        if (err != ESP_OK)
+            panicf("i2s: cannot allocate the GDMA TX interrupt (%d)", err);
+    }
 
-    /* DONE and DSCR_ERR. sink_lock/sink_unlock toggle the DONE bit from here on. */
+    /* out_eof and out_dscr_err. sink_lock/sink_unlock toggle the out_eof bit
+     * from here on. */
     wr(GDMA_TX_INT_ENA, GDMA_INT_DONE | GDMA_INT_DSCR_ERR);
     wr(GDMA_TX_INT_CLR, 0xFF);
 
