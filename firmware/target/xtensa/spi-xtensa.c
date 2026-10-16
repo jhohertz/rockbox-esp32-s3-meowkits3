@@ -50,6 +50,11 @@ static void spi_apply_config(void)
  * that path uses DMA; the polled CPU-buffer path should be proven at a slower
  * rate before trusting the top of the range.
  */
+/* func_out_sel_cfg value meaning "drive this pad from GPIO_OUT_REG". */
+#ifndef SIG_GPIO_OUT_IDX
+#define SIG_GPIO_OUT_IDX 256
+#endif
+
 #define SPI_CLK_1M      ((15u << 0) | (7u << 6) | (15u << 12) | (4u << 18))
 #define SPI_CLK_20M     ((1u << 0) | (0u << 6) | (1u << 12) | (1u << 18))
 
@@ -71,6 +76,25 @@ void spi_init(void)
     gpio_set_direction(PIN_LCD_SCLK, 1);
     gpio_set_direction(PIN_LCD_MOSI, 1);
     gpio_set_direction(PIN_LCD_DC, 1);
+
+    /* DC needs an explicit matrix entry, and the reason is bit 10 of
+     * func_out_sel_cfg, not the signal index. Left at its reset value of 0x100
+     * the pad is pointed at the GPIO output register (func_sel 256) but
+     * oen_sel is CLEAR, so the pad's output enable comes from the signal's own
+     * oen line rather than from GPIO_ENABLE -- and for SIG_GPIO_OUT_IDX that
+     * line is not driven. Measured on this board: DC read func=256 oen=0 while
+     * SCLK and MOSI, both routed through gpio_matrix_out(), read oen=1. The
+     * result is a tri-stated DC whose GPIO_ENABLE bit and GPIO_OUT1 writes are
+     * both perfectly correct and both ignored.
+     *
+     * A floating DC means the panel samples every byte as a command and never
+     * as data: the init sequence still takes effect, DISPON still lights the
+     * panel, and RAMWR content is discarded -- backlight on, no pixels, with
+     * the SPI controller reporting 2405 clean completed transfers.
+     *
+     * gpio_matrix_out() sets oen_from_enable, which is what the other two pads
+     * get; DC was the only one left at reset. */
+    gpio_matrix_out(PIN_LCD_DC, SIG_GPIO_OUT_IDX);
 
     wr(SPI_DMA_CONF, 0);
 

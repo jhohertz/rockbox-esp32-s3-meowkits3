@@ -29,8 +29,10 @@
 #include "backlight-target.h"
 #include "pca9557.h"
 #include "spi-xtensa.h"
+#include "gpio-xtensa.h"
 #include "st7789.h"
 #include "spi-xtensa.h"
+#include "gpio-xtensa.h"
 #include <stdio.h>              /* TEMPORARY bring-up logging */
 
 /* lcd_on and lcd_active() belong to drivers/lcd-memframe.c, which owns the
@@ -168,6 +170,7 @@ void lcd_init_device(void)
     /* Forced by the hardware: CS and RST are expander outputs, so the expander
      * has to be reachable before the panel can be reset or selected. */
     pca9557_init();
+    pca9557_dump("after pca9557_init");
     st7789_init();
 
     /* The framebuffer is in PSRAM and is not part of the image, so the first
@@ -198,6 +201,38 @@ void lcd_init_device(void)
             fb[i]     = 0xF8;
             fb[i + 1] = 0x00;
         }
+        /* The pad picture, for pins 39/40/41 (DC, MOSI, SCLK). All three are
+           above 31, so they live in the OUT1/ENABLE1/IN1 group, and all three
+           are JTAG pads that default to MCU_SEL = 0 rather than the GPIO
+           function. For each: the IO MUX must select GPIO (bits 14:12 == 1),
+           func_out_sel_cfg says which signal drives the pad (bits 8:0; 256 =
+           the GPIO output register) and whether output enable comes from
+           GPIO_ENABLE (bit 10), and ENABLE1/OUT1 say whether the pad is driven
+           and to what. A pad can be perfectly programmed in the controller and
+           still be tri-stated here, which is the "transfers complete, no edges
+           at the pin" signature. */
+        {
+            static const int dbg_pins[3] = { 39, 40, 41 };
+            const char *dbg_names[3] = { "DC ", "MOSI", "SCLK" };
+            int k;
+
+            for (k = 0; k < 3; k++)
+            {
+                int pin = dbg_pins[k];
+                unsigned mux = *(volatile unsigned *)IO_MUX_PIN(pin);
+                unsigned osel = *(volatile unsigned *)GPIO_FUNC_OUT_SEL(pin);
+                unsigned en1 = *(volatile unsigned *)0x6000402C;
+                unsigned out1 = *(volatile unsigned *)0x60004010;
+
+                printf("pad %s(%d): mux=0x%04x mcu=%d ie=%d osel=0x%03x "
+                       "func=%u oen=%d en1=%d out1=%d\n",
+                       dbg_names[k], pin, mux, (int)((mux >> 12) & 7),
+                       (int)((mux >> 9) & 1), osel, osel & 0x1FFu,
+                       (int)((osel >> 10) & 1), (en1 >> (pin - 32)) & 1,
+                       (out1 >> (pin - 32)) & 1);
+            }
+        }
+
         unsigned before = xt_spi_stuck, calls_before = xt_spi_calls;
         lcd_update();
         /* xt_spi_stuck counts transfers whose USR bit never cleared. If it moves

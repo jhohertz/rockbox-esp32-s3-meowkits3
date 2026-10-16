@@ -95,6 +95,10 @@ void st7789_init(void)
     delay_ms(120);                          /* ST7789 needs ~120 ms after release */
 
     cs_assert();
+    /* Expected: bit0 RST=1 (released), bit1 CS=0 (asserted), bit6 TOUCH_RST=1,
+       and CONFIG bits 0,1,2,3,6 clear -- set means input, and an input cannot
+       drive CS or RST however OUTPUT was written. */
+    pca9557_dump("after cs_assert");
 
     /* The expander's input register mirrors the state of every pin, outputs
      * included, so this is the only external proof that the CS/RST writes landed.
