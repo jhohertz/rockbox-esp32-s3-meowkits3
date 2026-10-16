@@ -739,3 +739,55 @@ the same segment split has to apply to the plugin region too, or plugins keep
 their current broken state. Splitting the two problems is still the right order
 -- codecs first, plugins as a follow-on -- but the linker work is common to
 both, so it is worth designing the `plugin.lds` change once.
+
+## Settled: the segment split is required, and here is the proof
+
+The `-mno-longcalls` step was real progress and is worth keeping -- it took the
+codec from "faults on the first internal call" to "runs `CODEC_LOAD` to
+completion and 16 bytes into `run_proc`". But it cannot finish the job, and the
+disassembly of `run_proc`'s prologue says why:
+
+```
+3c6800b6:  call8  3c684a18 <setjmp>          PC-relative, aliased correctly
+3c6800b9:  bnez   a10, ...                   <- A0 = 0x826800b9, our return addr
+```
+
+`setjmp` itself then does:
+
+```
+l32r  a4, __xtensa_libgcc_window_spill       -> 0x3c6849b0  (absolute)
+callx8 a4                                    -> fetch from the DATA window
+```
+
+`-mno-longcalls` removes longcall *stubs*. It does nothing about `l32r`+`callx8`,
+because an indirect call has to materialise an absolute address somewhere. Every
+such address in the image is the address it was linked at, and that is the data
+window.
+
+It is not only `setjmp`. The literal pool in the same prologue holds four more
+absolute **code** addresses:
+
+| literal | target |
+|---|---|
+| `0x3c680094` | `read_handler` |
+| `0x3c680098` | `initial_seek_handler` |
+| `0x3c68009c` | `tell_handler` |
+| `0x3c6800a0` | `close_handler` |
+
+These are the codec's callbacks, handed to the firmware through the codec API.
+So even with `setjmp` hand-patched, the first `(*api->read_data)()` from firmware
+would fault identically. **There is no pointer-level fix that survives this**,
+because the addresses are inside the image and there are arbitrarily many of them.
+
+Therefore the only correct shape is the one the design note predicted: link the
+codec's **code into the instruction window** and its **data into the data
+window**, so that absolute code literals are fetchable and absolute data
+literals are loadable, each in the window that actually serves them. That is a
+segment split, it changes the file shape, and it means the codecs get rebuilt
+and re-copied.
+
+Two things this rules out, so nobody retries them:
+
+- aliasing individual pointers (done -- works for the two header fields, cannot
+  reach into the image)
+- `-mno-longcalls` as a complete fix (helps, is necessary, is not sufficient)
