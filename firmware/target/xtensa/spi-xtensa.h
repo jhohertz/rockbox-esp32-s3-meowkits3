@@ -48,4 +48,10 @@ void spi_probe_edges(void);
 
 /* Set to 1 to have the next full 64-byte transfer sampled at the pin. */
 
+/* Transfer counters, for bring-up diagnostics: xt_spi_calls counts spi_write()
+ * entries and xt_spi_stuck counts transfers whose USR bit never cleared, i.e.
+ * the controller started a transfer that did not finish. */
+extern volatile unsigned int xt_spi_calls;
+extern volatile unsigned int xt_spi_stuck;
+
 #endif

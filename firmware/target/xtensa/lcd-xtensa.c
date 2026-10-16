@@ -30,6 +30,7 @@
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "st7789.h"
+#include "spi-xtensa.h"
 #include <stdio.h>              /* TEMPORARY bring-up logging */
 
 /* lcd_on and lcd_active() belong to drivers/lcd-memframe.c, which owns the
@@ -178,6 +179,37 @@ void lcd_init_device(void)
      * has to be set before anything is drawn - not after.
      */
     lcd_on = true;
+
+    /* TEMPORARY: direct proof on the glass, with nothing between it and the
+       panel -- no UI, no skin, no font, no backlight policy, no framebuffer
+       content from Rockbox's drawing code. The update counter says a full
+       320x240 flush happens, but a counter is not the glass, and the panel has
+       not been visually confirmed since the thread model changed. Solid red is
+       RGB565 0xF800 written high byte first, which is the byte order settled on
+       the spike. If this is red, the panel, the expander CS/reset, the SPI path
+       and the backlight are all fine and the black screen is a rendering or
+       power-state problem above this line. If it is black, it is not. */
+    {
+        unsigned char *fb = (unsigned char *)FRAME;
+        unsigned i;
+
+        for (i = 0; i + 1 < FRAMEBUFFER_SIZE; i += 2)
+        {
+            fb[i]     = 0xF8;
+            fb[i + 1] = 0x00;
+        }
+        unsigned before = xt_spi_stuck, calls_before = xt_spi_calls;
+        lcd_update();
+        /* xt_spi_stuck counts transfers whose USR bit never cleared. If it moves
+           here, the controller started transfers that did not finish -- no clock
+           at the pad, which is a wiring or clock-source fault. If it stays at
+           zero while the calls count climbs, the transfers completed and the
+           panel is being clocked, which moves the suspicion to CS, DC, the
+           expander, or the init sequence rather than the SPI path. */
+        printf("LCD red: calls+%u stuck+%u on=%d fb=%p\n",
+               xt_spi_calls - calls_before, xt_spi_stuck - before,
+               (int)lcd_on, (void*)fb);
+    }
 }
 
 /*
