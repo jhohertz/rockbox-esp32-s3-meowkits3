@@ -260,6 +260,10 @@ int main(void)
     validate_start_directory_init();
     /* no calls INIT_ATTR functions after this point anymore!
      * see definition of INIT_ATTR in config.h */
+    /* TEMPORARY: the UI entry point. Everything before this is init; reaching
+       here means Rockbox got to its own event loop and the screen should be
+       showing the main menu. */
+    printf("rockbox: entering root_menu\n");
     CHART(">root_menu");
     root_menu();
 }
