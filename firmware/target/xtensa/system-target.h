@@ -22,6 +22,7 @@
  * no-op. */
 void xthal_dcache_all_writeback(void);
 void xthal_dcache_all_writeback_inv(void);
+void xthal_icache_all_invalidate(void);
 #endif
 
 extern long cpu_frequency;   /* set by system_init */
@@ -210,9 +211,25 @@ static inline void commit_discard_dcache(void)
     xthal_dcache_all_writeback_inv();
 }
 
+/* The instruction cache is a separate structure from the data cache and the two
+ * are not coherent with each other. Code written through the data window lands
+ * in the D-cache and is written back to memory, but the I-cache keeps whatever
+ * previously occupied those lines -- on this target, whichever codec last used
+ * the same load address -- so the core fetches stale bytes and reports
+ * IllegalInstruction on a perfectly valid instruction.
+ *
+ * Measured rather than inferred: after loading vorbis, the word at the faulting
+ * PC read 02 78 b9 aa where the linked image says 29 08 81 5f, while both
+ * neighbouring words matched exactly. A single stale line, not corruption. The
+ * panic handler's own memory dump showed the same stale bytes because it reads
+ * the 0x42... range through the instruction side too.
+ *
+ * The name has always promised both halves; only the data-cache half was ever
+ * implemented. */
 static inline void commit_discard_idcache(void)
 {
     commit_discard_dcache();
+    xthal_icache_all_invalidate();
 }
 
 #endif /* SYSTEM_TARGET_H */
