@@ -1294,3 +1294,57 @@ The window/cache theory is not the audio blocker. It was worth chasing -- it
 produced four real fixes -- but the evidence now says the codec gets all the way
 into `codec_run`, past `setjmp`, into `ogg_malloc_init`, and dies on an
 allocation. That is a long way past where the address-model theories predicted.
+
+## Confirmed at last: gap 6 is the remaining blocker
+
+Playback now reaches the player screen and stops there -- position frozen, no
+audio, play/pause still toggles. Zero crashes and zero mismatches for the whole
+run, so this is no longer a fault, it is a stall. The two readouts taken in the
+same instant say exactly what is wrong:
+
+    SCHED: running=tick  rtr=[tick,scroll,codec]
+    OS:    s1:tick=Running  s2:scroll=BLOCKED  s8:codec=BLOCKED
+
+`scroll` and `codec` are on Rockbox's runnable list and have been for the entire
+observation window, while FreeRTOS holds both in the Blocked state pending their
+gates. The filesystem lock is idle throughout (`count=0 waiters=0` in 40/40
+samples), so this is not I/O, not the allocator, not the address model. The codec
+loaded, returned CODEC_OK, was woken to run, and is stranded.
+
+This is gap 6 -- the wake-notification gap -- observed directly rather than
+inferred, and it is the one I explicitly demoted in favour of the storage
+hypothesis. The storage hypothesis was right about its own bug and wrong about
+being the last one.
+
+Why nothing rescues them: a gate is only ever given by a thread voluntarily
+calling switch_thread(). `tick` is the running thread and is not yielding, so the
+runnable threads never get theirs. Upstream this is covered because a wake
+returns THREAD_SWITCH and the waker yields -- but these wakes originate from the
+FreeRTOS tick hook, which cannot switch.
+
+## Why the wake hook is now safe to add
+
+Earlier I argued that eagerly giving a woken thread's gate was unsafe because the
+gate means "you are selected", so an eager give would let two threads run Rockbox
+code at once. That argument was correct then and is obsolete now: the guard added
+in "a task may hold the gate only when the kernel has selected it" makes a woken
+task verify `rb_thread_running_context() == self` and go back to sleep if the
+kernel has not picked it. A spurious wake is now harmless by construction.
+
+That guard was written to stop the identity corruption and it happens to be
+exactly the precondition the wake hook needs. So:
+
+ - `THREAD_WAKE_NOTIFY(thread)` -- three gated lines in core_schedule_wakeup(),
+   arch macro in the shape of THREAD_STARTUP_INIT
+ - arch implementation gives the woken thread's gate
+
+Note this alone may not be sufficient: it makes the woken task FreeRTOS-Ready,
+but it still has to be *selected*, which requires the current holder to reach
+switch_thread(). If `tick` never yields, the woken task wakes, fails the check and
+re-blocks. So the complete fix likely also needs the tick path to yield after
+processing ticks -- which is what every cooperative arch does on its timer
+interrupt, and is the thing our port has no equivalent of.
+
+Order: add the notify hook, measure whether rtr= entries still sit BLOCKED, and
+if they do, make the tick path yield. Do not do both at once -- they are separate
+claims and the readout can tell them apart.
