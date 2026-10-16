@@ -1062,8 +1062,7 @@ void switch_thread(void)
         }
         STRACE(40, thread, thread->id, thread->state);
         thread_store_context(thread);
-        STRACE(41, thread, thread->context.frame[XT_F_PC],
-               thread->context.frame[XT_F_A1]);
+        STRACE(41, thread, thread->context.sp, 0);
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
