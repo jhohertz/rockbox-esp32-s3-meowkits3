@@ -157,6 +157,8 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     unsigned char ehdr[XT_EHDR_READ_SIZE];
     struct xt_phdr ph;
     unsigned int phoff, phnum;
+    unsigned char *data_hi = NULL;   /* top of the data-window image */
+    unsigned char *buf_end = buf + buf_size;
     int fd, i, loaded = 0;
 
     fd = open(filename, O_RDONLY);
@@ -242,6 +244,17 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
         printf("codec load: seg %d vaddr=%08x -> write@%p filesz=%u memsz=%u\n",
                i, ph.vaddr, (void *)dest, ph.filesz, ph.memsz);
+
+        /* Track the top of the data-window image so the heap above it can be
+         * cleared below. The text segment is written through its data-window
+         * alias, which sits below buf, so only the data segment bounds the heap. */
+        if (ph.vaddr < XT_IROM_BASE)
+        {
+            unsigned char *end = dest + ph.memsz;
+
+            if (data_hi == NULL || end > data_hi)
+                data_hi = end;
+        }
         loaded++;
     }
 
@@ -251,6 +264,34 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     {
         DEBUGF("No loadable segments");
         return NULL;
+    }
+
+    /* Clear the heap the codec will be handed, above the loaded image.
+     *
+     * This is not hygiene, it is correctness. codecbuf is a pinned absolute
+     * address declared with .set, so it belongs to no section and nothing ever
+     * zeroes it -- unlike .ext_ram.bss, which IDF's startup clears. Rockbox's
+     * codec allocator (lib/tlsf) keeps its pool state *in that very memory*, and
+     * init_memory_pool() short-circuits when it finds its own signature there:
+     *
+     *     if (tlsf->tlsf_signature == TLSF_SIGNATURE) { mp = mem_pool;
+     *         return b->size & BLOCK_SIZE; }    -- returns without re-initialising
+     *
+     * The signature is removed only by ogg_malloc_destroy(), which runs on a
+     * clean CODEC_UNLOAD. A codec that crashes never reaches it, so the next load
+     * inherits a pool laid out for a different codec at a different size,
+     * tlsf_malloc returns NULL, and the codec longjmps out of its own allocation
+     * failure. The fault therefore reproduces itself: one crash poisons the
+     * buffer for every load afterwards -- which is exactly what "consistent
+     * crash" looked like, and why it seemed unrelated to anything changing.
+     *
+     * A freshly loaded image must never inherit allocator state from a previous,
+     * possibly crashed, image. */
+    if (data_hi != NULL && data_hi < buf_end)
+    {
+        memset(data_hi, 0, buf_end - data_hi);
+        printf("codec load: cleared heap %p..%p (%u bytes)\n", (void *)data_hi,
+               (void *)buf_end, (unsigned)(buf_end - data_hi));
     }
 
     /* The instruction cache may hold lines for pages that only just became
