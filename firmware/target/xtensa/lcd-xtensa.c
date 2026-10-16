@@ -61,10 +61,22 @@ void lcd_write_data(const fb_data *p_bytes, int count)
         int n = count > chunk ? chunk : count;
         int j = 0;
 
+        /* Ship the buffer verbatim. The measured contract says the panel wants
+         * the high byte of the RGB565 word first, and that is what the spike
+         * sends -- but Rockbox's native value is already stored swapped for
+         * that. Measured: a solid red frame holds 0x00f8 in the framebuffer, so
+         * the two bytes in memory are f8, 00 in wire order already, and
+         * extracting pixel>>8 first emits 00,f8 -- the panel's two halves
+         * exchanged. The spike reaches the same wire order from 0xf800 by
+         * building explicit big-endian pairs; doing the swap here on top of
+         * Rockbox's own is a double swap.
+         *
+         * fb_data is unsigned short at LCD_DEPTH 16 on a little-endian core, so
+         * a straight byte copy is the high byte first on the wire. */
         for (int i = 0; i < n; i++) {
             unsigned short pixel = p_bytes[i];
-            buf[j++] = (unsigned char)(pixel >> 8);
             buf[j++] = (unsigned char)(pixel & 0xFF);
+            buf[j++] = (unsigned char)(pixel >> 8);
         }
 
         st7789_write_data(buf, j);
@@ -235,8 +247,47 @@ void lcd_init_device(void)
 
         spi_edge_probe_run();
 
+        /* What is actually in the buffer we are about to send. Every register on
+         * the transport now matches the spike that paints correctly on this same
+         * glass -- clk 0x80000000, user 0x18000001, ctrl 0, gate 7, dlen 511 --
+         * and the edge count matches too, so the panel is faithfully rendering
+         * the bytes it is given. If those bytes are not red, the fault is the
+         * source data, not the wire.
+         *
+         * The spike's framebuffer is MALLOC_CAP_INTERNAL; ours is in the PSRAM
+         * window, which is cache-backed and depends on an MMU entry being both
+         * correct and freshly invalidated. */
+        {
+            const fb_data *f0 = LCD_FRAMEBUF_ADDR(0, 0);
+            const fb_data *fmid = LCD_FRAMEBUF_ADDR(0, 120);
+            const fb_data *flast = LCD_FRAMEBUF_ADDR(319, 239);
+
+            printf("fb content: [0,0]=0x%04x 0x%04x  [0,120]=0x%04x  "
+                   "[319,239]=0x%04x  (want 0xf800 for red)\n",
+                   f0[0], f0[1], fmid[0], flast[0]);
+        }
+
         unsigned before = xt_spi_stuck, calls_before = xt_spi_calls;
+
+        /* DC is the last signal on this bus nobody has ever looked at. SCLK and
+         * MOSI are measured at the pad and are correct; CS and RST are confirmed
+         * on the expander's input register. If DC does not move, the panel
+         * samples every byte as a command, GRAM is never written, and what the
+         * glass shows is whatever was left in it -- which is banding and noise
+         * that no amount of register fixing will alter, because the registers
+         * were never the problem. A flush issues several command/data
+         * boundaries, so this must be well above zero. */
+        extern unsigned dc_pad_transitions;
+        extern unsigned dc_disagreements;
+
         lcd_update();
+        /* A flush issues several command/data boundaries, so the pad must move
+         * many times. dc_disagreements counts the times the pad did not end up
+         * where the output register said it would, which is the tri-state
+         * signature. */
+        printf("LCD flush: dc pad transitions=%u (want >0), dc pad/register "
+               "disagreements=%u, calls=%u\n",
+               dc_pad_transitions, dc_disagreements, xt_spi_calls - calls_before);
         /* xt_spi_stuck counts transfers whose USR bit never cleared. If it moves
            here, the controller started transfers that did not finish -- no clock
            at the pad, which is a wiring or clock-source fault. If it stays at
