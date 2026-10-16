@@ -71,6 +71,10 @@ _Static_assert(offsetof(XtExcFrame, a13)  == 64, "XT_STK_A13 byte offset");
  */
 static volatile uint32_t xt_context_addr;
 
+/* TEMPORARY: non-rotating breadcrumb slots, see target/xtensa/scan_trace.c */
+extern void scan_trace_sticky(int tag, unsigned long a, unsigned long b,
+                              unsigned long c);
+
 void xt_thread_start(void (*fn)(void))
 {
     fn();
@@ -315,6 +319,11 @@ static inline void load_context(const void* addr)
     struct regs* ctx = (struct regs*)(uintptr_t)addr;
     uint32_t* f = ctx->frame;
 
+    /* Unconditional, and only the newest survives: whichever switch is in
+       flight when the machine dies is the one worth reading. */
+    scan_trace_sticky(4, (uintptr_t)ctx, ctx->start, ctx->sp);
+    scan_trace_sticky(5, f[XT_F_PC], f[XT_F_PS], f[XT_F_A1]);
+
     if (ctx->start != 0)
     {
         uint32_t* fs;
@@ -336,9 +345,27 @@ static inline void load_context(const void* addr)
            the thread table, where xt_init_frame can reach it, and move it down. */
         fs = (uint32_t*)((uintptr_t)ctx->sp - XT_STK_FRMSZ);
         memcpy(fs, ctx->frame, XT_STK_FRMSZ);
-        fs[XT_F_A1] = (uint32_t)(uintptr_t)fs;
+        /* FreeRTOS's own uxInitialiseStackFrame sets
+         *   frame->a1 = uxStackPointer + XT_STK_FRMSZ
+         * "saved stack pointer should point to physical top of stack frame".
+         * _xt_user_exit then does `l32i sp, sp, XT_STK_A1` to remove the frame,
+         * so the thread wakes with sp just above its own frame rather than at
+         * its base. Naming the frame itself leaves 192 bytes stranded above the
+         * live stack and disagrees with every other windowed task on this chip. */
+        fs[XT_F_A1] = (uint32_t)(uintptr_t)fs + XT_STK_FRMSZ;
         ctx->sp = (uintptr_t)fs;
         xt_context_addr = (uint32_t)(uintptr_t)fs;
+
+        /* Sticky: the ring rotates and the tick floods it, so the one record
+           that matters -- what the very first frame of a thread held -- is gone
+           before anything can read it. Measured: the crash after masking the
+           level-4 cache path was an InstructionLoadProhibited at 0x3fcd14f0, a
+           thread-table address, with a0 inside xt_thread_start's call of its
+           argument. So xt_thread_start ran and its a2 was a thread pointer, not
+           a function. These say what the frame actually carried at entry. */
+        scan_trace_sticky(1, (uintptr_t)ctx, (uintptr_t)fs, f[XT_F_PC]);
+        scan_trace_sticky(2, f[XT_F_A2], f[XT_F_A6], f[XT_F_A6 + 1]);
+        scan_trace_sticky(3, f[XT_F_A0], f[XT_F_PS], f[XT_F_A1]);
 
         asm volatile ("j 3f                               \n"
                       ".align 4                           \n"

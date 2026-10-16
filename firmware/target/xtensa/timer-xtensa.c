@@ -158,12 +158,22 @@ void vApplicationTickHook(void)
                points at one bad access whose consequences then unfold. */
             volatile extmem_dev_t* ext =
                 (volatile extmem_dev_t*)0x600C4000;    /* DR_REG_EXTMEM_BASE */
-            uint32_t st = ext->cache_ilg_int_st.val;
+            uint32_t ilg = ext->cache_ilg_int_st.val;
+            uint32_t c0 = ext->core0_acs_cache_int_st.val;
+            uint32_t c1 = ext->core1_acs_cache_int_st.val;
 
-            if (st)
+            if (ilg | c0 | c1)
             {
-                scan_trace(96, st, hook_n, current_tick);
-                ext->cache_ilg_int_st.val = st;       /* W1C */
+                /* The panic reporter only ever names the illegal-access cause.
+                   Sampling the two per-core access-error registers alongside it
+                   says which core the hardware blamed, which the report leaves
+                   blank ("Core  panic'ed") because it reads them after the
+                   reset path has already been entered. */
+                scan_trace(96, ilg, c0, current_tick);
+                scan_trace(99, c1, hook_n, current_tick);
+                ext->cache_ilg_int_st.val = ilg;        /* W1C */
+                ext->core0_acs_cache_int_st.val = c0;   /* W1C */
+                ext->core1_acs_cache_int_st.val = c1;   /* W1C */
             }
         }
 
