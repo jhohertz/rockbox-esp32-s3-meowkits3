@@ -91,6 +91,30 @@ static unsigned int bk_bad;
 
 void vApplicationTickHook(void)
 {
+    /* Rockbox's clock has to follow the kernel's, not the core's, and it has to
+     * do so on EVERY tick, unconditionally, before anything else in this hook
+     * can bail out.
+     *
+     * In SMP FreeRTOS the tick hook runs on whichever core won the tick
+     * increment for that period -- measured on this board, always core 1, even
+     * though core 0's tick ISR itself is running fine (IDF's per-core served
+     * counter advances on both). Gating the bump on "am I core 0" therefore left
+     * current_tick at zero forever: the tick was healthy, no thread ever timed
+     * out, and every Rockbox thread blocked and stayed blocked. That is what
+     * made a live, ticking core look idle.
+     *
+     * xTaskGetTickCount() is a single global counter advanced exactly once per
+     * tick regardless of which core delivers it, so mirroring it is correct
+     * whichever core gets the hook. CONFIG_FREERTOS_HZ is pinned to 100, which
+     * is the 10 ms tick every Rockbox tick consumer already assumes.
+     *
+     * It is placed first, rather than last, because the diagnostic block below
+     * samples one tick in eight and returns early. With the assignment after
+     * that return, current_tick advanced at 12.5 Hz in jumps of eight: buttons
+     * needed to be held to register, elapsed time crawled, and every Rockbox
+     * timeout fired eight times late -- which is also what made runnable threads
+     * look stranded in the run queue. Never let instrumentation gate the clock. */
+    current_tick = (long)xTaskGetTickCount();
     /* TEMPORARY: police core 0's running-thread pointer (see
        thread_bookkeeping_check in thread-common.c). */
     if (!bk_bad)
@@ -268,21 +292,6 @@ void vApplicationTickHook(void)
         }
     }
 #endif
-    /* Rockbox's clock has to follow the kernel's, not the core's.
-     *
-     * In SMP FreeRTOS the tick hook runs on whichever core won the tick
-     * increment for that period -- measured on this board, always core 1, even
-     * though core 0's tick ISR itself is running fine (IDF's per-core served
-     * counter advances on both). Gating the bump on "am I core 0" therefore
-     * left current_tick at zero forever: the tick was healthy, no thread ever
-     * timed out, and every Rockbox thread blocked and stayed blocked. That is
-     * what made a live, ticking core look idle.
-     *
-     * xTaskGetTickCount() is a single global counter advanced exactly once per
-     * tick regardless of which core delivers it, so mirroring it is correct
-     * whichever core gets the hook. CONFIG_FREERTOS_HZ is pinned to 100, which
-     * is the 10 ms tick every Rockbox tick consumer already assumes. */
-    current_tick = (long)xTaskGetTickCount();
 }
 
 /*---------------------------------------------------------------------------

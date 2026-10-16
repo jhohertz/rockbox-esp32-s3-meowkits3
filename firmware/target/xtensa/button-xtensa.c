@@ -119,7 +119,7 @@ int button_read_device(int *data)
                 static char th[400];
                 static int thdiv;
                 extern int thread_debug_dump(char *out, int sz);
-                if (++thdiv >= 4)
+                if (++thdiv >= 10)
                 {
                     static char sc[200];
                     static char os[400];
