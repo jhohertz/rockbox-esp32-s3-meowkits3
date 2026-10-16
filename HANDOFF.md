@@ -1246,3 +1246,51 @@ observed PS difference is direct evidence of it.
 
 Scope note: this is `lib/libsetjmp`, i.e. lib code selected per-arch, not core
 Rockbox. The constraint that no core file changes holds.
+
+## The crash is a symptom: the codec's allocator is failing
+
+`lib/rbcodec/codecs/libtremor/oggmalloc.c`:
+
+```c
+void *ogg_malloc(size_t size)
+{
+    void* x = tlsf_malloc(size);
+    if (x == NULL)
+        LONGJMP(1);          /* -> longjmp(rb_jump_buf, 1) */
+    return x;
+}
+```
+
+So `longjmp` is reached **only when an allocation fails**. The LoadProhibited
+crash is therefore two bugs stacked:
+
+1. **`tlsf_malloc` returned NULL** -- the real audio blocker.
+2. **`longjmp` is broken** -- it converts a clean, recoverable "allocation
+   failed" into a garbage-register crash that looks like a memory-model problem.
+
+Corroborating: `A5 = 0x3c68d460` is exactly the pool base tremor was given, from
+`ogg_malloc_init()` -> `ci->codec_get_buffer(&bufsize)` ->
+`codec_get_buffer_callback()` returning `&codecbuf[codec_size]` with
+`CODEC_SIZE - codec_size` = 994,240 bytes. So the codec *has* a large pool and is
+still failing to allocate from it, which points at pool initialisation rather
+than exhaustion.
+
+### Order of work, and why
+
+**Fix longjmp first, even though it is the second bug.** With a correct longjmp,
+an allocation failure returns `CODEC_ERROR` cleanly and the codec reports
+"allocation failed" through its normal path -- a legible, bounded failure instead
+of a panic with a corrupted backtrace. Every subsequent diagnosis gets easier,
+because the codec's own error reporting becomes trustworthy.
+
+Then chase the allocation failure with the codec's error path working. Note the
+pool is in PSRAM while tlsf's bookkeeping is in the codec's .bss -- both are in
+the data window and both should be fine, but that is the specific thing to
+measure next rather than assume.
+
+### What this retires
+
+The window/cache theory is not the audio blocker. It was worth chasing -- it
+produced four real fixes -- but the evidence now says the codec gets all the way
+into `codec_run`, past `setjmp`, into `ogg_malloc_init`, and dies on an
+allocation. That is a long way past where the address-model theories predicted.
