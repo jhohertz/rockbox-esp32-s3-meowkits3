@@ -421,38 +421,26 @@ static void init_tagcache(void)
 static void init(void)
 {
     system_init();
-    printf("init: system_init done\n");
     core_allocator_init();
-    printf("init: core_allocator_init done\n");
     kernel_init();
-    printf("init: kernel_init done\n");
 #ifdef APPLICATION
     paths_init();
-    printf("init: paths_init done\n");
 #endif
     enable_irq();
-    printf("init: enable_irq done\n");
     lcd_init();
-    printf("init: lcd_init done\n");
 #ifdef HAVE_REMOTE_LCD
     lcd_remote_init();
-    printf("init: lcd_remote_init done\n");
 #endif
     FOR_NB_SCREENS(i)
         global_status.font_id[i] = FONT_SYSFIXED;
     font_init();
-    printf("init: font_init done\n");
     show_logo_boot();
-    printf("init: show_logo_boot done\n");
     button_init();
-    printf("init: button_init done\n");
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
     powermgmt_init();
-    printf("init: powermgmt_init done\n");
     backlight_init();
-    printf("init: backlight_init done\n");
     /* Rockbox leaves the lights as the bootloader set them. On this target the mask
      * ROM is the bootloader and sets nothing, so the panel would stay dark until the
      * backlight thread's own timeout logic ran. Light it here so the boot logo and the
@@ -460,93 +448,61 @@ static void init(void)
      */
     backlight_on();
     unicode_init();
-    printf("init: unicode_init done\n");
 #ifdef HAVE_MULTIVOLUME
     init_volume_names();
-    printf("init: init_volume_names done\n");
 #endif
 #ifdef SIMULATOR
     sim_tasks_init();
-    printf("init: sim_tasks_init done\n");
 #endif
 #if (CONFIG_PLATFORM & PLATFORM_ANDROID)
     notification_init();
-    printf("init: notification_init done\n");
 #endif
     lang_init(core_language_builtin, language_strings,
               LANG_LAST_INDEX_IN_ARRAY);
 #ifdef DEBUG
     debug_init();
-    printf("init: debug_init done\n");
 #endif
 #if CONFIG_TUNER
     radio_init();
-    printf("init: radio_init done\n");
 #endif
     prng_init();
 
     /* Keep the order of this 3 (viewportmanager handles statusbars)
      * Must be done before any code uses the multi-screen API */
     gui_syncstatusbar_init(&statusbars);
-    printf("init: gui_syncstatusbar_init done\n");
     gui_sync_skin_init();
-    printf("init: gui_sync_skin_init done\n");
     sb_skin_init();
-    printf("init: sb_skin_init done\n");
     viewportmanager_init();
-    printf("init: viewportmanager_init done\n");
 
     storage_init();
-    printf("init: storage_init done\n");
     pcm_init();
-    printf("init: pcm_init done\n");
     dsp_init();
-    printf("init: dsp_init done\n");
     settings_reset();
-    printf("init: settings_reset done\n");
     settings_load();
-    printf("init: settings_load done\n");
     settings_apply(true);
-    printf("init: settings_apply done\n");
     init_battery_tables();
-    printf("init: init_battery_tables done\n");
 #ifdef HAVE_DIRCACHE
     init_dircache(true);
-    printf("init: init_dircache done\n");
     init_dircache(false);
-    printf("init: init_dircache done\n");
 #endif
 #ifdef HAVE_TAGCACHE
     init_tagcache();
-    printf("init: init_tagcache done\n");
 #endif
     tree_mem_init();
-    printf("init: tree_mem_init done\n");
-    printf("init: tree_mem_init done\n");
     filetype_init();
-    printf("init: filetype_init done\n");
-    printf("init: filetype_init done\n");
-    printf("init: playlist_init done\n");
     playlist_init();
-    printf("init: playlist_init done\n");
     shortcuts_init();
-    printf("init: shortcuts_init done\n");
-    printf("init: shortcuts_init done\n");
 
     audio_init();
-    printf("init: audio_init done\n");
 
     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
     settings_apply_skins();
-    printf("init: settings_apply_skins done\n");
 
 /* do USB last so prompt (if enabled) can work correctly if USB was inserted with device off,
  * also doesn't hurt that it will display the nice pretty backdrop this way too. */
 #ifndef USB_NONE
     usb_init();
-    printf("init: usb_init done\n");
     usb_start_monitoring();
-    printf("init: usb_start_monitoring done\n");
 #endif
 }
 
@@ -561,49 +517,36 @@ static void init(void)
     bool mounted = false;
 
     system_init();
-    printf("ninit: system_init done\n");
     core_allocator_init();
-    printf("ninit: core_allocator_init done\n");
     kernel_init();
-    printf("ninit: kernel_init done\n");
 
 #if defined(HAVE_BOOTDATA) && !defined(BOOTLOADER)
     verify_boot_data();
-    printf("ninit: verify_boot_data done\n");
 #endif
 
 #if defined(HAVE_DEVICEDATA) && !defined(BOOTLOADER)
     verify_device_data();
-    printf("ninit: verify_device_data done\n");
 #endif
 
     /* early early early! */
     filesystem_init();
-    printf("ninit: filesystem_init done\n");
 
 #ifdef HAVE_ADJUSTABLE_CPU_FREQ
     set_cpu_frequency(CPUFREQ_NORMAL);
-    printf("ninit: set_cpu_frequency done\n");
 #ifdef CPU_COLDFIRE
     coldfire_set_pllcr_audio_bits(DEFAULT_PLLCR_AUDIO_BITS);
-    printf("ninit: coldfire_set_pllcr_audio_bits done\n");
 #endif
     cpu_boost(true);
-    printf("ninit: cpu_boost done\n");
 #endif
 
     i2c_init();
-    printf("ninit: i2c_init done\n");
 
     power_init();
-    printf("ninit: power_init done\n");
 
     enable_irq();
-    printf("ninit: enable_irq done\n");
 #if defined(CPU_ARM_CLASSIC)
 
     enable_fiq();
-    printf("ninit: enable_fiq done\n");
 #endif
     /* current_tick should be ticking by now */
     CHART("ticking");
@@ -616,20 +559,15 @@ static void init(void)
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
 
     unicode_init();
-    printf("ninit: unicode_init done\n");
     lcd_init();
-    printf("ninit: lcd_init done\n");
 #ifdef HAVE_REMOTE_LCD
     lcd_remote_init();
-    printf("ninit: lcd_remote_init done\n");
 #endif
     FOR_NB_SCREENS(i)
         global_status.font_id[i] = FONT_SYSFIXED;
     font_init();
-    printf("ninit: font_init done\n");
 
     settings_reset();
-    printf("ninit: settings_reset done\n");
 
     CHART(">show_logo");
     show_logo_boot();
@@ -639,68 +577,52 @@ static void init(void)
 
 #ifdef DEBUG
     debug_init();
-    printf("ninit: debug_init done\n");
 #else
 #ifdef HAVE_SERIAL
     serial_setup();
-    printf("ninit: serial_setup done\n");
 #endif
 #endif
 
 #if CONFIG_RTC
     rtc_init();
-    printf("ninit: rtc_init done\n");
 #endif
 
     adc_init();
-    printf("ninit: adc_init done\n");
 
     usb_init();
-    printf("ninit: usb_init done\n");
 #if CONFIG_USBOTG == USBOTG_ISP1362
     isp1362_init();
-    printf("ninit: isp1362_init done\n");
 #elif CONFIG_USBOTG == USBOTG_M5636
     m5636_init();
-    printf("ninit: m5636_init done\n");
 #endif
 
     backlight_init();
-    printf("ninit: backlight_init done\n");
     button_init();
-    printf("ninit: button_init done\n");
 
     /* Don't initialize power management here if it could incorrectly
      * measure battery voltage, and it's not needed for charging. */
 #if !defined(NEED_ATA_POWER_BATT_MEASURE) || \
     (CONFIG_CHARGING > CHARGING_MONITOR)
     powermgmt_init();
-    printf("ninit: powermgmt_init done\n");
 #endif
 
 #if CONFIG_TUNER
 
     radio_init();
-    printf("ninit: radio_init done\n");
 #endif
     prng_init();  /* After RTC */
 
 #ifdef HAVE_HARDWARE_CLICK
     piezo_init();
-    printf("ninit: piezo_init done\n");
 #endif
 
     /* Keep the order of this 3 (viewportmanager handles statusbars)
      * Must be done before any code uses the multi-screen API */
     gui_syncstatusbar_init(&statusbars);
-    printf("ninit: gui_syncstatusbar_init done\n");
     sb_skin_init();
-    printf("ninit: sb_skin_init done\n");
 
     gui_sync_skin_init();
-    printf("ninit: gui_sync_skin_init done\n");
     viewportmanager_init();
-    printf("ninit: viewportmanager_init done\n");
     rc = storage_init();
 
     CHART("<storage_init");
@@ -720,18 +642,15 @@ static void init(void)
     /* After storage_init(), ATA power must be on, so battery voltage
      * can be measured. Initialize power management if it was delayed. */
     powermgmt_init();
-    printf("ninit: powermgmt_init done\n");
 #endif
 #ifdef HAVE_EEPROM_SETTINGS
     CHART(">eeprom_settings_init");
     eeprom_settings_init();
-    printf("ninit: eeprom_settings_init done\n");
     CHART("<eeprom_settings_init");
 #endif
 
 #ifndef HAVE_USBSTACK
     usb_start_monitoring();
-    printf("ninit: usb_start_monitoring done\n");
     while (usb_detect() == USB_INSERTED)
     {
 #ifdef HAVE_EEPROM_SETTINGS
@@ -820,14 +739,11 @@ static void init(void)
     }
 
     pcm_init();
-    printf("ninit: pcm_init done\n");
 
     dsp_init();
-    printf("ninit: dsp_init done\n");
 
     CHART(">settings_load");
     settings_load();
-    printf("ninit: settings_load done\n");
     CHART("<settings_load");
 
 
@@ -851,7 +767,6 @@ static void init(void)
 #endif
     CHART(">init_battery_tables");
     init_battery_tables();
-    printf("ninit: init_battery_tables done\n");
     CHART("<init_battery_tables");
 
 #ifdef HAVE_DIRCACHE
@@ -867,19 +782,16 @@ static void init(void)
 
     CHART(">settings_apply(true)");
     settings_apply(true);
-    printf("ninit: settings_apply done\n");
     CHART("<settings_apply(true)");
 
 #ifdef HAVE_DIRCACHE
     CHART(">init_dircache(false)");
     init_dircache(false);
-    printf("ninit: init_dircache done\n");
     CHART("<init_dircache(false)");
 #endif
 #ifdef HAVE_TAGCACHE
     CHART(">init_tagcache");
     init_tagcache();
-    printf("ninit: init_tagcache done\n");
     CHART("<init_tagcache");
 #endif
 
@@ -894,47 +806,34 @@ static void init(void)
     }
 #endif
     playlist_init();
-    printf("ninit: playlist_init done\n");
     tree_mem_init();
-    printf("ninit: tree_mem_init done\n");
     filetype_init();
-    printf("ninit: filetype_init done\n");
 
     shortcuts_init();
-    printf("ninit: shortcuts_init done\n");
 
     CHART(">audio_init");
-    printf("init: audio_init...\n");
     audio_init();
-    printf("ninit: audio_init done\n");
     CHART("<audio_init");
-    printf("init: audio_init done\n");
     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
 
 #ifdef HAVE_WIFI
     wifi_init();
-    printf("ninit: wifi_init done\n");
 #endif
 
     /* runtime database has to be initialized after audio_init() */
     cpu_boost(false);
-    printf("ninit: cpu_boost done\n");
 
 #if CONFIG_CHARGING
     car_adapter_mode_init();
-    printf("ninit: car_adapter_mode_init done\n");
 #endif
 #ifdef IPOD_ACCESSORY_PROTOCOL
     iap_setup(global_settings.serial_bitrate);
-    printf("ninit: iap_setup done\n");
 #endif
 #ifdef HAVE_ACCESSORY_SUPPLY
     accessory_supply_set(global_settings.accessory_supply);
-    printf("ninit: accessory_supply_set done\n");
 #endif
 #ifdef HAVE_LINEOUT_POWEROFF
     lineout_set(global_settings.lineout_active);
-    printf("ninit: lineout_set done\n");
 #endif
 #ifdef HAVE_HOTSWAP_STORAGE_AS_MAIN
     CHART("<check_bootfile(false)");
@@ -943,9 +842,7 @@ static void init(void)
 #endif
     CHART("<settings_apply_skins");
     settings_apply_skins();
-    printf("ninit: settings_apply_skins done\n");
     CHART(">settings_apply_skins");
-    printf("init: settings_apply_skins done\n");
 }
 
 #ifdef CPU_PP
