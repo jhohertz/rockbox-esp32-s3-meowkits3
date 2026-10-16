@@ -111,6 +111,21 @@ int button_read_device(int *data)
             int count;
 
             fsdiag = 0;
+            /* Which threads are awake, and what each is queued on. Printed on
+             * every fourth sample: the play stall showed the lock free and the
+             * codec thread never running, so the thread states are the evidence,
+             * not the lock counters. */
+            {
+                static char th[400];
+                static int thdiv;
+                extern int thread_debug_dump(char *out, int sz);
+                if (++thdiv >= 4)
+                {
+                    thdiv = 0;
+                    thread_debug_dump(th, sizeof th);
+                    printf("THREADS: %s\n", th);
+                }
+            }
             extern volatile int mrsw_null_self;
             extern volatile int mrsw_null_self_read;
             extern volatile int mrsw_recursion_hits;

@@ -381,3 +381,36 @@ unsigned int thread_slot_check(const void* p)
 
     return 0;
 }
+
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+/* TEMPORARY bring-up: render every live thread and what it is waiting on.
+ *
+ * A play attempt left the UI at "Loading..." with the filesystem lock free and
+ * no codec request ever reaching the codec thread, so the stall is a thread
+ * that was never woken rather than a lock that was never released. This says
+ * which: "run" means the kernel considers it runnable, "blk@addr" names the
+ * blocker it is queued on, and two threads pointing at the same address are
+ * waiting on each other. */
+int thread_debug_dump(char *out, int sz)
+{
+    int pos = 0;
+    int i;
+
+    if (sz <= 0)
+        return 0;
+    out[0] = '\0';
+    for (i = 0; i < MAXTHREADS && pos < sz - 48; i++)
+    {
+        struct thread_entry *t = __threads[i];
+
+        if (!t || !t->name || !t->name[0])
+            continue;
+        if (t->blocker)
+            pos += snprintf(out + pos, sz - pos, "%s=blk@%p ", t->name,
+                            (void *)t->blocker);
+        else
+            pos += snprintf(out + pos, sz - pos, "%s=run ", t->name);
+    }
+    return pos;
+}
+#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
