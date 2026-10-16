@@ -3216,3 +3216,46 @@ firmware/kernel/thread.o` in the build dir -- never from
 
 Until that is resolved, the hand-rolled switch stays. It works; it is just the
 wrong thing to own.
+
+## GPIO 39/40/41 are JTAG pads, and MCU_SEL=1 may not be enough
+
+The panel's DC, MOSI and SCLK are GPIO 39, 40 and 41 -- MTCK, MTDO and MTDI.
+`gpio_set_direction()` calls `io_mux_select_gpio()`, and measured all three read
+`mcu=1` (GPIO function) in the IO MUX, with `func_out_sel_cfg` routing them
+correctly and `oen_sel` set. So the pads are *nominally* released.
+
+They may not be *effectively* released. The JTAG block can hold those pads
+independently of the per-pad MCU_SEL mux, which is why the display still shows
+nothing while every register on the path reads correct. The user recalls this
+from earlier work on the board, and recalls the cost correctly: releasing JTAG
+from the pads takes away the JTAG path, after which reflashing needs the
+boot button. Since the console and flashing here both ride USB-Serial-JTAG
+(`CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED=y`, and the host enumerates
+`303a:1001 USB JTAG/serial debug unit`), the two are entangled and this is not
+a change to make casually.
+
+What is known for certain, measured this session:
+
+- CS and RST are fine. The PCA9557 answers on INPUT, OUTPUT and CONFIG (`rd=7`),
+  zero write failures, `cfg=0xb0` leaves bits 0/1/2/3/6 as outputs, `out=0x41`
+  holds RST released and CS asserted, and `in=0x41` confirms the pins are
+  electrically at those levels.
+- The SPI controller completes every transfer: 2405 for a full 320x240 flush,
+  zero with USR stuck.
+- DC's `oen_sel` was clear (pad tri-stated) and has been fixed -- `func=256
+  oen=1 en1=1` now, matching SCLK and MOSI. That was a real bug and is worth
+  keeping, but it did not by itself bring pixels up.
+
+So the remaining candidates are, in order: JTAG still holding pads 39-41; the
+GPSPI2 clock source or the pad drive strength; and the ST7789 init sequence
+itself. The decisive measurement is the spike's edge-counting probe -- sample
+`GPIO_IN1` for pin 41 during a known 64-byte transfer at 1 MHz and count
+transitions. 512 edges means the pad is really clocking and the fault is at the
+panel; zero means it is still the pad, and the JTAG question is then the answer.
+
+**Do this change as its own session**, batched with anything else that costs a
+boot-button cycle. The IDF API that releases the JTAG pads was not located in
+this tree's `esp_hw_support`/`esp_system` Kconfig during this pass -- find it
+before assuming `usb_serial_jtag_ll_phy_enable_pad()` is the right lever; that
+bit selects whether the JTAG PHY is on the USB pads, which is a different
+question from whether legacy JTAG drives GPIO 39-42.
