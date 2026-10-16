@@ -2395,23 +2395,102 @@ IDF's original binding is what was lost -- and re-allocating becomes the fix.
 If ours does not fire either, the core's intake is genuinely closed and the
 fault is in the CPU-side path.
 
+### The dead tick was a missing register-window spill
+
+The symptom was core 0 stopping all interrupt intake at a fixed point (~tick
+47): the systimer tick, a hand-armed gptimer on a different slot, and the
+watchdog's own panic interrupt all died at once, and the hardware escalated to
+`TG1WDT_SYS_RST` because the panic interrupt could not be taken either. Nothing
+source-specific was wrong, and the peripheral was innocent -- `real_target_val`
+kept advancing.
+
+The cause: **`switch_thread()` never spilled the register windows.** It is the
+analogue of FreeRTOS's `vPortYield`, and `vPortYield` (portasm.S) does
+
+```asm
+movi  a6, ~(PS_WOE_MASK|PS_INTLEVEL_MASK)
+and   a2, a2, a6            /* clear WOE and INTLEVEL */
+addi  a2, a2, XCHAL_EXCM_LEVEL
+wsr   a2, PS
+rsync
+call0 xthal_window_spill_nw
+```
+
+before saving context. Without that spill there is no base-save area: this core
+config has no REGB option, so nothing else ever writes `sp-16..sp-4` of a frame,
+and GCC's windowed code stores only its own frame, never its caller's. The
+resumed thread reaches `retw` in `yield()`/`rockbox_sleep()`; `retw` does not
+merely jump, it hands the caller's a0-a3 back, and the underflow handler reads
+them from a base-save area that was never written. The thread returns to a
+garbage address with interrupts masked and runs wild. Every downstream symptom
+-- dead tick, dead gptimer, un-taken watchdog interrupt -- follows from that one
+missing call.
+
+Three things that made it look like something else:
+
+- The saved PC was always correct. `t41` records the frame PC after the store,
+  and it decodes to the instruction right after `call8 switch_thread` in the
+  blocking primitive (`yield+6`, `rockbox_sleep+0x1b`). Only the *window refill*
+  was wrong, so the resume looked healthy in every field we sampled.
+- Decoding a trace against the wrong build's ELF sends you nowhere. Address
+  layout shifts between rebuilds; pair each log with the ELF that produced it.
+- `PS`, `INTENABLE` and the pending mask all read clean at every switch point,
+  because the corruption happens *after* the resume, outside anything we had
+  instrumented.
+
+`xthal_window_spill()` (the exception-taking form) and
+`__xtensa_libgcc_window_spill()` are both unusable here: they work by *taking*
+window overflow exceptions, and `switch_thread()`'s `disable_irq()` has just
+masked them. Only the `_nw` form, entered `call0`-style with WOE clear, works.
+
+**It cannot be inline asm.** xtensa GCC does not honour clobbers of windowed
+registers: an inline block that borrowed a6/a7 left the compiler believing a7
+still held the frame pointer, and the next C statement executed `l32i a9, a7, 0`
+with a7 = `0x40000` -- the WOE constant from the block's own literal pool -- and
+faulted. Make it a real function and the ABI handles the conflict.
+
+### The OS tick hook runs on one core, and the Rockbox clock noticed
+
+`vApplicationTickHook` bumped `current_tick` only under
+`if (esp_cpu_get_core_id() == 0)`. In SMP FreeRTOS the hook runs on whichever
+core won the tick increment that period -- measured on this board, **always core
+1**, all 148 samples, even though core 0's tick ISR was running fine (IDF's
+per-core served counter advanced on both). So `current_tick` sat at zero
+forever: no Rockbox timeout ever expired, every thread blocked and stayed
+blocked, and a live, ticking, healthy core looked idle in `core_sleep()`.
+
+Mirror the kernel's counter instead, which is one global advanced exactly once
+per tick regardless of which core delivers it:
+
+```c
+current_tick = (long)xTaskGetTickCount();   /* CONFIG_FREERTOS_HZ = 100 */
+```
+
+`freertos/FreeRTOS.h` must precede `freertos/task.h`, and both must come after
+`config.h` or the Rockbox headers get parsed inside FreeRTOS's macro soup.
+
 ### Where it stands now
 
-Measured, after the flat-frame switch and a full clean rebuild:
+Both fixes verified on hardware: core 0's served count and the gptimer ISR count
+advance for a full 30 s with no reset and no panic, the scheduler idles and
+wakes normally through `core_sleep()`, and threads now run far enough to reach
+the dircache scan and the backlight thread.
 
-- Threads start, the tick runs (`current_tick` advancing in the breadcrumb
-  ring), and the first context switches complete without any cache or double
-  exception. The unanalyzable `ExtWbCacheError` / `double exception` class is
-  gone; the fault is now an ordinary, decodable `LoadProhibited`.
-- The remaining fault decodes precisely: `l32i a6, a7, 188` with
-  `a7 = 0xffffff6c`, giving `EXCVADDR 0x28`. It sits in
-  `check_tmo_expired_inner`, reached from `switch_thread` right after
-  `thread_store_context`. A base pointer of `0xffffff6c` is garbage, and the
-  `pc` the store wrote into the frame (`0xbdc997af`, window-encoded, so
-  nominally `0x3dc997af`) is garbage too -- i.e. `switch_thread` was entered
-  with a corrupt `a0`. The ring wraps at 96 records and the tick records
-  dominate it, so this is *not* provably the first switch; widening the ring or
-  tagging switch counts is the next step.
+The remaining fault is single, deterministic and reportable --
+`StoreProhibited`, `EXCVADDR 0x00f00d12`, in `lld_remove` (linked_list.c:212)
+via `wait_queue_try_remove` from `queue_wait_w_tmo` in `backlight_queue_wait`
+(backlight.c:562), on the backlight thread's first queue timeout. The list
+pointers are pattern garbage.
+
+**Tried and rejected**, so it does not get re-attempted: narrowing `WINDOWSTART`
+to the current window after the spill, and carrying `WINDOWBASE` in the frame's
+`PS.OWB` and restoring it at load. Both made things worse -- narrowing leaves
+`WINDOWSTART = 1`, which makes the spill a no-op and puts the broken `retw`
+refill back, and the pair turned the reportable crash back into a silent WDT
+hang. Worth knowing: at the first spill ever, `WINDOWSTART = 0xaa80` with
+`WINDOWBASE = 0x0f` -- a non-contiguous mask no call chain produces -- so the
+window bookkeeping is already inconsistent before anything walks it. That is the
+direction the `lld_remove` corruption most likely comes from.
 
 ### A breadcrumb ring that survives the crash
 
