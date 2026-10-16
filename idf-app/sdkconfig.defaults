@@ -77,7 +77,7 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # This was left =y while hunting the dead-tick fault, precisely so the watchdog
 # would name the stuck task and print a backtrace. It did, and the fault is
 # fixed; back to n, because a Rockbox core with every thread blocked is normal.
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_FREERTOS_HZ=100
 CONFIG_FREERTOS_USE_TICK_HOOK=y
