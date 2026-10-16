@@ -90,6 +90,10 @@ struct rb_thread_ref
 
 void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot);
 void rb_thread_adopt_self(struct regs *ctx);
+/* Records the task Rockbox's main() runs on, so thread 0 can be bound to it by
+ * name rather than by "whatever task is running when the first switch happens".
+ * Must be called from that task before main(). */
+void rb_thread_set_thread0_task(void *handle);
 /* Declare which thread_entry this task is now running. Called on every entry
  * into a Rockbox thread, because thread_exit() and the scheduler both read
  * corep->running and must not be handed a stale one. */

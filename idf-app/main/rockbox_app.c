@@ -36,6 +36,12 @@ extern void xtensa_paniclog_dump(void);
  * the one file whose job is to stay small. It never returns. */
 extern int main(void);
 
+/* Implemented in firmware/target/xtensa/thread-idf.c. Rockbox's thread 0 must be
+ * bound to this task specifically; binding it to "whichever task is current at
+ * the first context switch" previously attached thread 0 to the scroll thread's
+ * task, so main and scroll shared one gate. */
+extern void rb_thread_set_thread0_task(void *handle);
+
 /* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa.c. It is
  * created here rather than left to FreeRTOS because Rockbox's kernel reads
  * stackbegin/stackend as linker symbols and uses them as thread 0's stack
@@ -92,6 +98,10 @@ static void mask_cache_error_int(void)
 static void rockbox_task(void *arg)
 {
     (void)arg;
+
+    /* Name this task as Rockbox's thread 0 while we are certainly running on it,
+     * before any thread exists to switch out. */
+    rb_thread_set_thread0_task((void *)xTaskGetCurrentTaskHandle());
 
     fill_stack_canary();
     mask_cache_error_int();
