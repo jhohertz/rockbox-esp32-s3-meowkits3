@@ -125,6 +125,17 @@
 /* No plugin loader exists for this core, but apps/plugin.c and apps/codecs.c are
  * built unconditionally and every target config defines these. Codecs are real:
  * they are loaded from storage into CODEC_SIZE worth of PSRAM at runtime. */
+/* A synchronous dircache build takes audio_buffer_available() outright -- the
+ * whole arena -- capped only by DIRCACHE_LIMIT. This target's arena is 4 MB
+ * (XT_AUDIOBUF_SIZE, half of PSRAM), so the default 6 MB limit lets the cache
+ * claim all of it and everything allocated afterwards from the same arena
+ * fails: playlist_init()'s 117 KB fileref table came back as
+ * BUFLIB_ERRCODE_MEMBLOCK_ALLOC_FAILED, and because buflib reports failure as a
+ * negative code while the caller only tests for zero, that surfaced three
+ * frames later as a NULL write. Cap the cache below the arena so the rest of
+ * Rockbox still has somewhere to allocate. */
+#define DIRCACHE_LIMIT   (1024*1024*2) /* 2 MB of the 4 MB arena */
+
 #define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000
 

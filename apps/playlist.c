@@ -1985,6 +1985,14 @@ void playlist_init(void)
 #ifdef HAVE_DIRCACHE
     playlist->dcfrefs_handle = core_alloc(
         playlist->max_playlist_size * sizeof(struct dircache_fileref));
+
+    /* core_alloc() reports failure as a negative buflib error code rather than
+       zero, so the if (!handle) guard in dc_init_filerefs() does not catch it
+       and core_get_data() then returns NULL. On this target the allocation did
+       fail, because a synchronous dircache build claims
+       audio_buffer_available() outright -- the whole arena -- leaving nothing
+       for this table. Fixed by DIRCACHE_LIMIT in the target config; see
+       meowkits3.h. */
     dc_init_filerefs(playlist, 0, playlist->max_playlist_size);
 
     unsigned int playlist_thread_id =
