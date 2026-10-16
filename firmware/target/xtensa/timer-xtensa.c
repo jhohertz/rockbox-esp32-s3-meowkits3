@@ -149,6 +149,25 @@ void vApplicationTickHook(void)
         }
 
         {
+            /* TEMPORARY: pin the fault in time. The status register latches
+               whatever the cache MMU rejected, and the bits are cleared by
+               writing 1 back. Sampling it here and clearing it answers two
+               questions at once: when relative to boot the first fault
+               happened, and whether it is a one-off or keeps re-latching -- a
+               recurring fault points at an ongoing operation, a single latch
+               points at one bad access whose consequences then unfold. */
+            volatile extmem_dev_t* ext =
+                (volatile extmem_dev_t*)0x600C4000;    /* DR_REG_EXTMEM_BASE */
+            uint32_t st = ext->cache_ilg_int_st.val;
+
+            if (st)
+            {
+                scan_trace(96, st, hook_n, current_tick);
+                ext->cache_ilg_int_st.val = st;       /* W1C */
+            }
+        }
+
+        {
             /* TEMPORARY: the panic path (esp_system/port/soc/esp32s3/
                cache_err_int.c) reports the MMU entry fault cause but never
                reads the two registers that do carry information. The hardware
