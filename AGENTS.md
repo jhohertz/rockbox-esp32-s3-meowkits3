@@ -3151,12 +3151,21 @@ priorities, run queue, timeout list and every blocking primitive are untouched.
 `idf_additions.h` at its end (`FreeRTOS.h:1533`, under `ESP_PLATFORM`, marked for
 deprecation in IDF v6.0). In this translation unit that implicit include lands
 before `QueueHandle_t` exists, so `idf_additions.h` fails on `QueueHandle_t`,
-`SemaphoreHandle_t` and `queueQUEUE_TYPE_*`. Reordering `queue.h`/`task.h`/
-`semphr.h` around it did not help, which points at the implicit include firing
-during the *first* `FreeRTOS.h` in the TU rather than at our own ordering — so
-the fix is to find what makes it resolve differently here than in IDF's own
-components (include-path precedence is the first suspect: Rockbox has its own
-`queue.h` in `firmware/kernel/include/`).
+`SemaphoreHandle_t` and `queueQUEUE_TYPE_*` -- even though `idf_additions.h`
+includes `freertos/queue.h` itself four lines in, which is what makes it a real
+puzzle rather than a simple ordering mistake. Reordering `queue.h`/`task.h`/
+`semphr.h` around it did not help.
+
+**A correction, so the next person does not chase a dead end.** An earlier
+version of this note claimed a minimal `#include <freertos/FreeRTOS.h>` test
+compiled cleanly "with the same flags", which narrowed the suspects to Rockbox
+headers included before it. That test was invalid: `firmware/kernel/thread.c` is
+built by Rockbox's own make and does **not** appear in
+`idf-app/build/compile_commands.json`, and the flags were silently harvested from
+`pthread.c` instead. The failure is un-narrowed. Reproduce it from the real
+command line -- `touch ../firmware/kernel/thread.c && make V=1
+firmware/kernel/thread.o` in the build dir -- never from
+`compile_commands.json`, which only knows the CMake-built half of the tree.
 
 Until that is resolved, the hand-rolled switch stays. It works; it is just the
 wrong thing to own.
