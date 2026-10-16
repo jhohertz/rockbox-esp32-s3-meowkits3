@@ -55,7 +55,15 @@ target/hosted/rolo.c
 #endif
 
 #if CONFIG_BINFMT == BINFMT_ROCK
+/* ESP32-S3 links a loaded image into two aliased cache windows, so the flat
+ * single-read loader cannot express it; see the header comment in the target
+ * file. Hosted targets already replace the loader the same way (lc-unix.c,
+ * lc-3ds.c). */
+#if defined(CPU_XTENSA)
+target/xtensa/lc-xtensa.c
+#else
 lc-rock.c
+#endif
 #endif
 
 #if defined(HAVE_ELF)

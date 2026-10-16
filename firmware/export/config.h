@@ -1006,9 +1006,7 @@ Lyre prototype 1 */
 #if (MEMORYSIZE >= 8) && !defined(BOOTLOADER) && (defined(CHECKWPS) || !defined(__PCTOOL__)) \
     && !defined(APPLICATION)
 #ifndef SIMULATOR
-#ifndef CPU_XTENSA   /* EXPERIMENT: bisect, revert */
 #define HAVE_DIRCACHE
-#endif
 #endif
 #ifdef HAVE_TAGCACHE
 #define HAVE_TC_RAMCACHE
