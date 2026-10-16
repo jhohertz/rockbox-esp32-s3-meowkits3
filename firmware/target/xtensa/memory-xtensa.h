@@ -48,6 +48,28 @@
 #define XT_PLUGINBUF_ADDR   (XT_CODECBUF_ADDR + CODEC_SIZE)
 #define XT_LOADADDRESS_ADDR (XT_PLUGINBUF_ADDR + PLUGIN_BUFFER_SIZE)
 
+/* The two external-RAM cache windows alias the same physical pages -- they
+ * index the same MMU entries -- and differ only in what the hardware serves:
+ * the instruction window takes fetches and loads but faults on a store, the
+ * data window takes loads and stores but faults on a fetch. So a loaded image
+ * is linked read-only-half-up and writable-half-down, and the offset between
+ * the two views of one page is constant. */
+#define XT_IROM_BASE        0x40000000
+#define XT_IROM_OFF         0x06000000
+
+/* Text halves carved out of the gap below codecbuf. Measured across all 43
+ * codecs the largest .text+.literal+.rodata is 182 KB and the largest
+ * .data+.bss is 362 KB, so 512 KB each leaves room to grow. These are the
+ * numbers apps/plugins/plugin.lds links against -- it includes this header
+ * rather than repeating them. */
+#define XT_CODEC_TEXT_SIZE   0x80000
+#define XT_PLUGIN_TEXT_SIZE  0x80000
+
+/* Data-window addresses of those halves, i.e. the addresses they are *written*
+ * through. Execution uses the linked address, which is this plus XT_IROM_OFF. */
+#define XT_CODEC_TEXT_ADDR   (XT_CODECBUF_ADDR - XT_CODEC_TEXT_SIZE)
+#define XT_PLUGIN_TEXT_ADDR  (XT_CODEC_TEXT_ADDR - XT_PLUGIN_TEXT_SIZE)
+
 /* Rockbox's thread 0 stack, which is the FreeRTOS task stack the whole of
  * Rockbox runs on. The bare-metal script used the same 0x8000. */
 #define XT_STACK_SIZE       0x8000
