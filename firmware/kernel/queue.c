@@ -551,8 +551,16 @@ bool queue_peek_ex(struct event_queue *q, struct queue_event *ev,
     corelock_lock(&q->cl);
 
     /* Starting at the head, find first match  */
+    unsigned iters = 0;
     for(rd = q->read, wr = q->write; rd != wr; rd++)
     {
+        if(++iters > 4096u)
+        {
+            extern void scan_trace(int, unsigned long, unsigned long,
+                                   unsigned long);
+            scan_trace(85, rd, wr, (unsigned long)iters);
+            break;
+        }
         struct queue_event *e = &q->events[rd & QUEUE_LENGTH_MASK];
 
         if(filters)

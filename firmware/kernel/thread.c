@@ -1075,7 +1075,16 @@ void switch_thread(void)
 
         /* Enter sleep mode to reduce power usage */
         RTR_UNLOCK(corep);
+        /* Recorded, but only every 4096th pass: an idle core does this
+           thousands of times a second and would push every interesting
+           breadcrumb out of the ring. Seeing the pair at all is the point --
+           it says the scheduler found nothing runnable and woke up again. */
+        static unsigned sleep_n;
+        if ((++sleep_n & 4095u) == 0)
+            STRACE(68, current_tick, get_irq_level(), sleep_n);
         core_sleep(IF_COP(core));
+        if ((sleep_n & 4095u) == 0)
+            STRACE(69, current_tick, get_irq_level(), sleep_n);
 
         /* Awakened by interrupt or other CPU */
     }
@@ -1164,6 +1173,8 @@ void switch_thread(void)
     }
 #endif
     STRACE(42, thread, get_irq_level(), current_tick);
+    STRACE(70, thread, (unsigned int)(uintptr_t)thread->name,
+           (unsigned int)(uintptr_t)thread->context.sp);
     /* And finally, give control to the next thread. */
 thread_load_context(thread);
 }

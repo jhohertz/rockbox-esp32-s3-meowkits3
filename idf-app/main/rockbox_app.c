@@ -88,7 +88,7 @@ static void rockbox_task(void *arg)
  * delivery as a whole is dead -- two very different bugs. */
 volatile unsigned rb_late_hits;
 volatile unsigned rb_late_err;
-volatile unsigned rb_core0_ps, rb_core0_ie, rb_core0_ip;
+volatile unsigned rb_probe_ran;
 
 static bool IRAM_ATTR rb_late_cb(gptimer_handle_t timer,
                                  const gptimer_alarm_event_data_t *edata,
@@ -115,34 +115,26 @@ static void rb_late_probe(void *arg)
     };
 
     (void)arg;
-    rb_core0_ps = 0xa5a5a5a5u;   /* the task exists and reached its body */
-    /* Start well after the tick is known to have stopped (~0.5 s in). */
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    rb_probe_ran = 1;
 
+    /* Everything that matters happens before the first blocking call. This
+     * task is pinned to a core that, once its tick dies, is never preempted
+     * again -- so anything behind a vTaskDelay there simply never runs. That
+     * is what made the first version of this probe worthless. */
     rb_late_err = gptimer_new_timer(&cfg, &tm);
-    if (rb_late_err != ESP_OK)
-        return;
-    rb_late_err = gptimer_register_event_callbacks(tm, &cbs, NULL);
-    if (rb_late_err != ESP_OK)
-        return;
-    rb_late_err = gptimer_enable(tm);
-    if (rb_late_err != ESP_OK)
-        return;
-    rb_late_err = gptimer_set_alarm_action(tm, &ac);
-    if (rb_late_err != ESP_OK)
-        return;
-    rb_late_err = gptimer_start(tm);
+    if (rb_late_err == ESP_OK)
+        rb_late_err = gptimer_register_event_callbacks(tm, &cbs, NULL);
+    if (rb_late_err == ESP_OK)
+        rb_late_err = gptimer_enable(tm);
+    if (rb_late_err == ESP_OK)
+        rb_late_err = gptimer_set_alarm_action(tm, &ac);
+    if (rb_late_err == ESP_OK)
+        rb_late_err = gptimer_start(tm);
 
-    /* This task is pinned to core 0 and is not Rockbox code, so what it sees
-     * in PS and INTENABLE is core 0's real state as seen from outside the
-     * Rockbox paths that are under suspicion. */
-    for (;;)
-    {
-        asm volatile ("rsr %0, ps" : "=r"(rb_core0_ps));
-        asm volatile ("rsr %0, intenable" : "=r"(rb_core0_ie));
-        asm volatile ("rsr %0, interrupt" : "=r"(rb_core0_ip));
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+    /* Then get out of the way. The alarm callback is an ISR; it does not need
+     * this task to run again, so Rockbox keeps the core and behaves normally
+     * while the counter tells us whether core 0 is being served. */
+    vTaskDelay(portMAX_DELAY);
 }
 
 void app_main(void)

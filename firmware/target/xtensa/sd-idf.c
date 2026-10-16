@@ -144,8 +144,14 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
 
     sd_last_activity = current_tick;
 
-    return sdmmc_read_sectors(&card, buf, (uint32_t)start, (uint32_t)count) == ESP_OK
-           ? 0 : EIO;
+    {
+        extern void scan_trace(int, unsigned long, unsigned long, unsigned long);
+        esp_err_t e;
+        scan_trace(71, (unsigned long)start, (unsigned long)count, 0);
+        e = sdmmc_read_sectors(&card, buf, (uint32_t)start, (uint32_t)count);
+        scan_trace(72, (unsigned long)start, (unsigned long)count, (unsigned long)e);
+        return e == ESP_OK ? 0 : EIO;
+    }
 }
 
 int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *buf)
@@ -156,8 +162,14 @@ int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *bu
 
     sd_last_activity = current_tick;
 
-    return sdmmc_write_sectors(&card, buf, (uint32_t)start, (uint32_t)count) == ESP_OK
-           ? 0 : EIO;
+    {
+        extern void scan_trace(int, unsigned long, unsigned long, unsigned long);
+        esp_err_t e;
+        scan_trace(73, (unsigned long)start, (unsigned long)count, 0);
+        e = sdmmc_write_sectors(&card, buf, (uint32_t)start, (uint32_t)count);
+        scan_trace(74, (unsigned long)start, (unsigned long)count, (unsigned long)e);
+        return e == ESP_OK ? 0 : EIO;
+    }
 }
 
 /* Card power on this board is an AXP173 rail, not a slot switch, and IDF's host
