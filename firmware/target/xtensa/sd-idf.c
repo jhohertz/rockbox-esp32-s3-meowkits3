@@ -142,7 +142,6 @@ int sd_init(void)
         {
             uint32_t v = mmu[i];
             int j = i + 1;
-            bool same = (mmu[j] == v) && ((v & 0x4000u) == (mmu[i] & 0x4000u));
             while (j < 512 && (mmu[j] == v + (uint32_t)(j - i) ||
                                ((mmu[j] & 0x4000u) && (v & 0x4000u))))
                 j++;
@@ -173,6 +172,19 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
     {
         extern void scan_trace(int, unsigned long, unsigned long, unsigned long);
         esp_err_t e;
+
+        /* TEMPORARY: the crash is reported by the asynchronous cache-error
+           interrupt with both cores sitting in waiti, which means the agent
+           that tripped it is a DMA engine rather than a CPU instruction. The
+           SD host's IDMAC is the busiest one at that moment, and a descriptor
+           buffer in the PSRAM window is exactly the kind of address the cache
+           MMU is consulted for. Record every read whose buffer lands in that
+           window. */
+        if ((unsigned long)buf >= 0x3c000000ul &&
+            (unsigned long)buf < 0x3d000000ul)
+            scan_trace(97, (unsigned long)buf, (unsigned long)start,
+                       (unsigned long)count);
+
         scan_trace(71, (unsigned long)start, (unsigned long)count, 0);
         e = sdmmc_read_sectors(&card, buf, (uint32_t)start, (uint32_t)count);
         scan_trace(72, (unsigned long)start, (unsigned long)count, (unsigned long)e);
