@@ -75,6 +75,13 @@ static void spi_apply_config(void)
 /* Slowest legal divider: 80 / 64 = 1.25 MHz, N=63 H=32 L=1. 200 kHz is not
  * reachable on this block because there is no pre-divider. */
 #define SPI_CLK_1M25    ((63u << 12) | (32u << 6) | (1u << 0))
+/* The value the display was confirmed working with, recorded in e2a8c24dd4 when
+ * the RGBW quadrant test pattern rendered correctly on this glass: bit 31
+ * CLK_EQU_SYSCLK, taking the source clock undivided -- 80 MHz from the PLL that
+ * CLK_GATE bit 2 selects. Not a divided clock. Both the reference and the spike
+ * drive the panel this way, and every divided configuration tried since has
+ * produced banding and noise over a solid fill. */
+#define SPI_CLK_80M     SPI_CLK_EQU_SYSCLK
 
 
 
@@ -181,10 +188,13 @@ void spi_init(void)
      * drives this panel at 80 MHz, but that path uses DMA; the polled CPU-buffer
      * path is proven at 20 MHz first.
      */
-    /* Leave SPI_CLOCK to IDF. spi_bus_add_device() already programmed a legal
-     * divider for the 20 MHz in its device config, and every hand-written value
-     * this file has used for it has been malformed. Writing our own here only
-     * clobbers the one setting IDF got right. */
+    /* The one register IDF must not keep. spi_bus_add_device() programmed a
+     * legal 20 MHz divider, and it is the last thing standing between us and the
+     * configuration that is known to paint: e2a8c24dd4 confirmed the quadrant
+     * test pattern with clk=0x80000000, source undivided. Everything else in
+     * that record -- user 0x18000001, ctrl 0, gate 7 -- is now matched. */
+    wr(SPI_CLOCK, SPI_CLK_80M);
+    spi_apply_config();
 
     wr(SPI_MS_DLEN, SPI_BUF_BYTES * 32 - 1);
     spi_apply_config();
@@ -201,10 +211,12 @@ volatile unsigned int xt_spi_iter_max;
    because spi_write's wait loop is the thing doing the counting. */
 #define SPI_PROBE_SCLK_BIT (1u << (PIN_LCD_SCLK - 32))
 #define SPI_PROBE_MOSI_BIT (1u << (PIN_LCD_MOSI - 32))
+#define SPI_PROBE_DC_BIT   (1u << (PIN_LCD_DC - 32))
 
 volatile unsigned xt_spi_edges;
 volatile unsigned xt_spi_mosi_chg;
 volatile int spi_edge_probe;
+volatile unsigned xt_spi_dc_chg;
 
 /* Spin until the controller has finished clocking. The reference's
  * dc_control() does exactly this before it touches the DC pin: if DC changes
@@ -259,13 +271,14 @@ void spi_write(const unsigned char *data, int len)
            a stalled transfer is countable rather than a silent hang -- an
            unbounded spin here is indistinguishable from never having arrived. */
         unsigned spins = 0;
-        unsigned last_s = 0, last_m = 0;
+        unsigned last_s = 0, last_m = 0, last_d = 0;
 
         if (spi_edge_probe)
         {
             unsigned in1 = rd(GPIO_IN1);
             last_s = (in1 & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
             last_m = (in1 & SPI_PROBE_MOSI_BIT) ? 1u : 0u;
+            last_d = (in1 & SPI_PROBE_DC_BIT) ? 1u : 0u;
         }
 
         while (rd(SPI_CMD) & SPI_CMD_USR)
@@ -276,8 +289,11 @@ void spi_write(const unsigned char *data, int len)
                 unsigned s = (in1 & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
                 unsigned m = (in1 & SPI_PROBE_MOSI_BIT) ? 1u : 0u;
 
+                unsigned d = (in1 & SPI_PROBE_DC_BIT) ? 1u : 0u;
+
                 if (s != last_s) { xt_spi_edges++; last_s = s; }
                 if (m != last_m) { xt_spi_mosi_chg++; last_m = m; }
+                if (d != last_d) { xt_spi_dc_chg++; last_d = d; }
             }
 
             if (++spins > 200000)
@@ -337,13 +353,14 @@ void spi_edge_probe_run(void)
     xt_spi_mosi_chg = 0;
     xt_spi_spins = 0;
     xt_spi_iter_max = 0;
+    xt_spi_dc_chg = 0;
     spi_edge_probe = 1;
     spi_write(pat, sizeof(pat));
     spi_edge_probe = 0;
 
     printf("spi probe: 512 bits @1.25MHz -> sclk edges=%u (want >=512), "
-           "mosi chg=%u, stuck=%u\n",
-           xt_spi_edges, xt_spi_mosi_chg, xt_spi_stuck);
+           "mosi chg=%u, dc chg=%u, stuck=%u\n",
+           xt_spi_edges, xt_spi_mosi_chg, xt_spi_dc_chg, xt_spi_stuck);
     printf("spi probe: spins max=%u total=%u (0.41ms at 1.25MHz is hundreds; ~0 means "
            "the controller clocked nothing)\n", xt_spi_iter_max, xt_spi_spins);
     printf("spi probe: clock=0x%08x ms_dlen=%u user=0x%08x user1=0x%08x "

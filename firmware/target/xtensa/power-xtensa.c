@@ -24,6 +24,7 @@
 #include "tick.h"
 #include "axp173.h"
 #include "i2c.h"
+#include <stdio.h>   /* TEMPORARY bring-up logging */
 #include "xtensa.h"
 
 /* milliVolt at 0%, 10%, ... 100% */
@@ -82,6 +83,22 @@ void power_init(void)
      */
     i2c_init();
     axp173_init();
+
+    /* TEMPORARY: axp173_init() returns silently when axp173_present() fails, so
+     * "power_init done" is not evidence that any rail was configured. Read the
+     * rails back. Expected, matching the reference: 0x12=0x0F (DCDC1, LDO4,
+     * LDO2, LDO3 all enabled in one atomic write), 0x26=0x68 and 0x27=0x68
+     * (3300 mV, 700 + 25*n), 0x28=0xFF (LDO2 and LDO3 both 3300 mV, 1800 +
+     * 100*n in nibbles).
+     *
+     * This matters more than it looks: the AXP173 is not reset by an ESP32 reset
+     * and not by a USB-connected power cycle, so a rail left at the right level
+     * by a previous run makes the boot look healthy while this run configured
+     * nothing. Only a fully cold start with VBUS unplugged reproduces it. */
+    printf("pmu: present=%d 0x12=0x%02x 0x26=0x%02x 0x27=0x%02x 0x28=0x%02x\n",
+           (int)axp173_present(), axp173_read_reg(0x12),
+           axp173_read_reg(0x26), axp173_read_reg(0x27),
+           axp173_read_reg(0x28));
 
 }
 
