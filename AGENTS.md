@@ -2636,6 +2636,39 @@ option, so nothing spills by itself); `current_tick` must mirror
 `xTaskGetTickCount()` because the tick hook runs on whichever core won the
 increment; and `esp_rom_printf()` is the only safe print from a kernel path.
 
+### The arena and the dircache cannot both want everything
+
+A **synchronous** dircache build takes `audio_buffer_available()` outright --
+the whole arena -- capped only by `DIRCACHE_LIMIT`, which defaults to 6 MB
+against this target's 4 MB arena (`XT_AUDIOBUF_SIZE`, half of PSRAM). So the
+cache claimed everything and `playlist_init()`'s 117 KB fileref table came back
+as `BUFLIB_ERRCODE_MEMBLOCK_ALLOC_FAILED` (-2).
+
+That surfaced as a write through NULL three frames away, because buflib reports
+failure as a **negative** error code while `dc_init_filerefs()` tests only for
+zero -- `if (!playlist->dcfrefs_handle)` passes a failure straight through to
+`core_get_data()`. When a Rockbox allocation "succeeds" and then dereferences
+NULL, check for that pattern before believing the handle.
+
+`DIRCACHE_RESERVE/MIN/LIMIT` are now overridable and `meowkits3.h` caps the
+cache at 2 MB. Handle went from -2 to 4.
+
+### Rockbox threads must be pinned to core 0
+
+`xTaskCreateStatic` is only a macro for `xTaskCreateStaticPinnedToCore` with
+`tskNO_AFFINITY`, so SMP FreeRTOS spread Rockbox threads across both cores. The
+task watchdog caught it directly: `CPU 0: tick` while `CPU 1: scroll`, with
+core 1's idle task starved.
+
+Rockbox's kernel is single-core here (`NUM_CORES` is 1), the gate handoff assumes
+outgoing and incoming threads share a core, and `switch_thread()` holds no
+cross-core lock. Pinning is therefore load-bearing, not a tuning choice -- and it
+also frees core 1's idle task, which is what the watchdog was complaining about.
+
+Measured after both fixes: one boot, no panic, abort, assert or watchdog in 65 s;
+13984 context switches and `current_tick` past 9400, still running when
+reflashed. Boot now reaches SD, the MMU dump, dircache and playlist init.
+
 ### A breadcrumb ring that survives the crash
 
 Some faults on this platform cannot be printed. A double exception runs
