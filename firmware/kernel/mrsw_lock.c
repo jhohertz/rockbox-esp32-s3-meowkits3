@@ -470,8 +470,13 @@ int mrsw_debug_report(const struct mrsw_lock *mrsw, char *out, int sz)
     {
         if (pos >= sz - 32)
             break;
-        pos += snprintf(out + pos, sz - pos, "%s%s", n++ ? "," : "",
-                        t->name ? t->name : "?");
+        /* retval is set to 0 by a would-be writer and 1 by a would-be reader
+         * just before blocking, so this says which role each waiter queued
+         * under -- the difference between "a writer was never handed the lock"
+         * and "everyone is merely behind one". */
+        pos += snprintf(out + pos, sz - pos, "%s%s(%s)", n++ ? "," : "",
+                        t->name ? t->name : "?",
+                        t->retval == 0 ? "W" : "R");
     }
     snprintf(out + pos, sz - pos, "]%s", n ? "" : "none");
     return pos;
