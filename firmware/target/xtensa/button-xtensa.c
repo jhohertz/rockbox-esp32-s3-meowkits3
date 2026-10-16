@@ -122,11 +122,19 @@ int button_read_device(int *data)
                 if (++thdiv >= 4)
                 {
                     static char sc[200];
+                    static char os[400];
                     extern int scheduler_debug_state(char *out, int sz);
+                    extern int rb_thread_os_states(char *out, int sz);
 
                     thdiv = 0;
                     thread_debug_dump(th, sizeof th);
                     printf("THREADS: %s\n", th);
+                    /* The same threads as FreeRTOS sees them. A name that is
+                     * unremarkable above and BLOCKED here is inside a driver,
+                     * not awaiting its gate -- the distinction every reading
+                     * so far has been unable to make. */
+                    rb_thread_os_states(os, sizeof os);
+                    printf("OS:      %s\n", os);
                     /* The other half of the same question: what the scheduler
                      * believes, as opposed to what each thread is doing. */
                     scheduler_debug_state(sc, sizeof sc);
