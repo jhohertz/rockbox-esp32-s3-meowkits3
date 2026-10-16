@@ -229,6 +229,26 @@ static int codec_load_ram(struct codec_api *api)
     codec_size = 0;
 #endif
 
+#if defined(CPU_XTENSA)
+    /* ESP32-S3 decodes instruction fetches only in the 0x42... cache window and
+     * loads/stores only in the 0x3c... one, but both index the same MMU entry,
+     * so the image already resident in memory is reachable at either address.
+     * Pointing the entry point at the fetchable window once here means every
+     * call site -- CODEC_LOAD, CODEC_PLAY, CODEC_UNLOAD -- is served, without
+     * any of them knowing about the split. */
+    {
+        unsigned char *ep_addr =
+            (unsigned char *)c_hdr->entry_point + 0x06000000;
+        unsigned char *rp_addr =
+            (unsigned char *)c_hdr->run_proc + 0x06000000;
+        printf("codec: entry_point %p -> %p  run_proc %p -> %p\n",
+               (void *)c_hdr->entry_point, (void *)ep_addr,
+               (void *)c_hdr->run_proc, (void *)rp_addr);
+        memcpy(&c_hdr->entry_point, &ep_addr, sizeof c_hdr->entry_point);
+        memcpy(&c_hdr->run_proc, &rp_addr, sizeof c_hdr->run_proc);
+    }
+#endif
+
     *(c_hdr->api) = api;
 
     logf("Codec: calling entrypoint");
