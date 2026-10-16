@@ -139,6 +139,22 @@ int button_read_device(int *data)
                      * believes, as opposed to what each thread is doing. */
                     scheduler_debug_state(sc, sizeof sc);
                     printf("SCHED: %s\n", sc);
+                    /* Where the playback chain actually stops. init with no play
+                     * means the PCM layer never started; play with no irq means
+                     * the transmit interrupt still is not being delivered; both
+                     * climbing with no sound means the fault is downstream in
+                     * I2S, the ES8311 or the amp. */
+                    {
+                        extern volatile unsigned long xt_sink_init_n;
+                        extern volatile unsigned long xt_sink_play_n;
+                        extern volatile unsigned long xt_sink_stop_n;
+                        extern volatile unsigned long xt_sink_irq_n;
+                        extern volatile unsigned long xt_sink_last_size;
+
+                        printf("AUDIO: init=%lu play=%lu stop=%lu irq=%lu lastsz=%lu\n",
+                               xt_sink_init_n, xt_sink_play_n, xt_sink_stop_n,
+                               xt_sink_irq_n, xt_sink_last_size);
+                    }
                 }
             }
             extern volatile int mrsw_null_self;
