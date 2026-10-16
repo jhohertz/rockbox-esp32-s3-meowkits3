@@ -56,11 +56,8 @@ void st7789_write_command(uint8_t cmd)
 
 void st7789_write_data(const uint8_t *data, int len)
 {
-    *(volatile unsigned int *)0x50001b60 = 0x11110000u + (unsigned)len;
     dc(1);
-    *(volatile unsigned int *)0x50001b60 = 0x22220000u + (unsigned)len;
     spi_write(data, len);
-    *(volatile unsigned int *)0x50001b60 = 0x33330000u + (unsigned)len;
 }
 
 static void cmd(uint8_t c, const uint8_t *args, int n)
