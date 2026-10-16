@@ -47,6 +47,8 @@ static inline void rb_ref_fill(struct thread_entry *thread)
         panicf("thread ref: no memory");
 
     ref->ctx = &thread->context;
+    ref->thread = thread;
+    thread->context.thread = thread;
     ref->name = thread->name;
     ref->stack = thread->stack;
     ref->stack_size = thread->stack_size;
@@ -95,3 +97,37 @@ static inline void load_context(const void* addr)
 
 /* core_sleep() is not defined here: target/xtensa/system-target.h already has
  * it, with the waiti-until-any-interrupt shape this design needs. */
+
+/*---------------------------------------------------------------------------
+ * Declare the running thread for this core.
+ *
+ * The kernel keeps corep->running and updates it inside switch_thread(). That
+ * is sufficient when every change of the running thread passes through
+ * switch_thread(), which is the assumption the hand-rolled switch made. Under
+ * the gated-task model it is not: FreeRTOS decides who runs next, and a thread
+ * can be resumed without the kernel ever recording it. When that happens the
+ * pointer names a thread that is not on the CPU, and thread_exit() -- which
+ * reads it to find the thread it is tearing down -- then evaluates the
+ * priority-inheritance assertion for the wrong thread. That is the "abandon
+ * ship!" panic, and it is why it lands on whichever thread the pointer happened
+ * to be left pointing at rather than on any particular one.
+ *
+ * Setting it at each entry point makes the pointer a fact rather than a
+ * bookkeeping guess.
+ */
+void rb_thread_set_running(void *thread)
+{
+    struct core_entry *corep;
+
+    /* Thread 0 is adopted in store_context(), which has the context in hand but
+     * not the thread_entry, so its context.thread is never filled. Leaving the
+     * pointer alone there is correct rather than lossy: switch_thread() sets
+     * corep->running before it ever calls load_context(), so thread 0 is
+     * accounted for by the path that already works. Clearing it to NULL here
+     * would be strictly worse than not touching it. */
+    if (thread == NULL)
+        return;
+
+    corep = __core_id_entry(CURRENT_CORE);
+    corep->running = (struct thread_entry *)thread;
+}

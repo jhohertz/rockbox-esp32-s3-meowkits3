@@ -65,6 +65,11 @@ struct regs
     void* task;       /* the FreeRTOS task this thread runs on */
     void* ref;        /* the rb_thread_ref handed to the task, which has to
                        * outlive the call that created it */
+    void* thread;     /* struct thread_entry * this context belongs to. Lives
+                       * here rather than only in rb_thread_ref because
+                       * rb_thread_handoff() resumes with the context in hand
+                       * and not the ref, and it needs to re-assert who is
+                       * running. */
 };
 
 /* Implemented in target/xtensa/thread-idf.c. The ref is allocated and filled by
@@ -72,6 +77,12 @@ struct regs
 struct rb_thread_ref
 {
     struct regs *ctx;
+    void *thread;       /* struct thread_entry *, so the task can tell the
+                         * kernel who is actually running. corep->running is
+                         * per-core bookkeeping the kernel maintains in
+                         * switch_thread(), but under the gated-task model a
+                         * thread can gain the CPU without going through that
+                         * path, and then the pointer names the wrong thread. */
     const char *name;
     void *stack;
     unsigned int stack_size;
@@ -79,6 +90,10 @@ struct rb_thread_ref
 
 void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot);
 void rb_thread_adopt_self(struct regs *ctx);
+/* Declare which thread_entry this task is now running. Called on every entry
+ * into a Rockbox thread, because thread_exit() and the scheduler both read
+ * corep->running and must not be handed a stale one. */
+void rb_thread_set_running(void *thread);
 void rb_thread_handoff(struct regs *in);
 
 /* The level-1 handler runs on the interrupted thread's stack: its own frame,
