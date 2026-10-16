@@ -16,6 +16,11 @@
 #define SPI_MS_DLEN    (SPI2_BASE + 0x1C)
 #define SPI_MISC       (SPI2_BASE + 0x20)
 #define SPI_DMA_CONF   (SPI2_BASE + 0x30)
+/* The reference writes SPI_USER = 0x18000001 and nothing else: USR_MOSI,
+ * USR_MISO and USR_DOUTDIN. The MISO phase is left enabled on purpose. */
+#define SPI_USR_MISO     (1u << 28)
+#define SPI_USR_DOUTDIN  (1u << 0)
+
 #define SPI_CLK_GATE   (SPI2_BASE + 0xE8)
 #define SPI_W0         (SPI2_BASE + 0x98)   /* CPU-controlled buffer, 16 words */
 
@@ -48,6 +53,9 @@ void spi_write(const unsigned char *data, int len);
 /* TEMPORARY bring-up: count SCLK/MOSI edges at the pad during a slow transfer,
    then validate the counter by hand-toggling. */
 void spi_edge_probe_run(void);
+
+/* Wait for the controller to stop clocking (see dc() in st7789.c). */
+void spi_wait_idle(void);
 void spi_probe_edges(void);
 
 /* Set to 1 to have the next full 64-byte transfer sampled at the pin. */
