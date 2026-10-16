@@ -1348,3 +1348,50 @@ interrupt, and is the thing our port has no equivalent of.
 Order: add the notify hook, measure whether rtr= entries still sit BLOCKED, and
 if they do, make the tick path yield. Do not do both at once -- they are separate
 claims and the readout can tell them apart.
+
+## The port has no periodic entry into the Rockbox scheduler -- measured, not inferred
+
+Changing CONFIG_FREERTOS_HZ from 100 to 1000 moved the observed polling rate from
+2 Hz to 35 Hz. Rockbox's clock did not change: HZ is 100 either way and the seam
+divides 1000/100. So the polling rate is *not* set by Rockbox's clock.
+
+It is set by how often the system incidentally gets a dispatch opportunity.
+
+The mechanism: a Rockbox timeout is not a FreeRTOS timeout. rb_thread_handoff()
+and rb_task_body() both take their gate with portMAX_DELAY, so a blocked Rockbox
+thread has no OS-level deadline at all. Rockbox advances its own timeouts against
+current_tick only inside switch_thread(), and switch_thread() only runs when some
+thread voluntarily blocks. If every Rockbox thread is parked waiting for a timeout,
+nothing advances the timeouts that would un-park them. The system only escapes
+because the tick interrupt wakes core_sleep() and something then gets scheduled --
+so the effective rate of the entire cooperative scheduler is whatever the
+incidental dispatch frequency happens to be.
+
+That single fact explains three things that were being treated as separate:
+
+ - button lag, which tracked the tick rate exactly (2 Hz at 100 Hz, 35 Hz at
+   1000 Hz). It was never a debounce problem. The user's instinct to connect the
+   keypad to the sampling rate was right and I nearly parked it.
+ - the run queue appearing pinned at rtr=[tick,scroll,codec] earlier, and
+   rtr=[tick] now: the queue drains at dispatch frequency, not at HZ.
+ - playback reaching the player and stalling. Codec progress depends on buffering
+   timeouts and on being selected; both are gated on dispatch opportunities that
+   arrive at an arbitrary rate.
+
+This is gap 5 from the overlay review, and it is the real blocker -- not gap 6.
+The wake-notification hook would not fix it: waking a task that then has to wait
+for a dispatch opportunity to be *selected* changes nothing.
+
+Note the sequence of errors honestly. I claimed the stall was gap 6 from a readout
+taken while the scheduler ran at 2 Hz; then claimed the clock was 8x slow from
+source I had not confirmed was compiled (ROCKBOX_SCAN_TRACE is defined nowhere and
+scan_trace is absent from the ELF). Both were wrong. The 1000 Hz change was made
+for an unrelated architectural reason -- keeping IDF at its native rate for the
+wireless stack -- and accidentally served as the clean experiment that identified
+the actual constraint.
+
+Also note: THREADS: prints "run" for every thread and has been this whole time.
+In this model a blocked thread parks on its gate, not on a Rockbox blocker, so
+blocker is NULL for everyone and the column cannot distinguish anything. It was
+read as evidence more than once. Either make it report timeout-list membership or
+stop quoting it.
