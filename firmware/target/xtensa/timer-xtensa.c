@@ -112,6 +112,7 @@ void vApplicationTickHook(void)
     {
         static unsigned hook_n;
         hook_n++;
+
         extern void scan_trace(int tag, unsigned long a, unsigned long b,
                                unsigned long c);
         if ((hook_n & 7u) != 0)

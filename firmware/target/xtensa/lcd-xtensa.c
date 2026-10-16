@@ -30,6 +30,7 @@
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "st7789.h"
+#include <stdio.h>              /* TEMPORARY bring-up logging */
 
 /* lcd_on and lcd_active() belong to drivers/lcd-memframe.c, which owns the
  * active flag. The functions are prototyped in lcd.h; the variable itself has
@@ -109,10 +110,26 @@ void lcd_update_rect(int x, int y, int width, int height)
     int x_end = x + width;
     int y_end = y + height;
 
+    /* TEMPORARY bring-up counters. "Black screen" has at least three distinct
+       causes on this path -- the flush never being called, it being called but
+       dropped because the panel is flagged inactive, and it running with the
+       right pixel count but the wrong bytes -- and only the last one is visible
+       on the glass. Count all three so the console says which. */
+    static unsigned long upd_n, upd_px, upd_drop;
+    char dbg[96];
+
     /* The panel is powered down; the framebuffer keeps accumulating and is
      * pushed in full when the panel comes back. */
     if (!lcd_active())
+    {
+        if ((++upd_drop & 63u) == 1)
+        {
+            snprintf(dbg, sizeof dbg, "LCD drop: inactive, %lu calls so far\n",
+                     upd_drop);
+            printf("%s", dbg);
+        }
         return;
+    }
 
     if (x < 0) { width += x; x = 0; }
     if (y < 0) { height += y; y = 0; }
@@ -128,6 +145,16 @@ void lcd_update_rect(int x, int y, int width, int height)
 
     for (int row = y; row < y_end; row++)
         lcd_write_data(LCD_FRAMEBUF_ADDR(x, row), width);
+
+    upd_n++;
+    upd_px += (unsigned long)width * height;
+    if (upd_n == 1 || (upd_n & 255u) == 0)
+    {
+        snprintf(dbg, sizeof dbg,
+                 "LCD update #%lu: %dx%d px_total=%lu\n",
+                 upd_n, width, height, upd_px);
+        printf("%s", dbg);
+    }
 }
 
 void lcd_update(void)
