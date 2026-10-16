@@ -1018,3 +1018,96 @@ attempt.
 All three need the same three gated core lines. That is the whole extent of the
 core change under every option, and with `#ifdef THREAD_WAKE_NOTIFY` no other arch
 compiles a different instruction.
+
+## Review: the gaps in the FreeRTOS overlay
+
+Prompted by a fair observation that the failures were starting to look like a
+pattern rather than a list. They do. Every unresolved problem on this branch is
+the same root thing seen from a different angle:
+
+**Rockbox and FreeRTOS each maintain their own answer to "which thread is
+running, and why is it not running now", and nothing reconciles the two.**
+
+The gate reconciles *dispatch* -- exactly one Rockbox task may be outside a
+gate-wait, so Rockbox's single-thread invariant survives. It does not reconcile
+*state*. Where the two models disagree:
+
+### 1. Two incompatible notions of "blocked", and only one is observable
+
+Rockbox considers a thread blocked only if it went through `block_thread()`,
+which sets `thread->blocker`. A Rockbox thread that calls into IDF and waits on
+an IDF semaphore, queue or event is **Blocked as far as FreeRTOS is concerned
+and completely unblocked as far as Rockbox is concerned**.
+
+This directly invalidates the central inference of the last few rounds. The
+reading was:
+
+    owner=buffering  buffering=run  waiters=2
+
+I concluded "runnable but stranded, awaiting a gate nobody will give". But
+`run` only means `blocker == NULL`. A thread sitting inside `sdmmc_read_sectors()`
+-- which is exactly what `sd-idf.c` calls -- prints identically. The two states
+are indistinguishable in every instrument built so far.
+
+So the missed-handoff diagnosis is **unproven, not established**. The alternative
+fits the evidence at least as well: a storage transaction that never completes,
+while Rockbox holds the filesystem writer lock across it, which is by design.
+That also explains the correlation with a deliberately large card, and why the
+filesystem seemed fine right up until it was not.
+
+### 2. Two notions of "the running thread"
+
+`corep->running` versus FreeRTOS's current task. Already bit us once -- the
+`corep->running` bug fixed earlier -- and `rb_thread_handoff` still carries the
+comment that the kernel's notion "is set by whichever core did the giving, which
+is not necessarily the core we land on". Same fault line, different scar.
+
+### 3. Two thread lifetimes
+
+Rockbox ends a thread by switching away from it and never returning; FreeRTOS
+ends one by deleting the TCB. `thread_exit_final()` therefore contains a panic on
+an assumption that is simply false here -- the task is alive and pending on its
+gate, so it *can* come back. That is the `thread_exit->K:*R` panic, and it is not
+a new bug, just a newly-visible one.
+
+### 4. Priority inheritance is blind to foreign blockers
+
+Rockbox propagates priority through objects it owns so a low-priority holder
+cannot stall a high-priority waiter. It cannot see IDF objects. A Rockbox thread
+holding the filesystem writer lock while blocked on an IDF primitive keeps that
+lock for a duration Rockbox neither knows about nor can police. On a system that
+will later run Bluetooth, this is the gap most likely to bite in a way that looks
+random.
+
+### 5. Rockbox timeouts only advance inside switch_thread()
+
+The TMO list is scanned from `switch_thread()`. If the selected thread is parked
+inside IDF, no switch happens, so no timeout expires, so every `TIMEO_*` wait in
+the system silently stops being a timeout. A single stuck I/O operation therefore
+disarms the recovery mechanism for everything else -- which is how one bad
+transaction becomes a whole-device hang rather than a stalled file.
+
+### 6. Wake notification (real, but demoted)
+
+`core_schedule_wakeup()` notifies nobody on a single-core build, and the gate is
+only given by a thread voluntarily blocking. This is a genuine gap, but it is
+*secondary*: it only matters once something is runnable and the holder never
+yields -- and item 1 says the holder may not be yielding precisely because it is
+inside IDF. Fixing notification without fixing item 1 would just move the stall.
+
+## What follows from this
+
+The next step is not the wake hook. It is **making the second notion of blocked
+visible**, because until then every measurement we take is ambiguous and we have
+already been misled by it once tonight.
+
+Concretely: dump FreeRTOS's own view alongside Rockbox's -- `eTaskGetState()` and
+`uxTaskGetSystemState()` per task, so a thread shows as `run` (Rockbox) *and*
+`Blocked` (FreeRTOS) when it is inside a driver. That single readout distinguishes
+the two hypotheses that have been fighting all session, and it is target-side only.
+
+Then, and only then, decide whether the wake hook is needed at all.
+
+Standing lesson for this tree: **a Rockbox thread is not the same object as a
+FreeRTOS task, and any instrument that reads only one of the two will sometimes
+lie with a straight face.**
