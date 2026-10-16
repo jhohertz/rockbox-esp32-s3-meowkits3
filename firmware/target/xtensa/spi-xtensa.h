@@ -44,6 +44,10 @@
 
 void spi_init(void);
 void spi_write(const unsigned char *data, int len);
+
+/* TEMPORARY bring-up: count SCLK/MOSI edges at the pad during a slow transfer,
+   then validate the counter by hand-toggling. */
+void spi_edge_probe_run(void);
 void spi_probe_edges(void);
 
 /* Set to 1 to have the next full 64-byte transfer sampled at the pin. */
