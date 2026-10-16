@@ -29,6 +29,7 @@
 #include "esp_log.h"
 
 extern void scan_trace_early_dump(void);
+extern void xtensa_paniclog_dump(void);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -168,6 +169,7 @@ void app_main(void)
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
     scan_trace_early_dump();
+    xtensa_paniclog_dump();
     /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing
      * Rockbox is guaranteed to have is its own task: if the heap is exhausted

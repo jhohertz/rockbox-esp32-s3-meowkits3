@@ -677,6 +677,7 @@ target/coldfire/ata-as-coldfire.S
  * along with crt0.S, vectors.S, irom-map.c, mmu-xtensa.c, psram-xtensa.c,
  * rom_cache.c, irq-xtensa.c and app.lds. */
 target/xtensa/scan_trace.c
+target/xtensa/paniclog.c
 target/xtensa/thread-idf.c
 target/xtensa/memory-xtensa-syms.S
 target/xtensa/system-xtensa.c
