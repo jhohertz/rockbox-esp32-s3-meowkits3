@@ -23,6 +23,7 @@
 #include "usb.h"
 #include "disk.h"
 #include "pathfuncs.h"
+#include <stdio.h>              /* TEMPORARY bring-up logging */
 
 #ifdef HAVE_SDMMC_HOST
 # include "sdmmc_host.h"
@@ -278,6 +279,7 @@ static inline void storage_thread_init(void)
     }
 
     queue_init(&storage_queue, true);
+    printf("storage: queue ok, creating thread\n");
     storage_thread_id = create_thread(storage_thread, &storage_thread_stack,
                                       sizeof (storage_thread_stack),
                                       0, &storage_thread_name[1]
