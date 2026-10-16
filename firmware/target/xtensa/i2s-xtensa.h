@@ -89,12 +89,25 @@
 #define GDMA_TX_INT_ENA (GDMA_BASE + 0x70)
 #define GDMA_TX_INT_CLR (GDMA_BASE + 0x74)
 
-/* OUT_DONE (bit 0) fires when the last data pointed by one descriptor has been
- * transmitted to the peripheral, which is the point at which the buffer is safe to
- * refill. OUT_EOF (bit 1) fires earlier, when the data has only been read from
- * memory, so the buffer is still in the FIFO and must not be overwritten yet. */
-#define GDMA_INT_DONE (1u << 0)
+/* OUT channel completion events, positions taken from the BIT() definitions in
+ * components/soc/esp32s3/register/soc/gdma_reg.h rather than from prose:
+ *
+ *   bit 0  out_reach_target   GDMA_OUT_REACH_TARGET_CH0
+ *   bit 1  out_eof            GDMA_OUT_EOF_CH0_INT_*   = BIT(1)
+ *   bit 2  out_dscr_err       GDMA_OUT_DSCR_ERR_CH0_INT_* = BIT(2)
+ *   bit 3  out_total_eof      GDMA_OUT_TOTAL_EOF_CH0_INT_* = BIT(3)
+ *
+ * There is no separate "done" bit on the OUT channel: out_eof IS the
+ * per-descriptor completion event, and it is what ESP-IDF's own GDMA driver
+ * treats as the transmit-complete callback. An earlier note here claimed bit 0
+ * was DONE and bit 1 an earlier EOF; bit 0 is actually out_reach_target, which
+ * only fires when out_eof_num is programmed, and it never is. Enabling bit 0
+ * therefore meant the transmit interrupt never fired, the ring starved after two
+ * descriptors, and nothing played.
+ */
+#define GDMA_INT_DONE (1u << 1)          /* out_eof: this descriptor is finished */
 #define GDMA_INT_DSCR_ERR (1u << 2)
+#define GDMA_INT_TOTAL_EOF (1u << 3)
 #define GDMA_TX_LINK    (GDMA_BASE + 0x80)
 #define GDMA_TX_PERI_SEL (GDMA_BASE + 0xA8)
 

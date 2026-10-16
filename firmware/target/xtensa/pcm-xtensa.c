@@ -28,6 +28,10 @@
 #include "pcm-internal.h"
 #include "audiohw.h"
 #include "kernel.h"
+#include "panic.h"
+
+#include <esp_intr_alloc.h>
+#include <soc/interrupts.h>
 
 /* MeowKit wiring (bsp/config.h): the ES7210's data out is GPIO 3, and its
  * BCLK/WS are the same pins the ES8311 is driven from. */
@@ -49,6 +53,29 @@ static int rec_locked;
 /* Where the recorder wants the next bytes, and how many are left in that buffer. */
 static unsigned char *rec_ptr;
 static size_t rec_left;
+
+/* IDF interrupt handle for the GDMA IN channel. As on the transmit side, the
+ * previous code routed the interrupt by writing the per-source slot register and
+ * INTENABLE by hand, which is the bare-metal shape: IDF owns the level-1 vector
+ * table and dispatches from its own allocation table, so the slot had no handler
+ * registered with it, and nothing referenced gdma_rx_irq() so --gc-sections
+ * removed it from the image. Allocating through IDF fixes both.
+ *
+ * The receive event bits are deliberately left as they were: this change only
+ * connects the handler. Whether GDMA_INT_IN_DONE (bit 0, out of the IN channel's
+ * in_suc_eof) is the right per-descriptor event for this ring has not been
+ * re-verified against gdma_reg.h the way the transmit side now has, and changing
+ * two unverified things at once would make a regression impossible to attribute.
+ */
+static intr_handle_t rx_intr;
+
+void ICODE_ATTR gdma_rx_irq(void);
+
+static void gdma_rx_isr(void *arg)
+{
+    (void)arg;
+    gdma_rx_irq();
+}
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
@@ -76,8 +103,14 @@ static void rx_dma_init(void)
     wr(GDMA_RX_CONF0, (1u << 2) | (1u << 3));              /* clear the self-clearing reset bit */
     wr(GDMA_RX_CONF1, (1u << 12));                        /* in_check_owner */
 
-    wr(XT_INTERRUPT_CORE0_BASE + 4 * XT_SRC_GDMA_IN_CH0, XT_SLOT_GDMA_IN_CH0);
-    set_intenable(get_intenable() | (1u << XT_SLOT_GDMA_IN_CH0));
+    if (!rx_intr)
+    {
+        esp_err_t err = esp_intr_alloc(ETS_DMA_IN_CH0_INTR_SOURCE,
+                                       ESP_INTR_FLAG_LEVEL1, gdma_rx_isr,
+                                       NULL, &rx_intr);
+        if (err != ESP_OK)
+            panicf("pcm: cannot allocate the GDMA RX interrupt (%d)", err);
+    }
 
     wr(GDMA_RX_INT_ENA, GDMA_INT_IN_DONE | GDMA_INT_IN_DSCR_ERR | GDMA_INT_IN_DSCR_EMPTY);
     wr(GDMA_RX_INT_CLR, 0xFF);
