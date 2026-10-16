@@ -647,3 +647,50 @@ untouched.
 
 Recommendation: implement, and treat risk 2 as the likely outcome. If it bites,
 the segment split is the follow-on, and it is still target-only work.
+
+## Update: risk 2 resolved, and it splits the problem in two
+
+The boot-time `LoadStoreError` at `pluginbuf + 0x1c` was resolved against a
+matching ELF:
+
+```
+skin_get_gwps -> skin_load -> skin_data_load -> skin_parse
+  -> skin_parse_viewport -> skin_alloc_element      <-- faulted
+```
+
+So `pluginbuf` is not only a plugin image slot. `plugin_get_buf()` hands it out
+as the **allocation arena for the WPS and skin parser**, which means core UI
+code reads and writes it as data constantly. It can never live behind the
+instruction window.
+
+That is good news in disguise, because the two buffers do not have to share a
+base:
+
+| buffer | used as data by | can move to `0x42…`? |
+|---|---|---|
+| `codecbuf` | `apps/codecs.c` only (a handful of sites) | **yes** |
+| `pluginbuf` | `apps/plugin.c` **and** the skin/WPS parser via `plugin_get_buf()` | **no** |
+
+So **audio can be fixed without touching plugin support at all**, and plugins
+remain a separate, later problem that genuinely needs the segment split.
+
+The macro should therefore be range-conditional rather than unconditional, so
+that `pluginbuf` and every skin allocation through it are provably untouched:
+
+```c
+#if defined(CPU_XTENSA)
+/* Only addresses in the instruction window need translating; data-window
+ * addresses -- which is what pluginbuf and all skin arenas are -- pass
+ * through unchanged. */
+#define LC_DATA_ADDR(a) \
+    ((uintptr_t)(a) >= 0x40000000u \
+        ? (unsigned char *)((uintptr_t)(a) - 0x06000000) \
+        : (unsigned char *)(a))
+#else
+#define LC_DATA_ADDR(a)  (a)
+#endif
+```
+
+Revised scope: `firmware/lc-rock.c` (bounds check, `read()` target,
+`lc_get_header()`) and `apps/codecs.c` (the two `codecbuf` comparisons).
+`apps/plugin.c` needs **no change**.
