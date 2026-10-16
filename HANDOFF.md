@@ -1111,3 +1111,64 @@ Then, and only then, decide whether the wake hook is needed at all.
 Standing lesson for this tree: **a Rockbox thread is not the same object as a
 FreeRTOS task, and any instrument that reads only one of the two will sometimes
 lie with a straight face.**
+
+## Concrete instance of gap 2: thread 0 and the scroll thread are the same task
+
+The dual-state readout was built to settle whether a "stuck" thread was stranded
+awaiting its gate or parked inside IDF. It answered a different question first.
+
+    OS: t0:scroll=BLOCKED/0x3fcd99ac
+        s2:scroll=BLOCKED/0x3fcd99ac
+
+Same handle. **Rockbox thread 0 -- `main` -- has been adopted onto the scroll
+thread's FreeRTOS task.** Two Rockbox threads share one task and therefore one
+gate, which is why `main` never appears in the OS-side list at all: it is
+`scroll`.
+
+The mechanism is in `asm/xtensa/thread.c`:
+
+```c
+static inline void store_context(void* addr)
+{
+    rb_thread_adopt_self((struct regs*)(uintptr_t)addr);
+}
+```
+
+`store_context()` runs on every switch-out, and `rb_thread_adopt_self()` adopts
+`xTaskGetCurrentTaskHandle()` for whichever `regs` it is handed, early-returning
+only once that context has a gate. So the first time `store_context()` is called
+with thread 0's context, thread 0 is bound to *whatever task happens to be
+executing*. If the two notions of "running thread" disagree even once -- gap 2 --
+thread 0 gets bound to the wrong task, permanently, and nothing detects it.
+
+Why this accounts for symptoms that the missed-handoff theory only gestured at:
+
+ - a handoff to thread 0 gives the scroll task its gate, so scroll resumes
+   *as* main, with main's `corep->running` -- two threads mutating kernel state
+   through one stack at different times
+ - the filesystem writer lock can end up held by a thread that the other one
+   then releases, or held by a thread that is no longer the one executing
+ - `abandon ship!` at `thread_exit`: the priority-distribution mask of a thread
+   whose task is shared does not match what the kernel expects
+ - `thread_exit->K:*R`: the task genuinely does come back, because it was never
+   only that thread's task
+
+### The fix, and it is target-side
+
+Adopt thread 0 **once, explicitly, while still on the task that started Rockbox**
+-- from the Rockbox entry point in `idf-app/main/rockbox_app.c`, before any
+thread has been created. Then `store_context()` must not adopt at all: it should
+assert that the context already has a gate instead of silently binding one.
+
+That removes a whole class of failure rather than this instance of it, and it
+touches no core file. It also retires the wake-hook work as the next step: gap 6
+may still be real, but there is no point adding a notification path while two
+threads share a task.
+
+### Method note
+
+The readout was built to answer question A and instead exposed question B, which
+turned out to be upstream of A. That is the argument for making state visible
+before reasoning about it: three separate confident conclusions this session
+were drawn from an instrument that could not distinguish two very different
+states.
