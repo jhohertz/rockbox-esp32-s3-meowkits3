@@ -411,10 +411,14 @@ void filetype_init(void)
     filetype_count = 1;
 
     read_builtin_types_init();
+    printf("filetypes: read_builtin_types_init done\n");
     read_viewers_config_init();
+    printf("filetypes: read_viewers_config_init done\n");
     read_viewer_theme_file();
+    printf("filetypes: read_viewer_theme_file done\n");
 #ifdef HAVE_LCD_COLOR
     read_color_theme_file();
+    printf("filetypes: read_color_theme_file done\n");
 #endif
 }
 
