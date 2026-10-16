@@ -81,8 +81,6 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
     struct regs *ctx = ref->ctx;
 
     extern int printf(const char *, ...);
-    printf("task_create: %s slot=%u stack=%p size=%u\n",
-           ref->name ? ref->name : "?", slot, ref->stack, ref->stack_size);
 
     /* Slot reuse: Rockbox recycles thread slots, and the previous occupant's
        task is blocked on its gate forever -- nothing will give it again.
@@ -110,7 +108,6 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
        core, and switch_thread() holds no cross-core lock. Pinning also frees
        core 1's idle task, which is what the watchdog was actually complaining
        about. */
-    printf("task_create: gate ok, creating task\n");
     ctx->task = (void *)xTaskCreateStaticPinnedToCore(
         rb_task_body, ref->name ? ref->name : "rb",
         (configSTACK_DEPTH_TYPE)(ref->stack_size / sizeof(StackType_t)),
@@ -135,11 +132,9 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
        The constant lives in thread-internal.h, off this file's include path on
        purpose, so the write belongs on the kernel side of the seam. */
 
-    printf("task_create: task=%p\n", ctx->task);
 
     /* So a switch to this thread can find its own gate from the task handle. */
     vTaskSetThreadLocalStoragePointer((TaskHandle_t)ctx->task, 0, ctx);
-    printf("task_create: done\n");
 }
 
 /* Thread 0 is not created here: it is the task app_main started Rockbox on. It
