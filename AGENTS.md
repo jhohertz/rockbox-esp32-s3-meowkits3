@@ -3110,3 +3110,53 @@ Both had to be fixed together; either one alone leaves `current_tick` at zero.
 With both fixed the scheduler runs: `switch_thread` iterates, SD initialises
 (`CMD41` OCR `0x00ff8000` in the log), and a full 320x240 frame is pushed
 (4842 SPI chunks).
+
+## The thread layer: stop owning the context switch
+
+Every fault in this port has come from re-implementing something ESP-IDF already
+does. The context switch is the worst instance: `asm/xtensa/thread.c` grew
+`store_context`, `load_context`, `xt_init_frame`, `rb_window_spill`,
+`rb_spill_asm` and a 192-byte `XtExcFrame` in `struct regs`, and each of the
+base-save geometry, the spill ordering, `wsr.PS` not being `rfe`, and the
+literal-pool placement became its own debugging campaign. Hand-transcribing
+IDF's `vPortYield` + `_frxt_dispatch` into a `.S` file produced three new bugs in
+an hour (the window spill overwriting a stash slot inside the frame; a literal
+pool landing inside the function; `movi`-as-address-load not existing outside
+IDF's own build). All three are non-events in IDF's code because it is IDF's,
+assembled by IDF against the real core config.
+
+**The design that removes the layer:** each Rockbox thread *is* a FreeRTOS task,
+built with `xTaskCreateStatic` on the stack Rockbox already allocated, and the
+right to run is a per-thread binary semaphore that only the Rockbox scheduler
+holds.
+
+- `store_context(out)` — nothing. IDF owns the registers.
+- `load_context(in)` — `xSemaphoreGive(in->gate)`, then `xSemaphoreTake(own_gate)`.
+  The take returning *is* the resumption, so it returns into `switch_thread`
+  into the blocking primitive, which is exactly Rockbox's cooperative shape.
+- `THREAD_STARTUP_INIT` — create the gate and the task. Slot reuse is handled by
+  `vTaskDelete`ing the previous occupant from the creator's context.
+- Thread 0 adopts `xTaskGetCurrentTaskHandle()` and gets a gate lazily on its
+  first switch out.
+- `core_sleep()` — `set_irq_level(0); waiti 0; set_irq_level(15);`. `waiti` ends
+  on *any* interrupt, so a device ISR that unblocks a thread does not wait for
+  the tick, and no FreeRTOS API is called from a masked region.
+
+Cooperative semantics hold by construction: a task runs only if its gate was
+given, and exactly one gate is held, so exactly one Rockbox thread runs and only
+at Rockbox's own blocking primitives. The scheduler, thread table, IDs, names,
+priorities, run queue, timeout list and every blocking primitive are untouched.
+
+**Blocker found, not yet fixed.** `FreeRTOS.h` implicitly includes
+`idf_additions.h` at its end (`FreeRTOS.h:1533`, under `ESP_PLATFORM`, marked for
+deprecation in IDF v6.0). In this translation unit that implicit include lands
+before `QueueHandle_t` exists, so `idf_additions.h` fails on `QueueHandle_t`,
+`SemaphoreHandle_t` and `queueQUEUE_TYPE_*`. Reordering `queue.h`/`task.h`/
+`semphr.h` around it did not help, which points at the implicit include firing
+during the *first* `FreeRTOS.h` in the TU rather than at our own ordering — so
+the fix is to find what makes it resolve differently here than in IDF's own
+components (include-path precedence is the first suspect: Rockbox has its own
+`queue.h` in `firmware/kernel/include/`).
+
+Until that is resolved, the hand-rolled switch stays. It works; it is just the
+wrong thing to own.
