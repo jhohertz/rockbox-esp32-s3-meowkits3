@@ -45,13 +45,31 @@
         .text
         .align 4
 
+/* l32r reaches its operand through a PC-relative literal, and the pool entry has
+ * to exist. Letting the assembler synthesise one for an external symbol does not
+ * survive this binutils and linker-script combination: inside a codec image the
+ * reference resolved to the symbol's own address instead of to a literal, so
+ * l32r loaded the contents of that address -- the first word of
+ * __xtensa_libgcc_window_spill, `entry a1, ...' = 0x75006136 -- and the very next
+ * instruction callx8'd to it. IllegalInstruction at a garbage PC, identical on
+ * every attempt, which is what made it look like a corrupt image rather than a
+ * missing literal.
+ *
+ * Emitting the literal explicitly, in the same section and ahead of the use, is
+ * the same workaround this tree already needs for linker-script-defined symbols
+ * for the same reason. */
+        .align 2
+.Lspill_lit:
+        .word __xtensa_libgcc_window_spill
+        .align 4
+
         .globl  setjmp
         .type   setjmp, @function
 setjmp:
         entry   a1, 32
         mov     a3, a2                    /* a3 = jmp_buf */
 
-        l32r    a4, __xtensa_libgcc_window_spill
+        l32r    a4, .Lspill_lit
         callx8  a4
 
         rsr     a4, windowbase
