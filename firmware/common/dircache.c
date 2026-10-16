@@ -2055,8 +2055,15 @@ static void dircache_thread(void)
     /* calls made within the loop reopen the lock */
     dircache_lock();
 
+    printf("dc_thread: running, tick=%ld\n", (long)current_tick);
     while (1)
     {
+        static int dc_loops;
+        if ((dc_loops++ & 63) == 0)
+            printf("dc_thread: loop %d ev=%d tick=%ld done=%d susp=%d\n",
+                   dc_loops, (int)ev.id, (long)current_tick,
+                   (int)dircache_runinfo.thread_done,
+                   (int)dircache_runinfo.suspended);
         queue_wait_w_tmo(&dircache_queue, &ev, 0);
         if (ev.id == SYS_TIMEOUT || dircache_runinfo.suspended)
         {
@@ -2137,7 +2144,11 @@ static bool dircache_thread_post(int volatile *rcp)
  */
 void dircache_wait(void)
 {
+    printf("dircache_wait: tid=%u tick=%ld done=%d\n",
+           dircache_runinfo.thread_id, (long)current_tick,
+           (int)dircache_runinfo.thread_done);
     thread_wait(dircache_runinfo.thread_id);
+    printf("dircache_wait: returned tick=%ld\n", (long)current_tick);
 }
 
 /**
