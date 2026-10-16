@@ -42,6 +42,20 @@ extern int main(void);
  * task, so main and scroll shared one gate. */
 extern void rb_thread_set_thread0_task(void *handle);
 
+/* Rockbox's tick seam divides the kernel tick count down to Rockbox's HZ. It has
+ * to know the rate the kernel was really configured with, and reading
+ * configTICK_RATE_HZ from the Rockbox side does not give that: those objects are
+ * built by the Rockbox makefiles against IDF's generated headers, which are not
+ * reliably regenerated when sdkconfig changes. Measured: with the kernel at
+ * 1000 Hz the macro still read 100 on the Rockbox side, the division folded to
+ * 1, and current_tick ran ten times fast -- which surfaced as a screen timeout
+ * that fired almost immediately and as every Rockbox timeout expiring early
+ * enough to keep the codec from ever starting a transfer.
+ *
+ * This file is compiled by the IDF build, so the value baked in here cannot
+ * disagree with the kernel that actually gets linked. */
+const unsigned int rb_kernel_tick_hz = configTICK_RATE_HZ;
+
 /* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa.c. It is
  * created here rather than left to FreeRTOS because Rockbox's kernel reads
  * stackbegin/stackend as linker symbols and uses them as thread 0's stack
