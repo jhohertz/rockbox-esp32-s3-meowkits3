@@ -214,73 +214,68 @@ static inline void store_context(void* addr)
        scratch left the compiler believing a7 still held the frame pointer, and
        the next C statement loaded from 0x40000 -- the WOE constant -- as a
        pointer. A call goes through the ABI and the conflict disappears. */
+    STRACE(91, ctx->sp, ((uint32_t*)(uintptr_t)ctx->sp)[-8],
+                ((uint32_t*)(uintptr_t)ctx->sp)[-4]);
     rb_window_spill();
 
-    /* The two slots take different forms of the same word.
-       a0 keeps the value verbatim, which is what the resumed thread expects to
-       find in a0 at that point. pc may not: in the windowed ABI the *top two
-       bits* of a0 (31:30) carry the window increment, so the address's own top
-       bits have been overwritten, not merely flagged. retw reconstructs that;
-       _xt_user_exit does not -- it writes the frame's pc straight to EPC_1 and
-       executes rfe, which jumps to the value verbatim. Masking bit 31 alone
-       leaves bit 30 wrong and yields InstrFetchProhibited at 0x020522f3.
-       ESP-IDF's own decoder (esp_cpu_utils.h, esp_cpu_process_stack_pc) maps
-       the pair back with `| 0x40000000`, which is valid here because every
-       executable region on this chip -- flash .text at 0x42xxxxxx, IRAM at
-       0x4037xxxx, and the PSRAM codec window -- has bits 31:30 set to 01. */
-    f[XT_F_PC]   = (pc & 0x80000000u) ? ((pc & 0x3fffffffu) | 0x40000000u)
-                                      : pc;
+    /* The base-save area of a CALLINC 2 frame is the eight words at sp-32 ..
+       sp-4, and it is what retw refills the caller's a8-a11 and a12-a15 from.
+       Sampled before and after the spill so the write can be seen to happen --
+       or not. */
+    STRACE(88, ctx->sp, ((uint32_t*)(uintptr_t)ctx->sp)[-8],
+                ((uint32_t*)(uintptr_t)ctx->sp)[-4]);
+
+    /* A solicited yield needs exactly three things: where to return, which
+       stack was in use, and PS. That is all ESP-IDF's vPortYield saves for the
+       windowed ABI -- a0 to XT_SOL_PC, PS to XT_SOL_PS, and sp recorded in the
+       TCB -- and its restore (.L_frxt_dispatch_sol) is `wsr PS` then retw.
+
+       a2-a11 are deliberately *not* saved, and that is not an oversight: they
+       are caller-saved, so they are dead across the blocking primitive by ABI.
+       Saving and restoring them is what was corrupting the port. With CALLINC 8
+       the current window's a8-a15 are not this function's registers at all,
+       they belong two windows up, so _xt_context_save/_xt_context_restore were
+       overwriting registers the window machinery itself uses: the spill walks
+       windows using a9 and a13 as its base-save pointers, and the underflow
+       handler takes its ancestor pointer from a9. That is how a mask like
+       WINDOWSTART 0xaa80 with WINDOWBASE 0x0f -- a mask no call chain produces
+       -- gets built, and how the spill then stores a4-a7 through some other
+       thread's stack frame. */
+    f[XT_F_PC]   = pc;   /* verbatim, window encoding included. retw strips it
+                            using PS.CALLINC from the same saved PS, so there is
+                            nothing to decode; decoding was only needed for the
+                            rfe/EPC_1 entry, which a resume no longer uses. */
     f[XT_F_A0]   = pc;
     f[XT_F_A1]   = ctx->sp;
-    f[XT_F_EXIT] = (uint32_t)(uintptr_t)&_xt_user_exit;
 
-    /* rfe requires PS.EXCM set at the moment it executes, and _xt_user_exit
-       writes this value to PS immediately before doing that. UM is not
-       cosmetic: ESP-IDF implements _KernelExceptionVector as `break 1, 0`, an
-       explicit unhandled-exception stub, so a thread without UM dies on its
-       first level-1 interrupt. CALLINC 8 is the window the resume point lives
-       in -- switch_thread is entered with call8, and the resume point is the
-       instruction right after that call, still in the callee's window. */
-    f[XT_F_PS] = (saved & ~(XT_PS_INTLEVEL_MASK | XT_PS_CALLINC_MASK))
-                 | XT_PS_UM | XT_PS_EXCM_MASK | XT_PS_WOE_MASK
-                 | XT_PS_CALLINC_8;
+    /* PS is restored by a plain `wsr ps`, not by rfe, so whatever is in the
+       frame is what the thread runs with -- every bit of it, with none of the
+       fixes rfe performs for free. Two of those fixes have to be applied by
+       hand here:
 
-    /* The register half is filled by IDF's routine rather than by hand. It
-       addresses the frame through sp, so sp is moved to the frame for the
-       duration: the frame lives in the thread table rather than on a stack, and
-       the routine only ever writes inside it. It is entered with call0 because
-       that is how IDF's own vectors enter it (_xt_handle_exc, _xt_syscall_exc),
-       and it requires its caller to have placed a12 and a13 in the frame
-       first -- byte offsets 60 and 64 are XT_STK_A12 and XT_STK_A13.
-       sp is then reloaded from the frame's own A1 slot, which is the same
-       value switch_thread needs back. */
-    xt_context_addr = (uint32_t)(uintptr_t)f;
+       INTLEVEL. switch_thread() is reached through disable_irq(), so the PS
+       sampled a few instructions earlier has INTLEVEL 15. Writing it back
+       verbatim leaves the resumed thread with interrupts masked forever, which
+       is indistinguishable from a dead tick: the alarm fires in hardware and
+       the core never vectors to it.
 
-    asm volatile ("j 2f                       \n"
-                  ".align 4                   \n"
-                  "10: .long xt_context_addr  \n"
-                  "11: .long _xt_context_save \n"
-              "2:                             \n"
-                  "l32r    a6, 10b            \n"
-                  "l32i    a6, a6, 0          \n"
-                  "mov     a1, a6             \n"   /* sp = the frame */
-                  "s32i    a12, a1, 60        \n"   /* XT_STK_A12 */
-                  "s32i    a13, a1, 64        \n"   /* XT_STK_A13 */
-                  "l32r    a6, 11b            \n"
-                  "callx0  a6                 \n"
-                  "l32i    a1, a1, 16         \n"   /* XT_STK_A1: our sp back */
-                  :
-                  :
-                  : "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9",
-                    "a10", "a11", "a12", "a13", "memory");
-    /* a12 and a13 have to be in that list even though the frame receives their
-       values: _xt_context_save copies them to XT_STK_TMP0/TMP1 and then uses
-       the registers themselves as scratch. Under the windowed ABI a12-a15 are
-       callee-saved, so without the declaration GCC is told nothing about a
-       caller-saved-looking destruction of callee-saved state, and whatever it
-       had parked there is silently lost. Omitting them produced a
-       LoadProhibited at EXCVADDR 0x28 in check_tmo_expired, i.e. a NULL
-       core_entry, several switches later and nowhere near the cause. */
+       EXCM. A thread must run with EXCM clear. With it set, any exception the
+       thread takes is by definition a second one, so the core goes to
+       _DoubleExceptionVector, and IDF implements that (and the kernel and
+       hardware vectors) as _xt_panic, which prints nothing and spins. That is
+       what the watchdog's Saved PC was pointing at -- _xt_context_save and
+       _xt_panic in IDF's xtensa_context.S / panic_handler_asm.S, over and over,
+       with no Guru Meditation line ever reaching the console. rfe clears EXCM on
+       the first-run path; nothing clears it on this one.
+
+       Everything else is left exactly as the core had it: UM and RING decide
+       which exception vector a level-1 interrupt uses (_KernelExceptionVector
+       is `break 1, 0` here, so UM must stay set), WOE has to stay set for the
+       window underflow that refills the caller's a0-a3 to be taken at all, and
+       CALLINC has to stay non-zero because retw uses it to strip the window
+       encoding from a0. OWB travels with PS and must not be edited either. */
+    f[XT_F_PS]   = saved & ~(XT_PS_EXCM_MASK | XT_PS_INTLEVEL_MASK);
+    f[XT_F_EXIT] = 0;     /* 0 flags a solicited frame, as IDF does */
 }
 
 /*---------------------------------------------------------------------------
@@ -318,36 +313,93 @@ static inline void xt_init_frame(struct regs* ctx)
 static inline void load_context(const void* addr)
 {
     struct regs* ctx = (struct regs*)(uintptr_t)addr;
+    uint32_t* f = ctx->frame;
 
     if (ctx->start != 0)
+    {
+        uint32_t* fs;
+
+        /* A thread that has never run has no frames to return through, so it is
+           entered by way of an exception return: lay the full frame and let
+           IDF's own restore and user-exit paths do the rest. */
         xt_init_frame(ctx);
+
+        /* ... but not where xt_init_frame built it. Both halves of IDF's
+           never-run path address the frame through sp -- _xt_context_restore
+           ends by reloading sp from the frame's own A1 slot, and _xt_user_exit
+           then reads PS, PC and A0 back through sp before it removes the frame.
+           A frame parked in the thread table with an A1 slot naming the thread's
+           stack therefore has its sp replaced halfway through, and the rest is
+           read from the top of that stack instead. IDF's invariant, which the
+           exception entry gives it for free, is that the frame sits at the top
+           of the stack and its A1 slot names the frame itself. So build it in
+           the thread table, where xt_init_frame can reach it, and move it down. */
+        fs = (uint32_t*)((uintptr_t)ctx->sp - XT_STK_FRMSZ);
+        memcpy(fs, ctx->frame, XT_STK_FRMSZ);
+        fs[XT_F_A1] = (uint32_t)(uintptr_t)fs;
+        ctx->sp = (uintptr_t)fs;
+        xt_context_addr = (uint32_t)(uintptr_t)fs;
+
+        asm volatile ("j 3f                               \n"
+                      ".align 4                           \n"
+                      "10: .long xt_context_addr          \n"
+                      "11: .long _xt_context_restore      \n"
+                      "12: .long _xt_user_exit            \n"
+                  "3:                                    \n"
+                      "l32r    a6, 10b                    \n"
+                      "l32i    a6, a6, 0                  \n"
+                      "mov     a1, a6                     \n"   /* sp = the frame */
+                      "rsil    a7, %0                     \n"   /* PS.EXCM set */
+                      "l32r    a7, 11b                    \n"
+                      "callx0  a7                         \n"   /* _xt_context_restore */
+                      "l32r    a7, 12b                    \n"
+                      "jx      a7                         \n"   /* _xt_user_exit -> rfe */
+                      :
+                      : "i"(XCHAL_EXCM_LEVEL)
+                      : "memory");
+        /* never returns */
+    }
 
     xt_context_addr = (uint32_t)(uintptr_t)ctx->frame;
 
-    /* sp is pointed at the frame, which is what both IDF routines take as
-       their argument, and _xt_user_exit takes its fields from. It restores PS,
-       PC and A0 from the frame, sets sp from the frame's A1, and executes rfe.
-       rsil supplies PS.EXCM, without which rfe is not a legal instruction; it
-       is a user-mode instruction, so this is reachable from an ordinary task,
-       which is how vPortYield reaches the same path.
-       Nothing follows: control leaves through rfe and never comes back. */
-    asm volatile ("j 3f                          \n"
-                  ".align 4                      \n"
-                  "10: .long xt_context_addr     \n"
-                  "11: .long _xt_context_restore \n"
-              "3:                                \n"
-                  "l32r    a6, 10b               \n"
-                  "l32i    a6, a6, 0             \n"
-                  "mov     a1, a6                \n"   /* sp = the frame */
-                  "rsil    a7, %0                \n"   /* PS.EXCM set */
-                  "l32r    a7, 11b               \n"
-                  "callx0  a7                    \n"   /* _xt_context_restore */
-                  "l32i    a0, a1, 0             \n"   /* XT_STK_EXIT */
-                  "jx      a0                    \n"   /* -> _xt_user_exit */
+    STRACE(89, ctx->sp, ((uint32_t*)(uintptr_t)ctx->sp)[-8],
+                ((uint32_t*)(uintptr_t)ctx->sp)[-4]);
+    STRACE(90, f[XT_F_PC], f[XT_F_PS], f[XT_F_A1]);
+
+    /* A thread that blocked in switch_thread is resumed the way IDF resumes one
+       in _frxt_dispatch's .L_frxt_dispatch_sol branch: point sp at the frame,
+       put PS back, load a0, and return through the blocking primitive with
+       retw.
+
+       Nothing else is restored, and that is the point. a2-a11 are caller-saved
+       and dead by ABI across the blocking primitive, and writing a8-a15 here
+       would be writing into windows that are not this call chain's -- which is
+       what was feeding the window spill pointers that belonged to other
+       threads.
+
+       sp is loaded from the frame's A1 slot rather than set to the frame itself,
+       and the distinction is load-bearing. retw refills the caller's a0-a3 from
+       the base-save area at a1-16..a1-4, i.e. relative to whatever sp holds at
+       that moment, and that area belongs to the blocking primitive's own frame
+       on the thread's stack. Point sp at the thread table instead and the
+       refill reads 16 bytes of unrelated thread entries. The frame address is
+       only ever used to *find* the saved values, which is why a8 does that work
+       and a1 is assigned last. */
+    asm volatile ("j 4f                               \n"
+                  ".align 4                           \n"
+                  "20: .long xt_context_addr          \n"
+              "4:                                    \n"
+                  "l32r    a8, 20b                    \n"
+                  "l32i    a8, a8, 0                  \n"   /* the frame */
+                  "l32i    a2, a8, 8                  \n"   /* XT_STK_PS */
+                  "l32i    a0, a8, 4                  \n"   /* XT_STK_PC */
+                  "l32i    a1, a8, 16                 \n"   /* XT_STK_A1 */
+                  "wsr     a2, ps                     \n"
+                  "retw                               \n"
                   :
-                  : "i" (XT_EXCM_LEVEL)
-                  : "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-                    "a8", "a9", "a10", "a11", "memory");
+                  :
+                  : "memory");
+    /* never returns */
 }
 
 /* Nothing else is needed to start a thread: load_context() checks start, and
