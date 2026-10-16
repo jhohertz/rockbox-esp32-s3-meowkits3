@@ -139,8 +139,10 @@ int button_read_device(int *data)
                    "nullW=%d nullR=%d recur=%d\n",
                    count, owner, waiters,
                    mrsw_null_self, mrsw_null_self_read, mrsw_recursion_hits);
-            /* Only worth the bytes when the lock is actually held */
-            if (count != 0)
+            /* Worth the bytes whenever anything is outstanding. Gating this on
+             * count != 0 was a mistake: the state that matters is a FREE lock
+             * with permanent waiters, which count alone does not flag. */
+            if (count != 0 || waiters != 0)
             {
                 extern int mrsw_debug_report(const struct mrsw_lock *,
                                              char *, int);
