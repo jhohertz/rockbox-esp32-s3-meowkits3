@@ -59,6 +59,14 @@ static StaticTask_t tcb_pool[MAXTHREADS];
  * The handles are recorded here rather than recovered from tcb_pool because a
  * slot is reused after vTaskDelete(), and eTaskGetState() on a deleted TCB is
  * not a thing that can be done safely. */
+/* TEMPORARY bring-up: count the times the kernel switches out a context whose
+ * recorded task is not the one actually executing. That is the two-notions-of-
+ * running-thread gap made visible rather than inferred, and it is what let the
+ * mis-adoption above go unnoticed. */
+volatile unsigned long os_ctx_task_mismatch;
+static const char *os_mismatch_ctx;
+static const char *os_mismatch_real;
+
 static TaskHandle_t os_task[MAXTHREADS];
 static TaskHandle_t os_task0;
 
@@ -115,6 +123,14 @@ int rb_thread_os_states(char *out, int sz)
                         os_state_name(eTaskGetState(os_task[i])),
                         (void *)os_task[i]);
     }
+
+    /* Printed last so it is easy to ignore when zero and impossible to miss
+     * when it is not. */
+    if (os_ctx_task_mismatch)
+        snprintf(out + pos, sz - pos, "| MISMATCH %lu ctx=%s real=%s",
+                 os_ctx_task_mismatch,
+                 os_mismatch_ctx ? os_mismatch_ctx : "?",
+                 os_mismatch_real ? os_mismatch_real : "?");
     return pos;
 }
 
@@ -216,24 +232,50 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
         os_task[slot] = (TaskHandle_t)ctx->task;
 }
 
-/* Thread 0 is not created here: it is the task app_main started Rockbox on. It
-   still needs a gate, because switching away from it has to block it like any
-   other thread. Adopt the task we are already on. */
+/* Thread 0 is not created here: it is the task rockbox_app.c started Rockbox's
+   main() on. It still needs a gate, because switching away from it has to block
+   it like any other thread.
+
+   It must NOT be bound to xTaskGetCurrentTaskHandle(). store_context() calls
+   this on every switch-out, so binding to "whatever task is running right now"
+   means thread 0 gets attached to the first task that happens to switch out --
+   which is exactly what happened: thread 0 ended up sharing the scroll thread's
+   task and gate, so a handoff to main resumed scroll as main. The task is now
+   recorded once by rockbox_task() before main() exists, and adoption uses that
+   handle or refuses to proceed. */
+static TaskHandle_t os_thread0_handle;
+
+void rb_thread_set_thread0_task(void *handle)
+{
+    os_thread0_handle = (TaskHandle_t)handle;
+}
+
 void rb_thread_adopt_self(struct regs *ctx)
 {
-    /* Record the adopted task too: thread 0 is a real Rockbox thread and its OS
-     * state matters as much as any other's. */
-    os_task0 = xTaskGetCurrentTaskHandle();
+    if (ctx->task != NULL && (TaskHandle_t)ctx->task != xTaskGetCurrentTaskHandle())
+    {
+        os_ctx_task_mismatch++;
+        os_mismatch_ctx = pcTaskGetName((TaskHandle_t)ctx->task);
+        os_mismatch_real = pcTaskGetName(NULL);
+    }
+
     if (ctx->gate != NULL)
         return;
 
+    if (os_thread0_handle == NULL)
+        panicf("thread0 task never recorded -- rockbox_task() must call "
+               "rb_thread_set_thread0_task() before main()");
+
     ctx->gate = (void *)xSemaphoreCreateBinary();
-    ctx->task = (void *)xTaskGetCurrentTaskHandle();
+    ctx->task = (void *)os_thread0_handle;
+    os_task0 = os_thread0_handle;
 
     if (ctx->gate == NULL)
         panicf("thread gate: no memory for thread 0");
 
-    vTaskSetThreadLocalStoragePointer(NULL, 0, ctx);
+    /* Set the TLS on the task that owns this context, not on the current one:
+       they are only the same task by correctness, not by coincidence. */
+    vTaskSetThreadLocalStoragePointer(os_thread0_handle, 0, ctx);
 }
 
 void rb_thread_handoff(struct regs *in)
