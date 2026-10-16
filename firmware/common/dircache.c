@@ -2072,11 +2072,18 @@ static void dircache_thread(void)
            do it for real below */
         int *rcp = (int *)ev.data;
 
+        STRACE(75, current_tick, 0, 0);
         if (!rcp && prepare_build(NULL) > 0)
+        {
+            STRACE(76, current_tick, 1, 0);
             continue;
+        }
+        STRACE(76, current_tick, 0, 0);
 
         bool realloced;
+        STRACE(77, current_tick, 0, 0);
         int rc = prepare_build(&realloced);
+        STRACE(78, current_tick, 1, rc);
         if (rcp)
             *rcp = rc;
 
@@ -2084,11 +2091,17 @@ static void dircache_thread(void)
             continue;
 
         trigger_cpu_boost();
+        STRACE(79, current_tick, 0, 0);
         build_volumes();
+        STRACE(80, current_tick, 0, 0);
 
         /* if it was reallocated, compact it */
         if (realloced)
+        {
+            STRACE(81, current_tick, 0, 0);
             compact_cache();
+            STRACE(82, current_tick, 0, 0);
+        }
      }
 
      dircache_unlock();
