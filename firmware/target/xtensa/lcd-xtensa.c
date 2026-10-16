@@ -30,6 +30,7 @@
 #include "pca9557.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
+#include "esp_heap_caps.h"
 #include "st7789.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
@@ -61,22 +62,17 @@ void lcd_write_data(const fb_data *p_bytes, int count)
         int n = count > chunk ? chunk : count;
         int j = 0;
 
-        /* Ship the buffer verbatim. The measured contract says the panel wants
-         * the high byte of the RGB565 word first, and that is what the spike
-         * sends -- but Rockbox's native value is already stored swapped for
-         * that. Measured: a solid red frame holds 0x00f8 in the framebuffer, so
-         * the two bytes in memory are f8, 00 in wire order already, and
-         * extracting pixel>>8 first emits 00,f8 -- the panel's two halves
-         * exchanged. The spike reaches the same wire order from 0xf800 by
-         * building explicit big-endian pairs; doing the swap here on top of
-         * Rockbox's own is a double swap.
-         *
-         * fb_data is unsigned short at LCD_DEPTH 16 on a little-endian core, so
-         * a straight byte copy is the high byte first on the wire. */
+        /* High byte first. Reverting a "fix" I made earlier this session on the
+         * strength of reading 0x00f8 out of the framebuffer for a solid red
+         * fill -- but that fill wrote the raw bytes F8,00 by hand, so reading it
+         * back as a little-endian uint16_t necessarily gave 0x00f8. It said
+         * nothing about Rockbox's native format, which is ordinary RGB565 with
+         * red = 0xf800. Swapping on top of that exchanged the two halves of
+         * every pixel, and on the glass yellow (0xfff0) came out blue. */
         for (int i = 0; i < n; i++) {
             unsigned short pixel = p_bytes[i];
-            buf[j++] = (unsigned char)(pixel & 0xFF);
             buf[j++] = (unsigned char)(pixel >> 8);
+            buf[j++] = (unsigned char)(pixel & 0xFF);
         }
 
         st7789_write_data(buf, j);
@@ -204,6 +200,72 @@ void lcd_init_device(void)
        the spike. If this is red, the panel, the expander CS/reset, the SPI path
        and the backlight are all fine and the black screen is a rendering or
        power-state problem above this line. If it is black, it is not. */
+    /* Paint four quadrants straight from internal DMA RAM, through our own
+     * command and transfer functions, bypassing Rockbox's framebuffer entirely.
+     *
+     * This isolates the last difference from the spike that paints correctly on
+     * this glass. Its framebuffer is heap_caps_malloc(MALLOC_CAP_INTERNAL |
+     * MALLOC_CAP_DMA); ours is the PSRAM window at 0x3c127ac0, which is
+     * cache-backed and depends on an MMU entry. Every register on the transport
+     * already matches it byte for byte -- clk 0x80000000, user 0x18000001,
+     * ctrl 0, gate 7, dlen 511 -- and SCLK, MOSI, DC, CS and the PMU rails are
+     * all measured good, yet the panel still shows the quadrants the spike left
+     * in GRAM. If this puts quadrants on the glass in the same places the spike
+     * did, the transport is proven and the fault is the PSRAM framebuffer. If it
+     * does not, the fault is in the environment: task context, the tick, or
+     * something reconfiguring the bus after init.
+     *
+     * One line buffer, reused for every row, so this costs 640 bytes rather
+     * than 150 KB of the 337 KB static region.
+     */
+    {
+        uint16_t *line = heap_caps_malloc(LCD_WIDTH * sizeof(uint16_t),
+                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        unsigned char wire[LCD_WIDTH * 2];
+
+        if (line)
+        {
+            int row, i;
+
+            set_window(0, LCD_WIDTH - 1, 0, LCD_HEIGHT - 1);
+
+            for (row = 0; row < LCD_HEIGHT; row++)
+            {
+                for (i = 0; i < LCD_WIDTH; i++)
+                {
+                    int top = row < LCD_HEIGHT / 2;
+                    int left = i < LCD_WIDTH / 2;
+
+                    /* Deliberately NOT the spike's RGBW quadrants -- three
+                     * horizontal bands of cyan, magenta and yellow. Choosing the
+                     * same layout as the reference made the last run unreadable:
+                     * "still the quadrants" cannot distinguish our write from
+                     * the GRAM the spike left behind. If these bands appear, this
+                     * build wrote GRAM. If quadrants remain, it did not. */
+                    (void)left;
+                    line[i] = row < LCD_HEIGHT / 3 ? 0x07FF
+                            : (row < 2 * LCD_HEIGHT / 3 ? 0xF81F : 0xFFF0);
+                }
+
+                /* Explicit big-endian pairs, the byte order the spike sends. */
+                for (i = 0; i < LCD_WIDTH; i++)
+                {
+                    wire[i * 2]     = (unsigned char)(line[i] >> 8);
+                    wire[i * 2 + 1] = (unsigned char)(line[i] & 0xFF);
+                }
+
+                st7789_write_data(wire, sizeof wire);
+            }
+
+            heap_caps_free(line);
+            printf("LCD diag: quadrants pushed from internal RAM\n");
+        }
+        else
+        {
+            printf("LCD diag: no internal RAM for the line buffer\n");
+        }
+    }
+
     {
         unsigned char *fb = (unsigned char *)FRAME;
         unsigned i;
@@ -298,6 +360,7 @@ void lcd_init_device(void)
                xt_spi_calls - calls_before, xt_spi_stuck - before,
                (int)lcd_on, (void*)fb);
     }
+
 }
 
 /*
