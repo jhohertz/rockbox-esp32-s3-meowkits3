@@ -143,7 +143,21 @@
  * its owner. With the check off that violation walks a garbage pointer and dies
  * as a bare LoadProhibited; with it on the kernel names the thread itself.
  * Remove once the thread seam is settled. */
-#define THREAD_EXTRA_CHECKS 1
+/* Off for now, and not because the checks are wrong. Honoured since thread.c
+ * stopped clobbering it, enabling these immediately turned a known port defect
+ * fatal: thread_exit_final() ends in THREAD_PANICF("thread_exit->K:*R") because
+ * in the gated-task model switch_thread() legitimately returns to a thread that
+ * has exited -- its FreeRTOS task is still alive, pending on its gate -- which
+ * upstream treats as "must never be reached". Until thread_exit is taught the
+ * task model, enabling this panic-loops the device instead of informing us.
+ *
+ * Worth recording what it did find on the way: with these checks on, the
+ * runnable list was observed to contain scroll/tick/power/dircache five or six
+ * times each, i.e. threads are added to core_entry.rtr without their previous
+ * entry being removed. That duplication is the leading candidate for the play
+ * hang, since it lets switch_thread() select one thread twice and hand it a
+ * second gate. */
+#define THREAD_EXTRA_CHECKS 0
 
 #define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000

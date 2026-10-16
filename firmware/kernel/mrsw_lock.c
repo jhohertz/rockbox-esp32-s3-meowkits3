@@ -21,7 +21,7 @@
 #include <string.h>
 #include "mrsw_lock.h"
 
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
 /* TEMPORARY bring-up: the recursion shortcut in mrsw_write_acquire() compares
  * __running_self_entry() against splay.blocker.thread. On a free lock the
  * blocker is NULL, so if the kernel ever reports no running thread the compare
@@ -30,7 +30,7 @@
 volatile int mrsw_null_self;      /* write_acquire seen with no running thread */
 volatile int mrsw_null_self_read; /* read_acquire seen with no running thread  */
 volatile int mrsw_recursion_hits; /* acquires that took the recursion shortcut */
-#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
+#endif /* CPU_XTENSA bring-up instrumentation */*
 
 /* TEMPORARY bring-up: the counters say the owner/count pair desynchronises but
  * not where. This records the last transitions with the thread that made them,
@@ -206,7 +206,7 @@ void mrsw_read_acquire(struct mrsw_lock *mrsw)
 
     struct thread_entry *current = __running_self_entry();
 
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
     if (current == NULL)
         mrsw_null_self_read++;
 #endif
@@ -295,7 +295,7 @@ void mrsw_read_release(struct mrsw_lock *mrsw)
         /* No readers remain and a writer is waiting */
         mrsw->count = -1;
         result = mrsw_reader_wakeup_writer(mrsw, thread IF_PRIO(, slotnum));
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         /* The one ownership transfer that does not pass through
          * mrsw_write_acquire(), so without this the ring shows a new owner
          * appearing from nowhere. */
@@ -328,7 +328,7 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
 
     struct thread_entry *current = __running_self_entry();
 
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
     if (current == NULL)
         mrsw_null_self++;
     else if (current == mrsw->splay.blocker.thread)
@@ -339,7 +339,7 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
     {
         /* Current thread already has write access */
         mrsw->count--;
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('R', current, mrsw->count, mrsw);
 #endif
         return;
@@ -354,7 +354,7 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
         /* Lock is open to a writer */
         mrsw->count = -1;
         mrsw->splay.blocker.thread = current;
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('T', current, -1, mrsw);
 #endif
         corelock_unlock(&mrsw->cl);
@@ -362,7 +362,7 @@ void mrsw_write_acquire(struct mrsw_lock *mrsw)
     }
 
     /* Readers present or a writer owns it - block... */
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
     mrsw_evt_log('B', current, mrsw->count, mrsw);
 #endif
     current->retval = 0; /* indicate single-wake candidate */
@@ -389,7 +389,7 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
     {
         /* This thread still owns write lock */
         mrsw->count = count + 1;
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('r', __running_self_entry(), count + 1, mrsw);
 #endif
         return;
@@ -405,21 +405,21 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
     {
         mrsw->splay.blocker.thread = NULL;
         mrsw->count = 0;
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('F', __running_self_entry(), 0, mrsw);
 #endif
     }
     else if (thread->retval == 0) /* 'count' stays -1 */
     {
         result = mrsw_writer_wakeup_writer(mrsw, thread);
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('h', thread, mrsw->count, mrsw);
 #endif
     }
     else                          /* 'count' becomes # of readers */
     {
         result = mrsw_writer_wakeup_readers(mrsw, thread);
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
         mrsw_evt_log('H', thread, mrsw->count, mrsw);
 #endif
     }
@@ -434,7 +434,7 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
     (void)result;
 }
 
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
 /* TEMPORARY bring-up accessor, target-gated and compiled out unless the kernel's
  * own extra checks are on. The xtensa port deadlocks on the filesystem lock
  * with no panic and no output, so the only way to see it is to ask the lock who
@@ -530,4 +530,4 @@ int mrsw_debug_state(const struct mrsw_lock *mrsw, char *owner_name, int sz,
 
     return mrsw->count;
 }
-#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
+#endif /* CPU_XTENSA bring-up instrumentation */*

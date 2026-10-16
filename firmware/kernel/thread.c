@@ -52,11 +52,20 @@ extern void scan_trace(int tag, unsigned long a, unsigned long b,
 #if (CONFIG_PLATFORM & PLATFORM_HOSTED)
 #include <errno.h>
 #endif
-/* Define THREAD_EXTRA_CHECKS as 1 to enable additional state checks */
+/* Define THREAD_EXTRA_CHECKS as 1 to enable additional state checks.
+ *
+ * Only supply the default when nobody asked for a particular value. Without the
+ * guard a target that sets THREAD_EXTRA_CHECKS in its config header is silently
+ * overridden back to 0 here -- the compiler notes the redefinition and carries
+ * on -- so THREAD_ASSERT and the other invariants in this file are compiled out
+ * on the one target that asked for them. No in-tree target defines it, so this
+ * changes behaviour nowhere but the target that does. */
+#ifndef THREAD_EXTRA_CHECKS
 #ifdef DEBUG
 #define THREAD_EXTRA_CHECKS 1 /* Always 1 for DEBUG */
 #else
 #define THREAD_EXTRA_CHECKS 0
+#endif
 #endif
 
 /****************************************************************************
@@ -1689,3 +1698,61 @@ void INIT_ATTR init_threads(void)
     }
 #endif /* NUM_CORES */
 }
+
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+/* TEMPORARY bring-up: what the scheduler itself believes.
+ *
+ * The gated-task model means "Rockbox thinks this thread is runnable" and
+ * "FreeRTOS can actually dispatch this thread" are two different statements,
+ * and the play hang is the gap between them. This prints both halves of it:
+ * which thread the kernel believes is running, and which threads it believes
+ * are runnable. A thread named in rtr= that also shows as run in
+ * thread_debug_dump() but never makes progress is a thread waiting for a gate
+ * nobody intends to give. */
+int scheduler_debug_state(char *out, int sz)
+{
+    struct core_entry *corep = __core_id_entry(CURRENT_CORE);
+    struct thread_entry *t;
+    int pos, n = 0;
+
+    if (sz <= 0)
+        return 0;
+
+    pos = snprintf(out, sz, "running=%s rtr=",
+                   corep->running && corep->running->name
+                       ? corep->running->name : "(none)");
+    if (RTR_EMPTY(&corep->rtr))
+    {
+        snprintf(out + pos, sz - pos, "empty");
+        return pos;
+    }
+
+    pos += snprintf(out + pos, sz - pos, "[");
+    /* core_entry.rtr is an lldc: a doubly-linked CIRCULAR list whose last node
+     * points back to the first, not a NULL-terminated one. Walking it with
+     * `for (t = FIRST; t; t = NEXT(t))` therefore never ends -- which is exactly
+     * what it looked like when it happened, and read as "the runnable list is
+     * full of duplicates". Terminate on returning to the first node, and cap at
+     * the slot count as a belt-and-braces guard against a genuinely broken
+     * link. */
+    {
+        struct thread_entry *first = RTR_THREAD_FIRST(&corep->rtr);
+
+        t = first;
+        do
+        {
+            if (pos >= sz - 32)
+                break;
+            pos += snprintf(out + pos, sz - pos, "%s%s", n++ ? "," : "",
+                            t->name ? t->name : "?");
+            t = RTR_THREAD_NEXT(t);
+        } while (t != first && n < MAXTHREADS);
+
+        if (t != first)
+            snprintf(out + pos, sz - pos, " ...BROKEN-LINK");
+        else
+            snprintf(out + pos, sz - pos, "]");
+    }
+    return pos;
+}
+#endif /* CPU_XTENSA bring-up instrumentation */*
