@@ -1,3 +1,9 @@
+/* Included by asm/thread.h and, for the IDF binding, directly by
+ * target/xtensa/thread-idf.c -- which also reaches it through system.h,
+ * so it needs a guard. */
+#ifndef ROCKBOX_ASM_XTENSA_THREAD_H
+#define ROCKBOX_ASM_XTENSA_THREAD_H
+
 /***************************************************************************
  *             __________               __   ___.
  *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
@@ -19,65 +25,66 @@
  ****************************************************************************/
 
 /*
- * Xtensa under the windowed ABI.
+ * Xtensa under ESP-IDF: a Rockbox thread *is* a FreeRTOS task.
  *
- * The save area below is ESP-IDF's own exception frame, XtExcFrame from
- * xtensa_context.h -- the same structure IDF builds on every level-1 interrupt
- * and every task switch, and the same one _xt_context_save,
- * _xt_context_restore and _xt_user_exit already know how to fill in and leave.
- * It is spelled out in words here rather than included because this header is
- * also read by the freestanding domain (codecs and plugins), which has no IDF
- * include path; the .c file static_asserts the correspondence.
+ * What used to live here was a hand-rolled context switch -- XtExcFrame laid in
+ * the thread table, _xt_context_save/_xt_context_restore, xthal_window_spill_nw,
+ * retw back through the blocking primitive. It ran, after a fashion, and it was
+ * the largest single source of faults in this port. The reason is structural: a
+ * windowed-ABI context switch is exactly the thing IDF already implements,
+ * correctly, against the real core configuration, and every re-derivation has
+ * to rediscover on its own the base-save geometry, the spill ordering, the fact
+ * that wsr.PS is not rfe, and the fact that inline asm cannot tell the compiler
+ * that a block changes which physical registers the names refer to. Each of
+ * those was a separate debugging campaign here. Hand-transcribing IDF's
+ * vPortYield and _frxt_dispatch into a .S file produced three new bugs in an
+ * hour, all of which are non-events in IDF's own code.
  *
- * This replaces an earlier design that saved only sp/pc/ps/WINDOWBASE and let
- * the window underflow handlers refill the registers as the thread unwound.
- * That model needs the resumed thread's window *chain* to still be live in the
- * hardware window slots, and any other thread that ran in between overwrites
- * them. It also needs a8 and a9 -- the registers _WindowUnderflow8 uses to find
- * the base save area -- to survive the switch, which is exactly what a switch
- * wants to use them for. IDF does not do that. It flattens:
- * _xt_context_restore loads a2..a15 straight out of the frame and never touches
- * WINDOWBASE or WINDOWSTART. There is no such field in the frame at all.
+ * So this layer no longer switches anything. The IDF half lives in
+ * target/xtensa/thread-idf.c; what is left here is three one-line calls.
  *
- * Flattening is correct here for the same reason it is correct for FreeRTOS:
- * every switch happens at the same call depth (switch_thread), so every thread
- * presents the same window layout above that point, and the frame's a2..a15
- * mean the same thing for all of them no matter where WINDOWBASE happens to
- * sit. Depth, not base, is what has to match.
+ * The cooperative semantics are preserved by construction rather than by
+ * policy: a task cannot run unless its gate has been given, and exactly one
+ * gate is held at a time, so exactly one Rockbox thread runs -- and it is still
+ * switched only at Rockbox's own blocking primitives, because that is the only
+ * place that gives gates. The scheduler, the thread table, thread IDs, names,
+ * priorities, the run queue, the timeout list and every blocking primitive are
+ * untouched. Nothing in firmware/kernel knows that the threads are tasks.
  */
 
-/* The frame has to be sized for what IDF *writes*, not for what the struct
- * declares. On esp32s3 sizeof(XtExcFrame) is 112 bytes, but XCHAL_HAVE_FP is 1
- * and _xt_context_save does `addi a2, a1, XT_STK_EXTRA` (112) then
- * `call0 xthal_save_extra_nw`, which stores the FP register file there. IDF
- * therefore allocates XT_STK_FRMSZ = 192 bytes, and the struct has no `extra`
- * member at all on this config -- so an assert against sizeof(XtExcFrame)
- * passes while the real requirement is 192. Sizing this from the struct
- * overran struct regs by 32 bytes and landed on the thread_entry fields that
- * follow it: stack, name, tmo_tick, rtr, tmo.next. The visible symptom was the
- * timeout list walking into a float register that happened to hold a stack
- * address. Asserted against XT_STK_FRMSZ in the .c file. */
-#define XT_FRAME_WORDS 48   /* 192 bytes = XT_STK_FRMSZ */
-
+/* sp and start keep the names the kernel already writes: create_thread sets sp
+ * to the top of the stack and THREAD_STARTUP_INIT sets start to the entry
+ * point. The handles are void* rather than SemaphoreHandle_t and TaskHandle_t
+ * because this header is also read by the freestanding domain (codecs and
+ * plugins), which has no IDF include path. */
 struct regs
 {
-    uint32_t sp;      /* stack pointer at the switch; before a thread has run
-                       * this is the top of its stack */
-    uint32_t start;   /* entry point, zero once the thread has run */
-    uint32_t frame[XT_FRAME_WORDS];   /* XtExcFrame */
+    uint32_t sp;      /* top of the stack, as create_thread left it */
+    uint32_t start;   /* entry point, from THREAD_STARTUP_INIT */
+    void* gate;       /* binary semaphore: the right to run */
+    void* task;       /* the FreeRTOS task this thread runs on */
+    void* ref;        /* the rb_thread_ref handed to the task, which has to
+                       * outlive the call that created it */
 };
 
-/* Fixed prefix of XtExcFrame, in words. Mirrors xtensa_context.h; the .c file
- * asserts each one against the real struct. */
-#define XT_F_EXIT   0
-#define XT_F_PC     1
-#define XT_F_PS     2
-#define XT_F_A0     3
-#define XT_F_A1     4
-#define XT_F_A2     5
-#define XT_F_A6     9
+/* Implemented in target/xtensa/thread-idf.c. The ref is allocated and filled by
+ * the caller's helper below and kept alive by living in struct regs. */
+struct rb_thread_ref
+{
+    struct regs *ctx;
+    const char *name;
+    void *stack;
+    unsigned int stack_size;
+};
+
+void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot);
+void rb_thread_adopt_self(struct regs *ctx);
+void rb_thread_handoff(struct regs *in);
 
 /* The level-1 handler runs on the interrupted thread's stack: its own frame,
  * then the dispatch, the GDMA completion path and the mixer chain that the
- * completion callback drives. */
+ * completion callback drives. This is the FreeRTOS task stack, so it also has
+ * to satisfy IDF's stack-overflow watermark at the buffer's bottom. */
 #define DEFAULT_STACK_SIZE 0x1000 /* Bytes */
+
+#endif /* ROCKBOX_ASM_XTENSA_THREAD_H */

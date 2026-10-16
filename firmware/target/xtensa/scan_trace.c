@@ -21,7 +21,9 @@
 #include <stdint.h>
 
 #define SCAN_TRACE_MAGIC 0x42534e41u   /* "BSNA" */
-#define SCAN_TRACE_N     256            /* records, four words each */
+#define SCAN_TRACE_N     64             /* records; temporary scaffolding,
+                                                   * and every one of these costs internal
+                                                   * DRAM that the TCB pool needs */
 
 struct scan_ring
 {

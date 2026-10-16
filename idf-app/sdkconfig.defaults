@@ -81,3 +81,14 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_FREERTOS_HZ=100
 CONFIG_FREERTOS_USE_TICK_HOOK=y
+
+# Rockbox does its own stack-overflow detection: switch_thread() checks
+# thread->stack[0] against DEADBEEF. FreeRTOS fills the same buffer with
+# tskSTACK_FILL_BYTE (0xa5) at creation and, with method 2, re-checks the bottom
+# 16 bytes -- the same word Rockbox's canary lives in. The two cannot coexist on
+# one buffer: with method 2 on, every Rockbox thread trips its own check on the
+# first switch, because FreeRTOS legitimately overwrote the canary. Rockbox's
+# check is the one that knows about Rockbox thread stacks, so IDF's stands down.
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
+# CONFIG_FREERTOS_CHECK_STACKOVERFLOW_PTRVAL is not set
+# CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY is not set
