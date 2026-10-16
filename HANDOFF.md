@@ -1395,3 +1395,67 @@ In this model a blocked thread parks on its gate, not on a Rockbox blocker, so
 blocker is NULL for everyone and the column cannot distinguish anything. It was
 read as evidence more than once. Either make it report timeout-list membership or
 stop quoting it.
+
+## There is no playback output driver for this target -- the real reason nothing plays
+
+The player loads a codec, shows the WPS, accepts play/pause, and produces neither
+sound nor progress. After the threading, memory-model and codec-loading work that
+chain is no longer the cause: the codec now loads cleanly (CODEC_OK, heap cleared,
+zero faults, zero mismatches) and does become runnable in the scheduler.
+
+The actual reason is much simpler and was found by following the user's hunch that
+the audio driver was implicated:
+
+    grep -rn 'pcm_play_dma_init\|pcm_play_dma_start\|pcm_play_dma_stop' firmware/target/xtensa/
+      -> nothing
+    scan of every .o in the build for a definition
+      -> NONE
+    scan of every .o for an undefined reference
+      -> NONE either
+
+firmware/target/xtensa/pcm-xtensa.c implements only the recording half:
+pcm_rec_dma_init/close/start/stop, GDMA receive channel 0, the ES7210 mic path.
+There is no playback implementation at all. pcm.o contains the generic playback
+code (pcm_play_data, pcm_play_stop_int, pcm_postinit), but the target hooks it
+would call are neither defined nor referenced -- nothing reaches pcm_start(), so
+-ffunction-sections plus --gc-sections discarded the chain, which is the only
+reason the firmware links. Had anything called it, the link would have failed with
+an undefined reference to pcm_play_dma_start.
+
+So playback is not broken; it is unbuilt. The design is already written down in
+AGENTS.md -- I2S0 TX with GDMA OUT channel 0, a ping-pong descriptor pair in
+internal SRAM because the 20-bit descriptor window cannot reach PSRAM, buffers
+allowed in PSRAM with explicit cache maintenance, OUT_DONE rather than OUT_EOF
+because EOF fires while data is still in the FIFO -- but none of it was ever
+implemented.
+
+This does not invalidate tonight's fixes. Every one of them was load-bearing: the
+codec cannot be loaded, let alone run, without the thread-identity work, the
+segment split, the I-cache commit and the heap clearing. But the remaining gap is
+a driver, not a bug.
+
+## Instrument audit -- five wrong conclusions came from instruments I did not verify
+
+Worth keeping as a standing list, because the error is always the same one:
+
+ 1. THREADS: prints "run" for every thread, always. Blocked threads park on their
+    gate rather than on a Rockbox blocker, so blocker is NULL for everyone and the
+    column cannot distinguish any state.
+ 2. "running=tick in every sample" is self-observation: the probe runs in the tick
+    thread, so it can only ever see the tick thread running. It says nothing about
+    whether other threads execute.
+ 3. The ROCKBOX_SCAN_TRACE "8x slow clock" claim: that block is compiled out. The
+    symbol is absent from the build. I read source and assumed it was compiled.
+ 4. "pcm_init is not in the linked ELF": there is no ELF. The firmware is linked
+     straight to rockbox.esp32s3 and the intermediate is consumed by packaging, so
+     nm and strings were reading a nonexistent file and returning nothing.
+ 5. "pcm_init never logged": logf has a do { } while(0) definition in this build,
+    so logf output is not evidence of anything.
+
+The instruments that did hold up: printf (it demonstrably emits the codec load
+lines) and the FSLOCK probe, which produced a non-default value at least once and
+so is known to discriminate.
+
+Rule, restated because it was violated five times: before drawing a conclusion from
+a number, establish that the thing producing it is compiled in, present, and has
+ever produced anything other than its default.
