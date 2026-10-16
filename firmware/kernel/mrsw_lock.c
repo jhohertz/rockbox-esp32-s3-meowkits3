@@ -295,6 +295,12 @@ void mrsw_read_release(struct mrsw_lock *mrsw)
         /* No readers remain and a writer is waiting */
         mrsw->count = -1;
         result = mrsw_reader_wakeup_writer(mrsw, thread IF_PRIO(, slotnum));
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+        /* The one ownership transfer that does not pass through
+         * mrsw_write_acquire(), so without this the ring shows a new owner
+         * appearing from nowhere. */
+        mrsw_evt_log('W', thread, mrsw->count, mrsw);
+#endif
     }
     else
     {
@@ -437,6 +443,39 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
  * kind of thing that quietly goes wrong; this keeps the knowledge in the file
  * that owns the type. */
 #include "thread-internal.h"
+
+int mrsw_debug_report(const struct mrsw_lock *mrsw, char *out, int sz)
+{
+    struct thread_entry *owner = mrsw->splay.blocker.thread;
+    struct thread_entry *t;
+    int pos = 0;
+    int n = 0;
+
+    if (sz <= 0)
+        return 0;
+    out[0] = '\0';
+
+    pos += snprintf(out + pos, sz - pos, "owner=%s",
+                    owner && owner->name ? owner->name : "(none)");
+    /* A blocked owner means the lock is held by a thread waiting on something
+     * other than this lock -- which is the shape of this target's hang. */
+    if (owner)
+        pos += snprintf(out + pos, sz - pos, owner->blocker ?
+                        "/BLOCKED@%p" : "/running",
+                        (void *)owner->blocker);
+
+    pos += snprintf(out + pos, sz - pos, " waiting=[");
+    for (t = WQ_THREAD_FIRST((struct __wait_queue *)&mrsw->queue); t;
+         t = WQ_THREAD_NEXT(t))
+    {
+        if (pos >= sz - 32)
+            break;
+        pos += snprintf(out + pos, sz - pos, "%s%s", n++ ? "," : "",
+                        t->name ? t->name : "?");
+    }
+    snprintf(out + pos, sz - pos, "]%s", n ? "" : "none");
+    return pos;
+}
 
 int mrsw_debug_trace(char *out, int sz)
 {
