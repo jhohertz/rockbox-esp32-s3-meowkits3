@@ -533,3 +533,117 @@ compiler's `retw`, which is why the saved window state can never be made
 consistent. FreeRTOS enters the scheduler through a syscall exception instead,
 so the hardware captures `a0/a1/PS/PC` as a coherent frame — that is the shape to
 move to.
+
+---
+
+# Design note: the ESP32-S3 codec/plugin load window
+
+Status: **proposed, not implemented.** Written up because it is the only
+remaining blocker for audio, and because it is the first change in this port
+that would touch shared Rockbox core files.
+
+## The problem
+
+Rockbox's loadable-image model assumes one address serves both roles: a loaded
+image's `load_addr` is where you *write* it, where you *read* its header, and
+where you *execute* it. `apps/codecs.c` and `apps/plugin.c` enforce that by
+rejecting any image whose `load_addr` is not exactly `codecbuf` / `pluginbuf`.
+
+ESP32-S3 is the one target where that assumption fails. Its external-RAM cache
+window is addressed through two ranges that share MMU entries and differ by
+exactly `0x06000000`:
+
+| window | base | legal operations |
+|---|---|---|
+| data cache (DROM) | `0x3C000020` | load / store |
+| instruction cache (IROM) | `0x42000020` | fetch |
+
+Each cache block only decodes its own range. Both were measured on this board,
+not inferred:
+
+- image linked and copied at `0x3c680020`, entered there →
+  **`InstructionFetchError`**, `PC == EXCVADDR`, the first instruction never fetched
+- buffers moved to `0x42680020` → **`LoadStoreError`** at `pluginbuf + 0x1c`
+  during boot, i.e. the first ordinary data access
+
+So no single base address can work, and no Kconfig, linker expression or MMU
+programming changes what the silicon decodes. `CONFIG_SPIRAM_XIP_FROM_PSRAM` is
+already enabled and does work for the firmware's own `.text`, but IDF only
+re-maps ranges that existed at link time, so it cannot help a runtime-loaded
+image.
+
+## Why this cannot be solved entirely outside core files
+
+The translation has to happen where a load address is used *as a pointer*. That
+is `lc-rock.c` (bounds check, the `read()` target, and `lc_get_header()`), plus
+the two `load_addr != buf` comparisons. A target-side shim cannot intercept
+those without duplicating the loader.
+
+## The change, and why it is inert elsewhere
+
+One macro, defined once:
+
+```c
+#if defined(CPU_XTENSA)
+/* Images are linked and executed through the instruction window but filled and
+ * read through the data window: same pages, 0x06000000 apart. */
+#define LC_DATA_ADDR(a)  ((unsigned char *)((uintptr_t)(a) - 0x06000000))
+#else
+#define LC_DATA_ADDR(a)  (a)
+#endif
+```
+
+Applied at roughly eight sites in three files:
+
+| file | sites | what |
+|---|---|---|
+| `firmware/lc-rock.c` | 3 | bounds check, `read()` target, `lc_get_header()` |
+| `apps/codecs.c` | 2 | `load_addr != codecbuf`, `end_addr > codecbuf + CODEC_SIZE` |
+| `apps/plugin.c` | 2 | the same two for `pluginbuf` |
+
+`codecbuf` / `pluginbuf` stay **data-window** symbols, so every existing use as a
+buffer — the codec heap at `&codecbuf[codec_size]`, `bufread()`,
+`lc_open_from_mem()`, `plugin_get_buf()` — is untouched. Only the image's own
+addresses are translated, and `lc_open` still returns `hdr.load_addr`, the
+fetchable address, which is what the entry point needs.
+
+On every non-xtensa target `LC_DATA_ADDR` is the identity, so the preprocessor
+output and the generated code are **byte-identical to today**. That is the
+guarantee worth having: not "this should be safe on other targets" but "there is
+nothing there to be unsafe".
+
+The link side needs no core edit at all: `apps/plugins/plugin.lds` already
+provides `#ifndef CODEC_ORIGIN /* targets can specify another origin */`, which
+is the sanctioned hook for exactly this.
+
+## Architectural rationale, in one paragraph
+
+The invariant "`load_addr` is simultaneously a writable buffer and an executable
+address" is not a Rockbox design choice so much as an assumption that held
+because every target Rockbox has shipped on had a single flat, read-write-
+executable RAM or flash window for loadable images. ESP32-S3's split cache
+windows are the first counterexample. Encoding the difference as a target-
+conditional address translation states the new property where it belongs, keeps
+the invariant intact everywhere it is still true, and leaves the shared loader
+logic — bounds checking, header validation, entry-point dispatch — completely
+untouched.
+
+## Risks to check when implementing
+
+1. **Does writing through `0x3c…` while executing from `0x42…` stay coherent?**
+   Same physical pages, but two cache blocks. `lc_open` already calls
+   `commit_discard_idcache()` after the copy; that may need to become a
+   write-back on the data side plus an invalidate on the instruction side.
+2. **Codec `.data` / `.bss`** live in the same image, so the codec reads and
+   writes its own data through `0x42…` addresses baked in at link time. If the
+   D-cache cannot reach that range, the codec faults on its first global access
+   even after the entry point is reached. **This is the most likely reason the
+   plan fails**, and it would mean the real answer is splitting the image into an
+   executable segment and a data segment — a linker-script change in
+   `plugin.lds`, which is target-gated already.
+3. `CODEC_SIZE`/`PLUGIN_BUFFER_SIZE` regions must stay clear of `.ext_ram.bss`;
+   the `rb_ext_ram_end` check covers that, but it must compare against the
+   **data-window** alias or it proves nothing.
+
+Recommendation: implement, and treat risk 2 as the likely outcome. If it bites,
+the segment split is the follow-on, and it is still target-only work.
