@@ -2611,20 +2611,30 @@ route is closed.
 
 ### Where it stands now
 
-Measured after the solicited-frame rewrite:
+The thread layer is now FreeRTOS tasks, not a hand-rolled switch — see
+"The thread layer: stop owning the context switch" near the end of this file.
+Measured after that change: no panics, asserts or aborts from the thread layer,
+and boot reaches SD bring-up, the MMU dump, the dircache scan and playlist
+init — further than the hand-rolled switch ever got.
 
-- The breadcrumb ring goes from 130 records to **37495**, and the dircache scan
-  now runs to completion (1706 entries built).
-- The failure changed from a silent `TG1WDT_SYS_RST` with no output to a
-  reported panic with a decodable backtrace.
-- Threads start, block, resume and idle normally; core 0 takes interrupts; the
-  tick advances; SD storage works; PSRAM works.
+Current blocker, and it is ordinary Rockbox code rather than ABI machinery:
+`dc_init_filerefs()` (apps/playlist.c:203) writes through NULL because
+`core_get_data(playlist->dcfrefs_handle)` returned NULL for a handle that
+passed the non-NULL test two lines earlier. That is buflib/arena territory —
+the arena is the `audiobuffer` region that `memory-xtensa-syms.S` places, and
+the same file already records that `codecbuf` and `plugin.lds`'s
+`CODEC_ORIGIN` no longer agree now that IDF owns the linker script. Suspect the
+arena setup, not the scheduler.
 
-Open: the asynchronous MMU-entry fault above. The next useful move is to make
-the fault synchronous enough to name -- either by clearing the status bit at
-known checkpoints and finding the interval that sets it, or by bisecting the
-subsystems that touch the external window (audio DMA into the audiobuffer, the
-display path, IDF's own PSRAM heap) with each one disabled in turn.
+**Sections above describing `XtExcFrame` in `struct regs`, the solicited
+three-word frame, `wsr ps` versus `rfe`, frame placement, the window spill and
+the flat-frame dispatch are history.** They document the implementation that
+was deleted, and several of them are records of bugs that only existed because
+that implementation existed. The findings that survive the deletion are: the
+window spill is mandatory before any switch on this core config (no REGB
+option, so nothing spills by itself); `current_tick` must mirror
+`xTaskGetTickCount()` because the tick hook runs on whichever core won the
+increment; and `esp_rom_printf()` is the only safe print from a kernel path.
 
 ### A breadcrumb ring that survives the crash
 
@@ -3047,6 +3057,10 @@ _start:  l32r a4, main ; jx a4      /* R_XTENSA_32 -> main */
 
 No special-register write, no stack set-up. `firmware/target/xtensa/crt0.S` now
 matches that: it sets `a1` and masks interrupts, and touches nothing else.
+
+> **Superseded on this branch.** The switch described here was deleted: Rockbox
+> threads are FreeRTOS tasks now, and IDF owns the register work. Kept because
+> the measurements in it are about the core config, not about the code.
 
 ### The context switch is the part that is still wrong
 
