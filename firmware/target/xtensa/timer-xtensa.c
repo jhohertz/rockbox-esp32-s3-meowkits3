@@ -23,6 +23,7 @@
  * 1000/HZ milliseconds.
  ****************************************************************************/
 
+#include <soc/extmem_struct.h>
 #include <esp_cpu.h>
 #include "config.h"
 #include "system.h"
@@ -145,6 +146,29 @@ void vApplicationTickHook(void)
                     break;
                 }
             }
+        }
+
+        {
+            /* TEMPORARY: the panic path (esp_system/port/soc/esp32s3/
+               cache_err_int.c) reports the MMU entry fault cause but never
+               reads the two registers that do carry information. The hardware
+               latches the faulting virtual address and, alongside it, the
+               content of the MMU entry that was consulted plus a code for the
+               operation that tripped on it (1 = cpu miss, 2 = preload miss,
+               3 = writeback, 6 = external DMA tx, 7 = external DMA rx, with
+               bit 3 naming which icache). Reading them from the core that is
+               still alive turns "MMU entry fault" into an address. */
+            /* IDF 5.x no longer defines the EXTMEM object, so reach the block
+               by base address and let the struct type supply the offsets. */
+            const volatile uint32_t* extmem =
+                (const volatile uint32_t*)0x600C4000;   /* DR_REG_EXTMEM_BASE */
+            uint32_t c = extmem[offsetof(extmem_dev_t,
+                                         cache_mmu_fault_content) / 4];
+            uint32_t v = extmem[offsetof(extmem_dev_t,
+                                         cache_mmu_fault_vaddr) / 4];
+
+            if (v || c)
+                scan_trace(95, v, c, current_tick);
         }
 
         if ((hook_n & 63u) == 1)

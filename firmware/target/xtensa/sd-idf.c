@@ -135,24 +135,23 @@ int sd_init(void)
        window has to be a valid PSRAM entry or the access faults. */
     {
         const volatile uint32_t* mmu = (const volatile uint32_t*)0x600C5000;
-        int i, bad = 0, first = -1;
-        for (i = 16; i < 144; i++)
+        int i;
+        /* Summarise the whole 512-entry table as runs, so any address the image
+           uses can be checked against the entry that serves it. */
+        for (i = 0; i < 512; )
         {
             uint32_t v = mmu[i];
-            if (v & 0x4000u)          /* invalid entry */
-            {
-                if (first < 0)
-                    first = i;
-                bad++;
-            }
+            int j = i + 1;
+            bool same = (mmu[j] == v) && ((v & 0x4000u) == (mmu[i] & 0x4000u));
+            while (j < 512 && (mmu[j] == v + (uint32_t)(j - i) ||
+                               ((mmu[j] & 0x4000u) && (v & 0x4000u))))
+                j++;
+            ESP_LOGI(TAG, "MMU[%3d..%3d] = %08x %s page %d", i, j - 1, v,
+                     (v & 0x4000u) ? "INVALID " : (v & 0x8000u) ? "PSRAM  "
+                                                                : "flash  ",
+                     (int)(v & 0x3fffu));
+            i = j;
         }
-        ESP_LOGI(TAG, "MMU 16..143: %d invalid, first invalid entry %d", bad,
-                 first);
-        for (i = 16; i < 26; i++)
-            ESP_LOGI(TAG, "  MMU[%d] = %08x (%s page %d)", i, mmu[i],
-                     (mmu[i] & 0x4000u) ? "INVALID" :
-                     (mmu[i] & 0x8000u) ? "PSRAM" : "flash",
-                     (int)(mmu[i] & 0x3fffu));
     }
     return 0;
 }
