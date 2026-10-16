@@ -99,6 +99,10 @@ void rb_thread_set_thread0_task(void *handle);
  * corep->running and must not be handed a stale one. */
 void rb_thread_set_running(void *thread);
 void rb_thread_handoff(struct regs *in);
+/* Opaque pointer to the context the kernel currently regards as running, or
+ * NULL. A task must not proceed into Rockbox code unless this matches its own
+ * context, however it was woken. */
+void *rb_thread_running_context(void);
 
 /* The level-1 handler runs on the interrupted thread's stack: its own frame,
  * then the dispatch, the GDMA completion path and the mixer chain that the
