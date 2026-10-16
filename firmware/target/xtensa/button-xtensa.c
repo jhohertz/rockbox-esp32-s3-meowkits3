@@ -111,10 +111,25 @@ int button_read_device(int *data)
             int count;
 
             fsdiag = 0;
+            extern volatile int mrsw_null_self;
+            extern volatile int mrsw_null_self_read;
+            extern volatile int mrsw_recursion_hits;
+
             count = mrsw_debug_state(&file_internal_mrsw, owner, sizeof owner,
                                      &waiters);
-            printf("FSLOCK: count=%d owner=%s waiters=%d\n",
-                   count, owner, waiters);
+            extern int mrsw_debug_trace(char *out, int sz);
+            static char tr[256];
+
+            printf("FSLOCK: count=%d owner=%s waiters=%d "
+                   "nullW=%d nullR=%d recur=%d\n",
+                   count, owner, waiters,
+                   mrsw_null_self, mrsw_null_self_read, mrsw_recursion_hits);
+            /* Only worth the bytes when the lock is actually held */
+            if (count != 0)
+            {
+                mrsw_debug_trace(tr, sizeof tr);
+                printf("  hist: %s\n", tr);
+            }
         }
     }
 
