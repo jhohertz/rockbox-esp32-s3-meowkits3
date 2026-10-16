@@ -28,6 +28,11 @@
 #include "system.h"
 #include "tick.h"
 #include "timer.h"
+
+/* FreeRTOS.h has to precede task.h, and both come after the Rockbox headers so
+ * that config.h is what decides the target's types. */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "panic.h"
 
 #include "driver/gptimer.h"
@@ -85,8 +90,12 @@ void vApplicationTickHook(void)
 #ifdef ROCKBOX_SCAN_TRACE
     {
         static unsigned hook_n;
+        hook_n++;
         extern void scan_trace(int tag, unsigned long a, unsigned long b,
                                unsigned long c);
+        if ((hook_n & 7u) != 0)
+            return;
+
         unsigned int ie;
         asm volatile ("rsr %0, intenable" : "=r"(ie));
         scan_trace(60, current_tick, esp_cpu_get_core_id(), ie);
@@ -97,7 +106,7 @@ void vApplicationTickHook(void)
          * "did the counter stop, did the compare stop re-arming, or did the
          * interrupt stop being delivered" is answered by the hardware
          * rather than by inference. */
-        if ((hook_n++ & 7u) == 0)
+        if ((hook_n & 63u) == 0)
         {
             static volatile unsigned *const sys =
                 (volatile unsigned *)0x60023000;
@@ -155,15 +164,30 @@ void vApplicationTickHook(void)
                 {
                     extern volatile unsigned rb_late_hits;
                     extern volatile unsigned rb_late_err;
-                    extern volatile unsigned rb_core0_ps, rb_core0_ie, rb_core0_ip;
-                    scan_trace(64, rb_core0_ps, rb_core0_ie, rb_core0_ip);
+                    extern volatile unsigned rb_probe_ran;
+                    scan_trace(64, rb_late_hits,        /* core 0 gptimer ISRs */
+                               rb_late_err,            /* 0 == armed cleanly */
+                               rb_probe_ran);
                 }
             }
         }
     }
 #endif
-    if (esp_cpu_get_core_id() == 0)
-        current_tick++;
+    /* Rockbox's clock has to follow the kernel's, not the core's.
+     *
+     * In SMP FreeRTOS the tick hook runs on whichever core won the tick
+     * increment for that period -- measured on this board, always core 1, even
+     * though core 0's tick ISR itself is running fine (IDF's per-core served
+     * counter advances on both). Gating the bump on "am I core 0" therefore
+     * left current_tick at zero forever: the tick was healthy, no thread ever
+     * timed out, and every Rockbox thread blocked and stayed blocked. That is
+     * what made a live, ticking core look idle.
+     *
+     * xTaskGetTickCount() is a single global counter advanced exactly once per
+     * tick regardless of which core delivers it, so mirroring it is correct
+     * whichever core gets the hook. CONFIG_FREERTOS_HZ is pinned to 100, which
+     * is the 10 ms tick every Rockbox tick consumer already assumes. */
+    current_tick = (long)xTaskGetTickCount();
 }
 
 /*---------------------------------------------------------------------------

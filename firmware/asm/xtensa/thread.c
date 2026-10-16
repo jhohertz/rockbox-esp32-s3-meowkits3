@@ -94,6 +94,75 @@ extern void _xt_user_exit(void);
  * spill; load_context raises to it with rsil so that rfe is legal. */
 #define XT_EXCM_LEVEL       3u
 
+/* Spill the live register windows into the base-save areas of their frames.
+
+   Written as a bare function rather than inline asm: xtensa GCC does not honour
+   clobbers of windowed registers, so an inline block that borrows a6/a7 silently
+   corrupts whatever the compiler had parked there.
+
+   It is entered windowed (call8 from C) and leaves that way; only the helper is
+   entered with callx0, because xthal_window_spill_nw is a call0-ABI leaf and it
+   lives in IRAM, roughly 29 MB from flash .text, far outside any direct call's
+   range -- hence the address in a literal rather than a call.
+
+   WINDOWSTART is then narrowed to the current window alone. The helper walks
+   every window the mask marks as started, using the sp held in that window's
+   own registers as the base-save pointer. Rockbox threads are entered through
+   rfe onto stacks of their own, so the mask also still carries windows belonging
+   to whichever thread ran here last -- and their sp registers are still in the
+   file. Spilling those writes into another thread's frames. ESP-IDF hits the
+   same hazard once at scheduler start and says so in port.c: "Windows contain
+   references to the startup stack which will be reclaimed by the main task."
+   Narrowing after the spill means each thread's chain is described only by its
+   own base-save areas, which the spill just wrote, and a later retw refills
+   from them through the underflow handler. */
+extern void rb_spill_asm(void);
+
+void rb_window_spill(void)
+{
+    unsigned int ws, wb, ps;
+
+    asm volatile ("rsr %0, windowstart" : "=r"(ws));
+    asm volatile ("rsr %0, windowbase"  : "=r"(wb));
+    asm volatile ("rsr %0, ps"          : "=r"(ps));
+    STRACE(86, ws, wb, ps);
+
+    rb_spill_asm();
+
+    asm volatile ("rsr %0, windowstart" : "=r"(ws));
+    asm volatile ("rsr %0, windowbase"  : "=r"(wb));
+    asm volatile ("rsr %0, ps"          : "=r"(ps));
+    STRACE(87, ws, wb, ps);
+}
+
+asm (
+"       .align 4                                  \n"
+"       .globl  rb_spill_asm                      \n"
+"       .type   rb_spill_asm, @function           \n"
+"rb_spill_asm:                                    \n"
+"       entry   a1, 32                            \n"
+"       j       1f                                \n"
+"       .align 4                                  \n"
+"2:     .long   xthal_window_spill_nw             \n"
+"3:     .long   ~0x4000f                          \n"  /* clear WOE, INTLEVEL */
+"4:     .long   0x00040000                        \n"  /* WOE                 */
+"1:     rsr.ps  a10                               \n"
+"       l32r    a11, 3b                           \n"
+"       and     a10, a10, a11                     \n"
+"       addi    a10, a10, 3                       \n"  /* XCHAL_EXCM_LEVEL */
+"       wsr.ps  a10                               \n"
+"       rsync                                     \n"
+"       l32r    a11, 2b                           \n"
+"       callx0  a11                               \n"
+"       rsr.ps  a10                               \n"
+"       l32r    a11, 4b                           \n"
+"       or      a10, a10, a11                     \n"
+"       wsr.ps  a10                               \n"
+"       rsync                                     \n"
+"       retw                                      \n"
+"       .size   rb_spill_asm, .-rb_spill_asm      \n"
+);
+
 /*---------------------------------------------------------------------------
  * Store non-volatile context.
  *---------------------------------------------------------------------------
@@ -117,6 +186,35 @@ static inline void store_context(void* addr)
     asm volatile ("mov    %0, a0" : "=r" (pc));
     asm volatile ("rsr    %0, ps" : "=r" (saved));
     asm volatile ("mov    %0, a1" : "=r" (ctx->sp));
+
+    /* Spill the register windows into their base-save areas before anything is
+       saved. This is not an optimization: it is what makes the resume correct.
+
+       The resume returns through the blocking primitive with retw (yield is
+       `entry sp,32; call8 switch_thread; retw`). retw does not merely jump --
+       it hands the caller's a0-a3 back, and on a core with no REGB option the
+       only place those can come from is the base-save area at sp-16..sp-4 of
+       the frame being left. Nothing writes that area unless a spill happens:
+       there is no hardware spill on this core config, and GCC's windowed code
+       emits manual stores for its own frame only, never for the caller's.
+       So without an explicit spill, retw reloads the caller's a0-a3 from
+       whatever the intervening threads left on that stack, and the thread
+       returns to a garbage address. It then runs wild with interrupts masked,
+       which is what the dead core-0 tick looked like from the outside.
+
+       ESP-IDF does exactly this in vPortYield (portasm.S), the solicited-yield
+       path that switch_thread is the analogue of. The _nw form is used rather
+       than xthal_window_spill() because with WOE clear it does plain stores and
+       takes no exceptions -- and __xtensa_libgcc_window_spill cannot be used
+       here at all, since it works by *taking* window overflow exceptions, which
+       switch_thread's disable_irq() has just masked.
+
+       It is a real function rather than inline asm because xtensa GCC does not
+       honour clobbers of windowed registers: an inline block that used a6/a7 as
+       scratch left the compiler believing a7 still held the frame pointer, and
+       the next C statement loaded from 0x40000 -- the WOE constant -- as a
+       pointer. A call goes through the ABI and the conflict disappears. */
+    rb_window_spill();
 
     /* The two slots take different forms of the same word.
        a0 keeps the value verbatim, which is what the resumed thread expects to
