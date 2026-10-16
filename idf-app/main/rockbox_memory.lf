@@ -87,6 +87,21 @@ entries:
 archive: librockbox.a
 entries:
     language (rb_psram)
+    # Pure UI state, checked individually rather than by size: none of these
+    # defines a thread stack or hands a buffer to a DMA engine, which are the
+    # two things that make an object have to stay in internal DRAM. tree.o holds
+    # the browser context, playlist_viewer.o the viewer state, filetypes.o the
+    # registered-type table. Measured headroom before this was 3592 bytes of
+    # dram0_0_seg, which is not enough to add a diagnostic to; these three give
+    # back about 5.4 KB.
+    tree (rb_psram)
+    playlist_viewer (rb_psram)
+    filetypes (rb_psram)
+    # Deliberately NOT moved despite looking like data: scroll_engine.o and
+    # playlist.o each contain a thread stack, dir.o and disk_cache.o are disk
+    # read destinations, talk.o and beep.o feed the audio path, and
+    # thread-idf.o holds the TCB pool that xPortCheckValidTCBMem() requires in
+    # internal RAM.
     * (rb_dram)
 
 [mapping:rb_rbcodec]
