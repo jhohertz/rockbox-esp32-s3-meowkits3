@@ -346,3 +346,39 @@ void mrsw_write_release(struct mrsw_lock *mrsw)
 #endif /* HAVE_PRIORITY_SCHEDULING */
     (void)result;
 }
+
+#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+/* TEMPORARY bring-up accessor, target-gated and compiled out unless the kernel's
+ * own extra checks are on. The xtensa port deadlocks on the filesystem lock
+ * with no panic and no output, so the only way to see it is to ask the lock who
+ * holds it. Reaching into struct mrsw_lock from target code would mean
+ * duplicating kernel-internal layout out of kernel sight, which is exactly the
+ * kind of thing that quietly goes wrong; this keeps the knowledge in the file
+ * that owns the type. */
+#include "thread-internal.h"
+
+int mrsw_debug_state(const struct mrsw_lock *mrsw, char *owner_name, int sz,
+                     int *waiters)
+{
+    struct thread_entry *owner = mrsw->splay.blocker.thread;
+    int n = 0;
+    struct thread_entry *t;
+
+    for (t = WQ_THREAD_FIRST((struct __wait_queue *)&mrsw->queue); t;
+         t = WQ_THREAD_NEXT(t))
+        n++;
+
+    if (owner_name && sz > 0)
+    {
+        if (owner && owner->name)
+            snprintf(owner_name, sz, "%s", owner->name);
+        else
+            snprintf(owner_name, sz, "(none)");
+    }
+
+    if (waiters)
+        *waiters = n;
+
+    return mrsw->count;
+}
+#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
