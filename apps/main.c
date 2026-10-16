@@ -315,6 +315,23 @@ int show_logo_boot( void )
 #ifdef HAVE_DIRCACHE
 static int INIT_ATTR init_dircache(bool preinit)
 {
+    /* TEMPORARY BISECT: do not create or enable the dircache thread at all.
+
+     * The play attempt produced no load_codec output whatsoever, so the codec
+     * thread never received the request -- it is blocked and cannot be woken.
+     * The earlier crash was in the file_internal WRITER lock's wait queue
+     * (mrsw_writer_wakeup_writer -> wakeup_thread_transfer ->
+     * priority_disinherit), and dircache is both the thread that holds that
+     * lock most heavily and the only thread on this target that exits and has
+     * its slot recycled. If play reaches load_codec with dircache gone, the
+     * MRSW participation is the fault; if it still never arrives, the lock is
+     * implicated independently of dircache. */
+    if (preinit)
+    {
+        printf("dircache: DISABLED for bisect\n");
+        return -1;
+    }
+
     if (preinit)
         dircache_init(MAX(global_status.dircache_size, 0));
 

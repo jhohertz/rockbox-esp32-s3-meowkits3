@@ -92,3 +92,11 @@ CONFIG_FREERTOS_USE_TICK_HOOK=y
 CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
 # CONFIG_FREERTOS_CHECK_STACKOVERFLOW_PTRVAL is not set
 # CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY is not set
+
+# Execute-in-place from PSRAM. Rockbox loads codec and plugin images into the
+# PSRAM window (codecbuf/pluginbuf) and calls their entry points, which faults
+# with InstructionFetchError unless the range is mapped for instruction fetch.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is the helper for FETCH_INSTRUCTIONS + RODATA.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
