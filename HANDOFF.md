@@ -1172,3 +1172,77 @@ turned out to be upstream of A. That is the argument for making state visible
 before reasoning about it: three separate confident conclusions this session
 were drawn from an instrument that could not distinguish two very different
 states.
+
+## longjmp reads its own save area through the wrong window
+
+The LoadProhibited crash was traced by address arithmetic alone, with no new
+instrumentation:
+
+    PC  0x426af4ef -> data view 0x3c6af4ef  = inside the CODEC HEAP
+    A5  0x3c68d460 = exactly &codecbuf[codec_size], the heap base
+    A8  0x426002f0 = legitimate codec text
+
+So the codec jumped into its own heap and executed it. But the registers say this
+was not one bad pointer -- A0=0xfffff554, A10=0xffffeaa8, A15=0xfffffff6, and
+PS=0x00050330 where every other fault this session showed 0x00060330. PS is
+restored from the same save area as the registers. An entire register set came
+back wrong.
+
+That set is restored by lib/libsetjmp/xtensa/setjmp.S, and the bug is visible in
+the instruction order:
+
+```asm
+longjmp:
+        entry   a1, 32                    /* a2 = jmp_buf */
+        l32i    a4, a2, JB_WB
+        wsr     a4, windowbase            <-- window rotates HERE
+        rsync
+        l32i    a4, a2, JB_WS             <-- a2 is now the NEW window's a2
+        wsr     a4, windowstart
+        l32i    a4, a2, JB_PS
+        wsr     a4, ps
+        ...
+        mov     a15, a2                   <-- garbage base
+        l32i    a0,  a15, 0               <-- every load reads from garbage
+        ...
+        jx      a0                        <-- jump to the heap
+```
+
+Under the windowed ABI, `wsr windowbase` changes which physical registers the
+*names* a0-a15 denote. The file's own comment knows this -- "WINDOWBASE has
+moved, so keep the save area in a scratch that is written last" -- but the code
+does the opposite: it captures `a2` into `a15` **after** the rotation, and every
+load from the save area after the first `wsr` reads through a pointer that is no
+longer the jmp_buf. The first two words read (JB_WB) are correct; everything
+after is whatever the rotated window happened to hold.
+
+This was unreachable until now. `setjmp` crashed before it could save anything,
+so `longjmp` never ran with a real save area. Fixing the `l32r` literal made
+`longjmp` live for the first time, and it is broken.
+
+### Why this is not a simple reordering
+
+No architectural register name survives a WINDOWBASE change, so there is no
+scratch register to park the pointer in -- that is the whole difficulty the
+windowed ABI creates, and it is why AGENTS.md spends pages on it. Options:
+
+1. **Read the entire save area into the *current* window before rotating**, then
+   rotate and write the special registers only. The general registers loaded
+   before the rotation are themselves rotated by it, so this needs the target
+   window computed and the values placed by physical number -- doable, fiddly.
+2. **Do not rotate at all.** Restore only a0/a1 and PS's interrupt bits, and let
+   the window *underflow* handlers refill the rest from the spilled frames on the
+   stack. This is what a correct windowed longjmp does, and IDF installs those
+   handlers. It requires that setjmp's spill actually spilled, and that the saved
+   PS not be restored wholesale -- restoring CALLINC/OWB from the save area is
+   what makes `jx a0` land in the wrong window shape.
+3. **Stop hand-writing it** and use the toolchain's own setjmp/longjmp, which are
+   correct for this ABI. Blocked by codecs linking `-nostdlib -lgcc`: setjmp lives
+   in libc, not libgcc.
+
+Recommendation: 2, because it matches what the hardware and IDF's handlers
+actually support, and because restoring PS wholesale is wrong regardless -- the
+observed PS difference is direct evidence of it.
+
+Scope note: this is `lib/libsetjmp`, i.e. lib code selected per-arch, not core
+Rockbox. The constraint that no core file changes holds.
