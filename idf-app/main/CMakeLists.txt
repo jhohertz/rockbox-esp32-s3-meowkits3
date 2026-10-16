@@ -37,6 +37,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_gptimer
         esp_driver_sdmmc
+        esp_driver_spi
         esp_mm
         esp_timer
         sdmmc

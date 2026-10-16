@@ -233,6 +233,8 @@ void lcd_init_device(void)
             }
         }
 
+        spi_edge_probe_run();
+
         unsigned before = xt_spi_stuck, calls_before = xt_spi_calls;
         lcd_update();
         /* xt_spi_stuck counts transfers whose USR bit never cleared. If it moves

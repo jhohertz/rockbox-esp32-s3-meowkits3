@@ -32,6 +32,10 @@
 #include "xtensa.h"
 #include "spi-xtensa.h"
 #include "gpio-xtensa.h"
+#include "driver/spi_master.h"
+#include "esp_err.h"
+#include "system.h"   /* mdelay, TEMPORARY probe */
+#include <stdio.h>    /* TEMPORARY probe logging */
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t v) { *(volatile uint32_t *)reg = v; }
@@ -56,6 +60,10 @@ static void spi_apply_config(void)
 #endif
 
 #define SPI_CLK_1M      ((15u << 0) | (7u << 6) | (15u << 12) | (4u << 18))
+/* 80 MHz / (24+1) / (15+1) = 200 kHz, a 5 us period. A register-read loop runs
+   in a few hundred nanoseconds, so at this rate the loop cannot step over an
+   edge: the count is a true lower bound rather than a sampling artefact. */
+#define SPI_CLK_200K    ((15u << 0) | (7u << 6) | (15u << 12) | (24u << 18))
 #define SPI_CLK_20M     ((1u << 0) | (0u << 6) | (1u << 12) | (1u << 18))
 
 /* Measure the bit stream at the pin. A 64-byte transfer must produce exactly 512
@@ -63,8 +71,53 @@ static void spi_apply_config(void)
  * receiving a stream that is longer or shorter than the buffer we filled.
  * The clock is dropped to 1 MHz so a software loop can resolve individual edges.
  */
+/* The bus, brought up the way the two implementations that actually paint this
+ * panel do it. Both the reference's LovyanGFX bus and the bare-metal driver
+ * "use spi_bus_initialize only for pin and clock routing and then write
+ * SPI_USER / SPI_MS_DLEN / SPI_CMD themselves".
+ *
+ * That first half is not a convenience. Measured before this call was added:
+ * bit 6 of PERIP_CLK_EN0 was set, the base address was right, and yet every
+ * GPSPI2 register read back 0x00000000 and a write of 0x5a5a5a5a to SPI_ADDR
+ * was discarded outright. A register file that acknowledges on the APB and
+ * captures nothing is a block whose module clock has never been routed, and
+ * routing it is what spi_bus_initialize() does. Setting the SoC gate bit by
+ * hand is necessary but not sufficient.
+ *
+ * So the transfers below stay hand-programmed -- that is the shape this panel
+ * needs, and IDF's own master was measured emitting 0 edges against a 20/20
+ * self-test -- but they now run on a block that has a clock. */
+static spi_device_handle_t spi_dev;
+
 void spi_init(void)
 {
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = PIN_LCD_MOSI,
+        .miso_io_num = -1,
+        .sclk_io_num = PIN_LCD_SCLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    spi_device_interface_config_t devcfg = {
+        .mode = 0,
+        .clock_speed_hz = 20 * 1000 * 1000,
+        .spics_io_num = -1,   /* CS lives on the PCA9557, not a GPIO */
+        .queue_size = 7,
+    };
+    static int initialised;
+
+    if (!initialised)
+    {
+        esp_err_t e = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+        if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+            printf("spi_init: spi_bus_initialize: %d\n", (int)e);
+        e = spi_bus_add_device(SPI2_HOST, &devcfg, &spi_dev);
+        if (e != ESP_OK)
+            printf("spi_init: spi_bus_add_device: %d\n", (int)e);
+        initialised = 1;
+    }
+
     wr(XT_SYSTEM_BASE + 0x18, rd(XT_SYSTEM_BASE + 0x18) | SYSTEM_SPI2_CLK_EN);
     wr(SPI_CLK_GATE, SPI_CLK_EN | SPI_MST_CLK_ACTIVE | SPI_MST_CLK_SEL);
 
@@ -120,6 +173,15 @@ volatile unsigned int xt_spi_spins;
 volatile unsigned int xt_spi_maxlen;
 volatile unsigned int xt_spi_iter_max;
 
+/* Edge probe (see spi_edge_probe_run at the end of this file). Declared here
+   because spi_write's wait loop is the thing doing the counting. */
+#define SPI_PROBE_SCLK_BIT (1u << (PIN_LCD_SCLK - 32))
+#define SPI_PROBE_MOSI_BIT (1u << (PIN_LCD_MOSI - 32))
+
+volatile unsigned xt_spi_edges;
+volatile unsigned xt_spi_mosi_chg;
+volatile int spi_edge_probe;
+
 void spi_write(const unsigned char *data, int len)
 {
     while (len > 0)
@@ -157,17 +219,127 @@ void spi_write(const unsigned char *data, int len)
            a stalled transfer is countable rather than a silent hang -- an
            unbounded spin here is indistinguishable from never having arrived. */
         unsigned spins = 0;
+        unsigned last_s = 0, last_m = 0;
+
+        if (spi_edge_probe)
+        {
+            unsigned in1 = rd(GPIO_IN1);
+            last_s = (in1 & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
+            last_m = (in1 & SPI_PROBE_MOSI_BIT) ? 1u : 0u;
+        }
+
         while (rd(SPI_CMD) & SPI_CMD_USR)
         {
+            if (spi_edge_probe)
+            {
+                unsigned in1 = rd(GPIO_IN1);
+                unsigned s = (in1 & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
+                unsigned m = (in1 & SPI_PROBE_MOSI_BIT) ? 1u : 0u;
+
+                if (s != last_s) { xt_spi_edges++; last_s = s; }
+                if (m != last_m) { xt_spi_mosi_chg++; last_m = m; }
+            }
+
             if (++spins > 200000)
             {
                 xt_spi_stuck++;
                 break;
             }
         }
+        /* How long USR stayed set. This is the difference between a controller
+         * that clocked out the buffer and one that cleared USR immediately
+         * because it had nothing to send: at 200 kHz a 512-bit transfer is
+         * 2.56 ms, which is thousands of these iterations, while a transfer the
+         * controller ignored returns in a couple. */
+        if (spins > xt_spi_iter_max)
+            xt_spi_iter_max = spins;
+        xt_spi_spins += spins;
         xt_spi_calls++;
 
         len -= n;
         data += n;
     }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* TEMPORARY: edge-counting probe, ported from idf-spike stage 7.      */
+/* ------------------------------------------------------------------ */
+
+/* Everything upstream of this point reports success: the PCA9557 holds CS
+ * asserted and RST released and confirms it on its input register, the pads
+ * read the right func_sel and oen_sel, and 2405 transfers complete with none
+ * stuck. All of that is the register we hoped would produce a waveform. This
+ * measures the waveform.
+ *
+ * The pads are already in INPUT_OUTPUT (gpio_set_direction sets FUN_IE), so
+ * GPIO_IN1 mirrors the pin while the controller drives it. Counting there is
+ * the first check in this whole path that looks at the wire rather than at the
+ * programming of the block attached to it.
+ *
+ * A zero only means something if the counter works, so the probe validates
+ * itself afterwards by reconnecting SCLK to the plain GPIO output signal and
+ * toggling it by hand; the same loop must count twenty edges. */
+void spi_edge_probe_run(void)
+{
+    static unsigned char pat[64];
+    unsigned clock_save = rd(SPI_CLOCK);
+    unsigned last_s;
+    int i, vedges = 0;
+
+    for (i = 0; i < 64; i++)
+        pat[i] = 0xA5;
+
+    wr(SPI_CLOCK, SPI_CLK_200K);
+    spi_apply_config();
+
+    xt_spi_edges = 0;
+    xt_spi_mosi_chg = 0;
+    xt_spi_spins = 0;
+    xt_spi_iter_max = 0;
+    spi_edge_probe = 1;
+    spi_write(pat, sizeof(pat));
+    spi_edge_probe = 0;
+
+    printf("spi probe: 512 bits @200kHz -> sclk edges=%u (want >=512), "
+           "mosi chg=%u, stuck=%u\n",
+           xt_spi_edges, xt_spi_mosi_chg, xt_spi_stuck);
+    printf("spi probe: spins max=%u total=%u (2.56ms is thousands; ~0 means "
+           "the controller clocked nothing)\n", xt_spi_iter_max, xt_spi_spins);
+    printf("spi probe: clock=0x%08x ms_dlen=%u user=0x%08x user1=0x%08x "
+           "ctrl=0x%08x clk_gate=0x%08x cmd=0x%08x\n",
+           rd(SPI_CLOCK), rd(SPI_MS_DLEN), rd(SPI_USER), rd(SPI_USER1),
+           rd(SPI_CTRL), rd(SPI_CLK_GATE), rd(SPI_CMD));
+
+    /* Validate the counter. If this does not read 20 then the readback path is
+     * the problem and the number above means nothing. */
+    gpio_matrix_out(PIN_LCD_SCLK, SIG_GPIO_OUT_IDX);
+    last_s = (rd(GPIO_IN1) & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
+    for (i = 0; i < 20; i++)
+    {
+        wr((i & 1) ? GPIO_OUT1_W1TC : GPIO_OUT1_W1TS, SPI_PROBE_SCLK_BIT);
+        mdelay(1);
+        unsigned now = (rd(GPIO_IN1) & SPI_PROBE_SCLK_BIT) ? 1u : 0u;
+        if (now != last_s) { vedges++; last_s = now; }
+    }
+    printf("spi probe self-test: 20 hand toggles -> %d edges (want 20)\n",
+           vedges);
+
+    /* Is the block writable at all? SPI_ADDR is a plain 32-bit register with no
+     * side effects, so it is the safe place to ask. If the magic value does not
+     * come back, the peripheral has no clock or is held in reset, and every
+     * "transfer completed" on this driver has been a no-op against a dead
+     * register file. Also read the system gate itself rather than trusting that
+     * the write at init landed: bit 6 of PERIP_CLK_EN0, whose reset default is
+     * already 1. */
+    wr(SPI_ADDR, 0x5a5a5a5au);
+    printf("spi probe: addr write 0x5a5a5a5a -> read 0x%08x  "
+           "perip_clk_en0=0x%08x (bit6=%d) en1=0x%08x\n",
+           rd(SPI_ADDR), rd(XT_SYSTEM_BASE + 0x18),
+           (int)((rd(XT_SYSTEM_BASE + 0x18) >> 6) & 1u),
+           rd(XT_SYSTEM_BASE + 0x1c));
+
+    gpio_matrix_out(PIN_LCD_SCLK, SIG_FSPICLK_OUT);
+    wr(SPI_CLOCK, clock_save);
+    spi_apply_config();
 }
