@@ -96,6 +96,16 @@ void panicf( const char *fmt, ...)
     vsnprintf( panic_buf, sizeof(panic_buf), fmt, ap );
     va_end( ap );
 
+#if defined(CPU_XTENSA)
+    /* The message otherwise exists only on the LCD: what reaches the serial
+     * console is IDF's abort banner and a backtrace, with no text. Emit it
+     * through the target hook, which uses the lock-free ROM routine because
+     * interrupts are masked above and printf would take a lock. It also
+     * records it in retained memory for the next boot, since the console here
+     * is USB-Serial-JTAG and resets with the chip. */
+    xtensa_panic_log(panic_buf);
+#endif
+
     lcd_set_viewport(NULL);
 
     int y = 1;

@@ -349,4 +349,14 @@ bool dbg_ports(void);
 bool dbg_hw_info(void);
 #endif
 
+
+#if defined(CPU_XTENSA)
+/* Target hook: put a panic message on the console and into retained memory.
+ * panicf() draws the text on the LCD and then aborts, and IDF's abort banner
+ * carries no message, so without this the panic text exists only on the glass.
+ * Implemented in target/xtensa/paniclog.c. */
+void xtensa_panic_log(const char *msg);
+void xtensa_paniclog_dump(void);
+#endif
+
 #endif /* __SYSTEM_H__ */
