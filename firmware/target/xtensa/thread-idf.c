@@ -92,7 +92,17 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
         panicf("thread gate: no memory for %s", ref->name);
 
     /* configSTACK_DEPTH_TYPE counts words; Rockbox's stack_size is bytes. */
-    ctx->task = (void *)xTaskCreateStatic(
+    /* Pinned to core 0, and that is load-bearing rather than a tuning choice.
+       xTaskCreateStatic is only a macro for xTaskCreateStaticPinnedToCore with
+       tskNO_AFFINITY, so unaffinitied tasks let SMP FreeRTOS run two Rockbox
+       threads at the same moment on two cores -- measured as CPU 0 running
+       "tick" while CPU 1 ran "scroll", with core 1's idle task starved into the
+       task watchdog. Rockbox's kernel is single-core (NUM_CORES is 1 here), the
+       gate handoff assumes the outgoing and incoming thread are on the same
+       core, and switch_thread() holds no cross-core lock. Pinning also frees
+       core 1's idle task, which is what the watchdog was actually complaining
+       about. */
+    ctx->task = (void *)xTaskCreateStaticPinnedToCore(
         rb_task_body, ref->name ? ref->name : "rb",
         (configSTACK_DEPTH_TYPE)(ref->stack_size / sizeof(StackType_t)),
         ref,
@@ -104,7 +114,8 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
            rests on. Above the idle task, so the idle task cannot starve us. */
         (UBaseType_t)(tskIDLE_PRIORITY + 1),
         (StackType_t *)ref->stack,
-        &tcb_pool[slot < MAXTHREADS ? slot : MAXTHREADS - 1]);
+        &tcb_pool[slot < MAXTHREADS ? slot : MAXTHREADS - 1],
+        0 /* core 0: the only core Rockbox's scheduler owns */);
 
     if (ctx->task == NULL)
         panicf("task create failed for %s", ref->name);
