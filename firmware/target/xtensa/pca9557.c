@@ -2,7 +2,6 @@
 #include "system.h"   /* mdelay */
 #include "i2c.h"
 #include "pca9557.h"
-#include <stdio.h>   /* TEMPORARY bring-up logging */
 
 /* The reference firmware reads the output register before every write. That is two
  * I2C transactions per pin change, which is fine for control signals but wasteful.
@@ -43,25 +42,6 @@ int pca9557_status(void)
    notice. */
 unsigned pca9557_write_fails;
 unsigned pca9557_writes;
-
-/* Read the expander's own registers back. The INPUT register mirrors the state
-   of every pin, outputs included, so this is the only external proof that a
-   write landed and that the pin is actually configured as an output -- CONFIG
-   bit set means input, and an input cannot drive CS or RST no matter what was
-   written to OUTPUT. */
-void pca9557_dump(const char *tag)
-{
-    unsigned char in = 0, out = 0, cfg = 0;
-    int rd = 0;
-
-    if (read_reg(PCA9557_REG_INPUT, &in))   rd |= 1;
-    if (read_reg(PCA9557_REG_OUTPUT, &out))        rd |= 2;
-    if (read_reg(PCA9557_REG_CONFIG, &cfg))        rd |= 4;
-
-    printf("pca9557 %s: in=0x%02x out=0x%02x cfg=0x%02x cached=0x%02x rd=%d "
-           "writes=%u fails=%u\n",
-           tag, in, out, cfg, out_reg, rd, pca9557_writes, pca9557_write_fails);
-}
 
 int pca9557_write(int pin, int value)
 {
