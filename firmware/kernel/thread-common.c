@@ -382,7 +382,7 @@ unsigned int thread_slot_check(const void* p)
     return 0;
 }
 
-#if defined(CPU_XTENSA) && THREAD_EXTRA_CHECKS
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
 /* TEMPORARY bring-up: render every live thread and what it is waiting on.
  *
  * A play attempt left the UI at "Loading..." with the filesystem lock free and
@@ -413,4 +413,4 @@ int thread_debug_dump(char *out, int sz)
     }
     return pos;
 }
-#endif /* CPU_XTENSA && THREAD_EXTRA_CHECKS */
+#endif /* CPU_XTENSA bring-up instrumentation */*

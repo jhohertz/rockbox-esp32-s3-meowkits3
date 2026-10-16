@@ -121,9 +121,16 @@ int button_read_device(int *data)
                 extern int thread_debug_dump(char *out, int sz);
                 if (++thdiv >= 4)
                 {
+                    static char sc[200];
+                    extern int scheduler_debug_state(char *out, int sz);
+
                     thdiv = 0;
                     thread_debug_dump(th, sizeof th);
                     printf("THREADS: %s\n", th);
+                    /* The other half of the same question: what the scheduler
+                     * believes, as opposed to what each thread is doing. */
+                    scheduler_debug_state(sc, sizeof sc);
+                    printf("SCHED: %s\n", sc);
                 }
             }
             extern volatile int mrsw_null_self;
