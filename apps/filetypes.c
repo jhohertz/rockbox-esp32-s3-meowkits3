@@ -361,8 +361,17 @@ void read_viewer_theme_file(void)
         custom_filetype_icons[i] = filetypes[i].icon;
     }
 
-    fd = open_pathfmt(buffer, sizeof(buffer), O_RDONLY,
-                      ICON_DIR "/%s.icons", global_settings.viewers_icon_file);
+    /* TEMPORARY bisection. read_viewers_config_init() calls open() with a
+       literal path just above and it returns fine; this is the first
+       open_pathfmt() in the boot -- same subsystem, but the path is built
+       through vsnprintf rather than handed in. Build the path by hand, print
+       it, and open() it directly, so the two halves are separable: if this
+       returns, open_pathfmt() is the problem and not the filesystem. */
+    snprintf(buffer, sizeof(buffer), ICON_DIR "/%s.icons",
+             global_settings.viewers_icon_file);
+    printf("vt: opening '%s'\n", buffer);
+    fd = open(buffer, O_RDONLY);
+    printf("vt: open returned %d\n", fd);
     if (fd < 0)
         return;
 

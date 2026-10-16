@@ -98,16 +98,8 @@ volatile unsigned int xt_spi_iter_max;
 
 void spi_write(const unsigned char *data, int len)
 {
-    static unsigned stuck;
-
-    xt_spi_calls++;
-    *(volatile unsigned int *)0x50001b50 = (unsigned)xt_spi_calls;
-    *(volatile unsigned int *)0x50001b64 = 1;   /* entered */
-    if ((unsigned)len > xt_spi_maxlen)
-        xt_spi_maxlen = (unsigned)len;
-    if (xt_spi_calls < 8) {
-    }
-    while (len > 0) {
+    while (len > 0)
+    {
         int words = (len + 3) / 4;
         if (words > SPI_BUF_WORDS)
             words = SPI_BUF_WORDS;
@@ -119,10 +111,12 @@ void spi_write(const unsigned char *data, int len)
          */
         int n = len < words * 4 ? len : words * 4;
 
-        for (int i = 0; i < words; i++) {
+        for (int i = 0; i < words; i++)
+        {
             uint32_t w = 0;
 
-            for (int b = 0; b < 4; b++) {
+            for (int b = 0; b < 4; b++)
+            {
                 int idx = i * 4 + b;
                 if (idx < n)
                     w |= (uint32_t)data[idx] << (8 * b);
@@ -133,32 +127,21 @@ void spi_write(const unsigned char *data, int len)
 
         wr(SPI_MS_DLEN, (unsigned)n * 8u - 1u);
         spi_apply_config();
-        *(volatile unsigned int *)0x50001b54 = rd(SPI_CMD);
         wr(SPI_CMD, rd(SPI_CMD) | SPI_CMD_USR);
-        *(volatile unsigned int *)0x50001b58 = rd(SPI_CMD);
-        *(volatile unsigned int *)0x50001b64 = 2;   /* transfer started */
 
-        /* USR is self-clearing: it drops when the transfer completes. Bound the
-         * wait so a stalled transfer shows up as a trace instead of a silent hang;
-         * the unbounded loop is what makes "boot stops after the first frame"
-         * indistinguishable from "boot never got here".
-         */
+        /* USR is self-clearing: it drops when the transfer completes. Bounded so
+           a stalled transfer is countable rather than a silent hang -- an
+           unbounded spin here is indistinguishable from never having arrived. */
         unsigned spins = 0;
-        while (rd(SPI_CMD) & SPI_CMD_USR) {
-            if (++spins > 200000) {
-                stuck++;
+        while (rd(SPI_CMD) & SPI_CMD_USR)
+        {
+            if (++spins > 200000)
+            {
                 xt_spi_stuck++;
                 break;
             }
         }
-        *(volatile unsigned int *)0x50001b64 = 3;   /* transfer finished */
-        *(volatile unsigned int *)0x50001b68 = spins;
-        xt_spi_chunks++;
-        xt_spi_spins += spins;
-        {
-            unsigned it = xt_spi_chunks - (xt_spi_calls ? 0 : 0);
-            (void)it;
-        }
+        xt_spi_calls++;
 
         len -= n;
         data += n;
