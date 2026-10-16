@@ -102,6 +102,23 @@ static void gdma_tx_isr(void *arg)
 
 static int div_integ, div_num, div_denom;
 
+/* TEMPORARY: one counter per link in the playback chain, so "it does not play"
+ * becomes a statement about where the chain stops rather than which link is
+ * suspected. Printed from the button probe, which is known to emit. Remove once
+ * playback works.
+ *
+ * init  : sink_init() ran, so i2s_init() and audiohw_preinit() ran
+ * play  : the PCM layer handed us a buffer to transmit
+ * stop  : the PCM layer told us to stop
+ * irq   : the GDMA out_eof interrupt actually fired and we refilled
+ * lastsz: size of the most recent play() buffer, to show the mixer's frame shape
+ */
+volatile unsigned long xt_sink_init_n;
+volatile unsigned long xt_sink_play_n;
+volatile unsigned long xt_sink_stop_n;
+volatile unsigned long xt_sink_irq_n;
+volatile unsigned long xt_sink_last_size;
+
 #ifdef HAVE_RECORDING
 static void program_rx_div(void);
 #endif
@@ -446,7 +463,10 @@ void ICODE_ATTR gdma_irq(void)
     unsigned int st = rd(GDMA_TX_INT_ST);
 
     if (st & GDMA_INT_DONE)
+    {
+        xt_sink_irq_n++;
         refill();
+    }
 
     if (st & GDMA_INT_DSCR_ERR)
     {
@@ -477,6 +497,9 @@ static void sink_unlock(void)
 
 static void sink_play(const void *addr, size_t size)
 {
+    xt_sink_play_n++;
+    xt_sink_last_size = size;
+
     write_desc(addr, size);
 
     if (!playing) {
@@ -489,6 +512,8 @@ static void sink_play(const void *addr, size_t size)
 
 static void sink_stop(void)
 {
+    xt_sink_stop_n++;
+
     playing = false;
     stop_tx();
 
@@ -509,6 +534,8 @@ static void sink_set_freq(uint16_t freq)
 
 static void sink_init(void)
 {
+    xt_sink_init_n++;
+
     i2s_init();
 
     audiohw_preinit();
