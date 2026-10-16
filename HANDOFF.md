@@ -791,3 +791,61 @@ Two things this rules out, so nobody retries them:
 - aliasing individual pointers (done -- works for the two header fields, cannot
   reach into the image)
 - `-mno-longcalls` as a complete fix (helps, is necessary, is not sufficient)
+
+## Three different things I nearly merged into one
+
+The filesystem hang turned out to be three separate behaviours, and conflating
+them is why the diagnosis took so long. Recording them separately:
+
+**1. dircache holding the writer lock is correct behaviour, not a bug.**
+`dircache_thread()` takes `dircache_lock()` at firmware/common/dircache.c:2056
+and holds it across cache builds -- the in-source comment says *"calls made
+within the loop reopen the lock"*. Readers legitimately queue behind it. On a
+card with a great many files a build takes a long time and the UI stalls for
+that duration. That is slow, not deadlocked, and it was observed to recover on
+its own. A reading of `owner=dircache waiting=[main(R)]` is therefore expected
+under load and is not evidence of anything.
+
+**2. `abandon ship! dircache` is a real bug.** It is
+`thread_panicf()` at firmware/kernel/thread.c:1410, reached from `thread_exit()`
+when the exiting thread's priority-distribution mask still has entries -- the
+kernel's own comment: *"otherwise threads are waiting on an abandoned object"*.
+Note that `dircache_unlock()` at dircache.c:2107 *is* on the suspend path, so
+this is about `pdist`, not about the mrsw count. dircache terminates while the
+kernel still believes it owns something.
+
+**3. A free lock with permanent waiters is a real bug, and a different one.**
+Measured directly:
+
+    FSLOCK: count=0 owner=(none) waiters=2
+    main=blk@0x3fcb6bbc
+    power=blk@0x3fcb6bbc
+
+`0x3fcb6bbc` = `file_internal_mrsw` (0x3fcb6bb0) + 0xc = `&mrsw.splay.blocker`,
+resolved from the symbol table. The lock reports itself free and unowned while
+two threads remain queued on its blocker forever. That cannot be a long build --
+the lock is not held by anyone. It is a missed handoff, and it belongs to the
+same family as the `corep->running` fix: Rockbox's scheduler bookkeeping and the
+wakeups the IDF task model actually performs disagreeing.
+
+Distinguishing test between (1) and (3): does it recover if left alone? (1)
+does; (3) never will.
+
+## Instrumentation lessons
+
+- `who :`/`hist:` were gated on `count != 0`, which suppresses output for
+  precisely state (3) above -- a free lock with live waiters. Fixed to
+  `count != 0 || waiters != 0`. Two rounds of "the ring is silent" were this
+  gating error, not absent data.
+- `mrsw_debug_report()` now labels each waiter `W` or `R` from `retval`, which
+  `mrsw_read_acquire()`/`mrsw_write_acquire()` set to 1 and 0 respectively just
+  before blocking. That separates "a writer was never handed the lock" from
+  "everyone is merely behind one".
+- `thread_debug_dump()` walks `__threads[]` and prints `name=run` or
+  `name=blk@<blocker>`. Two threads naming the same blocker address are queued
+  on the same object, which is what identified (3). Cross-referencing it against
+  the lock's own counters is what produced the contradiction -- neither readout
+  alone was sufficient.
+- Cosmetic defect still open: the `playlist` thread prints without its status
+  suffix. Harmless for reading states but it should be fixed before this output
+  is trusted for anything subtle.
