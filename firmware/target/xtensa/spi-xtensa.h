@@ -50,10 +50,6 @@
 void spi_init(void);
 void spi_write(const unsigned char *data, int len);
 
-/* TEMPORARY bring-up: count SCLK/MOSI edges at the pad during a slow transfer,
-   then validate the counter by hand-toggling. */
-void spi_edge_probe_run(void);
-
 /* Wait for the controller to stop clocking (see dc() in st7789.c). */
 void spi_wait_idle(void);
 void spi_probe_edges(void);
@@ -65,9 +61,5 @@ void spi_probe_edges(void);
  * the controller started a transfer that did not finish. */
 extern volatile unsigned int xt_spi_calls;
 extern volatile unsigned int xt_spi_stuck;
-extern volatile unsigned xt_spi_edges;
-extern volatile unsigned xt_spi_mosi_chg;
-extern volatile unsigned xt_spi_dc_chg;
-extern volatile int spi_edge_probe;
 
 #endif

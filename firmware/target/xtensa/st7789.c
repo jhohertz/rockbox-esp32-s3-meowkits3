@@ -46,32 +46,15 @@ static void cs_assert(void)
     pca9557_write(IOEXP_LCD_CS, 0);   /* expander bit low = CS active */
 }
 
-/* TEMPORARY: does the DC pad actually move? Counted here, at the write, because
- * that is the only place the transition exists. Counting it inside spi_write's
- * wait loop cannot work: dc() changes the pin before spi_write() is entered and
- * holds it for the whole transfer, so every transition falls in the gap where
- * that sampler is not running, and the count reads zero no matter what the pin
- * does. Read the pad back rather than the output register -- GPIO_IN1 mirrors
- * the pin, so this distinguishes "we wrote OUT1" from "the pad moved". */
-static int dc_last = -1;
-unsigned dc_pad_transitions;
-unsigned dc_disagreements;
-
 static void dc(int data)
 {
-    int pad;
-
-    /* Do not move the pin while the controller is still clocking. See
-     * spi_wait_idle(). */
+    /* Do not move the pin while the controller is still clocking: the panel
+     * samples DC on every clock edge, so a change mid-transfer makes it read the
+     * remaining bytes under the wrong register select. Measured here: the pad
+     * does move, and GPIO_IN1 agrees with the output register every time --
+     * which is what ruled DC out as the reason the panel looked dead. */
     spi_wait_idle();
     gpio_write_pin(PIN_LCD_DC, data);
-
-    pad = gpio_read_pin(PIN_LCD_DC) ? 1 : 0;
-    if (dc_last >= 0 && pad != dc_last)
-        dc_pad_transitions++;
-    dc_last = pad;
-    if (pad != !!data)
-        dc_disagreements++;
 }
 
 void st7789_write_command(uint8_t cmd)
@@ -121,10 +104,6 @@ void st7789_init(void)
     delay_ms(120);                          /* ST7789 needs ~120 ms after release */
 
     cs_assert();
-    /* Expected: bit0 RST=1 (released), bit1 CS=0 (asserted), bit6 TOUCH_RST=1,
-       and CONFIG bits 0,1,2,3,6 clear -- set means input, and an input cannot
-       drive CS or RST however OUTPUT was written. */
-    pca9557_dump("after cs_assert");
 
     /* The expander's input register mirrors the state of every pin, outputs
      * included, so this is the only external proof that the CS/RST writes landed.

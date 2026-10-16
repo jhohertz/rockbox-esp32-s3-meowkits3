@@ -24,9 +24,5 @@ int pca9557_write(int pin, int value);
 int pca9557_read(int pin);
 int pca9557_status(void);
 
-/* TEMPORARY bring-up: read INPUT/OUTPUT/CONFIG back from the device. */
-void pca9557_dump(const char *tag);
-extern unsigned pca9557_write_fails;
-extern unsigned pca9557_writes;
 
 #endif
