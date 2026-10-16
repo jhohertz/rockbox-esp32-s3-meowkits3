@@ -3302,3 +3302,52 @@ The note above about MCU_SEL and the debug block is superseded for these pins.
 The edge probe's self-test reconnects SCLK to `SIG_GPIO_OUT_IDX` and hand-toggles
 it while reading `GPIO_IN1`: **20/20 edges counted**. A pad held by JTAG cannot
 do that. Pads 39/40/41 are free; the fault was the unclocked controller.
+
+## The display works — what it actually took
+
+Confirmed on the glass: Rockbox's boot logo renders correctly, colours and
+geometry included, drawn through Rockbox's own drawing code rather than a test
+pattern. Three separate faults were in series, and every one of them reported as
+"the panel is dead":
+
+1. **GPSPI2 had no module clock routed.** `spi_bus_initialize()` is required for
+   clock and pin routing even when every transfer is hand-programmed afterwards.
+   Setting `SYSTEM_SPI2_CLK_EN` is not enough. Symptom: every register reads
+   `0x00000000`, writes are discarded, `CMD.USR` never sets, and the driver
+   reports thousands of clean instant transfers that carried nothing.
+2. **DC's pad was tri-stated.** `func_out_sel_cfg` bit 10 (`oen_sel`) was clear,
+   so output enable came from the signal's own oen line rather than from
+   `GPIO_ENABLE`. Fixed with `gpio_matrix_out(PIN_LCD_DC, SIG_GPIO_OUT_IDX)`.
+3. **`SPI_CLOCK` must be `0x80000000`** — `CLK_EQU_SYSCLK`, source undivided from
+   the 80 MHz PLL selected by `CLK_GATE` bit 2. There is no pre-divider field on
+   this block, so the `1u << 18` terms this file used to carry wrote reserved
+   bits, and the resulting `N=1 H=0 L=1` violates the hardware's `N >= H >= L >= 1`
+   and yields a malformed waveform rather than a slow clock.
+
+Final register set, matching the painting reference byte for byte:
+`clk=0x80000000 user=0x18000001 ctrl=0 gate=7`, `MS_DLEN` an exact bit count.
+
+### Measurement discipline this cost a full day
+
+- **A test pattern must not match the reference's.** The spike leaves RGBW
+  quadrants in GRAM, and GRAM survives a reflash and a reset. Drawing the same
+  quadrants made "still the quadrants" uninterpretable. Three cyan/magenta/yellow
+  bands settled it in one flash.
+- **Check what produced a number before reasoning from it.** Reading `0x00f8` out
+  of the framebuffer for a "solid red" frame proved nothing, because the fill that
+  put it there wrote raw bytes `F8,00` by hand. Reasoning from that produced a
+  pixel byte-order "fix" that swapped both halves of every pixel — yellow came
+  out blue — and had to be reverted.
+- **Count a signal where it changes.** Counting DC inside `spi_write`'s wait loop
+  reported zero forever, because `dc()` moves the pin *before* `spi_write()` is
+  entered and holds it for the whole transfer. The transition is structurally
+  outside the sampling window.
+
+### Remaining blocker
+
+The board reboots roughly every nine seconds. `rb_task_body -> thread_exit ->
+thread_exit_final -> THREAD_PANICF -> abort`. `thread_exit_final()` is
+`NORETURN` and panics after `switch_thread()` returns, on the kernel's assumption
+that abandoning the current thread never comes back — which the FreeRTOS task
+model does not honour. The panel now renders Rockbox's own panic screen, so this
+is visible on the glass as well as the console.
