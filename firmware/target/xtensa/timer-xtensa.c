@@ -72,16 +72,29 @@ static const char TAG[] = "rbtick";
  * and a Rockbox semaphore wait switches threads, which an exception frame on
  * a core with no REGB option cannot do. apps/main.c's tick thread runs them.
  */
+/* Authoritative kernel tick rate. Defined in idf-app/main/rockbox_app.c, which
+ * is compiled by the IDF build, so its configTICK_RATE_HZ is the rate the kernel
+ * was actually configured with -- unlike this translation unit, whose view of
+ * that macro comes from IDF headers the Rockbox makefiles do not guarantee to
+ * regenerate. */
+extern const unsigned int rb_kernel_tick_hz;
+
 void tick_start(unsigned int interval_in_ms)
 {
+    /* The seam has to divide an exact number of times or Rockbox's clock drifts
+     * by a whole factor and nothing else in the tree can explain it. */
+    if (rb_kernel_tick_hz < HZ || (rb_kernel_tick_hz % HZ) != 0)
+        panicf("tick_start: kernel %u Hz is not a multiple of Rockbox HZ %d",
+               rb_kernel_tick_hz, HZ);
+
     /* HZ is what every tick consumer in Rockbox already assumes; all this
      * function can legitimately do is confirm the kernel agrees with it. */
     if (interval_in_ms != 1000u / HZ)
         panicf("tick_start: HZ %d does not agree with a %u ms tick", HZ,
                interval_in_ms);
 
-    ESP_LOGI(TAG, "tick: %u ms (%d Hz) from the FreeRTOS tick hook",
-             interval_in_ms, HZ);
+    ESP_LOGI(TAG, "tick: kernel %u Hz -> rockbox %d Hz (divide by %u, %u ms)",
+             rb_kernel_tick_hz, HZ, rb_kernel_tick_hz / HZ, interval_in_ms);
 }
 
 /* SMP FreeRTOS ticks on both cores; Rockbox runs on one, so counting on both
@@ -116,13 +129,20 @@ void vApplicationTickHook(void)
      * Bluetooth is enabled. So the OS keeps its native rate and this seam divides
      * down to Rockbox's.
      *
-     * The divisor is derived from the two macros rather than written as a literal
-     * 10, and the #error makes a non-integral ratio a build failure instead of a
-     * clock that quietly runs at the wrong speed. */
-#if (configTICK_RATE_HZ % HZ) != 0
-#error "configTICK_RATE_HZ must be an integer multiple of Rockbox HZ"
-#endif
-    current_tick = (long)(xTaskGetTickCount() / (configTICK_RATE_HZ / HZ));
+     * The divisor must come from the kernel that is actually running, NOT from
+     * configTICK_RATE_HZ as seen from this translation unit. Rockbox's objects
+     * are compiled by the Rockbox makefiles against IDF's generated headers, and
+     * those are not reliably regenerated when sdkconfig changes: with the rate
+     * raised to 1000, the macro here still read 100, the division folded to 1,
+     * and current_tick ran ten times fast. A compile-time #error cannot catch
+     * that because 100 % 100 == 0 is perfectly valid -- the disagreement is
+     * between two build systems, not within one.
+     *
+     * rb_kernel_tick_hz is defined in idf-app/main/rockbox_app.c, which the IDF
+     * build compiles, so its configTICK_RATE_HZ is by construction the rate the
+     * kernel was actually configured with. tick_start() checks the seam and says
+     * what it found, because this cost a long detour. */
+    current_tick = (long)(xTaskGetTickCount() / (rb_kernel_tick_hz / HZ));
     /* TEMPORARY: police core 0's running-thread pointer (see
        thread_bookkeeping_check in thread-common.c). */
     if (!bk_bad)
