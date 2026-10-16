@@ -2469,28 +2469,162 @@ current_tick = (long)xTaskGetTickCount();   /* CONFIG_FREERTOS_HZ = 100 */
 `freertos/FreeRTOS.h` must precede `freertos/task.h`, and both must come after
 `config.h` or the Rockbox headers get parsed inside FreeRTOS's macro soup.
 
+### A solicited frame is three words, not a register file
+
+ESP-IDF's solicited-yield path saves three things and nothing else:
+
+```asm
+vPortYield:
+    entry   sp, XT_SOL_FRMSZ
+    rsr     a2,  PS
+    s32i    a0,  sp, XT_SOL_PC
+    s32i    a2,  sp, XT_SOL_PS
+    ... spill, rsil, save coprocessor state ...
+```
+
+and `_frxt_dispatch`'s `.L_frxt_dispatch_sol` branch restores them with
+`wsr PS`, `l32i a0, sp, XT_SOL_PC`, and `retw`. No `_xt_context_restore`, no
+`rfe`, no a2-a11.
+
+Saving and restoring the whole register file through
+`_xt_context_save`/`_xt_context_restore` -- the *interrupt* frame model -- is
+wrong for a yield, and not merely wasteful. With CALLINC 8 the current window's
+a8-a15 are not this function's registers, they belong two windows up, and
+`_xt_context_restore` writes them into the current window. Those are the
+registers the window machinery itself uses: `xthal_window_spill_nw` walks
+windows taking its base-save pointers from `a9` and `a13`, and
+`_WindowUnderflow8` takes its ancestor pointer from `a9`. Feeding it a8-a15
+from an unrelated thread is how the spill ends up storing into the wrong place.
+
+a2-a11 are caller-saved and dead across the blocking primitive by ABI, so not
+restoring them costs nothing.
+
+### `wsr ps` is not `rfe`
+
+`rfe` restores PS from SPS **and clears PS.EXCM**; the exception entry had
+already raised INTLEVEL for the handler. A plain `wsr ps` installs whatever is
+in the frame, every bit of it, with none of those corrections. Two have to be
+applied by hand at store time:
+
+- **INTLEVEL.** `switch_thread()` is reached through `disable_irq()`, so the PS
+  sampled a few instructions earlier has INTLEVEL 15. Writing it back leaves the
+  resumed thread with interrupts masked forever -- which is indistinguishable
+  from a dead tick, because the alarm fires in hardware and the core never
+  vectors to it.
+- **EXCM.** A thread must run with EXCM clear. With it set, any exception the
+  thread takes is by definition a second one, so the core goes to
+  `_DoubleExceptionVector`, and IDF implements that (and the kernel and hardware
+  vectors) as `_xt_panic`, which prints nothing and spins. That is why the
+  watchdog's `Saved PC` kept landing in `_xt_context_save` and `_xt_panic` with
+  no Guru Meditation line ever reaching the console -- and the `Saved PC` is the
+  watchdog handler's own PC, not the stuck loop's, so it tells you nothing about
+  the cause.
+
+Everything else in PS is left exactly as the core had it: UM decides which
+exception vector a level-1 interrupt uses (`_KernelExceptionVector` is
+`break 1, 0` here), WOE has to stay set for the window underflow that refills
+the caller's a0-a3 to be taken at all, and CALLINC has to stay non-zero because
+`retw` uses it to strip the window encoding from a0.
+
+### Two frame-placement invariants, both about sp
+
+- **A never-run frame has to sit at the top of the thread's stack, and its A1
+  slot has to name the frame itself.** IDF's exception entry gives it that for
+  free. Both halves of the never-run path address the frame through sp:
+  `_xt_context_restore` ends by reloading sp from the frame's own A1 slot, and
+  `_xt_user_exit` then reads PS, PC and A0 back through sp before removing the
+  frame. A frame parked in the thread table with an A1 slot naming the thread's
+  stack therefore has its sp replaced halfway through, and PS, PC and A0 are
+  read off the top of that stack instead.
+- **On the resume path sp must be the thread's saved sp, not the frame.** `retw`
+  refills the caller's a0-a3 from the base-save area at `a1-16 .. a1-4`, and
+  that area is inside the blocking primitive's own frame on the thread's stack.
+  Point sp at the thread table and the refill reads 16 bytes of unrelated thread
+  entries. Use a scratch register to find the saved values and assign a1 last.
+
+With those in place the spill is demonstrably doing its job: the base-save word
+at `sp-16` reads 0 before `xthal_window_spill_nw` runs and `0x82046352` -- a
+live window-encoded return address -- after it, and is still intact when that
+thread is resumed later.
+
+### ESP-IDF brings this board's PSRAM up on the first try
+
+`octal_psram: vendor id 0x0d (AP), dev id 0x02 (generation 3), density 0x03
+(64 Mbit), good-die Pass`. The whole hand-rolled bring-up on the bare-metal
+branch, which never got an answer from the chip, was never a hardware problem.
+`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y` and IDF's own driver is enough.
+
+The resulting map, read out of the 512-entry table at `0x600C5000`:
+
+| entries | target |
+|---|---|
+| 0..7 | flash pages 10..17 |
+| 8..16 | flash pages 1..9 |
+| 17..144 | **PSRAM pages 0..127** -- all 8 MB |
+| 145..510 | invalid |
+| 511 | flash page 1 |
+
+Rockbox's PSRAM objects and the entries they land in: `audiobuffer`
+`0x3c14d2c0` (entries 20..83, 4 MB), `codecbuf` `0x3c54d2c0` (84, 1 MB),
+`pluginbuf` `0x3c64d2c0` (100). All inside the mapped range, and the table is
+still clean while the system runs -- sampled from core 1 every eight ticks over
+fourteen crash cycles, entries 16..143, zero violations.
+
+### What the current crash is, and what it is not
+
+The panic is reported through the **EXTMEM MMU-entry-fault status bit**
+(`components/esp_system/port/soc/esp32s3/cache_err_int.c`), which is an
+asynchronous cache-error interrupt, not a CPU exception. IDF says so outright
+next to the other causes: "The following backtrace may not indicate the code
+that caused Cache invalid access" -- and indeed the backtrace is
+`prvIdleTask` -> `esp_vApplicationIdleHook` -> `xt_utils_wait_for_intr`. The
+reported PC and backtrace are the idle task, not the culprit.
+
+The hardware does have fault-info registers -- `EXTMEM.cache_mmu_fault_vaddr`
+and `cache_mmu_fault_content` (the MMU entry content plus an operation code:
+1 cpu miss, 2 preload miss, 3 writeback, 6 external DMA tx, 7 external DMA rx,
+bit 3 selecting the icache). IDF never reads them for this cause. They were
+read from the live core on every eighth tick and **both stay zero**, which is
+consistent with IDF's table listing no address register for this cause. So
+hardware gives no address, and the address has to be obtained some other way.
+
+Ruled out by measurement, so it does not get re-attempted:
+
+- **The MMU table.** Intact at storage init and intact while running.
+- **`__cores[].running` being corrupted.** Checked on core 0 at every switch and
+  from core 1 every tick against the bounds of `__thread_entries`; never out of
+  range. The earlier reading that it pointed into the audiobuffer came from
+  trusting an objdump of literal-pool-heavy code, where `l32r` + `l32i` is a
+  literal load of the symbol's *address*, not a dereference of its contents.
+- **The window spill.** It writes the right base-save area, verified before and
+  after.
+
+### No hardware data watchpoints on this core config
+
+`XCHAL_HAVE_DEBUG` is 1 and `XCHAL_NUM_DBREAK` is 2 in the toolchain's
+`xtensa-config.h`, which suggests watchpoints are available. They are not:
+`wsr a2, dbreakc0` assembles, but `dbreak0`, `dbreak1`, `dbreak`, `dbrk0` and
+`ibreak0` are all unknown opcodes -- the address registers are missing from the
+dynconfig's opcode tables, same class of gap as the absent REGB options. A
+watchpoint on a specific word would have named a stray writer immediately; that
+route is closed.
+
 ### Where it stands now
 
-Both fixes verified on hardware: core 0's served count and the gptimer ISR count
-advance for a full 30 s with no reset and no panic, the scheduler idles and
-wakes normally through `core_sleep()`, and threads now run far enough to reach
-the dircache scan and the backlight thread.
+Measured after the solicited-frame rewrite:
 
-The remaining fault is single, deterministic and reportable --
-`StoreProhibited`, `EXCVADDR 0x00f00d12`, in `lld_remove` (linked_list.c:212)
-via `wait_queue_try_remove` from `queue_wait_w_tmo` in `backlight_queue_wait`
-(backlight.c:562), on the backlight thread's first queue timeout. The list
-pointers are pattern garbage.
+- The breadcrumb ring goes from 130 records to **37495**, and the dircache scan
+  now runs to completion (1706 entries built).
+- The failure changed from a silent `TG1WDT_SYS_RST` with no output to a
+  reported panic with a decodable backtrace.
+- Threads start, block, resume and idle normally; core 0 takes interrupts; the
+  tick advances; SD storage works; PSRAM works.
 
-**Tried and rejected**, so it does not get re-attempted: narrowing `WINDOWSTART`
-to the current window after the spill, and carrying `WINDOWBASE` in the frame's
-`PS.OWB` and restoring it at load. Both made things worse -- narrowing leaves
-`WINDOWSTART = 1`, which makes the spill a no-op and puts the broken `retw`
-refill back, and the pair turned the reportable crash back into a silent WDT
-hang. Worth knowing: at the first spill ever, `WINDOWSTART = 0xaa80` with
-`WINDOWBASE = 0x0f` -- a non-contiguous mask no call chain produces -- so the
-window bookkeeping is already inconsistent before anything walks it. That is the
-direction the `lld_remove` corruption most likely comes from.
+Open: the asynchronous MMU-entry fault above. The next useful move is to make
+the fault synchronous enough to name -- either by clearing the status bit at
+known checkpoints and finding the interval that sets it, or by bisecting the
+subsystems that touch the external window (audio DMA into the audiobuffer, the
+display path, IDF's own PSRAM heap) with each one disabled in turn.
 
 ### A breadcrumb ring that survives the crash
 
