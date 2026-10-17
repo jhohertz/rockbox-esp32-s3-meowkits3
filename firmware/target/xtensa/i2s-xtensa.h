@@ -188,11 +188,26 @@
 #define PIN_I2S_DOUT 16
 #define PIN_I2S_DIN  3   /* ES7210 -> I2S0 receive */
 
+/* One GDMA link-list item.
+ *
+ * The hardware reads exactly the first three words. The padding to 32 bytes is
+ * deliberate and is the reason this is not a plain three-word struct: two
+ * 12-byte descriptors sit in a 24-byte array and would share one 32-byte
+ * D-cache line, and cache maintenance works at line granularity. Committing the
+ * descriptor the CPU just armed would then also write back the CPU's stale copy
+ * of its neighbour -- including an owner bit the DMA had already cleared -- so
+ * the engine would be handed back a descriptor it had retired and the CPU
+ * believed was still in flight. One descriptor per line confines each commit to
+ * the descriptor actually being handed over.
+ *
+ * Offsets the DMA cares about are unchanged: dw0 at 0, buffer at 4, next at 8.
+ */
 struct gdma_desc {
     uint32_t dw0;      /* size[11:0], length[23:12], err_eof[28], suc_eof[30], owner[31] */
     uint32_t buffer;
     uint32_t next;
-};
+    uint32_t pad[5];   /* to one esp32s3 D-cache line; see above */
+} __attribute__((aligned(32)));
 
 /* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA moves. */
 #define DESC_SUC_EOF (1u << 30)
