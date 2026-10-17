@@ -398,10 +398,18 @@ void i2s_set_frequency(unsigned long rate)
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
-    /* Self-linked. The outlink is stopped after every transfer, so next is
-     * never followed; pointing it at this descriptor means a stray restart cannot
-     * walk the engine into a slot nobody armed. */
-    desc[i].next   = (uint32_t)(unsigned long)&desc[i];
+    /* Zero terminates the link list: the engine stops rather than wrapping.
+     *
+     * These descriptors were briefly self-linked, on the theory that a stray
+     * restart then could not walk into a slot nobody had armed. It could not
+     * walk anywhere, but it also never stopped. Measured consequences: one
+     * out_dscr_err per frame (err tracked irq exactly, +1, because the engine
+     * followed next back into desc[0] after we had taken it back), and a
+     * noticeable lag on pause while it replayed the last buffer.
+     *
+     * This is the encoding of imx233's `dma.next = NULL`: the transfer ends, and
+     * the driver restarts it deliberately. */
+    desc[i].next   = 0;
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
      * slot safe rather than fatal. */
@@ -764,10 +772,14 @@ static void sink_stop(void)
     queued = 0;
     stop_tx();
 
-    /* The link register still points at desc[0], so the ring restarts there on the
-     * next play. If the DMA left desc[0] owned by itself, the engine would suspend
-     * on it and nothing would ever come out. Hand both halves back to the CPU.
-     */
+    /* Hand every descriptor back to the CPU. If the DMA left one owned by
+     * itself, the engine would suspend on it at the next start and nothing would
+     * ever come out.
+     *
+     * Take the lines from memory before writing them, as fill() does: the engine
+     * has been clearing owner bits through the bus, and a blind write here would
+     * publish whatever our cache last held rather than what is actually there. */
+    discard_dcache_range((const void *)desc, sizeof(desc));
     for (int i = 0; i < XT_TX_RING; i++)
         desc[i].dw0 = 0;
     commit_dcache_range((const void *)desc, sizeof(desc));
