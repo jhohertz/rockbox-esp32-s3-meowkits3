@@ -167,6 +167,42 @@ Practical facts about that toolchain:
 
 ## 5. ESP32-S3 notes
 
+### Use IDF's drivers; do not bit-bang peripherals
+
+This is a standing instruction, and it has been earned twice.
+
+The I2S/GDMA transmit path only started working once it was handed to IDF's HAL
+(`i2s_hal_init`, `set_tx_clock`, `std_set_tx_slot`, `std_enable_tx_channel`). The
+backlight then demonstrated the failure mode of the alternative: a hand-rolled
+LEDC driver wrote the correct addresses, with offsets and bit fields each checked
+against `ledc_reg.h` and `ledc_struct.h`, and **not one write reached the register
+file**. Every LEDC register read back its reset value while the SYSTEM clock gate
+was confirmed set. Nothing errored. The symptom was a backlight that could not be
+turned off, and it survived many build-and-flash cycles because the reset state of
+that particular register happened to look like the correct behaviour.
+
+The lesson is not "be more careful with offsets" — the offsets were right. A
+peripheral can be silently unreachable for reasons a datasheet does not list, and
+the only cheap defence is to read the hardware back and compare against a driver
+known to work. IDF's driver made the same writes land immediately.
+
+So: if IDF has a driver for the block (`esp_driver_*`, `esp_lcd`, `esp_hw_support`,
+`soc/*_reg.h` for constants), use it. Reach for raw registers only where IDF has
+nothing — and when you do, add a readback probe alongside it.
+
+Two mechanical notes for files that include IDF headers:
+
+- `CFLAGS` already carries `$(IDF_CFLAGS)` for the whole firmware domain, so IDF
+  headers are reachable from any target file. But `tools/configure` harvests those
+  flags from `$rootdir/idf-app/build`, **not** from the build directory being
+  configured. Adding a component to `idf-app/main/CMakeLists.txt` therefore needs
+  `idf.py reconfigure` in `idf-app/` before `configure` will see its include path;
+  re-running `cmake` in `build-meowkits3` updates the wrong `compile_commands.json`
+  and `idf.make` silently keeps the old flag set.
+- `firmware/target/xtensa/gpio-xtensa.h` declares `gpio_set_direction(int, int)` as
+  a static inline, which collides with IDF's `driver/gpio.h` declaration that
+  `driver/ledc.h` pulls in. The two cannot share a translation unit.
+
 - Xtensa LX7, dual core. Rockbox is single-core in practice; `CURRENT_CORE`
   exists in `firmware/asm/corelock.c` for SMP.
 - No MMU. `firmware/target/*/mmu-*.c` is optional; do not assume one.
