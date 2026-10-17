@@ -66,6 +66,24 @@ static uint32_t downmix_buf[2][MAX_MIX_FRAME_SAMPLES] DOWNMIX_BUF_IBSS MEM_ALIGN
 static int downmix_index = 0;   /* Which downmix_buf? */
 static size_t next_size = 0;    /* Size of buffer to play next time */
 
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+/* TEMPORARY: the mixer's side of the playback chain, read out by
+ * audio_chain_probe() alongside the codec, pcmbuf, pcm-core and GDMA views so the
+ * seam where they disagree is visible in one sample. next_size and downmix_index
+ * are file-static, hence the accessors. Remove with the rest of the probe. */
+volatile unsigned long xt_mix_cb_n;
+
+size_t pcm_mixer_probe_next(void)
+{
+    return next_size;
+}
+
+int pcm_mixer_probe_index(void)
+{
+    return downmix_index;
+}
+#endif
+
 /* Descriptors for all available channels */
 static struct mixer_channel channels[PCM_MIXER_NUM_CHANNELS] IBSS_ATTR;
 
@@ -136,6 +154,10 @@ static inline void chan_call_buffer_hook(struct mixer_channel *chan)
 static enum pcm_dma_status MIXER_CALLBACK_ICODE
 mixer_buffer_callback(enum pcm_dma_status status)
 {
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+    xt_mix_cb_n++;
+#endif
+
     if (status != PCM_DMAST_STARTED)
         return status;
 

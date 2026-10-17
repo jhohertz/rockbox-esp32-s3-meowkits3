@@ -124,35 +124,65 @@ volatile unsigned long xt_sink_stop_n;
 volatile unsigned long xt_sink_irq_n;
 volatile unsigned long xt_sink_last_size;
 
-/* TEMPORARY: dump the transmit path as the hardware sees it. The counters can say
- * the completion event never reached the handler; only these registers can say
- * whether the event was never generated or merely never delivered, and those two
- * need opposite fixes. */
+/* TEMPORARY: the whole playback chain as one aligned readout, the way the
+ * scheduler was finally diagnosed -- every stage's own view of what it is doing,
+ * sampled at the same instant and emitted as a single printf so no other thread
+ * can land between two stages. The answer is the seam where two adjacent stages
+ * disagree, never one counter on its own:
+ *
+ *   insert climbing, pcmbuf used climbing, mixer cb static
+ *        -> the mixer is not being driven at all
+ *   mixer cb climbing, next non-zero, sink play static
+ *        -> buffers are being mixed but pcm_play_data() is not starting the DMA
+ *   core more=(nil)
+ *        -> pcm_play_stop_int() has latched the chain off; nothing can resume it
+ *   sink play climbing, dma irq static
+ *        -> the ring is fed but the transmitter is not completing
+ *
+ * pcmbuf used/free is the pressure quantity: it is what should decide whether
+ * there is anything to hand down. Clock and reset state are included because a
+ * peripheral held in reset reads back zero and is otherwise indistinguishable
+ * from a wrong base address.
+ */
 void i2s_audio_probe(void)
 {
-    printf("AUDHW: raw=%08x st=%08x ena=%08x link=%08x\n",
-           rd(GDMA_TX_INT_RAW), rd(GDMA_TX_INT_ST), rd(GDMA_TX_INT_ENA),
-           rd(GDMA_TX_LINK));
-    printf("AUDHW: ofifo=%08x txstate=%08x txconf=%08x\n",
-           rd(GDMA_TX_FIFO_STATUS), rd(GDMA_TX_STATE), rd(I2S_TX_CONF));
-    printf("AUDHW: d0=%08x d1=%08x cur=%d playing=%d queued=%d\n",
-           desc[0].dw0, desc[1].dw0, cur, playing, queued);
-    /* If a peripheral's clock is gated its registers read back as zero on this
-     * chip, which is indistinguishable from "the write never happened". Reading
-     * the two enable bits alongside the peripheral registers tells those apart:
-     * I2S1 is bit 21 of PERIP_CLK_EN0, DMA is bit 6 of PERIP_CLK_EN1. */
-    printf("AUDHW: clk0=%08x (i2s1=%d) clk1=%08x (dma=%d)\n",
-           rd(SYSTEM_PERIP_CLK_EN0),
+    extern volatile unsigned long xt_codec_run_n;
+    extern volatile int xt_codec_in_run;
+    extern volatile unsigned long xt_pcminsert_n, xt_bufget_n, xt_startfill_n;
+    extern volatile unsigned long xt_mix_cb_n;
+    extern size_t pcm_mixer_probe_next(void);
+    extern int pcm_mixer_probe_index(void);
+    extern size_t pcmbuf_free(void);
+    extern size_t pcmbuf_get_bufsize(void);
+    extern int pcmbuf_used_descs(void);
+    extern int pcmbuf_descs(void);
+    extern volatile pcm_play_callback_type pcm_callback_for_more;
+    extern enum pcm_dma_status
+        (* volatile pcm_play_status_callback)(enum pcm_dma_status);
+
+    size_t bufsz = pcmbuf_get_bufsize();
+    size_t used = bufsz - pcmbuf_free();
+
+    printf("CHAIN: codec run=%lu in=%d | insert=%lu bufget=%lu startfill=%lu\n"
+           "CHAIN: pcmbuf used=%lu/%lu descs=%d/%d | mixer cb=%lu next=%lu idx=%d\n"
+           "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
+           "CHAIN: dma irq=%lu queued=%d cur=%d d0=%08x d1=%08x txconf=%08x\n"
+           "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n",
+           xt_codec_run_n, xt_codec_in_run,
+           xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
+           (unsigned long)used, (unsigned long)bufsz,
+           pcmbuf_used_descs(), pcmbuf_descs(),
+           xt_mix_cb_n, (unsigned long)pcm_mixer_probe_next(),
+           pcm_mixer_probe_index(),
+           pcm_playing, (void *)pcm_callback_for_more,
+           (void *)pcm_play_status_callback,
+           xt_sink_play_n, xt_sink_stop_n,
+           xt_sink_irq_n, queued, cur,
+           (unsigned)desc[0].dw0, (unsigned)desc[1].dw0,
+           (unsigned)rd(I2S_TX_CONF),
            (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
-           rd(SYSTEM_PERIP_CLK_EN1),
-           (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0);
-    /* And the other half of that: a peripheral with its clock on but its reset
-     * asserted behaves exactly like one with no clock at all, so the enable bits
-     * alone cannot distinguish the two. 1 here means still held in reset. */
-    printf("AUDHW: rst0=%08x (i2s1=%d) rst1=%08x (dma=%d)\n",
-           rd(SYSTEM_PERIP_RST_EN0),
+           (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0,
            (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
-           rd(SYSTEM_PERIP_RST_EN1),
            (rd(SYSTEM_PERIP_RST_EN1) & CLK_EN_DMA) ? 1 : 0);
 }
 
