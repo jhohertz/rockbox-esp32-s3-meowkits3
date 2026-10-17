@@ -181,7 +181,18 @@ static void tick_task_thread(void)
      * hardware-accurate while the work happens here, in thread context. */
     while (true)
     {
-        sleep(HZ/2);
+        /* sleep() takes TICKS, not milliseconds -- sleep(0) waits for the next
+         * tick, which is what a tick-task loop wants: run_tick_tasks() then runs
+         * at HZ, the rate every tick consumer in Rockbox assumes.
+         *
+         * This used to say sleep(HZ/2), which with HZ=100 is sleep(50) -- half a
+         * second. Button polling lives in these tasks (button_init() registers
+         * button_tick via tick_add_task), so the stick was sampled twice a second
+         * and an ordinary 40-80 ms press usually fell entirely between two
+         * samples. That is the whole of the "have to press several times"
+         * complaint, and it is why removing the console spam from the button path
+         * did not fix it. */
+        sleep(0);
         run_tick_tasks();
     }
 }
