@@ -129,10 +129,6 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * 4 x 512. The bound below is the same one the static assert in write_desc()
  * enforces, so the slot can never be smaller than what we are handed. */
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4 * 2)
-/* One mixer frame of silence: 256 samples * 4 bytes for 16-bit stereo. This is
- * the size the mixer actually hands us (measured next=1024), so a silent slot
- * occupies exactly the same airtime as a real one. */
-#define XT_TX_SILENCE (MIX_FRAME_SAMPLES * 4)
 
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
 
@@ -151,8 +147,6 @@ static volatile int nxt;
 static volatile const void *pend_addr;
 static volatile size_t pend_size;
 static volatile int pend_valid;
-/* Which slots carry audio rather than silence. Indexed by slot. */
-static volatile uint8_t slot_audio[XT_TX_RING];
 static int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
@@ -420,19 +414,9 @@ static void arm(int i, unsigned long len)
 /* Place one frame into slot i and hand it to the DMA. len 0 leaves the slot
  * owned with nothing to move, which is what keeps the ring fully owned between
  * hand-offs. */
-static void fill(int i, const void *src, unsigned long len, int is_audio)
+static void fill(int i, const void *src, unsigned long len)
 {
-    if (src)
-        memcpy(dma_buf[i], (const void *)src, len);
-    else
-        memset(dma_buf[i], 0, len);
-
-    /* Whether this slot carries audio cannot be read back from the descriptor: a
-     * silent slot is full size and looks identical. It has to be recorded, because
-     * only a slot that carried audio may be reported as a consumption -- telling
-     * the mixer it produced something we played when we played silence would
-     * advance the stream over audio nobody heard. */
-    slot_audio[i] = (uint8_t)is_audio;
+    memcpy(dma_buf[i], (const void *)src, len);
 
     /* Take the line from memory before modifying it, then push it back. The
      * engine wrote the owner bit clear through the bus, and our cached copy of
@@ -462,6 +446,26 @@ static void fill(int i, const void *src, unsigned long len, int is_audio)
 
     if (link & (1u << 23))
         wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
+}
+
+/* Hand a slot back to the CPU: dw0 = 0 means the engine is not allowed to take
+ * it. This is the underrun path. The engine parks on such a descriptor, which is
+ * its designed behaviour rather than a fault, and the restart in fill() picks the
+ * walk back up as soon as real audio is available.
+ *
+ * The alternative used here briefly -- arming spare slots with a frame of silence
+ * -- was wrong, and measurably so. The core hands down exactly one buffer per
+ * reported consumption, so a primed ring of one audio slot plus three silent ones
+ * never recovers: each completion re-arms only the slot that just retired, which
+ * is the one the engine reaches last. The result was one audio frame in every
+ * four, a transport running at the correct 44.1 kHz carrying 25% audio, and a
+ * player clock advancing at a quarter speed because it is slaved to the audio
+ * completions. */
+static void release(int i)
+{
+    discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
+    desc[i].dw0 = 0;
+    commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
 }
 
 static void gdma_init(void)
@@ -518,9 +522,7 @@ static void gdma_init(void)
     {
         desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
         desc[i].next   = (uint32_t)(unsigned long)&desc[(i + 1) % XT_TX_RING];
-        /* Owned and empty. The engine may walk here at any time and must find a
-         * descriptor it is allowed to take. */
-        desc[i].dw0 = XT_TX_SLOT | DESC_SUC_EOF | DESC_OWNER;
+        desc[i].dw0 = 0;   /* start in the CPU's hands; see sink_play() */
     }
     commit_dcache_range((const void *)desc, sizeof(desc));
 
@@ -671,19 +673,17 @@ void ICODE_ATTR gdma_irq(void)
          * one, but nothing was heard, so the mixer must not be told a buffer was
          * consumed -- that would advance it over audio nobody played and drift
          * the stream by a frame every time the pipeline runs dry. */
-        discard_dcache_range((const void *)&desc[r], sizeof(desc[r]));
-        const int carried = slot_audio[r];
+        /* A completion can only mean audio was played: a slot the CPU owns is not
+         * taken, so it never completes. The carried/silent distinction that used to
+         * live here is gone along with the silent slots. */
+        xt_sink_irq_n++;
+        if (queued > 0)
+            queued--;
 
-        if (carried)
-        {
-            xt_sink_irq_n++;
-            if (queued > 0)
-                queued--;
-            /* Report the consumption first: that is what makes the mixer build
-             * the next frame and hand it down through sink_play(), which lands in
-             * the pending slot. */
-            refill();
-        }
+        /* Report the consumption first: that is what makes the mixer build the
+         * next frame and hand it down through sink_play(), which lands in the
+         * pending slot. */
+        refill();
 
         /* Then re-arm the slot we just released, with that frame if one arrived
          * and with nothing if it did not. This is the step that keeps the ring
@@ -692,18 +692,14 @@ void ICODE_ATTR gdma_irq(void)
          * lap found a descriptor it was not allowed to take. */
         if (pend_valid)
         {
-            fill(r, (const void *)pend_addr, (unsigned long)pend_size, 1);
+            fill(r, (const void *)pend_addr, (unsigned long)pend_size);
             pend_valid = 0;
         }
         else
         {
-            /* No frame ready. Play a slot of silence rather than an empty
-             * descriptor: a zero-length slot is walked but raises no out_eof, so
-             * we never learn it was consumed, never re-arm it, and nxt cannot
-             * advance -- which is exactly how the ring drained last time. Silence
-             * costs the same airtime, generates a real completion, and turns an
-             * underrun into nothing audible instead of a glitch. */
-            fill(r, NULL, XT_TX_SILENCE, 0);
+            /* Underrun. Hand the slot back and let the engine park on it; the
+             * next frame we are given will restart the walk. */
+            release(r);
         }
     }
 
@@ -756,12 +752,16 @@ static void sink_play(const void *addr, size_t size)
          * no descriptor in the ring it is not allowed to take. Starting with one
          * armed slot and three the engine must not touch is what made the very
          * first hand-off fatal. */
-        fill(0, addr, (unsigned long)size, 1);
+        fill(0, addr, (unsigned long)size);
         pend_valid = 0;
         queued = 1;
         nxt = 0;
+        /* Everything else starts in the CPU's hands. The engine walks slot 0,
+         * then parks at slot 1 until the first completion arms it -- which is the
+         * designed behaviour, and the only honest starting state given that we
+         * have exactly one frame to offer. */
         for (int i = 1; i < XT_TX_RING; i++)
-            fill(i, NULL, XT_TX_SILENCE, 0);
+            release(i);
 
         playing = true;
         start_tx();
@@ -791,7 +791,7 @@ static void sink_stop(void)
      * on it and nothing would ever come out. Hand both halves back to the CPU.
      */
     for (int i = 0; i < XT_TX_RING; i++)
-        desc[i].dw0 = XT_TX_SLOT | DESC_SUC_EOF | DESC_OWNER;
+        desc[i].dw0 = 0;
     commit_dcache_range((const void *)desc, sizeof(desc));
     nxt = 0;
     pend_valid = 0;
