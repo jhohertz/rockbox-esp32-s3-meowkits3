@@ -99,7 +99,11 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * a third context. Without the qualifier the compiler may cache it across those
  * boundaries. An earlier note here claimed the interrupt mask made it safe, but
  * sink_play takes no lock at all. */
-static volatile struct gdma_desc desc[2] __attribute__((aligned(4)));
+/* aligned(32), not aligned(4): the struct type asks for a cache line each, but a
+ * variable attribute overrides a type attribute, and leaving this at 4 put the
+ * array on a 16-byte boundary so the two descriptors still straddled shared
+ * lines. GDMA itself only requires 4-byte alignment. */
+static volatile struct gdma_desc desc[2] __attribute__((aligned(32)));
 /* GDMA requires a 4-byte aligned buffer address */
 static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)));
 
@@ -223,6 +227,13 @@ void i2s_audio_probe(void)
     uint32_t f_pll160 = 0, f_xtal = 0;
     unsigned int gs = rd(GDMA_TX_STATE);
     unsigned int fs = rd(GDMA_TX_FIFO_STATUS);
+
+    /* The DMA writes descriptor results back through the bus, not through our
+     * D-cache, so the cached line for the ring can still hold what we wrote
+     * rather than what the engine left. Drop it first: without this the owner
+     * bits printed below describe the CPU's memory, not the hardware's, and can
+     * contradict every other reading on this line. */
+    discard_dcache_range((const void *)desc, sizeof(desc));
 
     esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_F160M,
                                  ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_pll160);
@@ -508,6 +519,12 @@ static void write_desc(const void *addr, size_t size)
     }
 
     memcpy(dma_buf[cur], addr, size);
+    /* Take the line from memory before modifying it. The engine may have cleared
+     * this descriptor's owner, or its neighbour's, since we last looked; arming
+     * into a stale line and committing it would hand that stale state back to the
+     * DMA as if it were new. The line is clean at this point because every arm()
+     * is committed immediately below. */
+    discard_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
     arm(cur, size);
     /* GDMA fetches the descriptor and the buffer from memory, not from the
      * cache, so both have to be committed before the engine can mount them. */

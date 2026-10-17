@@ -41,7 +41,7 @@
  * a PSRAM address loses its high bits). The .srambss section belonged to
  * Rockbox's own linker script; naming a section IDF's script does not claim
  * makes the object an orphan and opens a gap IDF then refuses to flash. */
-static volatile struct gdma_desc rx_desc[2] __attribute__((aligned(4)));
+static volatile struct gdma_desc rx_desc[2] __attribute__((aligned(32)));
 static unsigned char rx_buf[2][GDMA_RX_CHUNK] __attribute__((aligned(4)));
 
 /* The descriptor the engine is expected to be filling. Re-armed immediately after
