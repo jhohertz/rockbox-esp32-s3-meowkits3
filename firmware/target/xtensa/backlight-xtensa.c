@@ -33,6 +33,14 @@
 #define LEDC_LSCH_DUTY(ch)    (XT_LEDC_BASE + 0x08 + 0x14 * (ch))
 #define LEDC_LSTIMER_CONF(t)  (XT_LEDC_BASE + 0xa0 + 0x08 * (t))
 
+/* conf0 is timer_sel [1:0], sig_out_en [2], idle_lv [3], low_speed_update [4].
+ * That last bit is the reason a bare write to the duty register does nothing: the
+ * duty and hpoint registers sit in the APB domain and the channel only samples
+ * them into its own clock domain when low_speed_update is pulsed. IDF does it in
+ * ledc_update_duty() -> ledc_hal_ls_channel_update() -> ledc_ll_ls_channel_update(),
+ * which is this one bit and nothing else. */
+#define BL_LS_UPDATE          (1u << 4)
+
 /* apb_clk_sel bits [1:0] of LEDC_CONF: 1 = APB, 2 = RC_FAST, 3 = XTAL. */
 #define LEDC_CLK_XTAL         3u
 
@@ -56,6 +64,14 @@ static void set_duty(unsigned duty)
 {
     /* Inverted: the LED lights when the line is low, so a small duty is bright. */
     wr(LEDC_LSCH_DUTY(BL_CHANNEL), BL_FULL_DUTY - duty);
+    /* Latch it. Without this the value above never reaches the counter, and the
+     * channel keeps whatever it sampled at reset -- duty 0, i.e. the line held
+     * low, i.e. an active-low LED at full brightness. That is the whole reason
+     * the backlight looked correct at maximum and refused to go out on the
+     * timeout: the un-latched reset state happens to equal the common case, so
+     * every write (including backlight_hw_off) was invisible. */
+    wr(LEDC_LSCH_CONF0(BL_CHANNEL),
+       rd(LEDC_LSCH_CONF0(BL_CHANNEL)) | BL_LS_UPDATE);
 }
 
 bool backlight_hw_init(void)
