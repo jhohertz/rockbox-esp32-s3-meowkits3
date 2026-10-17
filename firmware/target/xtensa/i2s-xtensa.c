@@ -393,6 +393,7 @@ void i2s_init(void)
                      ((SLOT_BITS - 1) << 24) |           /* tx_tdm_chan_bits */
                      ((SLOT_BITS - 1) << 18) |           /* tx_half_sample_bits */
                      ((I2S_BCLK_DIV - 1) << 7) |         /* tx_bclk_div_num */
+                     (SLOT_BITS - 1) |                   /* tx_tdm_ws_width */
                      (1u << 29));                        /* tx_msb_shift */
 
     /* Standard mode runs through the TDM path with two slots. The reset defaults
@@ -473,6 +474,7 @@ void i2s_rx_init(void)
                       ((SLOT_BITS - 1) << 24) |       /* rx_tdm_chan_bits */
                       ((SLOT_BITS - 1) << 18) |       /* rx_half_sample_bits */
                       ((I2S_BCLK_DIV - 1) << 7) |     /* rx_bclk_div_num */
+                      (SLOT_BITS - 1) |               /* rx_tdm_ws_width */
                       (1u << 29));                    /* rx_msb_shift */
 
     wr(I2S0_RX_TDM_CTRL, ((SLOT_NUM - 1) << 16) | 0x3);
