@@ -87,6 +87,44 @@ static const struct button_mapping button_context_wps[]  = {
     LAST_ITEM_IN_LIST
 }; /* button_context_wps */
 
+#ifdef HAVE_RECORDING
+/* The recording screen. There is no REC key on this board, so the play/pause key
+ * takes the role, which is what every target without a dedicated record button
+ * does: clip uses SELECT, fuzeplus uses PLAYPAUSE, fiiom3k uses PLAY, and A is
+ * our play/pause on the WPS. Without this context the screen falls through to
+ * button_context_standard, which never produces ACTION_REC_PAUSE -- so the
+ * recording screen could be opened but no key could start or stop a recording.
+ *
+ * The stick's left/right become value adjusters for whichever item is highlighted
+ * (the screen handles ACTION_SETTINGS_INC/DEC for volume, balance, base, treble),
+ * matching keymap-fuzeplus. Up/down still move through the list by falling through
+ * to CONTEXT_STD, and B backs out -- consistent with the WPS, where B leaves the
+ * screen without stopping playback.
+ *
+ * The explicit LEFT/RIGHT entries are listed before the fallthrough on purpose:
+ * the mapping lists are searched in order, so CONTEXT_STD's LEFT=cancel and
+ * RIGHT=ok would otherwise win and the values could not be changed. */
+static const struct button_mapping button_context_recscreen[]  = {
+    { ACTION_REC_PAUSE,       BUTTON_A|BUTTON_REL,          BUTTON_A },
+    { ACTION_REC_NEWFILE,     BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
+
+    { ACTION_SETTINGS_INC,    BUTTON_RIGHT,                 BUTTON_NONE },
+    { ACTION_SETTINGS_INCREPEAT, BUTTON_RIGHT|BUTTON_REPEAT, BUTTON_NONE },
+    { ACTION_SETTINGS_DEC,    BUTTON_LEFT,                  BUTTON_NONE },
+    { ACTION_SETTINGS_DECREPEAT, BUTTON_LEFT|BUTTON_REPEAT, BUTTON_NONE },
+
+    /* Back out of the recording screen. Deliberately not MENU: on this target B
+     * means "leave this screen" everywhere else too. */
+    { ACTION_STD_CANCEL,      BUTTON_B|BUTTON_REL,          BUTTON_B },
+
+    /* Same gestures from the touch grid: right cell records, left cell leaves. */
+    { ACTION_REC_PAUSE,       BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
+    { ACTION_STD_CANCEL,      BUTTON_MIDLEFT,               BUTTON_NONE },
+
+    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_STD)
+}; /* button_context_recscreen */
+#endif /* HAVE_RECORDING */
+
 static const struct button_mapping button_context_yesno[] = {
     { ACTION_YESNO_ACCEPT,    BUTTON_A|BUTTON_REL,          BUTTON_A },
     { ACTION_STD_CANCEL,      BUTTON_B|BUTTON_REL,          BUTTON_B },
@@ -140,6 +178,10 @@ const struct button_mapping* target_get_context_mapping(int context)
             return button_context_wps;
         case CONTEXT_YESNOSCREEN:
             return button_context_yesno;
+#ifdef HAVE_RECORDING
+        case CONTEXT_RECSCREEN:
+            return button_context_recscreen;
+#endif
         case CONTEXT_SETTINGS:
         case CONTEXT_SETTINGS_TIME:
             return button_context_settings;

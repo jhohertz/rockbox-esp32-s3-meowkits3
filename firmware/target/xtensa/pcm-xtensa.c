@@ -88,12 +88,14 @@ static volatile unsigned long rx_irq_count;
 static volatile unsigned long rx_err_count;
 static volatile unsigned long rx_bytes;
 static unsigned long rx_requested;
+static unsigned handoffs;
 
 static void rx_probe(const char *where)
 {
     printf("RX %s: reads=%lu errs=%lu bytes=%lu/%lu left=%lu run=%d wanted=%d "
            "locked=%d started=%d idle=%d\n",
-           where, rx_irq_count, rx_err_count, rx_bytes, rx_requested, rec_left,
+           where, rx_irq_count, rx_err_count, rx_bytes, rx_requested,
+           (unsigned long)rec_left,
            rx_running, rx_wanted, rec_locked, rx_thread_started, rx_thread_idle);
 }
 
@@ -110,6 +112,8 @@ static void i2s_rx_thread(void)
     {
         semaphore_wait(&rx_sem, TIMEOUT_BLOCK);
         rx_thread_idle = false;
+        printf("RX thread woke: wanted=%d left=%lu\n", rx_wanted,
+               (unsigned long)rec_left);
 
         while (rx_wanted && rec_left > 0)
         {
@@ -119,6 +123,14 @@ static void i2s_rx_thread(void)
 
             want = rec_left < RX_CHUNK ? rec_left : RX_CHUNK;
             err = i2s_channel_read(rx_chan, rec_ptr, want, &got, 200);
+
+            /* First few results printed whatever happens. If the read never
+             * returns, nothing prints here and the thread is blocked inside IDF
+             * despite the 200 ms timeout -- a different problem from a read that
+             * returns a timeout error, and the two look identical from outside. */
+            if (rx_irq_count + rx_err_count < 4u)
+                printf("RX read: err=%d got=%lu want=%lu\n", (int)err,
+                       (unsigned long)got, (unsigned long)want);
 
             if (err != ESP_OK || got == 0)
             {
@@ -145,8 +157,16 @@ static void i2s_rx_thread(void)
             {
                 void *addr;
                 size_t size;
+                bool again;
 
-                if (!pcm_rec_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
+                again = pcm_rec_dma_complete_callback(PCM_DMAST_OK, &addr, &size);
+
+                if (handoffs < 4u)
+                    printf("RX handoff %u: again=%d addr=%p size=%lu\n", handoffs,
+                           again, addr, (unsigned long)size);
+                handoffs++;
+
+                if (!again)
                 {
                     rx_wanted = false;
                     break;
@@ -155,6 +175,17 @@ static void i2s_rx_thread(void)
                 rec_ptr = (unsigned char *)addr;
                 rec_left = size;
             }
+
+            /* Yield to the threads that have to run for the hand-off above to
+             * mean anything. i2s_channel_read() returns as soon as a DMA buffer
+             * completes -- about 23 ms for 4096 bytes at 44.1 kHz stereo 16-bit --
+             * and this thread sits at PRIORITY_USER_INTERFACE, the same priority
+             * as the codec and recorder threads that consume what we just handed
+             * over. A loop that blocks only briefly and never sleeps can starve
+             * exactly the consumers it is waiting on. sleep(0) waits for the next
+             * tick (10 ms), which still allows ~400 KB/s against the 176 KB/s the
+             * stream needs, so it costs nothing. */
+            sleep(0);
         }
 
         rx_running = rx_wanted;
@@ -223,9 +254,23 @@ void pcm_rec_dma_close(void)
 {
     es7210_stop();
 
-    /* Same rule as stop: never delete a channel a task may be blocked on. */
-    while (!rx_thread_idle)
-        sleep(1);
+    /* Same rule as stop, and same bound: never delete a channel a task may be
+     * blocked on, and never spin here without saying so. */
+    {
+        int spins = 0;
+
+        while (!rx_thread_idle && spins < 100)
+        {
+            sleep(1);
+            spins++;
+        }
+
+        if (!rx_thread_idle)
+        {
+            printf("RX close: reader still blocked, leaking the channel\n");
+            return;
+        }
+    }
 
     if (rx_chan)
     {
@@ -275,15 +320,29 @@ void pcm_rec_dma_stop(void)
     /* Wake the thread so it observes rx_wanted and leaves its read loop. */
     semaphore_release(&rx_sem);
 
-    /* Wait for it to actually leave before touching the channel. Disabling or
+    /* Wait for it to actually leave before touching the channel: disabling or
      * deleting an IDF I2S channel while a task is blocked inside
-     * i2s_channel_read() on it is a deadlock, and that is exactly what this
-     * looked like: the recorder hung on stop, not on start. The read has a 200 ms
-     * timeout, so this cannot spin forever. */
-    while (!rx_thread_idle)
-        sleep(1);
+     * i2s_channel_read() on it is a deadlock.
+     *
+     * Bounded, and it reports when the bound expires. An earlier version spun
+     * here with no limit and no output, which turned "the reader is stuck" into an
+     * unexplained freeze of the whole recorder -- the hang looked like a UI
+     * problem rather than a thread that never came back. */
+    {
+        int spins = 0;
 
-    if (rx_chan)
+        while (!rx_thread_idle && spins < 100)   /* ~1 s at 10 ms/tick */
+        {
+            sleep(1);
+            spins++;
+        }
+
+        if (!rx_thread_idle)
+            printf("RX stop: reader still blocked after %d ticks, "
+                   "leaving channel enabled\n", spins);
+    }
+
+    if (rx_thread_idle && rx_chan)
         i2s_channel_disable(rx_chan);
 
     rx_running = false;
