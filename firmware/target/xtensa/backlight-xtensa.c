@@ -32,6 +32,7 @@
 
 #include "system.h"
 #include "lcd.h"
+#include "backlight.h"        /* backlight_brightness: the level to restore on */
 #include "backlight-target.h"
 #include "xtensa.h"
 
@@ -174,7 +175,18 @@ void backlight_hw_on(void)
      * onto a panel that is still coming out of sleep and the first frame is lost.
      */
     lcd_enable(true);
-    backlight_hw_brightness(MAX_BRIGHTNESS_SETTING);
+
+    /* Restore the level Rockbox is asking for, not maximum. With
+     * CONFIG_BACKLIGHT_FADING == BACKLIGHT_NO_FADING -- which is what this target
+     * gets, since it does not define one -- backlight_update_state() calls
+     * backlight_hw_on() and nothing else: there is no follow-up
+     * backlight_hw_brightness() on this configuration. backlight_setup_fade_up()
+     * at backlight.c:456 shows the pattern the fading targets rely on. So on this
+     * target hw_on alone has to produce the right level, and asking for
+     * MAX_BRIGHTNESS_SETTING made every off->on transition flash to full before
+     * the queued BACKLIGHT_BRIGHTNESS_CHANGED landed -- visible as a flicker while
+     * adjusting the setting. */
+    backlight_hw_brightness(backlight_brightness);
     bl_probe("at hw_on   ");
 }
 
