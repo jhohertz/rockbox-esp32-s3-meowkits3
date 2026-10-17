@@ -85,9 +85,18 @@
 /* GDMA TX channel 0 */
 #define GDMA_TX_CONF0   (GDMA_BASE + 0x60)
 #define GDMA_TX_CONF1   (GDMA_BASE + 0x64)
+#define GDMA_TX_INT_RAW (GDMA_BASE + 0x68)
 #define GDMA_TX_INT_ST  (GDMA_BASE + 0x6C)
 #define GDMA_TX_INT_ENA (GDMA_BASE + 0x70)
 #define GDMA_TX_INT_CLR (GDMA_BASE + 0x74)
+/* out_fifo_empty_l1/l2/l3 and out_fifo_full_l1/l2/l3 in the low six bits. The
+ * subordinate FIFOs are the path to the peripheral, so "all empty while the DMA
+ * still owns a descriptor" distinguishes a stalled transmitter from an
+ * undelivered interrupt. */
+#define GDMA_TX_FIFO_STATUS (GDMA_BASE + 0x78)
+/* out_state[22:19] and out_dscr_state[18:17]: the channel's own idea of what it
+ * is doing. There is no separate DSCR_STATE register on this part. */
+#define GDMA_TX_STATE   (GDMA_BASE + 0x84)
 
 /* OUT channel completion events, positions taken from the BIT() definitions in
  * components/soc/esp32s3/register/soc/gdma_reg.h rather than from prose:
@@ -153,6 +162,10 @@ struct gdma_desc {
 #define OWNER_DMA 1
 
 void i2s_init(void);
+
+/* TEMPORARY: playback-chain diagnostic, remove with the counters in
+ * i2s-xtensa.c. */
+void i2s_audio_probe(void);
 void i2s_set_frequency(unsigned long rate);
 #ifdef HAVE_RECORDING
 void i2s_rx_init(void);
