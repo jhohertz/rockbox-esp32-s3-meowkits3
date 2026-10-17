@@ -402,7 +402,7 @@ From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
 |---|---|
 | Display | ST7789 IPS **320×240**, SPI (MOSI 40, SCLK 41, DC 39), PWM backlight GPIO 42. CS and RST are **not GPIOs** — they go through a PCA9557 I²C IO expander. |
 | Touch | FT6336 capacitive, I²C 0x38, INT not connected. |
-| Audio out | ES8311 DAC over I2S (MCLK 15, BCLK 14, WS 13, DOUT 16) → NS4150B class-D amp → 1 W speaker. 44100 Hz, 16-bit. Amp enable is PCA9557 IO3. |
+| Audio out | ES8311 DAC over I2S (MCLK 15, BCLK 14, WS 13, DOUT 16), 44100 Hz, 16-bit. The DAC's headphone outputs feed **both** the 3.5 mm jack and, through R32/R33, an NS4150B class-D amp → 1 W speaker. Amp enable is PCA9557 IO3 and gates **the speaker only** — headphones work with the amp off. |
 | Audio in | ES7210 ADC, I2S DIN GPIO 3, I²C 0x41, MEMS mic. |
 | Storage | SD card, **SDMMC 1-bit** (CLK 47, CMD 48, D0 21). 16 MB SPI flash for firmware only. |
 | Input | Buttons A (GPIO 6), B (GPIO 4), 5-way joystick (UP 12, DOWN 18, LEFT 17, RIGHT 8). All **active-low with internal pull-ups**, 80–100 ms debounce. |
@@ -604,7 +604,7 @@ Expander pins (registers: 0x00 input, 0x01 output, 0x02 polarity inversion,
 | IO0 | LCD reset |
 | IO1 | LCD chip select |
 | IO2 | SPI flash chip select |
-| IO3 | NS4150B amp enable (active high, 10K pull-down) |
+| IO3 | NS4150B amp enable (active high, 10K pull-down). Speaker only; the headphone jack is upstream of this. |
 | IO6 | Touch reset |
 
 Init order is forced by this: **I²C → PCA9557 → display**. The reference firmware
@@ -1384,10 +1384,28 @@ is a new driver using the generic API. Bits that matter:
 - The seven time registers accept a burst write, which is one transaction instead
   of seven.
 
-**Speaker amplifier.** The NS4150B between the codec and the speaker is enabled by
-PCA9557 IO3, high-active with a 10K pull-down. Nothing in the target drove it, so
-the DAC produced a signal that never reached the speaker. `HAVE_SPEAKER` plus
-`audiohw_enable_speaker()` in `audiohw-xtensa.c` fixes it.
+**Speaker amplifier.** The NS4150B is enabled by PCA9557 IO3, high-active with a
+10K pull-down. Nothing in the target drove it, so the DAC produced a signal that
+never reached the speaker. `HAVE_SPEAKER` plus `audiohw_enable_speaker()` in
+`audiohw-xtensa.c` fixes it.
+
+**The amp is a branch, not the output stage.** An earlier version of this file
+(and the pin list that inspired it) described the path as
+`ES8311 → NS4150B → speaker`, which is wrong and misleading: it implies muting the
+amp mutes the machine. The schematic is:
+
+```
+ES8311 HPOUL/HPOUR ──> C118/C119 ──> HP_L_OUT / HP_R_OUT ──┬──> J4  (3.5 mm jack)
+                                                          │
+                                                          └── R32/R33 ──> SPKL_IN/SPKR_IN
+                                                                             └─> NS4150B ─> speaker
+```
+
+So the headphone jack is taken **directly off the DAC**, and PA_EN gates only the
+speaker. Consequences worth remembering: a "no sound at all" report cannot be
+blamed on PA_EN if the user is on headphones; the amp's state does not affect line
+level out of the jack; and `speaker_mode` is genuinely optional on this board, not
+a prerequisite for audio.
 
 That exposed a gap in Rockbox itself: `audio_enable_speaker()` lives in
 `apps/audio_path.c`, which `apps/SOURCES` only builds when `INPUT_SRC_CAPS != 0`.
