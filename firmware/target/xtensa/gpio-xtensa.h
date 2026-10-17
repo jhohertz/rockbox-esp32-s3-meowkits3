@@ -107,6 +107,15 @@
 #define SIG_I2S0I_BCK_IN  26
 #define SIG_I2S0I_WS_IN   27
 
+/* The same three slots also carry the receiver's clock OUTPUTS, for when the
+ * receiver is the bus master. On esp32s3 each RX clock signal has one matrix slot
+ * used in both directions -- I2S0I_BCK_IN_IDX and I2S0I_BCK_OUT_IDX are both 26
+ * (gpio_sig_map.h) -- and IDF's i2s_periph.c picks between them with m_rx_bck_sig
+ * and s_rx_bck_sig. MCLK is a single shared signal, 23. */
+#define SIG_I2S0_MCLK_OUT 23
+#define SIG_I2S0I_BCK_OUT 26
+#define SIG_I2S0I_WS_OUT  27
+
 static inline uint32_t gpio_read(uint32_t reg)
 {
     return *(volatile uint32_t *)reg;

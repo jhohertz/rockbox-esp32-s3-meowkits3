@@ -385,11 +385,27 @@ void i2s_set_frequency(unsigned long rate)
      * has to be reprogrammed whenever the rate changes. */
 #ifdef HAVE_RECORDING
     {
-        /* The receiver is the slave on this bus: it takes BCLK and WS back from
-         * the transmitter rather than generating its own, so the ADC and the DAC
-         * share one frame instead of two oscillators that happen to agree. */
+        /* The receiver is the MASTER on this bus, and that is deliberate rather
+         * than incidental. The board wires one set of MCLK/BCLK/WS to both
+         * codecs (bsp/config.h: "I2S -- Audio bus (ES8311 DAC + ES7210 ADC,
+         * shared BCLK/WS)"), so exactly one port may drive them at a time.
+         *
+         * This used to be a slave, taking BCLK and WS back from the transmitter
+         * through the GPIO matrix. That made the input device parasitic on the
+         * output device: recording could not run unless playback was, and
+         * Rockbox stops playback the moment a recording starts, so the receiver
+         * sat with no clock at all -- GDMA reporting neither completion nor
+         * error, because there was nothing to complete and nothing wrong.
+         *
+         * The reference firmware for this board (bsp/devices.cpp, MicTest) runs
+         * the mic port as I2S_MODE_MASTER | I2S_MODE_RX and drives mck/bck/ws
+         * itself, with data_out left at I2S_PIN_NO_CHANGE. That is the shape
+         * copied here: a self-contained input device. The pads are handed between
+         * the two ports on mode switch by i2s_rx_pads_take() /
+         * i2s_rx_pads_release(), which is only sound because Rockbox makes play
+         * and record exclusive. */
         i2s_hal_set_rx_clock(&rx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
-        i2s_hal_std_set_rx_slot(&rx_hal, true, &slot);
+        i2s_hal_std_set_rx_slot(&rx_hal, false, &slot);
     }
     es7210_set_frequency(rate);
 #endif
@@ -567,19 +583,39 @@ void i2s_rx_init(void)
     /* A pad can drive a matrix input while still being driven as an output, so
      * pins 13 and 14 do double duty: the transmitter drives them and the receiver
      * reads them back. */
+    /* As the bus master the receiver drives BCLK and WS out on pins 14 and 13, so
+     * those pads must not be routed back in as inputs -- that was the slave
+     * configuration, and it would have made the port drive and sample the same
+     * signal. Only the ADC's data line is an input to this port. */
     gpio_input_enable(PIN_I2S_DIN, 1);
-    gpio_input_enable(PIN_I2S_WS, 1);
-    gpio_input_enable(PIN_I2S_BCLK, 1);
-
-    gpio_matrix_in(PIN_I2S_DIN,  SIG_I2S0I_SD_IN);
-    gpio_matrix_in(PIN_I2S_WS,   SIG_I2S0I_WS_IN);
-    gpio_matrix_in(PIN_I2S_BCLK, SIG_I2S0I_BCK_IN);
+    gpio_matrix_in(PIN_I2S_DIN, SIG_I2S0I_SD_IN);
 
     /* The block itself is configured by IDF's HAL, in the transmitter's own
      * context order: init here, then clock and slot on every rate change from
-     * i2s_set_frequency(), which is where the slave role is declared. Doing the
+     * i2s_set_frequency(), which is where the master role is declared. Doing the
      * slot here as well would be overwritten by that call anyway. */
     i2s_hal_init(&rx_hal, XT_I2S_RX_PORT);
+}
+
+/* Hand the three shared clock pads to whichever port is master right now.
+ * esp_rom_gpio_connect_out_signal() just rewrites the pad's OUT_SEL, so this is
+ * cheap and can be done on every mode switch. See the note in i2s_set_frequency()
+ * for why the two ports cannot both drive these pads. */
+static void i2s_route_clock_pads(int mclk_sig, int bck_sig, int ws_sig)
+{
+    esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK, mclk_sig, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_BCLK, bck_sig, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_WS,   ws_sig,   false, false);
+}
+
+void i2s_rx_pads_take(void)
+{
+    i2s_route_clock_pads(SIG_I2S0_MCLK_OUT, SIG_I2S0I_BCK_OUT, SIG_I2S0I_WS_OUT);
+}
+
+void i2s_rx_pads_release(void)
+{
+    i2s_route_clock_pads(SIG_I2S1_MCLK_OUT, SIG_I2S1O_BCK_OUT, SIG_I2S1O_WS_OUT);
 }
 #endif /* HAVE_RECORDING */
 
@@ -595,6 +631,41 @@ static void stop_tx(void)
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
     i2s_ll_tx_stop(tx_hal.dev);
 }
+
+/* The receiver is a SLAVE to the bit and frame clocks this block's transmitter
+ * generates, and MCLK has nowhere else to come from: esp32s3 exposes a single
+ * I2S0_MCLK_OUT_IDX (23) shared by both domains, with no RX-side equivalent (see
+ * i2s_periph.c's one mck_out_sig). So recording needs this domain running even
+ * though nothing is being played, and measured on hardware a record-only session
+ * had both off:
+ *
+ *     tx_conf=00000000 (START=0)   tx_clkm=00000002 (active=0)
+ *
+ * which is why GDMA reported no completion and no error -- the receiver was
+ * correctly configured and had no clock to capture.
+ *
+ * tx_clk_active alone gives MCLK; BCLK and WS only appear once tx_start is set.
+ * The TX GDMA link is deliberately left stopped, so the transmitter runs against
+ * an empty FIFO. Whether that is audible through the DAC is a hardware question;
+ * the amp is gated separately by PA_EN, and an underrun FIFO should present
+ * zeros, but it has not been confirmed on this board.
+ *
+ * The cleaner end state is to make the receiver its own master -- signals 26 and
+ * 27 double as I2S0I_BCK_OUT / I2S0I_WS_OUT, so RX can drive BCLK/WS and the
+ * transmitter need not be involved at all beyond MCLK. That changes which block
+ * drives pins 13 and 14 and how the RX dividers are programmed, so it is worth
+ * doing once the rest of the capture chain is known to work rather than while
+ * five stages are still unvalidated. */
+/* The receiver is now its own bus master (see i2s_set_frequency), so recording
+ * needs nothing from the transmitter at all. The two functions that used to live
+ * here borrowed the transmitter's clock domain instead: they asserted tx_start,
+ * which made the DAC's port run against an empty FIFO, and they still did not
+ * produce a usable clock -- an I2S transmitter with no GDMA feeding it hangs and
+ * stops clocking, which is what the tx_hung interrupt exists to report.
+ *
+ * What recording needs instead is the shared clock pads, which the transmitter
+ * owns by default; i2s_rx_pads_take() and i2s_rx_pads_release() sit beside
+ * i2s_rx_init(). */
 
 /* cur is the half that is free to write. The DMA mounts a descriptor only when the
  * owner bit says it owns it, so the half it is about to need must already be armed

@@ -224,6 +224,12 @@ void i2s_audio_probe(void);
 void i2s_set_frequency(unsigned long rate);
 #ifdef HAVE_RECORDING
 void i2s_rx_init(void);
+/* The board shares one MCLK/BCLK/WS set between both codecs, so only one I2S port
+ * may drive those pads at a time. Recording makes the receiver the master, so the
+ * pads are handed over for the duration and given back afterwards. Sound only
+ * because Rockbox makes play and record exclusive. */
+void i2s_rx_pads_take(void);
+void i2s_rx_pads_release(void);
 #endif
 
 #endif /* I2S_XTENSA_H */
