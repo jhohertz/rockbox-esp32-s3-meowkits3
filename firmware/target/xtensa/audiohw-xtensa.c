@@ -33,6 +33,12 @@ void audiohw_postinit(void)
 {
     /* Volume is applied by the sound settings, not here. */
     es8311_mute(0);
+    /* TEMPORARY: ask the codec what it thinks its state is. Every write in this
+     * driver discarded i2c_writemem()'s status, so a NAKed bus and a correctly
+     * configured chip looked identical -- and the headphone jack is wired
+     * straight to HPOUL/HPOUR (schematic: C118/C119 -> HP_L_OUT/HP_R_OUT -> J4),
+     * which means silent headphones cannot be explained by PA_EN. */
+    es8311_dump("after postinit");
 }
 
 void audiohw_close(void)

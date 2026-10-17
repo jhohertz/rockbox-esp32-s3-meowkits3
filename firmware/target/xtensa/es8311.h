@@ -18,6 +18,9 @@ AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 30, 30)
 #endif
 
 void es8311_init(void);
+/* Read the codec back over I2C and print what it reports, with a count of the
+ * writes we attempted and how many were NAKed. */
+void es8311_dump(const char *tag);
 void es8311_postinit(void);
 void es8311_close(void);
 void es8311_set_clock(unsigned long rate, unsigned long mclk);
