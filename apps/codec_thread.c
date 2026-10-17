@@ -228,6 +228,16 @@ static void codec_pcmbuf_insert_callback(
         const void *ch1, const void *ch2, int count)
 {
     struct dsp_buffer src;
+
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+    /* TEMPORARY: declared in apps/buffering.c alongside the other playback
+     * counters. If this climbs while bufget stays at zero, the codec is producing
+     * audio and blocking on a full PCM buffer rather than waiting for file data,
+     * which is the opposite direction of fault. */
+    extern volatile unsigned long xt_pcminsert_n;
+    xt_pcminsert_n++;
+#endif
+
     src.remcount  = count;
     src.pin[0]    = ch1;
     src.pin[1]    = ch2;
