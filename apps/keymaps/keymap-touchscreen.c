@@ -420,6 +420,14 @@ const struct button_mapping* get_context_mapping(int context)
 
         case CONTEXT_YESNOSCREEN:
             return button_context_yesno;
+        /* The recording screen is missing from this switch, so it falls to the
+         * default below and gets the touchscreen's standard table -- which never
+         * produces ACTION_REC_PAUSE, meaning a touchscreen target cannot start or
+         * stop a recording at all. Every other full-screen context here has its
+         * own case. Chain to the target like the CONTEXT_CUSTOM2 path at the top
+         * of this function does, so a target can supply a recording context. */
+        case CONTEXT_RECSCREEN:
+            return target_get_context_mapping(CONTEXT_RECSCREEN);
         case CONTEXT_FM:
             return button_context_radio;
         case CONTEXT_BOOKMARKSCREEN:
