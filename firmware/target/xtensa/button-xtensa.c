@@ -164,6 +164,14 @@ int button_read_device(int *data)
                         printf("CODEC: run=%lu in_run=%d ret=%d\n",
                                xt_codec_run_n, xt_codec_in_run,
                                xt_codec_run_ret);
+                        /* The codec is blocked inside run_proc with the filesystem
+                         * lock idle, so it is waiting on the buffering layer.
+                         * This says what that layer is doing. */
+                        {
+                            extern void buffering_probe(void);
+
+                            buffering_probe();
+                        }
                         /* The counters say the completion event never reached the
                          * handler. They cannot say why, and the two reasons need
                          * opposite fixes, so dump the transmit path as the
