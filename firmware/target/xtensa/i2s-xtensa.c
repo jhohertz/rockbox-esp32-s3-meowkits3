@@ -426,6 +426,27 @@ static void fill(int i, const void *src, unsigned long len)
     arm(i, len);
     commit_dcache_range(dma_buf[i], len ? len : XT_TX_SLOT);
     commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
+
+    /* Arming a descriptor is not enough on its own, and this is the step that
+     * was missing.
+     *
+     * outlink.park is not an error condition -- it is the engine doing what it is
+     * designed to do when it reaches a descriptor the CPU still owns: it stops
+     * walking the list and waits. But it does not re-examine the list on its own,
+     * so a descriptor armed afterwards is invisible unless the walk is restarted.
+     * That is what gdma_ll_tx_restart() is for ("restart a new outlink right
+     * after the last descriptor") and what IDF's gdma_append() does on every
+     * hand-off.
+     *
+     * Without it the very first underrun latches the transmitter off forever,
+     * which is why park read 1 in every capture taken since the ring rewrite.
+     *
+     * Bits from gdma_reg.h: outlink.stop BIT(20), start BIT(21), restart BIT(22),
+     * park BIT(23); start and restart are R/W/SC. */
+    unsigned int link = rd(GDMA_TX_LINK);
+
+    if (link & (1u << 23))
+        wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
 }
 
 static void gdma_init(void)
