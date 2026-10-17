@@ -42,9 +42,27 @@
 #define TX_CONF_FIFO_RESET   (1u << 1)
 #define TX_CONF_RESET        (1u << 0)
 
-#define CLKM_CONF_CLK_EN     (1u << 29)
+/* TX_CLKM_CONF / RX_CLKM_CONF hold exactly three fields on this part:
+ *   tx_clk_sel     [28:27]
+ *   tx_clk_active  [26]
+ *   tx_clkm_div_num [8:0]
+ * There is no clk_en bit -- an earlier revision of this file also set bit 29, a
+ * position that is not a field at all (verified against the _S/_M definitions in
+ * components/soc/esp32s3/register/soc/i2s_reg.h, which list only CLK_SEL at 27,
+ * CLK_ACTIVE at 26 and CLKM_DIV_NUM at 0). tx_clk_active IS the enable.
+ *
+ * clk_sel encoding is taken from i2s_ll_tx_clk_set_src() in
+ * components/hal/esp32s3/include/hal/i2s_ll.h, not guessed:
+ *   0 = XTAL   1 = PLL_240M   2 = PLL_160M   3 = EXTERNAL
+ * An earlier comment here called 1 "APLL", which this part does not offer.
+ *
+ * PLL_F160M is what ESP-IDF picks for I2S_CLK_SRC_DEFAULT. XTAL works on paper
+ * but leaves MCLK to the fractional modulator from 40 MHz; running the audio
+ * clock off the PLL is the supported path and gives MCLK = 160e6/14.17 rather
+ * than 40e6/3.54.
+ */
 #define CLKM_CONF_CLK_ACTIVE (1u << 26)
-#define CLKM_CONF_CLK_SEL_XTAL 0   /* 0: XTAL, 1: APLL, 2: CLK160, 3: I2S_MCLK_in */
+#define CLKM_CONF_CLK_SEL_PLL160M 2
 
 /* I2S0, RX side. The receiver runs in slave mode: it takes BCLK and WS from the
  * GPIO matrix instead of generating them, so the ADC is locked to the frame the
