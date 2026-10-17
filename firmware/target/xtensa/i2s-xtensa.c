@@ -129,6 +129,10 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * 4 x 512. The bound below is the same one the static assert in write_desc()
  * enforces, so the slot can never be smaller than what we are handed. */
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4 * 2)
+/* One mixer frame of silence: 256 samples * 4 bytes for 16-bit stereo. This is
+ * the size the mixer actually hands us (measured next=1024), so a silent slot
+ * occupies exactly the same airtime as a real one. */
+#define XT_TX_SILENCE (MIX_FRAME_SAMPLES * 4)
 
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
 
@@ -147,6 +151,8 @@ static volatile int nxt;
 static volatile const void *pend_addr;
 static volatile size_t pend_size;
 static volatile int pend_valid;
+/* Which slots carry audio rather than silence. Indexed by slot. */
+static volatile uint8_t slot_audio[XT_TX_RING];
 static int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
@@ -414,10 +420,19 @@ static void arm(int i, unsigned long len)
 /* Place one frame into slot i and hand it to the DMA. len 0 leaves the slot
  * owned with nothing to move, which is what keeps the ring fully owned between
  * hand-offs. */
-static void fill(int i, const void *src, unsigned long len)
+static void fill(int i, const void *src, unsigned long len, int is_audio)
 {
-    if (len > 0)
+    if (src)
         memcpy(dma_buf[i], (const void *)src, len);
+    else
+        memset(dma_buf[i], 0, len);
+
+    /* Whether this slot carries audio cannot be read back from the descriptor: a
+     * silent slot is full size and looks identical. It has to be recorded, because
+     * only a slot that carried audio may be reported as a consumption -- telling
+     * the mixer it produced something we played when we played silence would
+     * advance the stream over audio nobody heard. */
+    slot_audio[i] = (uint8_t)is_audio;
 
     /* Take the line from memory before modifying it, then push it back. The
      * engine wrote the owner bit clear through the bus, and our cached copy of
@@ -657,7 +672,7 @@ void ICODE_ATTR gdma_irq(void)
          * consumed -- that would advance it over audio nobody played and drift
          * the stream by a frame every time the pipeline runs dry. */
         discard_dcache_range((const void *)&desc[r], sizeof(desc[r]));
-        const int carried = ((desc[r].dw0 >> 12) & 0xfff) != 0;
+        const int carried = slot_audio[r];
 
         if (carried)
         {
@@ -677,11 +692,19 @@ void ICODE_ATTR gdma_irq(void)
          * lap found a descriptor it was not allowed to take. */
         if (pend_valid)
         {
-            fill(r, (const void *)pend_addr, (unsigned long)pend_size);
+            fill(r, (const void *)pend_addr, (unsigned long)pend_size, 1);
             pend_valid = 0;
         }
         else
-            fill(r, NULL, 0);
+        {
+            /* No frame ready. Play a slot of silence rather than an empty
+             * descriptor: a zero-length slot is walked but raises no out_eof, so
+             * we never learn it was consumed, never re-arm it, and nxt cannot
+             * advance -- which is exactly how the ring drained last time. Silence
+             * costs the same airtime, generates a real completion, and turns an
+             * underrun into nothing audible instead of a glitch. */
+            fill(r, NULL, XT_TX_SILENCE, 0);
+        }
     }
 
     if (st & GDMA_INT_DSCR_ERR)
@@ -733,12 +756,12 @@ static void sink_play(const void *addr, size_t size)
          * no descriptor in the ring it is not allowed to take. Starting with one
          * armed slot and three the engine must not touch is what made the very
          * first hand-off fatal. */
-        fill(0, addr, (unsigned long)size);
+        fill(0, addr, (unsigned long)size, 1);
         pend_valid = 0;
         queued = 1;
         nxt = 0;
         for (int i = 1; i < XT_TX_RING; i++)
-            fill(i, NULL, 0);
+            fill(i, NULL, XT_TX_SILENCE, 0);
 
         playing = true;
         start_tx();
