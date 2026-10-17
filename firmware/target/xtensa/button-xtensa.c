@@ -145,33 +145,19 @@ int button_read_device(int *data)
                      * climbing with no sound means the fault is downstream in
                      * I2S, the ES8311 or the amp. */
                     {
-                        extern volatile unsigned long xt_sink_init_n;
-                        extern volatile unsigned long xt_sink_play_n;
-                        extern volatile unsigned long xt_sink_stop_n;
-                        extern volatile unsigned long xt_sink_irq_n;
-                        extern volatile unsigned long xt_sink_last_size;
-                        extern volatile unsigned long xt_codec_run_n;
-                        extern volatile int xt_codec_run_ret;
-                        extern volatile int xt_codec_in_run;
+                    /* One aligned readout of the entire playback chain -- codec,
+                     * pcmbuf, mixer, pcm core, sink ops and GDMA -- sampled at the
+                     * same instant, plus the buffering thread's own view. Printed
+                     * together so the seam that disagrees is visible in a single
+                     * sample rather than reconstructed across lines that were
+                     * never simultaneous. */
+                    {
+                        extern void i2s_audio_probe(void);
+                        extern void buffering_probe(void);
 
-                        printf("AUDIO: init=%lu play=%lu stop=%lu irq=%lu lastsz=%lu\n",
-                               xt_sink_init_n, xt_sink_play_n, xt_sink_stop_n,
-                               xt_sink_irq_n, xt_sink_last_size);
-                        /* The mixer says there is no second frame, so the fault
-                         * has moved upstream to the codec. run = how many times
-                         * it was entered, in_run = whether it is inside right now,
-                         * ret = what it gave back when it left. */
-                        printf("CODEC: run=%lu in_run=%d ret=%d\n",
-                               xt_codec_run_n, xt_codec_in_run,
-                               xt_codec_run_ret);
-                        /* The codec is blocked inside run_proc with the filesystem
-                         * lock idle, so it is waiting on the buffering layer.
-                         * This says what that layer is doing. */
-                        {
-                            extern void buffering_probe(void);
-
-                            buffering_probe();
-                        }
+                        i2s_audio_probe();
+                        buffering_probe();
+                    }
                         /* The counters say the completion event never reached the
                          * handler. They cannot say why, and the two reasons need
                          * opposite fixes, so dump the transmit path as the
