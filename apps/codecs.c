@@ -263,6 +263,14 @@ int codec_load_file(const char *plugin, struct codec_api *api)
     return codec_load_ram(api);
 }
 
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+/* TEMPORARY: read out from the button probe alongside the audio chain counters.
+ * Remove with codec_run_proc's instrumentation. */
+volatile unsigned long xt_codec_run_n;
+volatile int xt_codec_run_ret;
+volatile int xt_codec_in_run;
+#endif
+
 int codec_run_proc(void)
 {
     if (curr_handle == NULL) {
@@ -271,7 +279,22 @@ int codec_run_proc(void)
     }
 
     logf("Codec: entering run state");
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+    /* TEMPORARY: the audio chain is now proven to work up to the mixer, which
+     * asks for a second frame and is told there is none. That means the codec is
+     * not filling the PCM buffer, and nothing here prints because logf() is
+     * compiled out in this build. These three say which of the remaining
+     * possibilities it is: never entered, entered and already returned (so the
+     * codec thinks it has nothing to do), or entered and still running (so it is
+     * blocked somewhere other than the audio path). */
+    xt_codec_run_n++;
+    xt_codec_in_run = 1;
+    xt_codec_run_ret = c_hdr->run_proc();
+    xt_codec_in_run = 0;
+    return xt_codec_run_ret;
+#else
     return c_hdr->run_proc();
+#endif
 }
 
 int codec_close(void)

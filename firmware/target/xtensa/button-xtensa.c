@@ -150,10 +150,20 @@ int button_read_device(int *data)
                         extern volatile unsigned long xt_sink_stop_n;
                         extern volatile unsigned long xt_sink_irq_n;
                         extern volatile unsigned long xt_sink_last_size;
+                        extern volatile unsigned long xt_codec_run_n;
+                        extern volatile int xt_codec_run_ret;
+                        extern volatile int xt_codec_in_run;
 
                         printf("AUDIO: init=%lu play=%lu stop=%lu irq=%lu lastsz=%lu\n",
                                xt_sink_init_n, xt_sink_play_n, xt_sink_stop_n,
                                xt_sink_irq_n, xt_sink_last_size);
+                        /* The mixer says there is no second frame, so the fault
+                         * has moved upstream to the codec. run = how many times
+                         * it was entered, in_run = whether it is inside right now,
+                         * ret = what it gave back when it left. */
+                        printf("CODEC: run=%lu in_run=%d ret=%d\n",
+                               xt_codec_run_n, xt_codec_in_run,
+                               xt_codec_run_ret);
                         /* The counters say the completion event never reached the
                          * handler. They cannot say why, and the two reasons need
                          * opposite fixes, so dump the transmit path as the
