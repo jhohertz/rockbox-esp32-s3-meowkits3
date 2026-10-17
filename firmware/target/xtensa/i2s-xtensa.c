@@ -666,16 +666,24 @@ void ICODE_ATTR gdma_irq(void)
 
     if (st & GDMA_INT_DONE)
     {
-        const int r = nxt;
-        nxt = (nxt + 1) % XT_TX_RING;
+        /* The slot that just retired is the one nxt pointed at. The slot the
+         * engine is heading for is the one after it -- and that is the slot that
+         * has to be armed, not the one that just freed up.
+         *
+         * Arming the retired slot is what made playback stop dead. With silent
+         * padding that mistake was invisible because every slot stayed owned
+         * anyway; once a slot could be handed back to the CPU, the engine walked
+         * into the next one, found it unowned, parked, and nothing ever armed it.
+         *
+         * Writing the next slot is safe: with a ring this deep it was released
+         * XT_TX_RING-1 completions ago, so the engine is nowhere near it, and if
+         * the engine got here first it is merely parked -- fill() restarts the
+         * walk in that case. */
+        const int next = (nxt + 1) % XT_TX_RING;
+        nxt = next;
 
-        /* Did that slot carry audio? An empty one completes exactly like a full
-         * one, but nothing was heard, so the mixer must not be told a buffer was
-         * consumed -- that would advance it over audio nobody played and drift
-         * the stream by a frame every time the pipeline runs dry. */
         /* A completion can only mean audio was played: a slot the CPU owns is not
-         * taken, so it never completes. The carried/silent distinction that used to
-         * live here is gone along with the silent slots. */
+         * taken by the engine, so it never completes. */
         xt_sink_irq_n++;
         if (queued > 0)
             queued--;
@@ -685,21 +693,17 @@ void ICODE_ATTR gdma_irq(void)
          * pending slot. */
         refill();
 
-        /* Then re-arm the slot we just released, with that frame if one arrived
-         * and with nothing if it did not. This is the step that keeps the ring
-         * fully owned. Leaving it out is what let the ring drain: the engine
-         * would retire an empty slot, nothing would hand it back, and the next
-         * lap found a descriptor it was not allowed to take. */
         if (pend_valid)
         {
-            fill(r, (const void *)pend_addr, (unsigned long)pend_size);
+            fill(next, (const void *)pend_addr, (unsigned long)pend_size);
             pend_valid = 0;
         }
         else
         {
-            /* Underrun. Hand the slot back and let the engine park on it; the
-             * next frame we are given will restart the walk. */
-            release(r);
+            /* Underrun. Leave the next slot in the CPU's hands: the engine parks
+             * on it, which is its designed behaviour, and the next frame we are
+             * given restarts the walk from there. */
+            release(next);
         }
     }
 
