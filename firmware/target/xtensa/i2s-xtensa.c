@@ -178,6 +178,7 @@ void i2s_audio_probe(void)
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
            "CHAIN: dma irq=%lu queued=%d locked=%d ena=%08x raw=%08x st=%08x\n"
            "CHAIN:      cur=%d d0=%08x d1=%08x txconf=%08x ofifo=%08x link=%08x\n"
+           "CHAIN:      tx_idle=%d clkm=%08x div=%08x tdm=%08x conf1=%08x\n"
            "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
@@ -195,6 +196,9 @@ void i2s_audio_probe(void)
            (unsigned)desc[0].dw0, (unsigned)desc[1].dw0,
            (unsigned)rd(I2S_TX_CONF), (unsigned)rd(GDMA_TX_FIFO_STATUS),
            (unsigned)rd(GDMA_TX_LINK),
+           (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
+           (unsigned)rd(I2S_TX_CLKM_CONF), (unsigned)rd(I2S_TX_CLKM_DIV_CONF),
+           (unsigned)rd(I2S_TX_TDM_CTRL), (unsigned)rd(I2S_TX_CONF1),
            (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
            (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0,
            (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
@@ -240,7 +244,7 @@ static void calc_div(unsigned long exp_freq)
 
 static void set_raw_div(unsigned integ, unsigned x, unsigned y, unsigned z, unsigned yn1)
 {
-    wr(I2S_TX_CLKM_CONF, CLKM_CONF_CLK_ACTIVE |
+    wr(I2S_TX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
                          (CLKM_CONF_CLK_SEL_PLL160M << 27) | integ);
     wr(I2S_TX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
 
@@ -436,7 +440,7 @@ static void program_rx_div(void)
     unsigned x = z ? div_denom / z - 1 : 0;
     unsigned y = z ? div_denom % z : 0;
 
-    wr(I2S0_RX_CLKM_CONF, CLKM_CONF_CLK_ACTIVE |
+    wr(I2S0_RX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
                           (CLKM_CONF_CLK_SEL_PLL160M << 27) | div_integ);
     wr(I2S0_RX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
     wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);

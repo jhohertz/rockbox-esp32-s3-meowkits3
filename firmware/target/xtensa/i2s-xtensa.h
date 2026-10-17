@@ -42,27 +42,42 @@
 #define TX_CONF_FIFO_RESET   (1u << 1)
 #define TX_CONF_RESET        (1u << 0)
 
-/* TX_CLKM_CONF / RX_CLKM_CONF hold exactly three fields on this part:
- *   tx_clk_sel     [28:27]
- *   tx_clk_active  [26]
- *   tx_clkm_div_num [8:0]
- * There is no clk_en bit -- an earlier revision of this file also set bit 29, a
- * position that is not a field at all (verified against the _S/_M definitions in
- * components/soc/esp32s3/register/soc/i2s_reg.h, which list only CLK_SEL at 27,
- * CLK_ACTIVE at 26 and CLKM_DIV_NUM at 0). tx_clk_active IS the enable.
+/* TX_CLKM_CONF / RX_CLKM_CONF fields on this part:
+ *   I2S_CLK_EN        [29]   module clock enable, shared by TX and RX
+ *   tx_clk_sel        [28:27]
+ *   tx_clk_active     [26]   starts the clock generator
+ *   tx_clkm_div_num   [8:0]
+ *
+ * An earlier revision of this file claimed bit 29 was not a field and removed
+ * it. That was wrong and the claim is recorded here so it is not repeated: the
+ * field is named I2S_CLK_EN with no TX_ prefix, so a scan for I2S_TX_* does not
+ * find it. Concluding that something is absent from a search that could not have
+ * found it is the failure mode this port has hit repeatedly.
  *
  * clk_sel encoding is taken from i2s_ll_tx_clk_set_src() in
  * components/hal/esp32s3/include/hal/i2s_ll.h, not guessed:
  *   0 = XTAL   1 = PLL_240M   2 = PLL_160M   3 = EXTERNAL
  * An earlier comment here called 1 "APLL", which this part does not offer.
  *
- * PLL_F160M is what ESP-IDF picks for I2S_CLK_SRC_DEFAULT. XTAL works on paper
- * but leaves MCLK to the fractional modulator from 40 MHz; running the audio
- * clock off the PLL is the supported path and gives MCLK = 160e6/14.17 rather
- * than 40e6/3.54.
+ * PLL_F160M is what ESP-IDF picks for I2S_CLK_SRC_DEFAULT. Note that switching
+ * to it changed nothing measurable on the stall, so the clock source was not the
+ * fault; it is kept because it is IDF's supported audio path and removes the
+ * fractional modulator from 40 MHz from the list of suspects.
  */
 #define CLKM_CONF_CLK_ACTIVE (1u << 26)
+/* I2S_CLK_EN -- note the name carries no TX/RX prefix, which is exactly how it
+ * got missed: a scan for I2S_TX_* fields does not find it, and it was briefly
+ * removed on the mistaken grounds that bit 29 was undefined. It is defined
+ * (I2S_CLK_EN_M = BIT(29) in i2s_reg.h) and it is the module clock enable for
+ * this register, distinct from tx_clk_active which starts the generator. */
+#define CLKM_CONF_CLK_EN     (1u << 29)
 #define CLKM_CONF_CLK_SEL_PLL160M 2
+
+/* I2S_STATE_REG(i) = REG_I2S_BASE(i) + 0x6C; tx_idle is bit 0. This is the
+ * transmitter's own statement of whether its state machine is running, as
+ * opposed to GDMA's view of the same transfer. */
+#define I2S_TX_STATE      (I2S1_BASE + 0x6C)
+#define TX_STATE_IDLE     (1u << 0)
 
 /* I2S0, RX side. The receiver runs in slave mode: it takes BCLK and WS from the
  * GPIO matrix instead of generating them, so the ADC is locked to the frame the
