@@ -1459,3 +1459,57 @@ so is known to discriminate.
 Rule, restated because it was violated five times: before drawing a conclusion from
 a number, establish that the thing producing it is compiled in, present, and has
 ever produced anything other than its default.
+
+## Playback: the fault is GDMA TX parking, and the descriptor state does not add up
+
+Everything upstream is proven healthy and stays healthy: codec loads and runs
+(run=1, in_run=1), reads its file (bufget=26, startfill=0 so it never even had to
+wait for data), decodes (insert=209), pcmbuf fills to 513792/524288 with 62 of 64
+descriptors, the mixer holds a ready 1024-byte buffer (next=1024), and the pcm
+core is registered and playing (more and status both non-null). sink_play=1: the
+driver was handed exactly one buffer and never came back for another.
+
+The decoded readout during the stall:
+
+  refill=1 branch=3   refill ran and reached write_desc()
+  d0own=1 d1own=0     descriptor 0 armed and owned by the DMA; descriptor 1 not
+  park=1 out=0        the descriptor FSM is parked, the OUT engine is idle
+  fifo L1/L2/L3 all empty
+  raw eof=0 dscr=0 tot=0
+  i2s started=1 idle=1   correct: it has no data
+
+With GDMA_OUT_CHECK_OWNER enabled (bit 12 of OUT_CONF1 -- verified to exist on the
+TX side, unlike my first assumption), an engine that walks into a descriptor the
+CPU still owns suspends. park=1 is that suspension. So the shape of the fault is
+known: the engine stops at the second descriptor and is not resumed.
+
+What does NOT add up: branch=3 means write_desc() ran, and write_desc() arms
+desc[cur] with DESC_OWNER before flipping cur. Afterwards d1 should read owned and
+cur should be 0. We observe cur=0 (consistent) but d1own=0 (impossible under that
+path) and d0own=1. Either the engine consumed d1 and wrote back its owner without
+raising a second out_eof, or write_desc armed d0 rather than d1, or cur is being
+read stale -- it is not volatile, unlike queued. No further inference is warranted
+until that is measured rather than reasoned about.
+
+Restarting the link on park (restart|start, as gdma_ll_tx_restart documents) was
+tried and changed nothing observable.
+
+Two misreads caused most of the lost time, both from parsing register comment
+blocks instead of BIT() definitions, and both are now fixed at the source by
+printing flags decoded:
+  - out_eof was taken as bit 0; it is BIT(1). Bit 0 is out_reach_target.
+  - the GDMA FIFO status bits were read inverted: FULL_Ln are bits 0/2/4 and
+    EMPTY_Ln are 1/3/5. 0x2a is all-EMPTY. This made a starved transmitter look
+    like a stalled one and sent hours into I2S configuration that was already
+    correct -- confirmed when IDF's own HAL produced byte-identical behaviour.
+
+Next measurement, not next guess: record inside write_desc() which index it armed
+and the dw0 value it wrote, and count per-descriptor completions in the ISR. That
+distinguishes "armed the wrong half", "armed and consumed without an interrupt",
+and "cur read stale" in one sample. Make cur volatile while there, since it is
+shared with the ISR and currently is not.
+
+Also still outstanding and independent of playback: longjmp in
+lib/libsetjmp/xtensa/setjmp.S still reads its save area through the rotated
+window (verified in the disassembly of the shipped codec), and the receiver has
+not been migrated to the HAL.
