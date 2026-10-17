@@ -136,12 +136,6 @@ static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)))
  * finished transmitting is the one retire points at, so the mixer's next frame
  * goes into cur. Both advance modulo XT_TX_RING -- with a plain xor the upper
  * slots of the ring would never be armed at all. */
-/* The slot the engine is expected to retire next -- and therefore the slot we
- * have to re-arm when it does. These are the same index, which is why there is
- * only one variable: the ring is kept fully owned by re-arming the descriptor
- * that was just released, every time one is released. Two separate indices is
- * what let the ring drain last time. */
-static volatile int nxt;
 /* One buffer handed down by the core and not yet placed in a descriptor. The
  * core pushes through sink_play(); the completion interrupt pulls. */
 static volatile const void *pend_addr;
@@ -292,7 +286,7 @@ void i2s_audio_probe(void)
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
            "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
            "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
-           "CHAIN: gdma out=%d dscr=%d park=%d | err=%d | link=%08x nxt=%d own=%d%d%d%d len=%d,%d,%d,%d\n"
+           "CHAIN: gdma out=%d dscr=%d park=%d | err=%d | link=%08x own=%d%d%d%d len=%d,%d,%d,%d\n"
            "CHAIN: wd n=%d lastidx=%d wrote=%08x hist=%d,%d,%d,%d pre=%08x\n"
            "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | pll160=%lu xtal=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
@@ -317,7 +311,7 @@ void i2s_audio_probe(void)
            /* GDMA_OUT_STATE = 3 bits at 20, OUT_DSCR_STATE = 2 bits at 18 */
            (int)((gs >> 20) & 0x7), (int)((gs >> 18) & 3),
            (int)((rd(GDMA_TX_LINK) >> 23) & 1),
-           xt_dscr_err_n, (unsigned)rd(GDMA_TX_LINK), nxt,
+           xt_dscr_err_n, (unsigned)rd(GDMA_TX_LINK),
            (int)((desc[0].dw0 >> 31) & 1), (int)((desc[1].dw0 >> 31) & 1),
            (int)((desc[2].dw0 >> 31) & 1), (int)((desc[3].dw0 >> 31) & 1),
            (int)((desc[0].dw0 >> 12) & 0xfff), (int)((desc[1].dw0 >> 12) & 0xfff),
@@ -404,7 +398,10 @@ void i2s_set_frequency(unsigned long rate)
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
-    desc[i].next   = (uint32_t)(unsigned long)&desc[(i + 1) % XT_TX_RING];
+    /* Self-linked. The outlink is stopped after every transfer, so next is
+     * never followed; pointing it at this descriptor means a stray restart cannot
+     * walk the engine into a slot nobody armed. */
+    desc[i].next   = (uint32_t)(unsigned long)&desc[i];
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
      * slot safe rather than fatal. */
@@ -448,25 +445,6 @@ static void fill(int i, const void *src, unsigned long len)
         wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
 }
 
-/* Hand a slot back to the CPU: dw0 = 0 means the engine is not allowed to take
- * it. This is the underrun path. The engine parks on such a descriptor, which is
- * its designed behaviour rather than a fault, and the restart in fill() picks the
- * walk back up as soon as real audio is available.
- *
- * The alternative used here briefly -- arming spare slots with a frame of silence
- * -- was wrong, and measurably so. The core hands down exactly one buffer per
- * reported consumption, so a primed ring of one audio slot plus three silent ones
- * never recovers: each completion re-arms only the slot that just retired, which
- * is the one the engine reaches last. The result was one audio frame in every
- * four, a transport running at the correct 44.1 kHz carrying 25% audio, and a
- * player clock advancing at a quarter speed because it is slaved to the audio
- * completions. */
-static void release(int i)
-{
-    discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
-    desc[i].dw0 = 0;
-    commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
-}
 
 static void gdma_init(void)
 {
@@ -600,6 +578,7 @@ void i2s_rx_init(void)
 static void start_tx(void)
 {
     i2s_ll_tx_start(tx_hal.dev);
+    wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
 }
 
@@ -666,21 +645,24 @@ void ICODE_ATTR gdma_irq(void)
 
     if (st & GDMA_INT_DONE)
     {
-        /* The slot that just retired is the one nxt pointed at. The slot the
-         * engine is heading for is the one after it -- and that is the slot that
-         * has to be armed, not the one that just freed up.
+        /* Take the engine off the list before it can fetch anything else.
          *
-         * Arming the retired slot is what made playback stop dead. With silent
-         * padding that mistake was invisible because every slot stayed owned
-         * anyway; once a slot could be handed back to the CPU, the engine walked
-         * into the next one, found it unowned, parked, and nothing ever armed it.
+         * This is the imx233 model -- that driver's DMA command carries
+         * next = NULL, so the transfer ends and the ISR restarts it. Our GDMA is
+         * chained and free-running, which means it advances to the next
+         * descriptor about a microsecond after retiring the current one, while
+         * the refill that would arm it is still inside the interrupt. Measured on
+         * this part: reaching a descriptor the CPU owns raises out_dscr_err, it is
+         * not a benign park, so "let it park and restart later" is not a strategy
+         * here. Stopping the walk removes the race instead of trying to win it.
          *
-         * Writing the next slot is safe: with a ring this deep it was released
-         * XT_TX_RING-1 completions ago, so the engine is nowhere near it, and if
-         * the engine got here first it is merely parked -- fill() restarts the
-         * walk in that case. */
-        const int next = (nxt + 1) % XT_TX_RING;
-        nxt = next;
+         * The I2S FIFO bridges the gap; it was measured running full, so there is
+         * real capacity between a stopped outlink and the DAC. */
+        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
+
+        /* desc[0] is the only descriptor in play. The outlink was stopped above
+         * before anything else could be fetched, so there is no ring position to
+         * track: complete, re-arm, start. */
 
         /* A completion can only mean audio was played: a slot the CPU owns is not
          * taken by the engine, so it never completes. */
@@ -695,16 +677,16 @@ void ICODE_ATTR gdma_irq(void)
 
         if (pend_valid)
         {
-            fill(next, (const void *)pend_addr, (unsigned long)pend_size);
+            fill(0, (const void *)pend_addr, (unsigned long)pend_size);
             pend_valid = 0;
+            /* Re-arm and go again. Writing the address re-latches the descriptor
+             * list at desc[0]; start begins the walk from there. */
+            wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+            wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
         }
-        else
-        {
-            /* Underrun. Leave the next slot in the CPU's hands: the engine parks
-             * on it, which is its designed behaviour, and the next frame we are
-             * given restarts the walk from there. */
-            release(next);
-        }
+        /* Nothing to play: stay stopped. The core's stop path handles the end of
+         * stream; a genuine underrun simply pauses the transport rather than
+         * feeding the DAC a descriptor the engine is not allowed to read. */
     }
 
     if (st & GDMA_INT_DSCR_ERR)
@@ -722,8 +704,6 @@ void ICODE_ATTR gdma_irq(void)
            leave the ring alone and only restart the walk. */
         xt_dscr_err_n++;
         wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));      /* link.stop */
-        wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
-        nxt = 0;
     }
 
     /* Clear only what fired. int_clr is write-to-clear. */
@@ -759,16 +739,10 @@ static void sink_play(const void *addr, size_t size)
         fill(0, addr, (unsigned long)size);
         pend_valid = 0;
         queued = 1;
-        nxt = 0;
-        /* Everything else starts in the CPU's hands. The engine walks slot 0,
-         * then parks at slot 1 until the first completion arms it -- which is the
-         * designed behaviour, and the only honest starting state given that we
-         * have exactly one frame to offer. */
-        for (int i = 1; i < XT_TX_RING; i++)
-            release(i);
 
         playing = true;
         start_tx();
+        wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     }
     else
     {
@@ -797,7 +771,6 @@ static void sink_stop(void)
     for (int i = 0; i < XT_TX_RING; i++)
         desc[i].dw0 = 0;
     commit_dcache_range((const void *)desc, sizeof(desc));
-    nxt = 0;
     pend_valid = 0;
 }
 
