@@ -58,9 +58,16 @@ static const struct button_mapping button_context_wps[]  = {
     /* Both buttons commit on release, so holding one never fires the tap
      * action first. */
     { ACTION_WPS_PLAY,        BUTTON_A|BUTTON_REL,          BUTTON_A },
-    { ACTION_WPS_STOP,        BUTTON_B|BUTTON_REL,          BUTTON_B },
-    { ACTION_WPS_MENU,        BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
-    { ACTION_WPS_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
+    /* B is back, not stop. Leaving the now-playing screen should keep the music
+     * running and drop back to the browser, which is what ACTION_WPS_MENU does:
+     * gwps_leave_wps(true) then GO_TO_ROOT. It used to be ACTION_WPS_STOP here,
+     * so backing out faded the track out first. */
+    { ACTION_WPS_MENU,        BUTTON_B|BUTTON_REL,          BUTTON_B },
+    { ACTION_WPS_CONTEXT,     BUTTON_B|BUTTON_REPEAT,       BUTTON_B },
+    /* Stop moves to holding the play key, which is the convention on the other
+     * few-button targets -- keymap-m3.c and keymap-shanlingq1.c both bind
+     * ACTION_WPS_STOP to BUTTON_PLAY|BUTTON_REPEAT. */
+    { ACTION_WPS_STOP,        BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
 
     /* There is no volume key on this board, so the wheel axis is volume here,
      * the same as the top and bottom cells of the grid. */
