@@ -42,7 +42,34 @@
  * Rockbox's own linker script; naming a section IDF's script does not claim
  * makes the object an orphan and opens a gap IDF then refuses to flash. */
 static volatile struct gdma_desc rx_desc[2] __attribute__((aligned(32)));
-static unsigned char rx_buf[2][GDMA_RX_CHUNK] __attribute__((aligned(4)));
+
+/* Each half is padded up to a whole cache line and the array is aligned to one.
+ * GDMA_RX_CHUNK is 4092, which is 28 mod 32, so on a bare aligned(4) the first
+ * line of rx_buf[0] can carry up to 28 bytes of whatever the linker placed before
+ * it, and the last line of rx_buf[1] the same on the other side. drain()
+ * invalidates with commit_discard_dcache_range(), which drops those bytes instead
+ * of writing them back -- so the neighbour is silently lost. This is the same
+ * class of bug as the transmit descriptors (see the note on struct gdma_desc),
+ * but with the destructive variant: commit is a clean and loses nothing, discard
+ * loses data. The four slack bytes per half are never written by the engine, the
+ * descriptor still advertises GDMA_RX_CHUNK as the capacity. */
+#define GDMA_RX_STRIDE ((GDMA_RX_CHUNK + 31u) & ~31u)
+static unsigned char rx_buf[2][GDMA_RX_STRIDE] __attribute__((aligned(32)));
+
+/* TEMPORARY: one counter per stage of the capture chain, so "recording does
+ * nothing" can be told apart from "recording records silence" without a second
+ * run. Printed from thread context at start and stop, never from the ISR.
+ *
+ *   irq climbing, bytes climbing -> the path works; look downstream (encoder)
+ *   irq static, dscr_err climbing -> the ring never completes a descriptor
+ *   irq static, nothing climbing  -> I2S0 RX or the ES7210 is not clocking data
+ *   bytes < requested at stop     -> the recorder gave up before the DMA filled
+ */
+static volatile unsigned long rx_irq_count;
+static volatile unsigned long rx_err_count;
+static volatile unsigned long rx_bytes;
+static volatile unsigned long rx_last_st;
+static unsigned long rx_requested;
 
 /* The descriptor the engine is expected to be filling. Re-armed immediately after
  * it is retired, which is always before the ring wraps back around to it. */
@@ -153,19 +180,24 @@ static void drain(int i)
         return;
 
     /* The engine wrote these bytes behind the cache; drop any stale copy before
-     * the recorder reads them. */
+     * the recorder reads them. Safe at the boundaries now that each half is a
+     * whole number of cache lines. */
     commit_discard_dcache_range(rx_buf[i], n);
     memcpy(rec_ptr, rx_buf[i], n);
 
     rec_ptr += n;
     rec_left -= n;
+    rx_bytes += n;
 }
 
 void ICODE_ATTR gdma_rx_irq(void)
 {
     unsigned int st = rd(GDMA_RX_INT_ST);
 
+    rx_last_st = st;
+
     if (st & GDMA_INT_IN_DONE) {
+        rx_irq_count++;
         drain(rx_cur);
 
         if (rec_left == 0) {
@@ -188,6 +220,7 @@ void ICODE_ATTR gdma_rx_irq(void)
     }
 
     if (st & (GDMA_INT_IN_DSCR_ERR | GDMA_INT_IN_DSCR_EMPTY)) {
+        rx_err_count++;
         /* The ring is broken: stop the channel, point it back at the start and
          * re-arm both halves. */
         rx_stop();
@@ -211,11 +244,29 @@ void pcm_rec_dma_close(void)
     es7210_stop();
 }
 
+/* TEMPORARY: the capture chain in one line, printed from thread context only. */
+static void rx_probe(const char *where)
+{
+    printf("RX %s: irq=%lu err=%lu bytes=%lu/%lu left=%lu cur=%d run=%d "
+           "st=%02lx buf=%p/%p dscr=%p\n",
+           where, rx_irq_count, rx_err_count, rx_bytes, rx_requested, rec_left,
+           rx_cur, rx_running, rx_last_st,
+           (void *)&rx_buf[0][0], (void *)&rx_buf[1][0], (void *)&rx_desc[0]);
+    printf("RX   align: buf0=%lx buf1=%lx stride=%u (want 0 mod 32)\n",
+           (unsigned long)(unsigned long)&rx_buf[0][0] & 31u,
+           (unsigned long)(unsigned long)&rx_buf[1][0] & 31u, GDMA_RX_STRIDE);
+}
+
 void pcm_rec_dma_start(void *addr, size_t size)
 {
     rec_ptr = (unsigned char *)addr;
     rec_left = size;
     rx_cur = 0;
+    rx_requested = size;
+    rx_irq_count = 0;
+    rx_err_count = 0;
+    rx_bytes = 0;
+    rx_last_st = 0;
 
     rx_arm(0, chunk_for_left());
     rx_arm(1, chunk_for_left());
@@ -224,6 +275,7 @@ void pcm_rec_dma_start(void *addr, size_t size)
     rx_running = true;
 
     pcm_rec_dma_status_callback(PCM_DMAST_STARTED);
+    rx_probe("at start");
 }
 
 void pcm_rec_dma_stop(void)
@@ -233,6 +285,7 @@ void pcm_rec_dma_stop(void)
 
     rx_running = false;
     rx_stop();
+    rx_probe("at stop");
 }
 
 const void *pcm_rec_dma_get_peak_buffer(void)

@@ -2824,7 +2824,52 @@ sim config (`sim => 1` in `tools/builds.pm`).
 mkdir build-esp32s3 && cd build-esp32s3
 ../tools/configure --target=<modelname>
 make
+```
 
+### The build directory is shared by two build systems, and only one `Makefile` fits
+
+For this target the build dir (`build-meowkits3`) holds **both** Rockbox's build
+and the ESP-IDF/CMake build (`CMAKE_HOME_DIRECTORY` is `idf-app`). Each writes a
+file called `Makefile` there, and the second one to run wins:
+
+- `../tools/configure` writes Rockbox's (`## Automatically generated. http://www.rockbox.org/`),
+  which includes `tools/root.make` and compiles every Rockbox source into archives.
+- `cmake .` overwrites it with CMake's (`# CMAKE generated file: DO NOT EDIT!`),
+  which only drives IDF and links the archives Rockbox already produced.
+
+**So once IDF has been configured in that directory, plain `make` compiles no
+Rockbox source at all.** It re-links whatever archives are there and exits 0. An
+edit to any `.c` or `.h` under `firmware/` or `apps/` is silently absent from the
+resulting image, and nothing warns you. This was found the hard way: a change to
+`pcm-xtensa.c` produced a clean build, a clean link and a `rockbox.elf` with no
+trace of it (`strings rockbox.elf | grep` for a new format string returned
+nothing).
+
+The correct sequence after editing Rockbox sources is therefore:
+
+```bash
+cd build-meowkits3
+../tools/configure --target=meowkit-esp32s3   # restores Rockbox's Makefile
+make                                           # compile Rockbox -> archives
+cmake .                                        # restores CMake's Makefile
+make                                           # link rockbox.elf / .bin
+```
+
+`../tools/configure` is safe to re-run: it regenerates `Makefile`, `config.h` and
+`autoconf.h` from the same target, and `cmake .` regenerates from the existing
+`CMakeCache.txt` without reconfiguring IDF.
+
+A cheap sanity check that your edit actually landed, before flashing anything:
+
+```bash
+strings rockbox.elf | grep -F 'a string only your edit adds'
+```
+
+Link-only changes (the `rockbox_memory.lf` fragment, linker script edits) do go
+through with a bare `make`, which is what makes the trap easy to miss — half the
+time the one-step build is genuinely sufficient.
+
+```bash
 # useful make goals
 make bin        # firmware only
 make zip        # full package
