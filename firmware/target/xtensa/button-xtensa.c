@@ -154,6 +154,13 @@ int button_read_device(int *data)
                         printf("AUDIO: init=%lu play=%lu stop=%lu irq=%lu lastsz=%lu\n",
                                xt_sink_init_n, xt_sink_play_n, xt_sink_stop_n,
                                xt_sink_irq_n, xt_sink_last_size);
+                        /* The counters say the completion event never reached the
+                         * handler. They cannot say why, and the two reasons need
+                         * opposite fixes, so dump the transmit path as the
+                         * hardware sees it: pending-but-masked versus never
+                         * generated. */
+                        extern void i2s_audio_probe(void);
+                        i2s_audio_probe();
                     }
                 }
             }
