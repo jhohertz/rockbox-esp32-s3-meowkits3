@@ -139,6 +139,12 @@ volatile unsigned long xt_sink_last_size;
  *   sink play climbing, dma irq static
  *        -> the ring is fed but the transmitter is not completing
  *
+ * locked, int_ena and int_raw are included because sink_lock() masks out_eof and
+ * sink_unlock() unmasks it only when the count returns to zero. If the play lock
+ * is ever left held the consumer is muted for good: int_raw keeps the pending
+ * bit, int_ena has it clear, and the PCM buffer fills with nothing able to drain
+ * it -- which is what a stalled consumer looks like from upstream.
+ *
  * pcmbuf used/free is the pressure quantity: it is what should decide whether
  * there is anything to hand down. Clock and reset state are included because a
  * peripheral held in reset reads back zero and is otherwise indistinguishable
@@ -166,7 +172,8 @@ void i2s_audio_probe(void)
     printf("CHAIN: codec run=%lu in=%d | insert=%lu bufget=%lu startfill=%lu\n"
            "CHAIN: pcmbuf used=%lu/%lu descs=%d/%d | mixer cb=%lu next=%lu idx=%d\n"
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
-           "CHAIN: dma irq=%lu queued=%d cur=%d d0=%08x d1=%08x txconf=%08x\n"
+           "CHAIN: dma irq=%lu queued=%d locked=%d ena=%08x raw=%08x st=%08x\n"
+           "CHAIN:      cur=%d d0=%08x d1=%08x txconf=%08x link=%08x\n"
            "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
@@ -177,9 +184,12 @@ void i2s_audio_probe(void)
            pcm_playing, (void *)pcm_callback_for_more,
            (void *)pcm_play_status_callback,
            xt_sink_play_n, xt_sink_stop_n,
-           xt_sink_irq_n, queued, cur,
+           xt_sink_irq_n, queued, locked,
+           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_INT_RAW),
+           (unsigned)rd(GDMA_TX_INT_ST),
+           cur,
            (unsigned)desc[0].dw0, (unsigned)desc[1].dw0,
-           (unsigned)rd(I2S_TX_CONF),
+           (unsigned)rd(I2S_TX_CONF), (unsigned)rd(GDMA_TX_LINK),
            (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
            (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0,
            (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
