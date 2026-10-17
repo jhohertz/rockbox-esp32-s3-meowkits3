@@ -52,6 +52,7 @@
 #include <hal/i2s_types.h>
 #include <hal/i2s_ll.h>
 #include <esp_rom_gpio.h>
+#include <esp_clk_tree.h>
 
 /* The transmitter port. ESP32-S3 has no soc/i2s_periph.h and therefore no
  * I2S_NUM_1 enumerator; the port index is simply the register block, I2S1 at
@@ -201,6 +202,14 @@ void i2s_audio_probe(void)
 
     size_t bufsz = pcmbuf_get_bufsize();
     size_t used = bufsz - pcmbuf_free();
+    uint32_t f_pll160 = 0, f_xtal = 0, f_plld2 = 0;
+
+    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_F160M,
+                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_pll160);
+    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_XTAL,
+                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_xtal);
+    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_D2,
+                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_plld2);
 
     printf("CHAIN: codec run=%lu in=%d | insert=%lu bufget=%lu startfill=%lu\n"
            "CHAIN: pcmbuf used=%lu/%lu descs=%d/%d | mixer cb=%lu next=%lu idx=%d\n"
@@ -208,7 +217,21 @@ void i2s_audio_probe(void)
            "CHAIN: dma irq=%lu queued=%d locked=%d ena=%08x raw=%08x st=%08x\n"
            "CHAIN:      cur=%d d0=%08x d1=%08x txconf=%08x ofifo=%08x link=%08x\n"
            "CHAIN:      tx_idle=%d clkm=%08x div=%08x tdm=%08x conf1=%08x\n"
-           "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n",
+           /* GDMA's own account of its state. out_state[22:19] and
+            * out_dscr_state[18:17] of OUT_STATE_REG say whether the engine is
+            * idle, initialising, waiting for a descriptor or running -- which is
+            * the only way to tell 'GDMA never started' from 'GDMA started and the
+            * peripheral never asked'. The descriptor owner bit cannot answer it:
+            * arm() sets owner itself, so owner=1 is our write, not evidence the
+            * engine ever looked. */
+           "CHAIN:      gdma_state=%08x (out=%d dscr=%d) raw=%08x\n"
+           "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n"
+           /* Whether the clock we selected is actually present. Everything so far
+            * has asserted that PLL_F160M is running because IDF defaults to it --
+            * including my own reasoning -- and nothing has ever asked the clock
+            * tree. APPROX precision is deliberate: EXACT triggers a calibration
+            * and this runs from the button thread. */
+           "CHAIN: src freq  pll160=%lu  xtal=%lu  plld2=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
            (unsigned long)used, (unsigned long)bufsz,
@@ -228,10 +251,16 @@ void i2s_audio_probe(void)
            (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
            (unsigned)rd(I2S_TX_CLKM_CONF), (unsigned)rd(I2S_TX_CLKM_DIV_CONF),
            (unsigned)rd(I2S_TX_TDM_CTRL), (unsigned)rd(I2S_TX_CONF1),
+           (unsigned)rd(GDMA_TX_STATE),
+           (int)((rd(GDMA_TX_STATE) >> 19) & 0xF),
+           (int)((rd(GDMA_TX_STATE) >> 17) & 3),
+           (unsigned)rd(GDMA_TX_INT_RAW),
            (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
            (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0,
            (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
-           (rd(SYSTEM_PERIP_RST_EN1) & CLK_EN_DMA) ? 1 : 0);
+           (rd(SYSTEM_PERIP_RST_EN1) & CLK_EN_DMA) ? 1 : 0,
+           (unsigned long)f_pll160, (unsigned long)f_xtal,
+           (unsigned long)f_plld2);
 }
 
 #ifdef HAVE_RECORDING
