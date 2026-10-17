@@ -9,6 +9,8 @@
  ****************************************************************************/
 #include "config.h"
 
+#include <stdio.h>
+
 #include "system.h"
 #include "i2c.h"
 #include "es8311.h"
@@ -35,14 +37,42 @@
 #define REG_DAC32    0x32
 #define REG_DAC37    0x37
 
+/* Every call site used to discard this. That is how a dead I2C bus looks
+ * identical to a correctly configured codec: the transport runs at exactly the
+ * right rate, the DAC is silent, and nothing anywhere reports a failure. */
+static int es8311_write_fails;
+static int es8311_writes;
+
+/* i2c_writemem(dev, address, buf, count) always puts `address` on the bus first,
+ * as the register byte. This driver used to pass address = 0 and put the register
+ * in the payload alongside the value, so every write went out as three bytes --
+ * 00, reg, val -- instead of reg, val. The codec saw a write to register 0 whose
+ * data was the intended register number, then two stray bytes.
+ *
+ * Every other device on this bus gets it right: pca9557.c and es7210.c both pass
+ * the register as `address` and a single data byte. That mismatch is why the
+ * expander, the PMU and the ADC all work while the codec never accepted a single
+ * command -- and because the return value was discarded at every call site, it
+ * looked identical to a configured chip. The values that appeared to match what we
+ * wrote were reset defaults.
+ *
+ * Symptom, for the record: perfect I2S transport at 44.1 kHz, readback showing
+ * REG00 = 0x31 (chipen clear, powered down) and REG01 = 0x00 (no clocks enabled),
+ * and silence on both the headphone jack and the speaker.
+ */
 static int write_reg(int reg, int val)
 {
-    unsigned char buf[2];
+    unsigned char v = (unsigned char)val;
+    /* i2c_writemem returns the byte count on success and -1 on failure -- not
+     * zero. Testing against 0 would report every successful write as a failure
+     * and invent a dead bus that is not there. */
+    int r = i2c_writemem(ES8311_I2C_ADDR, reg, &v, 1);
 
-    buf[0] = (unsigned char)reg;
-    buf[1] = (unsigned char)val;
+    es8311_writes++;
+    if (r != 1)
+        es8311_write_fails++;
 
-    return i2c_writemem(ES8311_I2C_ADDR, 0, buf, 2);
+    return r;
 }
 
 static int read_reg(int reg)
@@ -108,6 +138,36 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
         write_reg(REG_CLK07, reg07 & 0xC0);                      /* lrch = 0 */
 
     write_reg(REG_CLK08, 255);                                   /* lrcl = 255 */
+}
+
+/* Read the codec back over I2C. This is the only way to distinguish "we wrote
+ * the right values" from "the chip is configured", and until now nothing in the
+ * driver ever asked the chip what it thinks its state is. */
+void es8311_dump(const char *tag)
+{
+    static const unsigned char regs[] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+        0x0D, 0x0E, 0x12, 0x13, 0x14, 0x31, 0x32, 0x37,
+    };
+    static const char *names[] = {
+        "chip", "clk1", "clk2", "clk3", "clk4", "clk5", "clk6", "clk7", "clk8",
+        "sdpin", "sdpo", "sys0d", "sys0e", "sys12", "sys13", "sys14",
+        "dac31", "dac32", "dac37",
+    };
+
+    printf("ES8311 %s: writes=%d fails=%d\n", tag, es8311_writes,
+           es8311_write_fails);
+
+    for (unsigned i = 0; i < sizeof(regs); i++)
+    {
+        int v = read_reg(regs[i]);
+        printf("%s%s=%02x", i ? " " : "  ", names[i], v & 0xff);
+        if (v < 0)
+            printf("(ERR)");
+        if (i % 6 == 5)
+            printf("\n");
+    }
+    printf("\n");
 }
 
 void es8311_init(void)
