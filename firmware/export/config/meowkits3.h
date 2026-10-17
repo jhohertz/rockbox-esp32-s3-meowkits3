@@ -40,11 +40,21 @@
  */
 #define CPU_FREQ 240000000
 
-/* TEMPORARY bring-up instrumentation for the dircache scan fault. Pairs with
- * the STRACE() calls in firmware/common/dircache.c and the .noinit ring in
- * firmware/target/xtensa/scan_trace.c. Delete this line, those calls and that
- * file to remove it. */
-#define ROCKBOX_SCAN_TRACE
+/* Bring-up instrumentation for the dircache scan fault and the Ext_RAM MMU
+ * faults: the STRACE() calls in firmware/common/dircache.c and firmware/kernel/,
+ * the .noinit ring in firmware/target/xtensa/scan_trace.c, and the sampling in
+ * vApplicationTickHook.
+ *
+ * Off now, not deleted -- the questions it answered are settled (the PSRAM MMU
+ * indexing, the Ext_RAM read/write asymmetry, the codec I2C addressing), and
+ * leaving it on costs real time on a hot path. With it defined, the 1 kHz tick
+ * reads intenable plus two EXTMEM status registers every eighth tick, and every
+ * sixty-fourth walks 128 volatile MMU entries at 0x600C5000. That is what was
+ * left running on the tick after the button-tick probe was removed.
+ *
+ * Uncomment to re-arm everything at once. The ring is .noinit, so a trace
+ * survives a reset and is printed by the boot log on the next start. */
+/* #define ROCKBOX_SCAN_TRACE */
 
 /* Not set, on purpose. Rockbox's cpu_boost() exists to call
  * set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
