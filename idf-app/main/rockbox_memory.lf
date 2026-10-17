@@ -74,6 +74,13 @@ archive: libfirmware.a
 entries:
     unicode (rb_psram)
     bidi (rb_psram)
+    # dir.o -- open_streams[] is filestr_base + ns_scan_info + dirent: directory
+    # scan cursors plus one parsed entry. Storage reads land in a separate buffer
+    # and are parsed into this, so it is not itself a DMA destination. An earlier
+    # note here classed it alongside disk_cache.o as a read destination; it isn't.
+    dir (rb_psram)
+    # fileobj_mgr.o -- fobindings[], the file-object binding table. Metadata only.
+    fileobj_mgr (rb_psram)
     # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
     # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
     # buffers are already in .ext_ram.bss by their own section attribute, which
@@ -97,6 +104,21 @@ entries:
     tree (rb_psram)
     playlist_viewer (rb_psram)
     filetypes (rb_psram)
+    # tagtree.o is the tagcache's browse-menu layer. Its only large static is
+    # uniqbuf, 64 KB of pure scratch handed to tagcache_search_set_uniqbuf() and
+    # never to a DMA engine, and the file defines no thread stack -- so it meets
+    # both halves of the rule above. It has to move: enabling HAVE_TAGCACHE put
+    # 65,536 (uniqbuf) plus tagcache.o's 20,480-byte thread stack into a segment
+    # that had single-digit KB of headroom, and dram0_0_seg overflowed by 86,736.
+    # tagcache.o itself deliberately stays in DRAM because of that stack.
+    tagtree (rb_psram)
+    # Three more to cover the rest of what HAVE_TAGCACHE costs. Each was checked
+    # against the same two tests rather than by size:
+    #   playback.o -- static_id3_entries[], the metadata cache. No stack.
+    #     (dir.o and fileobj_mgr.o are firmware/common objects and belong to
+    #     libfirmware.a, so they are granted in that mapping instead -- putting
+    #     them here silently did nothing.)
+    playback (rb_psram)
     # Deliberately NOT moved despite looking like data: scroll_engine.o and
     # playlist.o each contain a thread stack, dir.o and disk_cache.o are disk
     # read destinations, talk.o and beep.o feed the audio path, and
