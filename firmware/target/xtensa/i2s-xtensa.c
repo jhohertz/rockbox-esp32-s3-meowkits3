@@ -42,6 +42,22 @@
 #include <esp_intr_alloc.h>
 #include <soc/interrupts.h>
 
+/* ESP-IDF's HAL layer: the register-level programming of the I2S block, computed
+ * by IDF rather than by us. This is the layer the I2S driver itself calls, so it
+ * covers the clock tree, the fractional modulator, the TDM/standard slot layout
+ * and the WS width -- the four things this file used to hand-roll and got wrong
+ * one at a time. It deliberately does NOT own GDMA, which is why the sink
+ * contract and the descriptor ring below can stay exactly as they are. */
+#include <hal/i2s_hal.h>
+#include <hal/i2s_types.h>
+#include <hal/i2s_ll.h>
+#include <esp_rom_gpio.h>
+
+/* The transmitter port. ESP32-S3 has no soc/i2s_periph.h and therefore no
+ * I2S_NUM_1 enumerator; the port index is simply the register block, I2S1 at
+ * 0x6002D000. */
+#define XT_I2S_TX_PORT 1
+
 #ifdef HAVE_RECORDING
 #include "es7210.h"
 #endif
@@ -110,6 +126,19 @@ static void gdma_tx_isr(void *arg)
 }
 
 static int div_integ, div_num, div_denom;
+
+/* IDF's HAL context for the transmitter. The HAL is a thin wrapper over the
+ * register block, so the context is just the peripheral base address. */
+static i2s_hal_context_t tx_hal;
+
+/* TEMPORARY (transitional measurement only): the registers as IDF's HAL left
+ * them, so they can be diffed against the values this file used to write by
+ * hand. Remove together with the last hand-rolled setup. */
+static void i2s_reg_snapshot(const char *tag);
+
+/* The receiver still divides from the source clock by hand until it is migrated,
+ * so calc_div must keep running even though the transmitter no longer uses it. */
+static void calc_div(unsigned long exp_freq);
 
 /* TEMPORARY: one counter per link in the playback chain, so "it does not play"
  * becomes a statement about where the chain stops rather than which link is
@@ -278,8 +307,47 @@ static void program_div(void)
 
 void i2s_set_frequency(unsigned long rate)
 {
-    calc_div(rate * MCLK_MULTIPLE);
-    program_div();
+    /* Clock and slot configuration, computed by IDF's HAL.
+     *
+     * i2s_hal_set_tx_clock() picks the source, programs the integral and
+     * fractional modulator and the BCLK divider, and pulses tx_update; it
+     * replaces calc_div, set_raw_div and program_div entirely. The slot call sets
+     * the sample bits, the WS width (which this file had left at zero, giving a
+     * one-BCLK frame) and the TDM channel mask, and selects standard mode via the
+     * TDM path.
+     */
+    i2s_hal_clock_info_t clk = {
+        .sclk     = I2S_CLK_SRC_HZ,
+        .mclk     = (uint32_t)(rate * MCLK_MULTIPLE),
+        .bclk     = (uint32_t)(rate * SLOT_BITS * SLOT_NUM),
+        .mclk_div = MCLK_MULTIPLE,
+        .bclk_div = I2S_BCLK_DIV,
+    };
+    hal_utils_clk_div_t mclk_div;
+
+    i2s_hal_set_tx_clock(&tx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
+
+    i2s_hal_slot_config_t slot = {
+        .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+        .slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT,
+        .slot_mode      = I2S_SLOT_MODE_STEREO,
+        .std = {
+            .slot_mask     = I2S_STD_SLOT_BOTH,
+            .ws_width      = SLOT_BITS,
+            .ws_pol        = false,
+            .bit_shift     = true,
+            .left_align    = true,
+            .big_endian    = false,
+            .bit_order_lsb = false,
+        },
+    };
+
+    /* Master role: this side generates BCLK and WS and feeds MCLK to both codecs. */
+    i2s_hal_std_set_tx_slot(&tx_hal, false, &slot);
+    i2s_hal_std_enable_tx_channel(&tx_hal);
+
+    i2s_reg_snapshot("after hal config");
+
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
     /* The ADC is clocked from the same MCLK the transmitter drives out, so it
@@ -358,64 +426,38 @@ static void gdma_init(void)
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
 }
 
+/* The transitional register dump declared above. */
+static void i2s_reg_snapshot(const char *tag)
+{
+    printf("I2SREG %s: conf=%08x conf1=%08x tdm=%08x clkm=%08x div=%08x state=%08x\n",
+           tag, (unsigned)rd(I2S_TX_CONF), (unsigned)rd(I2S_TX_CONF1),
+           (unsigned)rd(I2S_TX_TDM_CTRL), (unsigned)rd(I2S_TX_CLKM_CONF),
+           (unsigned)rd(I2S_TX_CLKM_DIV_CONF), (unsigned)rd(I2S_TX_STATE));
+}
+
 void i2s_init(void)
 {
+    /* Peripheral clock and reset. IDF does this in periph_ctrl; entering from the
+     * ROM loader means doing it here. Both halves are required -- with the reset
+     * bit still asserted the block discards every write and reads back zero. */
     wr(SYSTEM_PERIP_CLK_EN0, rd(SYSTEM_PERIP_CLK_EN0) | CLK_EN_I2S1);
     wr(SYSTEM_PERIP_CLK_EN1, rd(SYSTEM_PERIP_CLK_EN1) | CLK_EN_DMA);
-
-    /* Release reset. Clock enable alone is not enough: while the matching
-     * PERIP_RST_EN bit is set the peripheral stays in reset, every write to it
-     * is discarded, and the registers read back as zero. That is what the probe
-     * showed immediately after gdma_init() had written INT_ENA and LINK -- both
-     * read 0 -- which is why the transmit interrupt could never fire and nothing
-     * played. ESP-IDF does this in periph_ctrl; entering from the ROM loader
-     * means doing it here. */
     wr(SYSTEM_PERIP_RST_EN0, rd(SYSTEM_PERIP_RST_EN0) & ~CLK_EN_I2S1);
     wr(SYSTEM_PERIP_RST_EN1, rd(SYSTEM_PERIP_RST_EN1) & ~CLK_EN_DMA);
 
-    /* GPSPI does not drive its own pins; neither does I2S once the signal is
-     * routed through the GPIO matrix. */
-    gpio_matrix_out(PIN_I2S_MCLK, SIG_I2S1_MCLK_OUT);
-    gpio_matrix_out(PIN_I2S_BCLK, SIG_I2S1O_BCK_OUT);
-    gpio_matrix_out(PIN_I2S_WS,   SIG_I2S1O_WS_OUT);
-    gpio_matrix_out(PIN_I2S_DOUT, SIG_I2S1O_SD_OUT);
+    i2s_hal_init(&tx_hal, XT_I2S_TX_PORT);
+
+    /* Route the signals through the GPIO matrix using the same ROM helper the
+     * IDF driver uses, so the pad configuration matches what IDF expects. */
+    esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK, SIG_I2S1_MCLK_OUT, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_BCLK, SIG_I2S1O_BCK_OUT, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_WS,   SIG_I2S1O_WS_OUT, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_DOUT, SIG_I2S1O_SD_OUT, false, false);
 
     gpio_set_direction(PIN_I2S_MCLK, 1);
     gpio_set_direction(PIN_I2S_BCLK, 1);
     gpio_set_direction(PIN_I2S_WS,   1);
     gpio_set_direction(PIN_I2S_DOUT, 1);
-
-    /* TX_CONF1: BCLK divider, 16-bit channel, Phillips standard. Every "bits" and
-     * "div" field here is stored as value-minus-one, so the divider that yields
-     * BCLK = MCLK/8 is written as 7.
-     */
-    wr(I2S_TX_CONF1, ((SLOT_BITS - 1) << 13) |          /* tx_bits_mod */
-                     ((SLOT_BITS - 1) << 24) |           /* tx_tdm_chan_bits */
-                     ((SLOT_BITS - 1) << 18) |           /* tx_half_sample_bits */
-                     ((I2S_BCLK_DIV - 1) << 7) |         /* tx_bclk_div_num */
-                     (SLOT_BITS - 1) |                   /* tx_tdm_ws_width */
-                     (1u << 29));                        /* tx_msb_shift */
-
-    /* Standard mode runs through the TDM path with two slots. The reset defaults
-     * of tx_stop_en, tx_pcm_bypass and tx_left_align are 1 and a bare write of
-     * this register clears them: with tx_pcm_bypass = 0 and tx_pcm_conf = 0 the
-     * data goes through the A-law compressor.
-     */
-    wr(I2S_TX_TDM_CTRL, ((SLOT_NUM - 1) << 16) | 0x3);  /* tot_chan_num, chan mask */
-
-    wr(I2S_TX_CONF, (1u << 19) |                    /* tx_tdm_en */
-                    (1u << 15) |                    /* tx_left_align */
-                    (1u << 13) |                    /* tx_stop_en */
-                    (1u << 12) |                    /* tx_pcm_bypass */
-                    (1u << 8));                     /* tx_update */
-    /* tx_update is documented as self-clearing, but ESP-IDF never waits for it.
-     * Bound the wait so a bit that does not clear cannot hang the boot, and leave
-     * the readback in the trace log. */
-    int guard = 10000;
-    while ((rd(I2S_TX_CONF) & TX_CONF_UPDATE) && guard > 0) {
-        udelay(1);
-        guard--;
-    }
 
     gdma_init();
 
@@ -501,14 +543,14 @@ void i2s_rx_init(void)
 
 static void start_tx(void)
 {
-    wr(I2S_TX_CONF, rd(I2S_TX_CONF) | TX_CONF_START);
+    i2s_ll_tx_start(tx_hal.dev);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
 }
 
 static void stop_tx(void)
 {
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
-    wr(I2S_TX_CONF, rd(I2S_TX_CONF) & ~TX_CONF_START);
+    i2s_ll_tx_stop(tx_hal.dev);
 }
 
 /* cur is the half that is free to write. The DMA mounts a descriptor only when the
