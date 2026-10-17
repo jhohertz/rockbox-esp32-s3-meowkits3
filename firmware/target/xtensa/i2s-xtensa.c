@@ -231,7 +231,7 @@ void i2s_audio_probe(void)
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
            "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
            "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
-           "CHAIN: gdma out=%d dscr=%d | link=%08x cur=%d d0own=%d d1own=%d\n"
+           "CHAIN: gdma out=%d dscr=%d park=%d | link=%08x cur=%d d0own=%d d1own=%d\n"
            "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | src=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
@@ -254,6 +254,7 @@ void i2s_audio_probe(void)
            (int)((rd(GDMA_TX_INT_RAW) >> 3) & 1),
            /* GDMA_OUT_STATE = 3 bits at 20, OUT_DSCR_STATE = 2 bits at 18 */
            (int)((gs >> 20) & 0x7), (int)((gs >> 18) & 3),
+           (int)((rd(GDMA_TX_LINK) >> 23) & 1),
            (unsigned)rd(GDMA_TX_LINK), cur,
            (int)((desc[0].dw0 >> 31) & 1), (int)((desc[1].dw0 >> 31) & 1),
            (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
@@ -623,6 +624,30 @@ static void write_desc(const void *addr, size_t size)
     commit_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
     cur ^= 1;
     queued++;
+
+    /* Arming a descriptor is not enough on its own.
+     *
+     * When the engine reaches a descriptor the CPU still owns, it parks its
+     * descriptor FSM and stops. From that point a later arm() is invisible: the
+     * engine is no longer walking the list, so it never notices the descriptor it
+     * now owns. The link has to be restarted. That is what gdma_ll_tx_restart()
+     * is for -- "restart a new outlink right after the last descriptor" -- and
+     * what IDF's gdma_append() does on every hand-off.
+     *
+     * This is exactly the state the readout showed: a descriptor armed and owned
+     * by the DMA (d0own=1), the FIFO empty, no interrupt pending, and out_state
+     * reporting the engine idle. out_eof fired once for the first descriptor,
+     * refill armed the second, and nothing ever came back for it -- so the
+     * transmitter starved, tx_idle stayed asserted, and upstream the mixer sat on
+     * a ready buffer with half a megabyte of PCM queued behind it.
+     *
+     * Bit positions from gdma_reg.h: outlink.stop BIT(20), start BIT(21),
+     * restart BIT(22), park BIT(23). start and restart are both R/W/SC.
+     */
+    unsigned int link = rd(GDMA_TX_LINK);
+
+    if (link & (1u << 23))      /* outlink.park: the descriptor FSM is idle */
+        wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
 }
 
 static void refill(void)
