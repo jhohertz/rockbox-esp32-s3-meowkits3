@@ -81,6 +81,11 @@ static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)
 static int cur;
 static int locked;
 static bool playing;
+/* Descriptors armed and awaiting transmission. The ISR decrements it as each one
+ * retires; refill() only asks the core for a buffer when the ring has run dry,
+ * because in the normal case reporting the completion causes ops.play to hand us
+ * the next one before we ever need to ask. */
+static volatile int queued;
 
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
@@ -130,8 +135,8 @@ void i2s_audio_probe(void)
            rd(GDMA_TX_LINK));
     printf("AUDHW: ofifo=%08x txstate=%08x txconf=%08x\n",
            rd(GDMA_TX_FIFO_STATUS), rd(GDMA_TX_STATE), rd(I2S_TX_CONF));
-    printf("AUDHW: d0=%08x d1=%08x cur=%d playing=%d\n",
-           desc[0].dw0, desc[1].dw0, cur, playing);
+    printf("AUDHW: d0=%08x d1=%08x cur=%d playing=%d queued=%d\n",
+           desc[0].dw0, desc[1].dw0, cur, playing, queued);
     /* If a peripheral's clock is gated its registers read back as zero on this
      * chip, which is indistinguishable from "the write never happened". Reading
      * the two enable bits alongside the peripheral registers tells those apart:
@@ -487,6 +492,7 @@ static void write_desc(const void *addr, size_t size)
     commit_dcache_range(dma_buf[cur], size);
     commit_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
     cur ^= 1;
+    queued++;
 }
 
 static void refill(void)
@@ -494,11 +500,35 @@ static void refill(void)
     const void *addr;
     size_t size;
 
+    /* Report the consumed buffer BEFORE asking for another one.
+     *
+     * This is the order every working sink driver uses -- see
+     * firmware/target/arm/imx233/pcm-imx233.c, whose ISR ends with
+     * pcm_play_dma_status_callback(PCM_DMAST_STARTED). Telling the layer above
+     * that a buffer was consumed is what makes the mixer produce the next one
+     * and hand it down through builtin_pcm_sink.ops.play, which arms a
+     * descriptor for us. In steady state we therefore never need to ask.
+     *
+     * Asking first was the bug. On the very first completion the mixer had never
+     * been told to build a second buffer, so mixer_pcm_callback() returned
+     * next_size == 0, pcm_get_more_int() returned false,
+     * pcm_play_dma_complete_callback() called pcm_play_stop_int() -- which sets
+     * pcm_callback_for_more = NULL -- and playback was latched off for good. The
+     * codec then went on decoding into a PCM buffer nothing could ever ask for:
+     * measured at 209 inserts with the transmit path idle after a single 1024
+     * byte frame.
+     */
+    pcm_play_dma_status_callback(PCM_DMAST_STARTED);
+
+    if (queued > 0)
+        return;     /* ops.play already handed us the next buffer */
+
+    /* Nothing was queued behind it, so ask explicitly. This is the fallback, not
+     * the normal path. */
     if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
         return;
 
     write_desc(addr, size);
-    pcm_play_dma_status_callback(PCM_DMAST_STARTED);
 }
 
 /* Runs on the interrupted thread's stack, so it has to stay small. The handler in
@@ -510,6 +540,8 @@ void ICODE_ATTR gdma_irq(void)
     if (st & GDMA_INT_DONE)
     {
         xt_sink_irq_n++;
+        if (queued > 0)
+            queued--;
         refill();
     }
 
@@ -551,8 +583,6 @@ static void sink_play(const void *addr, size_t size)
         playing = true;
         start_tx();
     }
-
-    pcm_play_dma_status_callback(PCM_DMAST_STARTED);
 }
 
 static void sink_stop(void)
@@ -560,6 +590,7 @@ static void sink_stop(void)
     xt_sink_stop_n++;
 
     playing = false;
+    queued = 0;
     stop_tx();
 
     /* The link register still points at desc[0], so the ring restarts there on the
