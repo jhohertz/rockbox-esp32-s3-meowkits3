@@ -218,11 +218,22 @@ void es8311_close(void)
 }
 
 /* Rockbox always passes centibels. reg = round((db + 95.5) / 0.5). */
-void es8311_set_volume(int centibels)
+/* val is in Rockbox's 0.1 dB unit, matching the AUDIOHW_SETTING bounds of -955
+ * and 320. The register is 0.5 dB per step from a -95.5 dB floor, so:
+ *
+ *   -955 -> 0   (-95.5 dB, the floor)
+ *   -250 -> 141 (-25.0 dB, the default)
+ *   +320 -> 255 (+32.0 dB, the ceiling)
+ *
+ * The previous formula divided by 50 after adding 9550, i.e. it treated val as
+ * centibels. On the -25.0 dB default that produced 0xBA, which is -2.5 dB -- 22.5
+ * dB louder than intended -- and it made the 0.1 dB keypress step land on the
+ * same register value over and over. */
+void es8311_set_volume(int val)
 {
-    int reg = (centibels + 9550 + 25) / 50;
+    int reg = (val + 955) / 5;
 
-    last_vol_cB = centibels;
+    last_vol_cB = val;
 
     if (reg < 0)
         reg = 0;
@@ -236,8 +247,8 @@ void es8311_set_volume(int centibels)
      * take, and that is a different fault from "we never asked for a volume".
      * Doing it here rather than in the boot dump keeps the answer free of any
      * question about what ran before or after what. */
-    printf("ES8311 volume: %d cB -> wrote %02x, read %02x (r=%d)\n",
-           centibels, reg & 0xff, read_reg(REG_DAC32) & 0xff, r);
+    printf("ES8311 volume: %d (0.1dB) -> reg32=%02x read %02x (r=%d)\n",
+           val, reg & 0xff, read_reg(REG_DAC32) & 0xff, r);
 }
 
 void es8311_mute(int mute)
