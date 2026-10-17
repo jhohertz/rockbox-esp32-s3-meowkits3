@@ -119,6 +119,21 @@ volatile unsigned long xt_sink_stop_n;
 volatile unsigned long xt_sink_irq_n;
 volatile unsigned long xt_sink_last_size;
 
+/* TEMPORARY: dump the transmit path as the hardware sees it. The counters can say
+ * the completion event never reached the handler; only these registers can say
+ * whether the event was never generated or merely never delivered, and those two
+ * need opposite fixes. */
+void i2s_audio_probe(void)
+{
+    printf("AUDHW: raw=%08x st=%08x ena=%08x link=%08x\n",
+           rd(GDMA_TX_INT_RAW), rd(GDMA_TX_INT_ST), rd(GDMA_TX_INT_ENA),
+           rd(GDMA_TX_LINK));
+    printf("AUDHW: ofifo=%08x txstate=%08x txconf=%08x\n",
+           rd(GDMA_TX_FIFO_STATUS), rd(GDMA_TX_STATE), rd(I2S_TX_CONF));
+    printf("AUDHW: d0=%08x d1=%08x cur=%d playing=%d\n",
+           desc[0].dw0, desc[1].dw0, cur, playing);
+}
+
 #ifdef HAVE_RECORDING
 static void program_rx_div(void);
 #endif
