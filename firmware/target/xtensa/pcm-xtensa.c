@@ -278,6 +278,11 @@ void pcm_rec_dma_close(void)
         i2s_del_channel(rx_chan);
         rx_chan = NULL;
     }
+
+    /* Belt and braces: pcm_close_recording() always calls this, so making the
+     * handback idempotent here means the transmitter can never be left without
+     * its clocks however the session ended. */
+    i2s_rx_pads_release();
 }
 
 void pcm_rec_dma_start(void *addr, size_t size)
@@ -314,7 +319,16 @@ void pcm_rec_dma_start(void *addr, size_t size)
 void pcm_rec_dma_stop(void)
 {
     if (!rx_running)
+    {
+        /* Still give the clock pads back. The reader clears rx_running itself
+         * when it leaves its loop, so a stop that arrives after it will take this
+         * branch -- and if the pads were left pointing at I2S0, the transmitter
+         * can never clock the codecs again, which kills playback for the rest of
+         * the session. Releasing is just rewriting three OUT_SEL registers, so
+         * doing it unconditionally is free. */
+        i2s_rx_pads_release();
         return;
+    }
 
     rx_wanted = false;
     /* Wake the thread so it observes rx_wanted and leaves its read loop. */
@@ -355,9 +369,10 @@ const void *pcm_rec_dma_get_peak_buffer(void)
     return rec_ptr;
 }
 
-/* The reader polls this, so a locked section pauses the copy rather than losing
- * the data: whatever the DMA has already captured is still in IDF's buffers and
- * is read out when the lock is released. */
+/* pcm_rec_lock() masks the recording completion, not the transfer -- so the reader
+ * keeps pulling data while locked and only defers the hand-off. That is what
+ * imx233 does by disabling the DMA channel interrupt, and what this driver's
+ * predecessor did by masking GDMA_INT_IN_DONE. */
 void pcm_rec_lock(void)
 {
     rec_locked++;
