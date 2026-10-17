@@ -245,6 +245,145 @@ void pcm_rec_dma_close(void)
 }
 
 /* TEMPORARY: the capture chain in one line, printed from thread context only. */
+
+/* Offsets this file needs but i2s-xtensa.h does not define, each checked against
+ * ESP-IDF's esp32s3 register headers rather than inferred:
+ *   i2s_reg.h: I2S_INT_RAW_REG = base + 0xC, I2S_INT_ST_REG = +0x10,
+ *              I2S_STATE_REG = +0x6C
+ *   gdma_reg.h: GDMA_IN_INT_RAW_CH0_REG = +0x8, GDMA_IN_STATE_CH0_REG = +0x24
+ *               (GDMA_IN_STATE_CH0_S = 20, so the retired size is bits [31:20]) */
+#define I2S0_INT_RAW        (I2S0_BASE + 0x0C)
+#define I2S0_INT_ST         (I2S0_BASE + 0x10)
+#define I2S0_STATE          (I2S0_BASE + 0x6C)
+#define GDMA_RX_INT_RAW     (GDMA_BASE + 0x08)
+#define GDMA_RX_STATE       (GDMA_BASE + 0x24)
+
+/* The whole receive path in one readout, so "recording captures nothing" can be
+ * attributed to a stage in a single run rather than by successive guesses.
+ *
+ * Read from top to bottom, the first stage that disagrees with the one above it
+ * is the break:
+ *
+ *   in_sel wrong / sig_in_sel clear -> the receiver is not wired to the pins at
+ *       all, so it has no bit clock and no frame sync and can never fill a
+ *       descriptor. This is the shape of the failure we have: GDMA reports no
+ *       completion AND no error, which is what a receiver with no clock looks
+ *       like, not what a broken ring looks like.
+ *   rx_conf start clear  -> the receiver was never started
+ *   rx_conf slave_mod    -> must be set: BCLK/WS come back from the transmitter
+ *   gdma link addr       -> must be &rx_desc[0]; inlink_start should read back
+ *       clear, as it is a self-clearing trigger
+ *   gdma state           -> bytes the engine put in the last retired descriptor;
+ *       non-zero with irq==0 would mean the interrupt is not reaching us
+ *   dscr owner           -> if the engine never took a descriptor, both owner
+ *       bits stay set
+ *
+ * Raw hex is printed alongside the few fields decoded here, and only fields
+ * whose bit positions were checked against the register header are decoded --
+ * the transmit-side lesson that reading a comment block instead of the BIT()
+ * define cost most of a day applies equally here. */
+static void rx_reg_snapshot(const char *where)
+{
+    uint32_t rxc = rd(I2S0_RX_CONF);
+    uint32_t lnk = rd(GDMA_RX_LINK);
+    uint32_t raw = rd(GDMA_RX_INT_RAW);
+    uint32_t ena = rd(GDMA_RX_INT_ENA);
+
+    printf("RX REG %s: rx_conf=%08lx (reset=%d fifo_rst=%d start=%d slave=%d)\n",
+           where, (unsigned long)rxc,
+           (rxc >> 0) & 1u, (rxc >> 1) & 1u, (rxc >> 2) & 1u, (rxc >> 3) & 1u);
+    printf("RX   rx_conf1=%08lx clkm=%08lx div=%08lx tdm=%08lx state=%08lx\n",
+           (unsigned long)rd(I2S0_RX_CONF1),
+           (unsigned long)rd(I2S0_RX_CLKM_CONF),
+           (unsigned long)rd(I2S0_RX_CLKM_DIV_CONF),
+           (unsigned long)rd(I2S0_RX_TDM_CTRL),
+           (unsigned long)rd(I2S0_STATE));
+    printf("RX   i2s_int raw=%08lx st=%08lx\n",
+           (unsigned long)rd(I2S0_INT_RAW), (unsigned long)rd(I2S0_INT_ST));
+
+    /* The transmitter's own state, because the receiver is a SLAVE to the clocks
+     * that domain generates: BCLK and WS only appear on pins 14/13 when tx_start
+     * is set. If those read start=0 while recording, the receiver is correctly
+     * configured and simply has no clock to capture -- which is a different bug
+     * from a broken ring, and looks identical from the GDMA side (no completion,
+     * no error). tx_clk_active says whether MCLK is reaching the codecs at all.
+     *
+     * NOTE the peripheral: on this board TX is I2S1 and RX is I2S0 (XT_I2S_TX_PORT
+     * = 1, XT_I2S_RX_PORT = 0), so the clock source and the consumer are different
+     * blocks. Offsets from i2s_reg.h: TX_CONF = base + 0x24 (NOT +0x00),
+     * TX_CLKM_CONF = +0x34.
+     *
+     * Field positions from i2s_struct.h, which is worth stating because the first
+     * version of this line decoded tx_clk_active as bit 0 and reported it clear
+     * when it was set: tx_clkm_conf is div_num[7:0], then tx_clk_active at BIT 26,
+     * tx_clk_sel[28:27], clk_en[29]. Same layout on the RX side, plus mclk_sel[29]
+     * which selects whether I2S_MCLK_OUT is sourced from the TX or the RX module
+     * clock. Channel bits are TX_RESET 0, TX_FIFO_RESET 1, TX_START 2,
+     * TX_SLAVE_MOD 3.
+     */
+    {
+        uint32_t txc = rd(I2S_TX_CONF);
+        uint32_t txm = rd(I2S_TX_CLKM_CONF);
+        printf("RX   tx(I2S1) conf=%08lx (reset=%d fifo_rst=%d START=%d slave=%d)\n",
+               (unsigned long)txc,
+               (txc >> 0) & 1u, (txc >> 1) & 1u, (txc >> 2) & 1u, (txc >> 3) & 1u);
+        printf("RX   tx_clkm=%08lx (clk_active[26]=%d clk_sel[28:27]=%d)\n",
+               (unsigned long)txm, (txm >> 26) & 1u, (txm >> 27) & 3u);
+        printf("RX   rx_clkm=%08lx (clk_active[26]=%d clk_sel[28:27]=%d "
+               "mclk_sel[29]=%d)\n",
+               (unsigned long)rd(I2S0_RX_CLKM_CONF),
+               (rd(I2S0_RX_CLKM_CONF) >> 26) & 1u,
+               (rd(I2S0_RX_CLKM_CONF) >> 27) & 3u,
+               (rd(I2S0_RX_CLKM_CONF) >> 29) & 1u);
+    }
+
+    printf("RX   gdma conf0=%08lx (rst=%d burst=%d) conf1=%08lx (chk_own=%d)\n",
+           (unsigned long)rd(GDMA_RX_CONF0),
+           (rd(GDMA_RX_CONF0) >> 0) & 1u,
+           (rd(GDMA_RX_CONF0) >> 3) & 1u,
+           (unsigned long)rd(GDMA_RX_CONF1),
+           (rd(GDMA_RX_CONF1) >> 12) & 1u);
+    printf("RX   gdma peri_sel=%lu raw=%08lx ena=%08lx (done=%d err=%d empty=%d)\n",
+           (unsigned long)(rd(GDMA_RX_PERI_SEL) & 0x3fu),
+           (unsigned long)raw, (unsigned long)ena,
+           (ena >> 0) & 1u, (ena >> 3) & 1u, (ena >> 4) & 1u);
+    printf("RX   gdma link=%08lx addr=%08lx (want %08lx) start=%d stop=%d "
+           "auto_ret=%d state=%lu\n",
+           (unsigned long)lnk, (unsigned long)(lnk & 0xFFFFFu),
+           (unsigned long)(unsigned long)&rx_desc[0],
+           (lnk >> 22) & 1u, (lnk >> 21) & 1u, (lnk >> 20) & 1u,
+           (unsigned long)(rd(GDMA_RX_STATE) >> 20));
+
+    /* The descriptors are written by the engine behind our cache, so read them
+     * back through an invalidate or we report what we last wrote. */
+    commit_discard_dcache_range((const void *)rx_desc, sizeof(rx_desc));
+    printf("RX   dscr0 dw0=%08lx own=%d len=%lu buf=%08lx | dscr1 dw0=%08lx "
+           "own=%d len=%lu buf=%08lx\n",
+           (unsigned long)rx_desc[0].dw0, (rx_desc[0].dw0 >> 31) & 1u,
+           (unsigned long)((rx_desc[0].dw0 >> 12) & 0xFFFu),
+           (unsigned long)rx_desc[0].buffer,
+           (unsigned long)rx_desc[1].dw0, (rx_desc[1].dw0 >> 31) & 1u,
+           (unsigned long)((rx_desc[1].dw0 >> 12) & 0xFFFu),
+           (unsigned long)rx_desc[1].buffer);
+
+    /* The three matrix inputs the receiver depends on, indexed by signal rather
+     * than pin (the input slots are per signal). in_sel is bits [5:0] and bit 7
+     * selects the GPIO matrix over the direct IO-MUX path; a clear bit 7 means
+     * the signal is not connected at all. Expected: signal 25 (SD) <- pin 3,
+     * 26 (BCK) <- pin 14, 27 (WS) <- pin 13. */
+    /* The pads the receiver must own as master. OUT_SEL holds the signal index:
+     * while recording these should read 23 (I2S0 MCLK), 26 (I2S0 RX BCK) and
+     * 27 (I2S0 RX WS); while playing they belong to I2S1 and read 21, 28, 29. */
+    printf("RX   in_sel sd25=%03lx (want 0x%02x) | out_sel mclk15=%03lx bck14=%03lx "
+           "ws13=%03lx (recording wants %d / %d / %d)\n",
+           (unsigned long)(rd(GPIO_FUNC_IN_SEL(SIG_I2S0I_SD_IN)) & 0x1FFu),
+           3u | 0x80u,
+           (unsigned long)(rd(GPIO_FUNC_OUT_SEL(15)) & 0x1FFu),
+           (unsigned long)(rd(GPIO_FUNC_OUT_SEL(14)) & 0x1FFu),
+           (unsigned long)(rd(GPIO_FUNC_OUT_SEL(13)) & 0x1FFu),
+           SIG_I2S0_MCLK_OUT, SIG_I2S0I_BCK_OUT, SIG_I2S0I_WS_OUT);
+}
+
 static void rx_probe(const char *where)
 {
     printf("RX %s: irq=%lu err=%lu bytes=%lu/%lu left=%lu cur=%d run=%d "
@@ -255,6 +394,7 @@ static void rx_probe(const char *where)
     printf("RX   align: buf0=%lx buf1=%lx stride=%u (want 0 mod 32)\n",
            (unsigned long)(unsigned long)&rx_buf[0][0] & 31u,
            (unsigned long)(unsigned long)&rx_buf[1][0] & 31u, GDMA_RX_STRIDE);
+    rx_reg_snapshot(where);
 }
 
 void pcm_rec_dma_start(void *addr, size_t size)
@@ -271,6 +411,11 @@ void pcm_rec_dma_start(void *addr, size_t size)
     rx_arm(0, chunk_for_left());
     rx_arm(1, chunk_for_left());
 
+    /* Recording makes the receiver the master of the shared clock bus, so it needs
+     * the pads. This must precede rx_start(): the receiver cannot drive a clock out
+     * of a pad it does not own. */
+    i2s_rx_pads_take();
+
     rx_start();
     rx_running = true;
 
@@ -286,6 +431,7 @@ void pcm_rec_dma_stop(void)
     rx_running = false;
     rx_stop();
     rx_probe("at stop");
+    i2s_rx_pads_release();
 }
 
 const void *pcm_rec_dma_get_peak_buffer(void)
