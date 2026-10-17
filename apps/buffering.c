@@ -20,6 +20,7 @@
 #include "config.h"
 #include <string.h>
 #include "system.h"
+#include "stdio.h"     /* TEMPORARY: only for buffering_probe's printf */
 #include "storage.h"
 #include "thread.h"
 #include "kernel.h"
@@ -117,6 +118,14 @@ static size_t high_watermark = 0; /* High watermark for rebuffer */
 static struct lld_head handle_list; /* buffer-order handle list */
 static struct lld_head mru_cache;   /* MRU-ordered list of handles */
 static int num_handles;             /* number of handles in the lists */
+
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+/* TEMPORARY: playback-chain diagnostics, printed from the button probe alongside
+ * the audio and codec counters. Remove with them. */
+volatile unsigned long xt_buf_loop_n;
+volatile long xt_buf_last_ev;
+volatile int xt_buf_filling;
+#endif
 static int base_handle_id;
 
 /* Main lock for adding / removing handles */
@@ -1595,6 +1604,17 @@ static void NORETURN_ATTR buffering_thread(void)
             queue_wait(&buffering_queue, &ev);
         }
 
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+        /* TEMPORARY: the codec is proven to be blocked inside run_proc, and the
+         * filesystem lock is idle, so nothing is reading the card. This says
+         * whether the buffering thread is even awake and what it was last told to
+         * do. handles=0 means playback never registered the file; filling=0 with
+         * handles present means it was never asked to start. */
+        xt_buf_loop_n++;
+        xt_buf_last_ev = (long)ev.id;
+        xt_buf_filling = filling;
+#endif
+
         switch (ev.id)
         {
             case Q_START_FILL:
@@ -1748,3 +1768,14 @@ void buffering_get_debugdata(struct buffering_debug *dbgdata)
     dbgdata->useful_data = dc.useful;
     dbgdata->watermark = BUF_WATERMARK;
 }
+
+#if defined(CPU_XTENSA) && !defined(SIMULATOR)
+/* TEMPORARY: snapshot of the buffering layer as the codec thread sees it.
+ * Lives here because num_handles is file-static and the whole question is
+ * whether a handle was ever registered for the track being played. */
+void buffering_probe(void)
+{
+    printf("BUFFER: handles=%d filling=%d loop=%lu last_ev=%ld\n",
+           num_handles, xt_buf_filling, xt_buf_loop_n, xt_buf_last_ev);
+}
+#endif
