@@ -1513,3 +1513,47 @@ Also still outstanding and independent of playback: longjmp in
 lib/libsetjmp/xtensa/setjmp.S still reads its save area through the rotated
 window (verified in the disassembly of the shipped codec), and the receiver has
 not been migrated to the HAL.
+
+## setjmp/longjmp: the approach is wrong, not just the instruction
+
+Question asked: what does IDF offer for this? Answer, checked rather than assumed:
+
+- **Nothing purpose-built.** There is no esp_jmp, no jump-buffer API. IDF's idiom
+  for escaping from deep inside is esp_err_t returns plus the ESP_GOTO_ON_ERROR /
+  ESP_GOTO_ON_FALSE goto-cleanup ladders, and for unrecoverable failure the panic
+  handler or deleting and recreating the task. longjmp appears in IDF only in test
+  infrastructure (unity's own priv/setjmp.h, cmock's CException).
+- **The toolchain does have a correct one.** picolibc's libc.a for esp32s3 contains
+  libc_machine_xtensa_setjmp.S.o. The source is not in the IDF tree (prebuilt only),
+  but the object is small and the disassembly is complete.
+
+What that implementation does, and why ours cannot work:
+
+1. setjmp spills with callx4 (not callx8), then copies the caller's base-save area
+   at a1-16 and walks the ancestor windows into the buffer. It gets the window
+   stride from `extui aN, a0, 30, 2` -- CALLINC is encoded in the top two bits of
+   the return address. That is the trick our code lacks.
+2. longjmp sets WINDOWSTART to a single bit at the CURRENT windowbase, writes the
+   saved registers back into the STACK BASE-SAVE AREAS, and returns with retw. It
+   never touches WINDOWBASE and never touches PS. The hardware window-underflow
+   exception refills the registers on the way out.
+3. Return value is `movi a2,1; movnez a2,a3,a3`.
+
+Measured on the disassembly: zero writes to windowbase or ps, zero jx, two retw.
+Our lib/libsetjmp/xtensa/setjmp.S is the mirror image: it rotates WINDOWBASE,
+restores PS wholesale and finishes with jx a0.
+
+The reason that cannot be made to work is the point worth keeping: after wsr
+WINDOWBASE the names a0-a15 denote different physical registers, so there is no
+way to name the target window's registers from inside the current one. Any scheme
+that rotates and then loads registers is broken, whatever it does in between. A
+fix attempted during this session (stashing the buffer pointer in scratch memory
+and re-acquiring it with l32r after the rotation, since l32r is PC-relative and
+window-independent) is therefore also wrong, and was reverted rather than left in
+looking plausible.
+
+The correct rewrite is to follow picolibc's algorithm: rebuild the base-save areas
+in memory and return normally, letting the underflow handlers do the restoration.
+That is a real piece of assembly and needs a hardware test; it is latent, not the
+playback blocker, because with the codec heap cleared on load tremor should not
+reach longjmp at all.
