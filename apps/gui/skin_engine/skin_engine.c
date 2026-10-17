@@ -293,6 +293,11 @@ static char* get_skin_filename(enum skinnable_screens skin, enum screen_type scr
     return buf;
 }
 
+bool skin_is_loaded(enum skinnable_screens skin, enum screen_type screen)
+{
+    return skins[skin][screen].data.wps_loaded;
+}
+
 struct gui_wps *skin_get_gwps(enum skinnable_screens skin, enum screen_type screen)
 {
     if (skin == CUSTOM_STATUSBAR && !skins_initialised)
@@ -305,6 +310,23 @@ struct gui_wps *skin_get_gwps(enum skinnable_screens skin, enum screen_type scre
         cpu_boost(true);
         skin_load(skin, screen, filename);
         cpu_boost(false);
+        if (!skins[skin][screen].data.wps_loaded)
+        {
+            /* Reported once: an unloaded skin used to be rendered anyway, and
+               skin_render() walked a stale tree offset through a NULL-based
+               buffer. The filename here is what the primary attempt asked for;
+               an empty string means the setting is "-" and only the failsafe
+               was tried. */
+            static bool reported[SKINNABLE_SCREENS_COUNT][NB_SCREENS];
+            if (!reported[skin][screen])
+            {
+                reported[skin][screen] = true;
+                printf("skin: load failed (skin=%d screen=%d) req='%s' "
+                       "bufh=%d\n", skin, screen,
+                       filename ? filename : "(null)",
+                       skins[skin][screen].data.buflib_handle);
+            }
+        }
     }
     return &skins[skin][screen].gui_wps;
 }

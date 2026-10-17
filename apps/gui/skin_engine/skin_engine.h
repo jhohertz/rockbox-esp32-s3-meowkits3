@@ -73,6 +73,8 @@ int skin_wait_for_action(enum skinnable_screens skin, int context, int timeout);
 struct gui_wps *skin_get_gwps(enum skinnable_screens skin, enum screen_type screen);
 void gui_sync_skin_init(void);
 
+bool skin_is_loaded(enum skinnable_screens skin, enum screen_type screen);
+
 bool skin_do_full_update(enum skinnable_screens skin, enum screen_type screen);
 void skin_request_full_update(enum skinnable_screens skin);
 void skin_request_update_locked(bool locked);
