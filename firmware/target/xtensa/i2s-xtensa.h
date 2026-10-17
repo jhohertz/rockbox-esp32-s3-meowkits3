@@ -19,6 +19,13 @@
  * enable them: Rockbox has to. */
 #define SYSTEM_PERIP_CLK_EN0 (SYSTEM_BASE + 0x18)
 #define SYSTEM_PERIP_CLK_EN1 (SYSTEM_BASE + 0x1C)
+/* Assert-high reset, one bit per peripheral at the same position as its clock
+ * enable. Enabling the clock without clearing this leaves the peripheral held in
+ * reset: its registers then accept no writes and read back as zero, which looks
+ * identical to a wrong base address. ESP-IDF releases these in periph_ctrl rather
+ * than leaving it to each driver. */
+#define SYSTEM_PERIP_RST_EN0 (SYSTEM_BASE + 0x20)
+#define SYSTEM_PERIP_RST_EN1 (SYSTEM_BASE + 0x24)
 #define CLK_EN_I2S0 (1u << 4)
 #define CLK_EN_I2S1 (1u << 21)
 #define CLK_EN_DMA  (1u << 6)

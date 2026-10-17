@@ -132,6 +132,23 @@ void i2s_audio_probe(void)
            rd(GDMA_TX_FIFO_STATUS), rd(GDMA_TX_STATE), rd(I2S_TX_CONF));
     printf("AUDHW: d0=%08x d1=%08x cur=%d playing=%d\n",
            desc[0].dw0, desc[1].dw0, cur, playing);
+    /* If a peripheral's clock is gated its registers read back as zero on this
+     * chip, which is indistinguishable from "the write never happened". Reading
+     * the two enable bits alongside the peripheral registers tells those apart:
+     * I2S1 is bit 21 of PERIP_CLK_EN0, DMA is bit 6 of PERIP_CLK_EN1. */
+    printf("AUDHW: clk0=%08x (i2s1=%d) clk1=%08x (dma=%d)\n",
+           rd(SYSTEM_PERIP_CLK_EN0),
+           (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
+           rd(SYSTEM_PERIP_CLK_EN1),
+           (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0);
+    /* And the other half of that: a peripheral with its clock on but its reset
+     * asserted behaves exactly like one with no clock at all, so the enable bits
+     * alone cannot distinguish the two. 1 here means still held in reset. */
+    printf("AUDHW: rst0=%08x (i2s1=%d) rst1=%08x (dma=%d)\n",
+           rd(SYSTEM_PERIP_RST_EN0),
+           (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
+           rd(SYSTEM_PERIP_RST_EN1),
+           (rd(SYSTEM_PERIP_RST_EN1) & CLK_EN_DMA) ? 1 : 0);
 }
 
 #ifdef HAVE_RECORDING
@@ -292,6 +309,16 @@ void i2s_init(void)
     wr(SYSTEM_PERIP_CLK_EN0, rd(SYSTEM_PERIP_CLK_EN0) | CLK_EN_I2S1);
     wr(SYSTEM_PERIP_CLK_EN1, rd(SYSTEM_PERIP_CLK_EN1) | CLK_EN_DMA);
 
+    /* Release reset. Clock enable alone is not enough: while the matching
+     * PERIP_RST_EN bit is set the peripheral stays in reset, every write to it
+     * is discarded, and the registers read back as zero. That is what the probe
+     * showed immediately after gdma_init() had written INT_ENA and LINK -- both
+     * read 0 -- which is why the transmit interrupt could never fire and nothing
+     * played. ESP-IDF does this in periph_ctrl; entering from the ROM loader
+     * means doing it here. */
+    wr(SYSTEM_PERIP_RST_EN0, rd(SYSTEM_PERIP_RST_EN0) & ~CLK_EN_I2S1);
+    wr(SYSTEM_PERIP_RST_EN1, rd(SYSTEM_PERIP_RST_EN1) & ~CLK_EN_DMA);
+
     /* GPSPI does not drive its own pins; neither does I2S once the signal is
      * routed through the GPIO matrix. */
     gpio_matrix_out(PIN_I2S_MCLK, SIG_I2S1_MCLK_OUT);
@@ -373,6 +400,9 @@ static void program_rx_div(void)
 void i2s_rx_init(void)
 {
     wr(SYSTEM_PERIP_CLK_EN0, rd(SYSTEM_PERIP_CLK_EN0) | CLK_EN_I2S0);
+    /* Same requirement as the transmit side: clock enable without a reset release
+     * leaves the receiver in reset and its registers read zero. */
+    wr(SYSTEM_PERIP_RST_EN0, rd(SYSTEM_PERIP_RST_EN0) & ~CLK_EN_I2S0);
 
     /* A pad can drive a matrix input while still being driven as an output, so
      * pins 13 and 14 do double duty: the transmitter drives them and the receiver
@@ -562,6 +592,12 @@ static void sink_init(void)
 #endif
 
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
+
+    /* Snapshot the transmit path the instant initialisation completes. Compared
+     * against the same dump later, this says whether the configuration was ever
+     * there at all or was taken away afterwards. */
+    printf("AUDHW -- immediately after sink_init --\n");
+    i2s_audio_probe();
 }
 
 struct pcm_sink builtin_pcm_sink = {
