@@ -157,6 +157,10 @@ volatile unsigned long xt_sink_play_n;
 volatile unsigned long xt_sink_stop_n;
 volatile unsigned long xt_sink_irq_n;
 volatile unsigned long xt_sink_last_size;
+/* TEMPORARY: refill() path trace -- see the comment on refill(). */
+volatile unsigned long xt_refill_n;
+volatile int xt_refill_branch;
+volatile unsigned long xt_refill_size;
 
 /* TEMPORARY: the whole playback chain as one aligned readout, the way the
  * scheduler was finally diagnosed -- every stage's own view of what it is doing,
@@ -184,6 +188,17 @@ volatile unsigned long xt_sink_last_size;
  * peripheral held in reset reads back zero and is otherwise indistinguishable
  * from a wrong base address.
  */
+/* TEMPORARY: the whole playback chain as one aligned readout -- every stage's
+ * own view, sampled at the same instant and emitted as a single printf so no
+ * other thread can land between two stages. The answer is the seam where two
+ * adjacent stages disagree, never one counter on its own.
+ *
+ * Hardware flags are printed DECODED. Two separate misreads cost most of a day
+ * here: out_eof was taken for bit 0 when the BIT() define says bit 1, and the
+ * GDMA FIFO status bits were read as full when bits 0/2/4 are full and 1/3/5 are
+ * empty -- both from parsing the comment block instead of the defines. Nothing
+ * below asks the reader to know a bit position.
+ */
 void i2s_audio_probe(void)
 {
     extern volatile unsigned long xt_codec_run_n;
@@ -202,36 +217,22 @@ void i2s_audio_probe(void)
 
     size_t bufsz = pcmbuf_get_bufsize();
     size_t used = bufsz - pcmbuf_free();
-    uint32_t f_pll160 = 0, f_xtal = 0, f_plld2 = 0;
+    uint32_t f_pll160 = 0, f_xtal = 0;
+    unsigned int gs = rd(GDMA_TX_STATE);
+    unsigned int fs = rd(GDMA_TX_FIFO_STATUS);
 
     esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_F160M,
                                  ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_pll160);
     esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_XTAL,
                                  ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_xtal);
-    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_D2,
-                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_plld2);
 
     printf("CHAIN: codec run=%lu in=%d | insert=%lu bufget=%lu startfill=%lu\n"
            "CHAIN: pcmbuf used=%lu/%lu descs=%d/%d | mixer cb=%lu next=%lu idx=%d\n"
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
-           "CHAIN: dma irq=%lu queued=%d locked=%d ena=%08x raw=%08x st=%08x\n"
-           "CHAIN:      cur=%d d0=%08x d1=%08x txconf=%08x ofifo=%08x link=%08x\n"
-           "CHAIN:      tx_idle=%d clkm=%08x div=%08x tdm=%08x conf1=%08x\n"
-           /* GDMA's own account of its state. out_state[22:19] and
-            * out_dscr_state[18:17] of OUT_STATE_REG say whether the engine is
-            * idle, initialising, waiting for a descriptor or running -- which is
-            * the only way to tell 'GDMA never started' from 'GDMA started and the
-            * peripheral never asked'. The descriptor owner bit cannot answer it:
-            * arm() sets owner itself, so owner=1 is our write, not evidence the
-            * engine ever looked. */
-           "CHAIN:      gdma_state=%08x (out=%d dscr=%d) raw=%08x\n"
-           "CHAIN: clk i2s1=%d dma=%d | rst i2s1=%d dma=%d\n"
-           /* Whether the clock we selected is actually present. Everything so far
-            * has asserted that PLL_F160M is running because IDF defaults to it --
-            * including my own reasoning -- and nothing has ever asked the clock
-            * tree. APPROX precision is deliberate: EXACT triggers a calibration
-            * and this runs from the button thread. */
-           "CHAIN: src freq  pll160=%lu  xtal=%lu  plld2=%lu\n",
+           "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
+           "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
+           "CHAIN: gdma out=%d dscr=%d | link=%08x cur=%d d0own=%d d1own=%d\n"
+           "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | src=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
            (unsigned long)used, (unsigned long)bufsz,
@@ -241,26 +242,26 @@ void i2s_audio_probe(void)
            pcm_playing, (void *)pcm_callback_for_more,
            (void *)pcm_play_status_callback,
            xt_sink_play_n, xt_sink_stop_n,
-           xt_sink_irq_n, queued, locked,
-           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_INT_RAW),
-           (unsigned)rd(GDMA_TX_INT_ST),
-           cur,
-           (unsigned)desc[0].dw0, (unsigned)desc[1].dw0,
-           (unsigned)rd(I2S_TX_CONF), (unsigned)rd(GDMA_TX_FIFO_STATUS),
-           (unsigned)rd(GDMA_TX_LINK),
+           xt_sink_irq_n, xt_refill_n, xt_refill_branch, queued, locked,
+           (unsigned)rd(GDMA_TX_INT_ENA),
+           /* GDMA_OUTFIFO_FULL_Ln = BIT(0/2/4), EMPTY_Ln = BIT(1/3/5) */
+           (int)((fs >> 0) & 1), (int)((fs >> 1) & 1),
+           (int)((fs >> 2) & 1), (int)((fs >> 3) & 1),
+           (int)((fs >> 4) & 1), (int)((fs >> 5) & 1),
+           /* GDMA_OUT_EOF = BIT(1), DSCR_ERR = BIT(2), TOTAL_EOF = BIT(3) */
+           (int)((rd(GDMA_TX_INT_RAW) >> 1) & 1),
+           (int)((rd(GDMA_TX_INT_RAW) >> 2) & 1),
+           (int)((rd(GDMA_TX_INT_RAW) >> 3) & 1),
+           /* GDMA_OUT_STATE = 3 bits at 20, OUT_DSCR_STATE = 2 bits at 18 */
+           (int)((gs >> 20) & 0x7), (int)((gs >> 18) & 3),
+           (unsigned)rd(GDMA_TX_LINK), cur,
+           (int)((desc[0].dw0 >> 31) & 1), (int)((desc[1].dw0 >> 31) & 1),
            (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
-           (unsigned)rd(I2S_TX_CLKM_CONF), (unsigned)rd(I2S_TX_CLKM_DIV_CONF),
-           (unsigned)rd(I2S_TX_TDM_CTRL), (unsigned)rd(I2S_TX_CONF1),
-           (unsigned)rd(GDMA_TX_STATE),
-           (int)((rd(GDMA_TX_STATE) >> 19) & 0xF),
-           (int)((rd(GDMA_TX_STATE) >> 17) & 3),
-           (unsigned)rd(GDMA_TX_INT_RAW),
-           (rd(SYSTEM_PERIP_CLK_EN0) & CLK_EN_I2S1) ? 1 : 0,
-           (rd(SYSTEM_PERIP_CLK_EN1) & CLK_EN_DMA) ? 1 : 0,
-           (rd(SYSTEM_PERIP_RST_EN0) & CLK_EN_I2S1) ? 1 : 0,
-           (rd(SYSTEM_PERIP_RST_EN1) & CLK_EN_DMA) ? 1 : 0,
-           (unsigned long)f_pll160, (unsigned long)f_xtal,
-           (unsigned long)f_plld2);
+           (rd(I2S_TX_CONF) & TX_CONF_START) ? 1 : 0,
+           (int)((rd(I2S_TX_CLKM_CONF) >> 27) & 3),
+           (rd(I2S_TX_CLKM_CONF) & CLKM_CONF_CLK_ACTIVE) ? 1 : 0,
+           (rd(I2S_TX_CLKM_CONF) & CLKM_CONF_CLK_EN) ? 1 : 0,
+           (unsigned long)f_pll160, (unsigned long)f_xtal);
 }
 
 #ifdef HAVE_RECORDING
@@ -355,6 +356,13 @@ void i2s_set_frequency(unsigned long rate)
     hal_utils_clk_div_t mclk_div;
 
     i2s_hal_set_tx_clock(&tx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
+
+#ifdef HAVE_RECORDING
+    /* The receiver has not been migrated to the HAL yet and still derives its
+     * divider locally, so it still needs the local calculation even though the
+     * transmitter no longer does. */
+    calc_div(rate * MCLK_MULTIPLE);
+#endif
 
     i2s_hal_slot_config_t slot = {
         .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
@@ -622,6 +630,17 @@ static void refill(void)
     const void *addr;
     size_t size;
 
+    /* TEMPORARY: which branch refill actually took. Every attempt to reason about
+     * the stall from side effects has produced a contradiction -- irq=1 says this
+     * ran, yet queued, cur and d1 are all still at their post-sink_play values,
+     * and stop stayed 0 which rules out the complete-callback failure path. So
+     * record the path instead of inferring it:
+     *   1 = reported the completion and ops.play had already queued a buffer
+     *   2 = reported, then asked explicitly and was told there is no more
+     *   3 = reported, asked, and armed a descriptor
+     */
+    xt_refill_n++;
+
     /* Report the consumed buffer BEFORE asking for another one.
      *
      * This is the order every working sink driver uses -- see
@@ -642,14 +661,19 @@ static void refill(void)
      */
     pcm_play_dma_status_callback(PCM_DMAST_STARTED);
 
-    if (queued > 0)
+    if (queued > 0) {
+        xt_refill_branch = 1;
         return;     /* ops.play already handed us the next buffer */
+    }
 
     /* Nothing was queued behind it, so ask explicitly. This is the fallback, not
      * the normal path. */
-    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
+    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size)) {
+        xt_refill_branch = 2;
         return;
+    }
 
+    xt_refill_branch = 3;
     write_desc(addr, size);
 }
 
