@@ -66,6 +66,8 @@ static size_t rec_left;
 static int rec_locked;
 static volatile bool rx_wanted;
 static volatile bool rx_running;
+static volatile bool rx_thread_idle = true;
+static volatile bool rx_thread_started;;
 
 static struct semaphore rx_sem;
 static long rx_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
@@ -90,9 +92,9 @@ static unsigned long rx_requested;
 static void rx_probe(const char *where)
 {
     printf("RX %s: reads=%lu errs=%lu bytes=%lu/%lu left=%lu run=%d wanted=%d "
-           "locked=%d\n",
+           "locked=%d started=%d idle=%d\n",
            where, rx_irq_count, rx_err_count, rx_bytes, rx_requested, rec_left,
-           rx_running, rx_wanted, rec_locked);
+           rx_running, rx_wanted, rec_locked, rx_thread_started, rx_thread_idle);
 }
 
 /* The recorder is driven by callbacks, not by a blocking reader, so a small
@@ -102,21 +104,18 @@ static void rx_probe(const char *where)
  * teardown is normal and the loop exits on rx_wanted anyway. */
 static void i2s_rx_thread(void)
 {
+    rx_thread_started = true;
+
     while (true)
     {
         semaphore_wait(&rx_sem, TIMEOUT_BLOCK);
+        rx_thread_idle = false;
 
         while (rx_wanted && rec_left > 0)
         {
             size_t want;
             size_t got = 0;
             esp_err_t err;
-
-            if (rec_locked)
-            {
-                sleep(1);
-                continue;
-            }
 
             want = rec_left < RX_CHUNK ? rec_left : RX_CHUNK;
             err = i2s_channel_read(rx_chan, rec_ptr, want, &got, 200);
@@ -134,7 +133,15 @@ static void i2s_rx_thread(void)
             rec_left -= got;
             rx_bytes += got;
 
-            if (rec_left == 0)
+            /* pcm_rec_lock() masks the recording completion, not the transfer --
+             * imx233 does it by disabling the DMA channel interrupt, and this
+             * driver's predecessor did it by masking IN_DONE. The DMA kept
+             * filling either way. So keep reading into the caller's buffer and
+             * hold back only the hand-off, which is what the interrupt would have
+             * been. Stopping the read instead (an earlier version here did) parks
+             * the thread while the recorder waits for data that can never arrive,
+             * because pcm_record_data() starts us while it still holds the lock. */
+            if (rec_left == 0 && !rec_locked)
             {
                 void *addr;
                 size_t size;
@@ -151,6 +158,7 @@ static void i2s_rx_thread(void)
         }
 
         rx_running = rx_wanted;
+        rx_thread_idle = true;
         rx_probe("at end of run");
     }
 }
@@ -206,13 +214,18 @@ void pcm_rec_dma_init(void)
      * already present when the first frame is clocked out of us. */
     es7210_start();
 
-    printf("RX channel up: rate=%lu desc=%d frame=%d\n",
-           (unsigned long)i2s_rx_sample_rate(), RX_DMA_DESC_NUM, RX_DMA_FRAME_NUM);
+    printf("RX channel up: rate=%lu desc=%d frame=%d thread=%u\n",
+           (unsigned long)i2s_rx_sample_rate(), RX_DMA_DESC_NUM, RX_DMA_FRAME_NUM,
+           rx_thread_id);
 }
 
 void pcm_rec_dma_close(void)
 {
     es7210_stop();
+
+    /* Same rule as stop: never delete a channel a task may be blocked on. */
+    while (!rx_thread_idle)
+        sleep(1);
 
     if (rx_chan)
     {
@@ -259,9 +272,16 @@ void pcm_rec_dma_stop(void)
         return;
 
     rx_wanted = false;
-    /* Wake the thread so it observes rx_wanted and leaves its read loop; it then
-     * parks on the semaphore again. */
+    /* Wake the thread so it observes rx_wanted and leaves its read loop. */
     semaphore_release(&rx_sem);
+
+    /* Wait for it to actually leave before touching the channel. Disabling or
+     * deleting an IDF I2S channel while a task is blocked inside
+     * i2s_channel_read() on it is a deadlock, and that is exactly what this
+     * looked like: the recorder hung on stop, not on start. The read has a 200 ms
+     * timeout, so this cannot spin forever. */
+    while (!rx_thread_idle)
+        sleep(1);
 
     if (rx_chan)
         i2s_channel_disable(rx_chan);
