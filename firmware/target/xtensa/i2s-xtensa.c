@@ -58,6 +58,9 @@
  * I2S_NUM_1 enumerator; the port index is simply the register block, I2S1 at
  * 0x6002D000. */
 #define XT_I2S_TX_PORT 1
+/* The receiver lives on I2S0 (0x6000F000): the signal map gives each port a
+ * single data signal, so the ADC's data line cannot share I2S1's. */
+#define XT_I2S_RX_PORT 0
 
 #ifdef HAVE_RECORDING
 #include "es7210.h"
@@ -91,15 +94,18 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * owner bit changes through a store the compiler cannot see. The handler reads it to
  * decide whether a half is free, and without the qualifier that test can be hoisted.
  *
- * cur is not volatile: it is only touched by the handler and by sink_play, and the
- * interrupt mask means the handler cannot run while sink_play is inside the lock. */
+ * cur is volatile: refill() calls write_desc() from inside the ISR and sink_play()
+ * calls it from thread context without taking the lock, and the probe reads it from
+ * a third context. Without the qualifier the compiler may cache it across those
+ * boundaries. An earlier note here claimed the interrupt mask made it safe, but
+ * sink_play takes no lock at all. */
 static volatile struct gdma_desc desc[2] __attribute__((aligned(4)));
 /* GDMA requires a 4-byte aligned buffer address */
 static unsigned char dma_buf[2][GDMA_MAX_DESC_LEN + 1] __attribute__((aligned(4)));
 
 /* cur is the half that is free to write. When DONE fires, the half that just
  * finished transmitting is cur ^ 1, so the mixer's next frame goes into cur. */
-static int cur;
+static volatile int cur;
 static int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
@@ -126,20 +132,18 @@ static void gdma_tx_isr(void *arg)
     gdma_irq();
 }
 
-static int div_integ, div_num, div_denom;
 
 /* IDF's HAL context for the transmitter. The HAL is a thin wrapper over the
  * register block, so the context is just the peripheral base address. */
 static i2s_hal_context_t tx_hal;
+#ifdef HAVE_RECORDING
+static i2s_hal_context_t rx_hal;
+#endif
 
 /* TEMPORARY (transitional measurement only): the registers as IDF's HAL left
  * them, so they can be diffed against the values this file used to write by
  * hand. Remove together with the last hand-rolled setup. */
 static void i2s_reg_snapshot(const char *tag);
-
-/* The receiver still divides from the source clock by hand until it is migrated,
- * so calc_div must keep running even though the transmitter no longer uses it. */
-static void calc_div(unsigned long exp_freq);
 
 /* TEMPORARY: one counter per link in the playback chain, so "it does not play"
  * becomes a statement about where the chain stops rather than which link is
@@ -160,7 +164,6 @@ volatile unsigned long xt_sink_last_size;
 /* TEMPORARY: refill() path trace -- see the comment on refill(). */
 volatile unsigned long xt_refill_n;
 volatile int xt_refill_branch;
-volatile unsigned long xt_refill_size;
 
 /* TEMPORARY: the whole playback chain as one aligned readout, the way the
  * scheduler was finally diagnosed -- every stage's own view of what it is doing,
@@ -232,7 +235,7 @@ void i2s_audio_probe(void)
            "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
            "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
            "CHAIN: gdma out=%d dscr=%d park=%d | link=%08x cur=%d d0own=%d d1own=%d\n"
-           "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | src=%lu\n",
+           "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | pll160=%lu xtal=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
            xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
            (unsigned long)used, (unsigned long)bufsz,
@@ -265,76 +268,12 @@ void i2s_audio_probe(void)
            (unsigned long)f_pll160, (unsigned long)f_xtal);
 }
 
-#ifdef HAVE_RECORDING
-static void program_rx_div(void);
-#endif
 
 /* Best rational approximation of freq_error / exp_freq with denominator < max.
  * Ported from ESP-IDF's hal_utils_calc_clk_div_frac_accurate. */
-static void calc_div(unsigned long exp_freq)
-{
-    div_integ = I2S_CLK_SRC_HZ / exp_freq;
-    unsigned long rem = I2S_CLK_SRC_HZ % exp_freq;
 
-    if (!rem) { div_num = 0; div_denom = 1; return; }
-
-    /* Carry to the next integer if the fraction is closer to 1 than to the
-     * best fraction reachable under the denominator bound. */
-    if (rem >= exp_freq - exp_freq / (MAX_FRACT - 1) * 2) {
-        div_integ++;
-        div_num = 0;
-        div_denom = 1;
-        return;
-    }
-
-    unsigned long long best = 1ULL << 63;
-    div_denom = 1;
-    div_num = 0;
-    for (unsigned long a = 2; a < MAX_FRACT; a++) {
-        unsigned long b = (a * rem + exp_freq / 2) / exp_freq;
-        unsigned long long sub = exp_freq * b > rem * a ? exp_freq * b - rem * a
-                                                        : rem * a - exp_freq * b;
-        if (sub < best) {
-            best = sub;
-            div_denom = a;
-            div_num = b;
-        }
-    }
-}
-
-static void set_raw_div(unsigned integ, unsigned x, unsigned y, unsigned z, unsigned yn1)
-{
-    wr(I2S_TX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
-                         (CLKM_CONF_CLK_SEL_PLL160M << 27) | integ);
-    wr(I2S_TX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
-
-    /* tx_update latches the APB writes into the I2S clock domain. It has to be a
-     * read-modify-write: a bare write of this register also clears tx_start, and
-     * the tx_stop_en/tx_pcm_bypass/tx_left_align reset defaults that the standard
-     * mode depends on.
-     */
-    wr(I2S_TX_CONF, rd(I2S_TX_CONF) | TX_CONF_UPDATE);
-    while (rd(I2S_TX_CONF) & TX_CONF_UPDATE)
-        ;
-}
 
 /* i2s_ll_tx_set_mclk's mapping from (integer, num/den) to the four registers. */
-static void program_div(void)
-{
-    unsigned yn1 = div_num * 2 > div_denom;
-    unsigned z = yn1 ? div_denom - div_num : div_num;
-    unsigned x = z ? div_denom / z - 1 : 0;
-    unsigned y = z ? div_denom % z : 0;
-
-    /* ESP-IDF's workaround for the divider latching inaccurately when the ratio
-     * jumps from a low sample rate to a high one: write a coefficient set that no
-     * real division could produce, then the target. (7, 317, 7, 3, 0) is the value
-     * ESP-IDF uses; it corresponds to a division of 7 + 3/3 * (317 + 1) which is
-     * not reachable from any integer/numerator/denominator triple.
-     */
-    set_raw_div(7, 317, 7, 3, 0);
-    set_raw_div(div_integ, x, y, z, yn1);
-}
 
 void i2s_set_frequency(unsigned long rate)
 {
@@ -357,13 +296,6 @@ void i2s_set_frequency(unsigned long rate)
     hal_utils_clk_div_t mclk_div;
 
     i2s_hal_set_tx_clock(&tx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
-
-#ifdef HAVE_RECORDING
-    /* The receiver has not been migrated to the HAL yet and still derives its
-     * divider locally, so it still needs the local calculation even though the
-     * transmitter no longer does. */
-    calc_div(rate * MCLK_MULTIPLE);
-#endif
 
     i2s_hal_slot_config_t slot = {
         .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
@@ -391,7 +323,13 @@ void i2s_set_frequency(unsigned long rate)
     /* The ADC is clocked from the same MCLK the transmitter drives out, so it
      * has to be reprogrammed whenever the rate changes. */
 #ifdef HAVE_RECORDING
-    program_rx_div();
+    {
+        /* The receiver is the slave on this bus: it takes BCLK and WS back from
+         * the transmitter rather than generating its own, so the ADC and the DAC
+         * share one frame instead of two oscillators that happen to agree. */
+        i2s_hal_set_rx_clock(&rx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
+        i2s_hal_std_set_rx_slot(&rx_hal, true, &slot);
+    }
     es7210_set_frequency(rate);
 #endif
 }
@@ -505,32 +443,6 @@ void i2s_init(void)
 }
 
 #ifdef HAVE_RECORDING
-/*
- * The receiver half of the bus. It lives on I2S0 because the ESP32-S3 signal map
- * gives a single data signal per port (I2S1I_SD_IN and I2S1O_SD_OUT are both 30),
- * so a second data line has to come from the other port.
- *
- * The receiver runs in slave mode and is fed the transmitter's BCLK and WS back
- * through the GPIO matrix, which keeps the ADC's frames and the DAC's frames in
- * lock-up rather than two free-running dividers that merely agree on frequency.
- */
-static void program_rx_div(void)
-{
-    unsigned yn1 = div_num * 2 > div_denom;
-    unsigned z = yn1 ? div_denom - div_num : div_num;
-    unsigned x = z ? div_denom / z - 1 : 0;
-    unsigned y = z ? div_denom % z : 0;
-
-    wr(I2S0_RX_CLKM_CONF, CLKM_CONF_CLK_EN | CLKM_CONF_CLK_ACTIVE |
-                          (CLKM_CONF_CLK_SEL_PLL160M << 27) | div_integ);
-    wr(I2S0_RX_CLKM_DIV_CONF, (yn1 << 27) | (x << 18) | (y << 9) | z);
-    wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
-    int guard = 10000;
-    while ((rd(I2S0_RX_CONF) & RX_CONF_UPDATE) && guard > 0) {
-        udelay(1);
-        guard--;
-    }
-}
 
 void i2s_rx_init(void)
 {
@@ -550,32 +462,11 @@ void i2s_rx_init(void)
     gpio_matrix_in(PIN_I2S_WS,   SIG_I2S0I_WS_IN);
     gpio_matrix_in(PIN_I2S_BCLK, SIG_I2S0I_BCK_IN);
 
-    wr(I2S0_RX_CONF1, ((SLOT_BITS - 1) << 13) |       /* rx_bits_mod */
-                      ((SLOT_BITS - 1) << 24) |       /* rx_tdm_chan_bits */
-                      ((SLOT_BITS - 1) << 18) |       /* rx_half_sample_bits */
-                      ((I2S_BCLK_DIV - 1) << 7) |     /* rx_bclk_div_num */
-                      (SLOT_BITS - 1) |               /* rx_tdm_ws_width */
-                      (1u << 29));                    /* rx_msb_shift */
-
-    wr(I2S0_RX_TDM_CTRL, ((SLOT_NUM - 1) << 16) | 0x3);
-
-    /* rx_stop_en, rx_pcm_bypass and rx_left_align are 1 at reset and a bare write
-     * of this register clears them; with rx_pcm_bypass = 0 and rx_pcm_conf = 0 the
-     * data goes through the A-law compressor.
-     */
-    wr(I2S0_RX_CONF, (1u << 19) |                    /* rx_tdm_en */
-                     RX_CONF_SLAVE |
-                     RX_CONF_LEFT_ALIGN |
-                     RX_CONF_STOP_MODE |
-                     RX_CONF_PCM_BYPASS);
-    wr(I2S0_RX_CONF, rd(I2S0_RX_CONF) | RX_CONF_UPDATE);
-    int guard = 10000;
-    while ((rd(I2S0_RX_CONF) & RX_CONF_UPDATE) && guard > 0) {
-        udelay(1);
-        guard--;
-    }
-
-    program_rx_div();
+    /* The block itself is configured by IDF's HAL, in the transmitter's own
+     * context order: init here, then clock and slot on every rate change from
+     * i2s_set_frequency(), which is where the slave role is declared. Doing the
+     * slot here as well would be overwritten by that call anyway. */
+    i2s_hal_init(&rx_hal, XT_I2S_RX_PORT);
 }
 #endif /* HAVE_RECORDING */
 
