@@ -145,30 +145,33 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
  * driver ever asked the chip what it thinks its state is. */
 void es8311_dump(const char *tag)
 {
-    static const unsigned char regs[] = {
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-        0x0D, 0x0E, 0x12, 0x13, 0x14, 0x31, 0x32, 0x37,
-    };
-    static const char *names[] = {
-        "chip", "clk1", "clk2", "clk3", "clk4", "clk5", "clk6", "clk7", "clk8",
-        "sdpin", "sdpo", "sys0d", "sys0e", "sys12", "sys13", "sys14",
-        "dac31", "dac32", "dac37",
-    };
+    /* One printf, not twenty. The multi-call version this replaces was cut off
+     * at twelve registers by interleaving output, which truncated it exactly
+     * before dac31/dac32 -- the two that mattered. */
+    int chip = read_reg(0x00), clk1 = read_reg(0x01), clk2 = read_reg(0x02);
+    int clk3 = read_reg(0x03), clk4 = read_reg(0x04), clk5 = read_reg(0x05);
+    int clk6 = read_reg(0x06), clk7 = read_reg(0x07), clk8 = read_reg(0x08);
+    int sdpin = read_reg(0x09), sdpo = read_reg(0x0A), sys0d = read_reg(0x0D);
+    int sys0e = read_reg(0x0E), sys12 = read_reg(0x12), sys13 = read_reg(0x13);
+    int dac31 = read_reg(0x31), dac32 = read_reg(0x32);
 
-    printf("ES8311 %s: writes=%d fails=%d\n", tag, es8311_writes,
-           es8311_write_fails);
-
-    for (unsigned i = 0; i < sizeof(regs); i++)
-    {
-        int v = read_reg(regs[i]);
-        printf("%s%s=%02x", i ? " " : "  ", names[i], v & 0xff);
-        if (v < 0)
-            printf("(ERR)");
-        if (i % 6 == 5)
-            printf("\n");
-    }
-    printf("\n");
+    printf("ES8311 %s: w=%d f=%d | chip=%02x clk=%02x %02x %02x %02x %02x "
+           "%02x %02x %02x | sdp=%02x %02x | sys=%02x %02x %02x | "
+           "dac31=%02x dac32=%02x\n",
+           tag, es8311_writes, es8311_write_fails,
+           chip & 0xff, clk1 & 0xff, clk2 & 0xff, clk3 & 0xff, clk4 & 0xff,
+           clk5 & 0xff, clk6 & 0xff, clk7 & 0xff, clk8 & 0xff,
+           sdpin & 0xff, sdpo & 0xff, sys0d & 0xff, sys0e & 0xff, sys12 & 0xff,
+           sys13 & 0xff, dac31 & 0xff, dac32 & 0xff);
 }
+
+/* The last volume we were asked for, in centibels, or VOL_UNSET before the first
+ * call. Needed because sink_init() runs audiohw_preinit() -> es8311_init() when
+ * the PCM core comes up, which is after the apps layer has already applied the
+ * stored volume. The reset below wipes REG32 to 0 -- -95.5 dB -- and nothing else
+ * re-applies it, so the codec came back muted no matter what the UI showed. */
+#define VOL_UNSET 0x7fffffff
+static int last_vol_cB = VOL_UNSET;
 
 void es8311_init(void)
 {
@@ -193,6 +196,13 @@ void es8311_init(void)
     write_reg(REG_SYS13, 0x10);              /* output to HP drive */
     write_reg(REG_ADC1C, 0x6A);              /* bypass ADC equalizer */
     write_reg(REG_DAC37, 0x08);              /* bypass DAC equalizer */
+
+    /* REG00 = 0x1F above is a full digital reset, which clears the DAC volume
+     * along with everything else. Restore the last value we were given so a reset
+     * that happens after the apps layer set the volume does not silently mute the
+     * codec. */
+    if (last_vol_cB != VOL_UNSET)
+        es8311_set_volume(last_vol_cB);
 }
 
 void es8311_postinit(void)
@@ -212,12 +222,22 @@ void es8311_set_volume(int centibels)
 {
     int reg = (centibels + 9550 + 25) / 50;
 
+    last_vol_cB = centibels;
+
     if (reg < 0)
         reg = 0;
     if (reg > 255)
         reg = 255;
 
-    write_reg(REG_DAC32, reg);
+    int r = write_reg(REG_DAC32, reg);
+
+    /* Read straight back. The reference driver reads this register in its
+     * volume-get, so it is not write-only -- if it comes back 0 the write did not
+     * take, and that is a different fault from "we never asked for a volume".
+     * Doing it here rather than in the boot dump keeps the answer free of any
+     * question about what ran before or after what. */
+    printf("ES8311 volume: %d cB -> wrote %02x, read %02x (r=%d)\n",
+           centibels, reg & 0xff, read_reg(REG_DAC32) & 0xff, r);
 }
 
 void es8311_mute(int mute)
