@@ -171,8 +171,12 @@ static void gdma_tx_isr(void *arg)
 /* IDF's HAL context for the transmitter. The HAL is a thin wrapper over the
  * register block, so the context is just the peripheral base address. */
 static i2s_hal_context_t tx_hal;
+
 #ifdef HAVE_RECORDING
-static i2s_hal_context_t rx_hal;
+/* The rate i2s_set_frequency() last programmed; the recording session's IDF
+ * channel has to be created at this rate. Declared here because i2s_set_frequency
+ * is where it is written, which precedes the receive section of this file. */
+static unsigned long rx_rate;
 #endif
 
 /* TEMPORARY (transitional measurement only): the registers as IDF's HAL left
@@ -381,32 +385,15 @@ void i2s_set_frequency(unsigned long rate)
 
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
-    /* The ADC is clocked from the same MCLK the transmitter drives out, so it
-     * has to be reprogrammed whenever the rate changes. */
+    /* The ADC shares the transmitter's MCLK, so it has to be reprogrammed
+     * whenever the rate changes.
+     *
+     * The receiver is no longer configured here. It is a full ESP-IDF I2S channel
+     * created per recording session in pcm-xtensa.c, which sets its own clock and
+     * slot. All this file still owes the capture path is the sample rate the
+     * session must match, recorded below, and the shared clock pads. */
 #ifdef HAVE_RECORDING
-    {
-        /* The receiver is the MASTER on this bus, and that is deliberate rather
-         * than incidental. The board wires one set of MCLK/BCLK/WS to both
-         * codecs (bsp/config.h: "I2S -- Audio bus (ES8311 DAC + ES7210 ADC,
-         * shared BCLK/WS)"), so exactly one port may drive them at a time.
-         *
-         * This used to be a slave, taking BCLK and WS back from the transmitter
-         * through the GPIO matrix. That made the input device parasitic on the
-         * output device: recording could not run unless playback was, and
-         * Rockbox stops playback the moment a recording starts, so the receiver
-         * sat with no clock at all -- GDMA reporting neither completion nor
-         * error, because there was nothing to complete and nothing wrong.
-         *
-         * The reference firmware for this board (bsp/devices.cpp, MicTest) runs
-         * the mic port as I2S_MODE_MASTER | I2S_MODE_RX and drives mck/bck/ws
-         * itself, with data_out left at I2S_PIN_NO_CHANGE. That is the shape
-         * copied here: a self-contained input device. The pads are handed between
-         * the two ports on mode switch by i2s_rx_pads_take() /
-         * i2s_rx_pads_release(), which is only sound because Rockbox makes play
-         * and record exclusive. */
-        i2s_hal_set_rx_clock(&rx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
-        i2s_hal_std_set_rx_slot(&rx_hal, false, &slot);
-    }
+    rx_rate = rate;
     es7210_set_frequency(rate);
 #endif
 }
@@ -565,36 +552,16 @@ void i2s_init(void)
     gpio_set_direction(PIN_I2S_DOUT, 1);
 
     gdma_init();
-
-#ifdef HAVE_RECORDING
-    i2s_rx_init();
-#endif
 }
 
 #ifdef HAVE_RECORDING
 
-void i2s_rx_init(void)
+/* The recording session's IDF channel has to be created at the rate the bus is
+ * running: the codecs share one MCLK, so a receiver configured for a different
+ * one would be clocked against a frame the ADC was not expecting. */
+unsigned long i2s_rx_sample_rate(void)
 {
-    wr(SYSTEM_PERIP_CLK_EN0, rd(SYSTEM_PERIP_CLK_EN0) | CLK_EN_I2S0);
-    /* Same requirement as the transmit side: clock enable without a reset release
-     * leaves the receiver in reset and its registers read zero. */
-    wr(SYSTEM_PERIP_RST_EN0, rd(SYSTEM_PERIP_RST_EN0) & ~CLK_EN_I2S0);
-
-    /* A pad can drive a matrix input while still being driven as an output, so
-     * pins 13 and 14 do double duty: the transmitter drives them and the receiver
-     * reads them back. */
-    /* As the bus master the receiver drives BCLK and WS out on pins 14 and 13, so
-     * those pads must not be routed back in as inputs -- that was the slave
-     * configuration, and it would have made the port drive and sample the same
-     * signal. Only the ADC's data line is an input to this port. */
-    gpio_input_enable(PIN_I2S_DIN, 1);
-    gpio_matrix_in(PIN_I2S_DIN, SIG_I2S0I_SD_IN);
-
-    /* The block itself is configured by IDF's HAL, in the transmitter's own
-     * context order: init here, then clock and slot on every rate change from
-     * i2s_set_frequency(), which is where the master role is declared. Doing the
-     * slot here as well would be overwritten by that call anyway. */
-    i2s_hal_init(&rx_hal, XT_I2S_RX_PORT);
+    return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
 /* Hand the three shared clock pads to whichever port is master right now.
@@ -632,40 +599,24 @@ static void stop_tx(void)
     i2s_ll_tx_stop(tx_hal.dev);
 }
 
-/* The receiver is a SLAVE to the bit and frame clocks this block's transmitter
- * generates, and MCLK has nowhere else to come from: esp32s3 exposes a single
- * I2S0_MCLK_OUT_IDX (23) shared by both domains, with no RX-side equivalent (see
- * i2s_periph.c's one mck_out_sig). So recording needs this domain running even
- * though nothing is being played, and measured on hardware a record-only session
- * had both off:
+/* Nothing is started or stopped for the receiver in this file any more: it is an
+ * ESP-IDF I2S channel, enabled and disabled by pcm_rec_dma_start() /
+ * pcm_rec_dma_stop(). Two hand-rolled attempts lived here and both are worth
+ * remembering for what they taught:
  *
- *     tx_conf=00000000 (START=0)   tx_clkm=00000002 (active=0)
+ *   i2s_tx_clock_run() borrowed the transmitter's clock domain for recording. It
+ *   asserted tx_start, which runs the DAC's port against an empty FIFO, and still
+ *   produced no usable clock -- an I2S transmitter with no GDMA feeding it hangs
+ *   and stops clocking, which is what the tx_hung interrupt exists to report.
  *
- * which is why GDMA reported no completion and no error -- the receiver was
- * correctly configured and had no clock to capture.
+ *   i2s_rx_start() set rx_start directly and never pulsed rx_update, so the
+ *   receiver's configuration (master role, clock source, slot width) stayed in the
+ *   APB domain and was never latched into the sampling domain. Measured: rx_conf
+ *   read 00009404 with slave=0 and rx_update clear, and GDMA never took a
+ *   descriptor. That is the same double-buffered-configuration trap as LEDC's
+ *   conf0.low_speed_update and I2C's CONF_UPGATE.
  *
- * tx_clk_active alone gives MCLK; BCLK and WS only appear once tx_start is set.
- * The TX GDMA link is deliberately left stopped, so the transmitter runs against
- * an empty FIFO. Whether that is audible through the DAC is a hardware question;
- * the amp is gated separately by PA_EN, and an underrun FIFO should present
- * zeros, but it has not been confirmed on this board.
- *
- * The cleaner end state is to make the receiver its own master -- signals 26 and
- * 27 double as I2S0I_BCK_OUT / I2S0I_WS_OUT, so RX can drive BCLK/WS and the
- * transmitter need not be involved at all beyond MCLK. That changes which block
- * drives pins 13 and 14 and how the RX dividers are programmed, so it is worth
- * doing once the rest of the capture chain is known to work rather than while
- * five stages are still unvalidated. */
-/* The receiver is now its own bus master (see i2s_set_frequency), so recording
- * needs nothing from the transmitter at all. The two functions that used to live
- * here borrowed the transmitter's clock domain instead: they asserted tx_start,
- * which made the DAC's port run against an empty FIFO, and they still did not
- * produce a usable clock -- an I2S transmitter with no GDMA feeding it hangs and
- * stops clocking, which is what the tx_hung interrupt exists to report.
- *
- * What recording needs instead is the shared clock pads, which the transmitter
- * owns by default; i2s_rx_pads_take() and i2s_rx_pads_release() sit beside
- * i2s_rx_init(). */
+ * What the capture path still needs from here is only the shared clock pads. */
 
 /* cur is the half that is free to write. The DMA mounts a descriptor only when the
  * owner bit says it owns it, so the half it is about to need must already be armed
@@ -871,9 +822,19 @@ static void sink_init(void)
     audiohw_preinit();
 
     /* Reset and configure the ADC before the first rate is programmed, so the
-     * clock registers land on a chip that has actually been reset. */
+     * clock registers land on a chip that has actually been reset.
+     *
+     * The result is checked and reported. It was discarded, which is exactly the
+     * mistake that hid the ES8311 I2C bug for so long: with the return value
+     * dropped, an ADC that never answered on the bus is indistinguishable from
+     * one that configured perfectly, and every symptom downstream of it -- no
+     * captured audio, no data on the I2S input -- looks like a fault in the
+     * capture path rather than an absent device. */
 #ifdef HAVE_RECORDING
-    es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]);
+    if (!es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]))
+        printf("ES7210: init FAILED (no answer at 0x41?)\n");
+    else
+        printf("ES7210: init ok\n");
 #endif
 
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
