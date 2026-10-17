@@ -146,6 +146,23 @@
  * Rockbox still has somewhere to allocate. */
 #define DIRCACHE_LIMIT   (1024*1024*2) /* 2 MB of the 4 MB arena */
 
+/* The tagcache is what Rockbox calls the database: it indexes the ID3/Vorbis
+ * tags on the card so the Tree can offer Artist / Album / Genre / Critter
+ * browsing, and it is what "View database info" under Debug refers to. This
+ * tree gates it on HAVE_TAGCACHE (current master renamed the knob to
+ * CONFIG_DATABASE); apps/SOURCES pulls in the implementation at lines 61 and
+ * 183.
+ *
+ * It arrives with two companions automatically, both from the MEMORYSIZE >= 8
+ * block in config.h: HAVE_TC_RAMCACHE, which keeps the index in RAM, and
+ * HAVE_PICTUREFLOW_INTEGRATION. Memory is not the constraint here -- 8 MB of
+ * PSRAM -- but note the interaction above: the dircache is capped at 2 MB of a
+ * 4 MB arena precisely so later allocations from the same arena succeed, and the
+ * tagcache thread allocates from it too. If something starts failing with
+ * BUFLIB_ERRCODE_MEMBLOCK_ALLOC_FAILED after this, lower DIRCACHE_LIMIT further
+ * rather than dropping the tagcache. */
+#define HAVE_TAGCACHE
+
 /* TEMPORARY: Rockbox's own thread invariants, off by default and compiled out
  * as `do {} while (0)`. One of them -- "UPPT->wrong thread" in
  * wakeup_thread_transfer() -- asserts precisely what we are crashing on: that
