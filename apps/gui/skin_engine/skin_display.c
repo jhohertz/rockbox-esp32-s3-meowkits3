@@ -99,6 +99,14 @@ void skin_update(enum skinnable_screens skin, enum screen_type screen,
     if (cuesheet_update)
         skin_request_full_update(skin);
 
+    if (!skin_is_loaded(skin, screen))
+    {
+        /* Nothing was ever parsed into this skin, so the tree offset in its
+           data struct is whatever the static allocation happened to hold.
+           Drawing nothing is correct; rendering it walks garbage. */
+        return;
+    }
+
     skin_render(gwps, skin_do_full_update(skin, screen) ?
                         SKIN_REFRESH_ALL : update_type);
     skin_mark_dirty(screen);

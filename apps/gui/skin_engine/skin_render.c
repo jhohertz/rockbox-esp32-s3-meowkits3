@@ -853,6 +853,11 @@ void skin_render(struct gui_wps *gwps, unsigned refresh_mode)
 
     int old_refresh_mode = refresh_mode;
     skin_buffer = get_skin_buffer(gwps->data);
+    /* A skin that never loaded has no buffer, and every offset below is then
+       NULL plus whatever the static data struct happens to hold. The caller in
+       skin_engine.c checks the buffer; this path did not, so an unloaded skin
+       dereferenced a stale offset instead of drawing nothing. */
+    if (!skin_buffer) return;
 
     /* Framebuffer is likely dirty */
     if ((refresh_mode&SKIN_REFRESH_ALL) == SKIN_REFRESH_ALL)
@@ -864,6 +869,23 @@ void skin_render(struct gui_wps *gwps, unsigned refresh_mode)
         {
             display->clear_viewport();
         }
+    }
+
+    /* tree is an offset into the skin buffer, and the parser leaves it zero when
+       nothing was built. The test below only caught that while the buffer was
+       NULL, since NULL + 0 is 0; with a real buffer a zero tree made the
+       buffer's own header bytes be read as a struct skin_element, so the fault
+       address depended on whatever the allocator had left there. */
+    if (!data->tree)
+    {
+        static bool tree_reported = false;
+        if (!tree_reported)
+        {
+            tree_reported = true;
+            printf("skin: empty tree (buf=%p h=%d loaded=%d)\n",
+                   (void *)skin_buffer, data->buflib_handle, data->wps_loaded);
+        }
+        return;
     }
 
     viewport = SKINOFFSETTOPTR(skin_buffer, data->tree);
