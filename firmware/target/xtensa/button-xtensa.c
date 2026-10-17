@@ -11,8 +11,6 @@
 #include "system.h"
 #include "button.h"
 #include "gpio-xtensa.h"
-#include "mrsw_lock.h"     /* TEMPORARY filesystem-lock probe */
-#include <stdio.h>         /* TEMPORARY bring-up logging */
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"
@@ -92,110 +90,22 @@ void touchscreen_enable_device(bool en)
 
 int button_read_device(int *data)
 {
-    /* TEMPORARY: once a second, report who holds the filesystem lock. The play
-     * attempt deadlocks with no panic and no output at all, which means the
-     * only way to see it is to ask the lock directly while it is wedged. The
-     * dircache thread takes the writer lock and then blocks on its queue with
-     * TIMEO_BLOCK, and nothing in this tree releases held MRSW locks across a
-     * wait -- so an idle dircache thread should show count<0, owner dircache,
-     * and a growing waiter list. If instead count is 0 and the waiters are
-     * empty, the lock is innocent and the stall is elsewhere. */
-    {
-        static int fsdiag;
-        extern struct mrsw_lock file_internal_mrsw;
-
-        if (++fsdiag >= 1)   /* every call: this path is rare */
-        {
-            char owner[20];
-            int waiters = 0;
-            int count;
-
-            fsdiag = 0;
-            /* Which threads are awake, and what each is queued on. Printed on
-             * every fourth sample: the play stall showed the lock free and the
-             * codec thread never running, so the thread states are the evidence,
-             * not the lock counters. */
-            {
-                static char th[400];
-                static int thdiv;
-                extern int thread_debug_dump(char *out, int sz);
-                if (++thdiv >= 10)
-                {
-                    static char sc[200];
-                    static char os[400];
-                    extern int scheduler_debug_state(char *out, int sz);
-                    extern int rb_thread_os_states(char *out, int sz);
-
-                    thdiv = 0;
-                    thread_debug_dump(th, sizeof th);
-                    printf("THREADS: %s\n", th);
-                    /* The same threads as FreeRTOS sees them. A name that is
-                     * unremarkable above and BLOCKED here is inside a driver,
-                     * not awaiting its gate -- the distinction every reading
-                     * so far has been unable to make. */
-                    rb_thread_os_states(os, sizeof os);
-                    printf("OS:      %s\n", os);
-                    /* The other half of the same question: what the scheduler
-                     * believes, as opposed to what each thread is doing. */
-                    scheduler_debug_state(sc, sizeof sc);
-                    printf("SCHED: %s\n", sc);
-                    /* Where the playback chain actually stops. init with no play
-                     * means the PCM layer never started; play with no irq means
-                     * the transmit interrupt still is not being delivered; both
-                     * climbing with no sound means the fault is downstream in
-                     * I2S, the ES8311 or the amp. */
-                    {
-                    /* One aligned readout of the entire playback chain -- codec,
-                     * pcmbuf, mixer, pcm core, sink ops and GDMA -- sampled at the
-                     * same instant, plus the buffering thread's own view. Printed
-                     * together so the seam that disagrees is visible in a single
-                     * sample rather than reconstructed across lines that were
-                     * never simultaneous. */
-                    {
-                        extern void i2s_audio_probe(void);
-                        extern void buffering_probe(void);
-
-                        i2s_audio_probe();
-                        buffering_probe();
-                    }
-                        /* The counters say the completion event never reached the
-                         * handler. They cannot say why, and the two reasons need
-                         * opposite fixes, so dump the transmit path as the
-                         * hardware sees it: pending-but-masked versus never
-                         * generated. */
-                        extern void i2s_audio_probe(void);
-                        i2s_audio_probe();
-                    }
-                }
-            }
-            extern volatile int mrsw_null_self;
-            extern volatile int mrsw_null_self_read;
-            extern volatile int mrsw_recursion_hits;
-
-            count = mrsw_debug_state(&file_internal_mrsw, owner, sizeof owner,
-                                     &waiters);
-            extern int mrsw_debug_trace(char *out, int sz);
-            static char tr[256];
-
-            printf("FSLOCK: count=%d owner=%s waiters=%d "
-                   "nullW=%d nullR=%d recur=%d\n",
-                   count, owner, waiters,
-                   mrsw_null_self, mrsw_null_self_read, mrsw_recursion_hits);
-            /* Worth the bytes whenever anything is outstanding. Gating this on
-             * count != 0 was a mistake: the state that matters is a FREE lock
-             * with permanent waiters, which count alone does not flag. */
-            if (count != 0 || waiters != 0)
-            {
-                extern int mrsw_debug_report(const struct mrsw_lock *,
-                                             char *, int);
-                static char rep[160];
-                mrsw_debug_report(&file_internal_mrsw, rep, sizeof rep);
-                printf("  who : %s\n", rep);
-                mrsw_debug_trace(tr, sizeof tr);
-                printf("  hist: %s\n", tr);
-            }
-        }
-    }
+    /* This function is the hot path: the common button code calls it every button
+     * tick, at HZ. Until a moment ago it carried the bring-up diagnostics -- the
+     * filesystem-lock state, thread dumps, scheduler state, the playback-chain
+     * probe (twice, from a bad merge) and buffering_probe -- on every call. That
+     * is well over a kilobyte of console output per tick, roughly a hundred
+     * milliseconds of blocking UART at 115200 baud, emitted by the very thread
+     * that services the buttons.
+     *
+     * It is why input felt laggy and erratic and why the player appeared to lock
+     * up with no panic and no fault: 98% of the session log was this probe
+     * printing itself. The comment on the block claimed "this path is rare".
+     *
+     * The deadlock it was written to chase is long since found and fixed -- the
+     * ES8311 was being addressed with a spurious leading register byte, so the
+     * codec had never accepted a command. Nothing here needs to ask the
+     * filesystem lock anything any more. */
 
     int b = 0;
 
