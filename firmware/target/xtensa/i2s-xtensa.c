@@ -136,11 +136,17 @@ static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)))
  * finished transmitting is the one retire points at, so the mixer's next frame
  * goes into cur. Both advance modulo XT_TX_RING -- with a plain xor the upper
  * slots of the ring would never be armed at all. */
-static volatile int cur;
-/* The slot the engine is expected to retire next. The ring is walked in order,
- * so this advances one per completion regardless of whether that slot carried
- * anything. */
-static volatile int retire;
+/* The slot the engine is expected to retire next -- and therefore the slot we
+ * have to re-arm when it does. These are the same index, which is why there is
+ * only one variable: the ring is kept fully owned by re-arming the descriptor
+ * that was just released, every time one is released. Two separate indices is
+ * what let the ring drain last time. */
+static volatile int nxt;
+/* One buffer handed down by the core and not yet placed in a descriptor. The
+ * core pushes through sink_play(); the completion interrupt pulls. */
+static volatile const void *pend_addr;
+static volatile size_t pend_size;
+static volatile int pend_valid;
 static int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
@@ -286,7 +292,7 @@ void i2s_audio_probe(void)
            "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
            "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
            "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
-           "CHAIN: gdma out=%d dscr=%d park=%d | err=%d | link=%08x cur=%d own=%d%d%d%d len=%d,%d,%d,%d\n"
+           "CHAIN: gdma out=%d dscr=%d park=%d | err=%d | link=%08x nxt=%d own=%d%d%d%d len=%d,%d,%d,%d\n"
            "CHAIN: wd n=%d lastidx=%d wrote=%08x hist=%d,%d,%d,%d pre=%08x\n"
            "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | pll160=%lu xtal=%lu\n",
            xt_codec_run_n, xt_codec_in_run,
@@ -311,8 +317,7 @@ void i2s_audio_probe(void)
            /* GDMA_OUT_STATE = 3 bits at 20, OUT_DSCR_STATE = 2 bits at 18 */
            (int)((gs >> 20) & 0x7), (int)((gs >> 18) & 3),
            (int)((rd(GDMA_TX_LINK) >> 23) & 1),
-           (unsigned)rd(GDMA_TX_LINK), cur,
-           xt_dscr_err_n,
+           xt_dscr_err_n, (unsigned)rd(GDMA_TX_LINK), nxt,
            (int)((desc[0].dw0 >> 31) & 1), (int)((desc[1].dw0 >> 31) & 1),
            (int)((desc[2].dw0 >> 31) & 1), (int)((desc[3].dw0 >> 31) & 1),
            (int)((desc[0].dw0 >> 12) & 0xfff), (int)((desc[1].dw0 >> 12) & 0xfff),
@@ -404,6 +409,23 @@ static void arm(int i, unsigned long len)
      * takes it, transfers nothing, and moves on. That is what makes an empty
      * slot safe rather than fatal. */
     desc[i].dw0 = XT_TX_SLOT | (len << 12) | DESC_SUC_EOF | DESC_OWNER;
+}
+
+/* Place one frame into slot i and hand it to the DMA. len 0 leaves the slot
+ * owned with nothing to move, which is what keeps the ring fully owned between
+ * hand-offs. */
+static void fill(int i, const void *src, unsigned long len)
+{
+    if (len > 0)
+        memcpy(dma_buf[i], (const void *)src, len);
+
+    /* Take the line from memory before modifying it, then push it back. The
+     * engine wrote the owner bit clear through the bus, and our cached copy of
+     * this line still has whatever we put there. */
+    discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
+    arm(i, len);
+    commit_dcache_range(dma_buf[i], len ? len : XT_TX_SLOT);
+    commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
 }
 
 static void gdma_init(void)
@@ -561,128 +583,41 @@ static void stop_tx(void)
 _Static_assert(MIX_FRAME_SAMPLES * 4 * 2 <= GDMA_MAX_DESC_LEN,
                "the mixer's largest frame exceeds one GDMA descriptor");
 
-static void write_desc(const void *addr, size_t size)
-{
-    if (size > XT_TX_SLOT)
-    {
-        /* Unreachable by the assertion above. Reaching it means the PCM layer is
-         * handing us something the mixer was never designed to produce, and
-         * quietly dropping the tail would play a corrupted frame rather than
-         * tell us anything.
-         */
-        panicf("i2s: %lu byte DMA frame exceeds a staging slot",
-               (unsigned long)size);
-    }
-
-    memcpy(dma_buf[cur], addr, size);
-
-    /* Take the line from memory before looking at it or modifying it. The engine
-     * may have cleared this descriptor's owner, or its neighbour's, since we last
-     * looked; arming into a stale line and committing it would hand that stale
-     * state back to the DMA as if it were new. The line is clean at this point
-     * because every arm() is committed immediately below. */
-    discard_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
-
-    {
-        const int wd_idx = cur;
-        const unsigned long wd_before = desc[wd_idx].dw0;
-
-        /* TEMPORARY: the slot armed, and what dw0 held once the line had been
-         * taken from memory. If wd_before already shows the owner bit set, the
-         * previous hand-off never completed and the ring is a step out of phase
-         * with the engine. */
-        xt_wd_n++;
-        xt_wd_last_idx = wd_idx;
-        if (xt_wd_n <= 4) {
-            xt_wd_idx_hist[xt_wd_n - 1] = wd_idx;
-            xt_wd_dw0_hist[xt_wd_n - 1] = wd_before;
-        }
-    }
-
-    arm(cur, size);
-    /* GDMA fetches the descriptor and the buffer from memory, not from the
-     * cache, so both have to be committed before the engine can mount them. */
-    commit_dcache_range(dma_buf[cur], size);
-    commit_dcache_range((const void *)&desc[cur], sizeof(desc[cur]));
-    xt_wd_last_dw0 = desc[cur].dw0;
-    cur = (cur + 1) % XT_TX_RING;
-    queued++;
-
-    /* Arming a descriptor is not enough on its own.
-     *
-     * When the engine reaches a descriptor the CPU still owns, it parks its
-     * descriptor FSM and stops. From that point a later arm() is invisible: the
-     * engine is no longer walking the list, so it never notices the descriptor it
-     * now owns. The link has to be restarted. That is what gdma_ll_tx_restart()
-     * is for -- "restart a new outlink right after the last descriptor" -- and
-     * what IDF's gdma_append() does on every hand-off.
-     *
-     * This is exactly the state the readout showed: a descriptor armed and owned
-     * by the DMA (d0own=1), the FIFO empty, no interrupt pending, and out_state
-     * reporting the engine idle. out_eof fired once for the first descriptor,
-     * refill armed the second, and nothing ever came back for it -- so the
-     * transmitter starved, tx_idle stayed asserted, and upstream the mixer sat on
-     * a ready buffer with half a megabyte of PCM queued behind it.
-     *
-     * Bit positions from gdma_reg.h: outlink.stop BIT(20), start BIT(21),
-     * restart BIT(22), park BIT(23). start and restart are both R/W/SC.
-     */
-    unsigned int link = rd(GDMA_TX_LINK);
-
-    if (link & (1u << 23))      /* outlink.park: the descriptor FSM is idle */
-        wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
-}
 
 static void refill(void)
 {
     const void *addr;
     size_t size;
 
-    /* TEMPORARY: which branch refill actually took. Every attempt to reason about
-     * the stall from side effects has produced a contradiction -- irq=1 says this
-     * ran, yet queued, cur and d1 are all still at their post-sink_play values,
-     * and stop stayed 0 which rules out the complete-callback failure path. So
-     * record the path instead of inferring it:
-     *   1 = reported the completion and ops.play had already queued a buffer
-     *   2 = reported, then asked explicitly and was told there is no more
-     *   3 = reported, asked, and armed a descriptor
-     */
     xt_refill_n++;
 
-    /* Report the consumed buffer BEFORE asking for another one.
-     *
-     * This is the order every working sink driver uses -- see
-     * firmware/target/arm/imx233/pcm-imx233.c, whose ISR ends with
-     * pcm_play_dma_status_callback(PCM_DMAST_STARTED). Telling the layer above
-     * that a buffer was consumed is what makes the mixer produce the next one
-     * and hand it down through builtin_pcm_sink.ops.play, which arms a
-     * descriptor for us. In steady state we therefore never need to ask.
-     *
-     * Asking first was the bug. On the very first completion the mixer had never
-     * been told to build a second buffer, so mixer_pcm_callback() returned
-     * next_size == 0, pcm_get_more_int() returned false,
-     * pcm_play_dma_complete_callback() called pcm_play_stop_int() -- which sets
-     * pcm_callback_for_more = NULL -- and playback was latched off for good. The
-     * codec then went on decoding into a PCM buffer nothing could ever ask for:
-     * measured at 209 inserts with the transmit path idle after a single 1024
-     * byte frame.
-     */
+    /* Report the consumed buffer before anything else. This is the order every
+     * working sink driver uses -- see firmware/target/arm/imx233/pcm-imx233.c,
+     * whose ISR ends with pcm_play_dma_status_callback(PCM_DMAST_STARTED).
+     * Telling the layer above that a buffer was consumed is what makes the mixer
+     * produce the next one and hand it down through builtin_pcm_sink.ops.play,
+     * which lands in the pending slot. */
     pcm_play_dma_status_callback(PCM_DMAST_STARTED);
 
-    if (queued > 0) {
+    if (pend_valid)
+    {
         xt_refill_branch = 1;
         return;     /* ops.play already handed us the next buffer */
     }
 
-    /* Nothing was queued behind it, so ask explicitly. This is the fallback, not
-     * the normal path. */
-    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size)) {
+    /* Nothing arrived, so ask explicitly. This is the fallback, not the normal
+     * path, and it is also the underrun path: the caller re-arms the released
+     * slot empty and the engine walks past it. */
+    if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
+    {
         xt_refill_branch = 2;
         return;
     }
 
     xt_refill_branch = 3;
-    write_desc(addr, size);
+    pend_addr = addr;
+    pend_size = size;
+    pend_valid = 1;
 }
 
 /* Runs on the interrupted thread's stack, so it has to stay small. The handler in
@@ -693,24 +628,39 @@ void ICODE_ATTR gdma_irq(void)
 
     if (st & GDMA_INT_DONE)
     {
-        const int r = retire;
-        retire = (retire + 1) % XT_TX_RING;
+        const int r = nxt;
+        nxt = (nxt + 1) % XT_TX_RING;
 
-        /* Which slot retired decides everything here. An empty slot is in the
-         * ring precisely so the engine has something owned to take, and it
-         * completes like any other -- but nothing was played, so the mixer must
-         * not be told a buffer was consumed. Reporting STARTED for an empty slot
-         * would advance the mixer over audio nobody heard and drift the stream
-         * by a frame every time the pipeline runs dry. */
+        /* Did that slot carry audio? An empty one completes exactly like a full
+         * one, but nothing was heard, so the mixer must not be told a buffer was
+         * consumed -- that would advance it over audio nobody played and drift
+         * the stream by a frame every time the pipeline runs dry. */
         discard_dcache_range((const void *)&desc[r], sizeof(desc[r]));
+        const int carried = ((desc[r].dw0 >> 12) & 0xfff) != 0;
 
-        if ((desc[r].dw0 >> 12) & 0xfff)
+        if (carried)
         {
             xt_sink_irq_n++;
             if (queued > 0)
                 queued--;
+            /* Report the consumption first: that is what makes the mixer build
+             * the next frame and hand it down through sink_play(), which lands in
+             * the pending slot. */
             refill();
         }
+
+        /* Then re-arm the slot we just released, with that frame if one arrived
+         * and with nothing if it did not. This is the step that keeps the ring
+         * fully owned. Leaving it out is what let the ring drain: the engine
+         * would retire an empty slot, nothing would hand it back, and the next
+         * lap found a descriptor it was not allowed to take. */
+        if (pend_valid)
+        {
+            fill(r, (const void *)pend_addr, (unsigned long)pend_size);
+            pend_valid = 0;
+        }
+        else
+            fill(r, NULL, 0);
     }
 
     if (st & GDMA_INT_DSCR_ERR)
@@ -729,6 +679,7 @@ void ICODE_ATTR gdma_irq(void)
         xt_dscr_err_n++;
         wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));      /* link.stop */
         wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+        nxt = 0;
     }
 
     /* Clear only what fired. int_clr is write-to-clear. */
@@ -754,11 +705,32 @@ static void sink_play(const void *addr, size_t size)
     xt_sink_play_n++;
     xt_sink_last_size = size;
 
-    write_desc(addr, size);
+    if (!playing)
+    {
+        /* First frame of a playback. Fill slot 0 with it and every other slot
+         * with an owned nothing, so from the instant the engine starts there is
+         * no descriptor in the ring it is not allowed to take. Starting with one
+         * armed slot and three the engine must not touch is what made the very
+         * first hand-off fatal. */
+        fill(0, addr, (unsigned long)size);
+        pend_valid = 0;
+        queued = 1;
+        nxt = 0;
+        for (int i = 1; i < XT_TX_RING; i++)
+            fill(i, NULL, 0);
 
-    if (!playing) {
         playing = true;
         start_tx();
+    }
+    else
+    {
+        /* Steady state: the core hands us the next frame while the engine is
+         * still playing the current one. The completion interrupt takes it from
+         * here into whichever slot it has just released. */
+        pend_addr = addr;
+        pend_size = size;
+        pend_valid = 1;
+        queued++;
     }
 }
 
@@ -777,8 +749,8 @@ static void sink_stop(void)
     for (int i = 0; i < XT_TX_RING; i++)
         desc[i].dw0 = XT_TX_SLOT | DESC_SUC_EOF | DESC_OWNER;
     commit_dcache_range((const void *)desc, sizeof(desc));
-    cur = 0;
-    retire = 0;
+    nxt = 0;
+    pend_valid = 0;
 }
 
 static void sink_set_freq(uint16_t freq)
