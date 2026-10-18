@@ -270,6 +270,14 @@ struct battery_tables_t {
 #define BATTERY_ON_TXT  "Start"
 #define BATTERY_OFF_TXT "Select"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit: A and B are the two standalone buttons; the 5-way is all mapped to
+ * navigation, so the start/stop pair has to come from these. */
+#define BATTERY_ON      BUTTON_A
+#define BATTERY_OFF     BUTTON_B
+#define BATTERY_ON_TXT  "A"
+#define BATTERY_OFF_TXT "B"
+
 #else
 #error "No keymap defined!"
 #endif
