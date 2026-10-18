@@ -81,6 +81,14 @@ entries:
     dir (rb_psram)
     # fileobj_mgr.o -- fobindings[], the file-object binding table. Metadata only.
     fileobj_mgr (rb_psram)
+    # file.o -- its ONLY bss symbol is open_streams[], the file-descriptor table
+    # (2108 bytes). Storage reads land in the disk cache / a caller buffer, never
+    # here, so it is not a DMA destination -- the same reasoning that already puts
+    # dir.o and fileobj_mgr.o in PSRAM. This exists to buy back internal SRAM:
+    # dram0_0_seg had 4376 bytes free and CONFIG_ESP_PANIC_HANDLER_IRAM needs
+    # roughly 5472, so without a donor like this the panic handler cannot be moved
+    # into IRAM at all -- see firmware/target/xtensa/MEMORY.md for the budget.
+    file (rb_psram)
     # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
     # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
     # buffers are already in .ext_ram.bss by their own section attribute, which

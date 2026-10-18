@@ -784,6 +784,12 @@ interrupt is unmasked; `XT_ISR_SPILL=0` boots and cycles all threads indefinitel
 
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
+> **Measured budgets and the full arena layout now live in
+> `firmware/target/xtensa/MEMORY.md`**, generated from `rockbox.elf` rather than
+> from headers, with the commands to re-derive every number. Read that first for
+> current free space -- internal SRAM is down to ~1 KiB and the figures here are
+> the design rationale, not the live budget.
+
 The prebuilt toolchain ships `lib/esp32s3/memory.elf.ld` and ESP-IDF's
 `components/esp_system/ld/esp32s3/memory.ld.in`. The important part is that
 **instruction and data buses see the same physical SRAM at different addresses**:
