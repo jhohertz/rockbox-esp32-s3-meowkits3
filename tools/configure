@@ -4334,7 +4334,18 @@ fi
     bmp2rb_remotenative="$rootdir/tools/bmp2rb -f 0"
     output="rockbox.esp32s3"
     appextra="app: ascii"
-    plugins="no"
+    # Plugins were off as the "easier life for a while" escape configure documents
+    # at the case-block comment above. They are not a separate memory budget: on
+    # every target pluginbuf and plugin_text are carved from RAM *outside* the
+    # buflib arena (firmware/rom.lds puts codecbuf at ENDAUDIOADDR and pluginbuf at
+    # ENDADDR), and this target already reserves both -- 512 KiB + 512 KiB, idle,
+    # since apps/plugin.c is compiled unconditionally and plugin_load() is already
+    # linked. The only arena a plugin touches is plugin_get_audio_buffer()'s
+    # core_alloc_maximum(), which competes with playback's slot rather than adding
+    # one, and plugin playback excludes normal playback anyway. So enabling costs
+    # no memory; what it exercises is the loader path, which lc-xtensa.c already
+    # proves works because codecs use it, and PLUGIN_USE_ELF below.
+    plugins="yes"
     # architecture, manufacturer and model for the target-tree build
     t_cpu="xtensa"
     t_manufacturer="espressif"
