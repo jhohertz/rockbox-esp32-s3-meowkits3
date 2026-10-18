@@ -35,6 +35,7 @@
 #include "skin_display.h"
 #include "skin_engine.h"
 #include "skin_parser.h"
+#include "skin_buffer.h"     /* INVALID_OFFSET / IS_VALID_OFFSET */
 #include "tag_table.h"
 #include "skin_scan.h"
 #if CONFIG_TUNER
@@ -871,19 +872,23 @@ void skin_render(struct gui_wps *gwps, unsigned refresh_mode)
         }
     }
 
-    /* tree is an offset into the skin buffer, and the parser leaves it zero when
-       nothing was built. The test below only caught that while the buffer was
-       NULL, since NULL + 0 is 0; with a real buffer a zero tree made the
-       buffer's own header bytes be read as a struct skin_element, so the fault
-       address depended on whatever the allocator had left there. */
-    if (!data->tree)
+    /* "no tree" is INVALID_OFFSET (-1), not zero. tree is a buffer-relative
+       offset -- PTRTOSKINOFFSET(skin_buffer, tree) -- so a tree allocated at the
+       very start of the buffer legitimately has offset 0, and the statusbar skin
+       does exactly that. Testing for zero therefore blanked a perfectly good skin
+       while letting -1 straight through: SKINOFFSETTOPTR(buf, -1) is buf - 1, and
+       its bytes were then read as a struct skin_element, which is why the fault
+       address changed on every boot rather than being a fixed NULL offset.
+       Use the header's own predicate, which is what the parser clears it with. */
+    if (!IS_VALID_OFFSET(data->tree))
     {
         static bool tree_reported = false;
         if (!tree_reported)
         {
             tree_reported = true;
-            printf("skin: empty tree (buf=%p h=%d loaded=%d)\n",
-                   (void *)skin_buffer, data->buflib_handle, data->wps_loaded);
+            printf("skin: no tree (buf=%p off=%ld h=%d loaded=%d)\n",
+                   (void *)skin_buffer, (long)data->tree,
+                   data->buflib_handle, data->wps_loaded);
         }
         return;
     }

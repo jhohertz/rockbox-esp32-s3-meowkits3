@@ -836,6 +836,13 @@ static void sink_stop(void)
 {
     xt_sink_stop_n++;
 
+    /* TEMPORARY: read the transmit path out as the session ends, before stop_tx()
+       and the descriptor handback below erase the evidence. A playback that never
+       completed shows up here as sink play>0 with dma irq=0 and gdma out=0, which
+       is the engine refusing to take a descriptor -- a different fault entirely
+       from a codec or a data problem. Thread context, so printf is safe. */
+    i2s_audio_probe();
+
     playing = false;
     queued = 0;
     stop_tx();
