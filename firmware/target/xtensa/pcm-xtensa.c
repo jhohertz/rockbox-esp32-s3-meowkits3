@@ -383,6 +383,14 @@ void pcm_rec_dma_close(void)
      * handback idempotent here means the transmitter can never be left without
      * its clocks however the session ended. */
     i2s_rx_pads_release();
+
+    /* TEMPORARY: the recording buffer is allocated with core_alloc_maximum(),
+     * which takes everything the arena has left, and is released by
+     * on_close_recording() -> core_free(pcmrec_handle). If that release ever
+     * fails to happen -- an exit path that skips the close, an error return that
+     * misses it -- the arena never comes back and the next playback cannot fit
+     * its pcmbuf. This dump is the delta that shows whether it did. */
+    xt_arena_dump("after recording close");
 }
 
 void pcm_rec_dma_start(void *addr, size_t size)
