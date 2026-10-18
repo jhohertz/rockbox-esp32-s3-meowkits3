@@ -151,17 +151,26 @@
  * arena rather than what the caller hoped for. The MEMORYSIZE <= 16 branch in
  * pcm_record.c leaves both at their defaults, 256 chunks of 2048 samples, which
  * is a 2 MB ring in a 4 MB arena already holding a 2 MB dircache cap plus the
- * fonts and skins. The grant came back short, every ring index still wrapped at
- * the compile-time 2 MB, and the capture path wrote audio off the end of its own
- * allocation -- straight onto buflib's handle table, which grows down from the
- * top of that same arena. A font's handle entry ended up holding PCM data.
+ * fonts and skins. The grant came back at 910 KiB, every ring index still
+ * wrapped at the compile-time 2 MB, and the capture path wrote audio off the end
+ * of its own allocation -- straight onto buflib's handle table, which grows down
+ * from the top of that same arena. A font's handle entry ended up holding PCM
+ * data.
  *
- * 64 * 1024 * 4 = 256 KiB, which is 1.4 seconds of stereo 44.1 kHz. The WAV
- * encoder asks for 2048 samples per call, so the ring is 32x deeper than any
- * single request; enc_pcmbuf_read() refuses to progress if a request ever
- * exceeds the whole ring, so keep that ratio. */
+ * The ring therefore has to shrink to fit the grant, but it must shrink by chunk
+ * COUNT and not by chunk size. PCM_CHUNK_SIZE is PCM_CHUNK_SAMP * PCM_SAMP_SIZE
+ * and it is the unit both pcm_rec_have_more() and enc_pcmbuf_read() advance by,
+ * so it is the contract between the DMA hand-off and the encoder. Setting
+ * PCM_CHUNK_SAMP to 1024 halves PCM_CHUNK_SIZE to 4096 -- precisely the size our
+ * driver slices its reads into, which is what made it look safe -- and capture
+ * goes silent while every ADC register still reads back correct. Confirmed by
+ * bisect to this commit and then by re-applying its two capture changes
+ * separately: moving es7210_init() out of the playback sink is innocent, this
+ * resize is what killed the signal.
+ *
+ * 64 * 2048 * 4 = 512 KiB, about 2.9 seconds of stereo 44.1 kHz, which fits the
+ * grant with room left for the stream and encode buffers that follow it. */
 #define PCM_NUM_CHUNKS   64
-#define PCM_CHUNK_SAMP  1024
 
 /* The tagcache is what Rockbox calls the database: it indexes the ID3/Vorbis
  * tags on the card so the Tree can offer Artist / Album / Genre / Critter
