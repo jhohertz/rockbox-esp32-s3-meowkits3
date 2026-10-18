@@ -60,6 +60,13 @@
 #define RX_DMA_FRAME_NUM 512
 
 static i2s_chan_handle_t rx_chan;
+/* The channel is created once and kept for the lifetime of the boot -- see
+   pcm_rec_dma_init(). These track what state it is in so enable and disable are
+   issued once each, instead of IDF logging "the channel has not been enabled
+   yet" every time a session ends. */
+static unsigned long rx_chan_rate;
+static bool rx_chan_enabled;
+static bool rx_thread_created;
 
 static unsigned char *rec_ptr;
 static size_t rec_left;
@@ -218,19 +225,51 @@ static void i2s_rx_thread(void)
     }
 }
 
-void pcm_rec_dma_init(void)
+/* Create the IDF receive channel.
+ *
+ * This MUST run before the transmitter's hand-built GDMA setup, and that ordering
+ * is not stylistic. i2s_new_channel() acquires IDF's GDMA group for the first
+ * time, and gdma_acquire_group_handle() does:
+ *
+ *     gdma_ll_enable_bus_clock(group_id, true);
+ *     gdma_ll_reset_register(group_id);
+ *
+ * -- resetting EVERY channel in the block, including the OUT channel the
+ * transmitter drives with raw registers. Our transmitter never registers with
+ * IDF's GDMA driver, so it holds no reference and IDF has no idea that channel is
+ * in use. Measured directly: at boot GDMA_TX_INT_ENA is 0x06 and GDMA_TX_LINK
+ * holds the descriptor address 0x0cf700; by the time the first recording session
+ * reaches its first line of code -- before pads_take, before chan_enable, before
+ * anything that could physically touch the bus -- they read 0x00 and 0. The only
+ * thing that ran in between was i2s_new_channel().
+ *
+ * That is why playback died permanently the first time recording was ARMED rather
+ * than during a session, and why it never came back: nothing re-initialises the
+ * transmitter afterwards. Creating the channel at boot, ahead of gdma_init(),
+ * puts IDF's block reset first so our configuration lands after it and survives.
+ *
+ * The channel is also never deleted, for the mirror-image reason:
+ * gdma_release_group_handle() drops the group refcount to zero and calls
+ * gdma_ll_enable_bus_clock(group_id, false), gating the block's bus clock
+ * outright. */
+bool i2s_rx_chan_create(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    if (rx_chan)
+        return true;
+
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,
+                                                            I2S_ROLE_MASTER);
 
     chan_cfg.dma_desc_num  = RX_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = RX_DMA_FRAME_NUM;
 
     esp_err_t e = i2s_new_channel(&chan_cfg, NULL, &rx_chan);
+
     if (e != ESP_OK)
     {
         printf("RX i2s_new_channel failed: %d\n", (int)e);
         rx_chan = NULL;
-        return;
+        return false;
     }
 
     i2s_std_config_t std_cfg = {
@@ -247,31 +286,66 @@ void pcm_rec_dma_init(void)
             .ws   = I2S_GPIO_UNUSED,
             .dout = I2S_GPIO_UNUSED,
             .din  = PIN_I2S_DIN,
-            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false,
+                              .ws_inv = false },
         },
     };
 
     e = i2s_channel_init_std_mode(rx_chan, &std_cfg);
+
     if (e != ESP_OK)
     {
         printf("RX i2s_channel_init_std_mode failed: %d\n", (int)e);
         i2s_del_channel(rx_chan);
         rx_chan = NULL;
-        return;
+        return false;
     }
 
-    semaphore_init(&rx_sem, 1, 0);
-    rx_thread_id = create_thread(i2s_rx_thread, &rx_thread_stack,
-                                 sizeof(rx_thread_stack), 0, rx_thread_name
-                                 IF_PRIO(, PRIORITY_USER_INTERFACE));
+    rx_chan_rate = i2s_rx_sample_rate();
+
+    return true;
+}
+
+void pcm_rec_dma_init(void)
+{
+    /* Normally already created at boot by sink_init(); this is the fallback for a
+       rate change or a boot that skipped it. */
+    if (!i2s_rx_chan_create())
+        return;
+
+    if (!rx_thread_created)
+    {
+        rx_thread_created = true;
+        semaphore_init(&rx_sem, 1, 0);
+        rx_thread_id = create_thread(i2s_rx_thread, &rx_thread_stack,
+                                     sizeof(rx_thread_stack), 0, rx_thread_name
+                                     IF_PRIO(, PRIORITY_USER_INTERFACE));
+    }
+    else if (rx_chan_rate != i2s_rx_sample_rate())
+    {
+        /* Same channel, different rate. Reconfigure the clock rather than
+           rebuilding the channel -- rebuilding resets the whole GDMA block. */
+        i2s_std_clk_config_t clk =
+            I2S_STD_CLK_DEFAULT_CONFIG(i2s_rx_sample_rate());
+
+        if (rx_chan_enabled)
+            i2s_channel_disable(rx_chan);
+
+        esp_err_t e = i2s_channel_reconfig_std_clock(rx_chan, &clk);
+
+        if (e != ESP_OK)
+            printf("RX i2s_channel_reconfig_std_clock(%lu) failed: %d\n",
+                   i2s_rx_sample_rate(), (int)e);
+        else
+            rx_chan_rate = i2s_rx_sample_rate();
+    }
 
     /* The ADC is started before the channel is enabled so it has its clocks
      * already present when the first frame is clocked out of us. */
     es7210_start();
 
-    printf("RX channel up: rate=%lu desc=%d frame=%d thread=%u\n",
-           (unsigned long)i2s_rx_sample_rate(), RX_DMA_DESC_NUM, RX_DMA_FRAME_NUM,
-           rx_thread_id);
+    printf("RX channel ready: rate=%lu desc=%d frame=%d thread=%u\n",
+           rx_chan_rate, RX_DMA_DESC_NUM, RX_DMA_FRAME_NUM, rx_thread_id);
 }
 
 void pcm_rec_dma_close(void)
@@ -296,11 +370,13 @@ void pcm_rec_dma_close(void)
         }
     }
 
-    if (rx_chan)
+    if (rx_chan && rx_chan_enabled)
     {
+        /* Disable, but never delete: see pcm_rec_dma_init(). Deleting this
+           channel gates the clock on the whole GDMA block and kills the
+           transmitter for the rest of the boot. */
         i2s_channel_disable(rx_chan);
-        i2s_del_channel(rx_chan);
-        rx_chan = NULL;
+        rx_chan_enabled = false;
     }
 
     /* Belt and braces: pcm_close_recording() always calls this, so making the
@@ -338,11 +414,16 @@ void pcm_rec_dma_start(void *addr, size_t size)
 
     /* The receiver cannot clock anything out of pads it does not own, so take
      * them before enabling the channel. */
+    i2s_tx_gdma_peek("before pads_take");
     i2s_rx_pads_take();
+    i2s_tx_gdma_peek("after pads_take");
 
     esp_err_t e = i2s_channel_enable(rx_chan);
+    i2s_tx_gdma_peek("after chan_enable");
     if (e != ESP_OK)
         printf("RX i2s_channel_enable failed: %d\n", (int)e);
+    else
+        rx_chan_enabled = true;
 
     rx_wanted = true;
     rx_running = true;
@@ -392,12 +473,28 @@ void pcm_rec_dma_stop(void)
                    "leaving channel enabled\n", spins);
     }
 
-    if (rx_thread_idle && rx_chan)
+    if (rx_thread_idle && rx_chan && rx_chan_enabled)
+    {
+        i2s_tx_gdma_peek("before chan_disable");
         i2s_channel_disable(rx_chan);
+        i2s_tx_gdma_peek("after chan_disable");
+        rx_chan_enabled = false;
+    }
 
     rx_running = false;
     rx_probe("at stop");
     i2s_rx_pads_release();
+
+    /* TEMPORARY: read the TRANSMIT path the instant the recording session lets go
+       of the bus. Every dump we have ever taken of GDMA is either at boot or at a
+       playback stop that this bug never lets happen, so the state of the block in
+       between has never actually been observed -- the 0x3ff reading was inferred
+       from one old capture, not re-measured. If link and ena read 0x3ff here, the
+       session teardown is still gating or resetting the block and the reference
+       count theory was wrong in detail rather than in kind; if they read sane
+       values, the transmitter survived the session intact and the fault is
+       somewhere else entirely. */
+    i2s_audio_probe();
 }
 
 const void *pcm_rec_dma_get_peak_buffer(void)
