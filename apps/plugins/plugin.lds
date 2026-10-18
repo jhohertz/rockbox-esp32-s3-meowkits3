@@ -138,16 +138,24 @@ OUTPUT_FORMAT(elf32-xtensa-le)
 
 #elif defined(CPU_XTENSA)
 /* ESP32-S3. Codecs and plugins live at the top of the PSRAM part of the external
- * data-cache window, which is exactly where target/xtensa/app.lds places codecbuf:
- * DROMORIG + MEMORYSIZE*0x100000 - PLUGIN_BUFFER_SIZE - CODEC_SIZE. The two scripts
- * have to produce the same number or apps/codecs.c rejects the loaded codec.
+ * data-cache window. apps/codecs.c and apps/plugin.c reject any image whose
+ * declared load_addr is not exactly &codecbuf / &pluginbuf, so this script and
+ * the firmware MUST produce the same numbers -- and the only way to guarantee
+ * that is to derive them from the same header rather than restate them here.
+ *
+ * They were restated, as `DRAMORIG 0x3C000020` plus the size formula, which
+ * silently diverged the moment memory-xtensa.h moved codecbuf down by 0x20 to
+ * bring the arena back inside the mapped MMU window: the firmware's codecbuf
+ * became 0x3c680000 while every codec still linked at 0x3c680020, and each was
+ * then refused on load. The comment above has always claimed the numbers live in
+ * one place; now they actually do.
  *
  * IRAM here is the instruction-bus view of internal SRAM. It has to sit in the
  * gap app.lds leaves between the firmware's .iram and the firmware's data region,
  * because .data/.bss alias the same physical memory from the data bus: 0x40378000
  * is 0x3FC88000. */
-#define DRAMORIG 0x3C000020
-#define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGIN_BUFFER_SIZE - CODEC_SIZE
+#define DRAMORIG  XT_DROMORIG
+#define DRAMSIZE  (XT_CODECBUF_ADDR - XT_DROMORIG)
 #define IRAMORIG 0x40382900
 #define IRAMSIZE 0x6A00
 
