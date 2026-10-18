@@ -109,7 +109,7 @@ CONFIG_SPIRAM_RODATA=y
 # restarts without ever printing a register dump. Putting the handler in IRAM lets
 # it run regardless of cache state; halting instead of rebooting keeps the dump on
 # the console, which is USB-Serial-JTAG and whose FIFO is discarded by the reset.
-# CONFIG_ESP_PANIC_HANDLER_IRAM is not set  (needs 1096 more bytes of DRAM)
+CONFIG_ESP_PANIC_HANDLER_IRAM=y
 CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
 
 # Test the starvation theory before spending DRAM on PANIC_HANDLER_IRAM. With
