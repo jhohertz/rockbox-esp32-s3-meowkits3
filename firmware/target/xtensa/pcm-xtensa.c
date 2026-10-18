@@ -145,6 +145,30 @@ static void i2s_rx_thread(void)
             rec_left -= got;
             rx_bytes += got;
 
+            /* TEMPORARY: is there any signal at all? A dead VU means either the
+               ADC is streaming silence or the peak tap is never read, and from
+               outside those two look identical. Measuring the largest magnitude
+               sample in the chunk says which: peak=0 is a capture problem, a
+               healthy peak means the data is fine and the meter is what is
+               broken. */
+            if (rx_irq_count <= 4u)
+            {
+                const int16_t *s = (const int16_t *)(rec_ptr - got);
+                size_t n = got / sizeof(int16_t);
+                long peak = 0;
+
+                for (size_t k = 0; k < n; k++)
+                {
+                    long v = s[k];
+                    if (v < 0)
+                        v = -v;
+                    if (v > peak)
+                        peak = v;
+                }
+                printf("RX level: peak=%ld / 32767 over %lu samples\n",
+                       peak, (unsigned long)n);
+            }
+
             /* pcm_rec_lock() masks the recording completion, not the transfer --
              * imx233 does it by disabling the DMA channel interrupt, and this
              * driver's predecessor did it by masking IN_DONE. The DMA kept
