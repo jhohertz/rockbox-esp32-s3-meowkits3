@@ -30,6 +30,7 @@
 #include "settings.h"
 
 #include "es7210.h"
+#include <stdio.h> /* TEMPORARY: register readback probe in es7210_init */
 
 #define REG_RESET          0x00
 #define REG_CLOCK_OFF      0x01
@@ -132,6 +133,15 @@ static void program_clock(unsigned long rate)
                double_speed ? MODE_DOUBLE_SPEED : 0);
 }
 
+/* The last CLOCK_OFF pattern known to enable the channels we use. Kept across
+   sessions on purpose: es7210_stop() writes 0x7f, so the next start() reads the
+   power-down pattern back and cannot recover the real value from the chip. The
+   reference driver holds the same thing in a _clk_reg_save member for exactly
+   this reason. Without it the ADC clocks are never restored, the converter
+   silently stays off, and gain changes do nothing -- measured here as the first
+   session capturing at peak 439-519 and every later one sitting at 12-14. */
+static unsigned char clk_off_save = 0x00;
+
 bool es7210_init(unsigned long rate)
 {
     if (!es7210_present())
@@ -185,6 +195,13 @@ bool es7210_init(unsigned long rate)
     reg_write(REG_MIC34_POWER, 0xff);
 
     reg_update(REG_CLOCK_OFF, CLOCK_OFF_ADC12, 0);
+    /* Remember what actually enabled the channels, so start() has something
+       valid to restore after a stop() has written 0x7f. */
+    {
+        unsigned char now;
+        if (reg_read(REG_CLOCK_OFF, &now) && now != 0x7f && now != 0xff)
+            clk_off_save = now;
+    }
     reg_write(REG_MIC12_POWER, 0x00);
     reg_update(REG_MIC1_GAIN, GAIN_ENABLE, GAIN_ENABLE);
     reg_update(REG_MIC2_GAIN, GAIN_ENABLE, GAIN_ENABLE);
@@ -192,6 +209,25 @@ bool es7210_init(unsigned long rate)
     reg_update(REG_MIC2_GAIN, GAIN_MASK, gain_code(global_settings.rec_mic_gain));
 
     reg_write(REG_ADC_AUTOMUTE, 0x00);
+
+    /* TEMPORARY: read the chip back. Writing a register and reading it are two
+       different claims -- the ES7210 has been accepting every other write
+       happily, so if REG11 or the gain bytes come back wrong the write is being
+       dropped or overwritten, and if they come back right then the low level is
+       analogue (bias, input select, the mic itself) and no further register work
+       will help. */
+    {
+        unsigned char r11 = 0, r43 = 0, r44 = 0, r41 = 0, r40 = 0;
+
+        reg_read(REG_SDP_IF1, &r11);
+        reg_read(REG_MIC1_GAIN, &r43);
+        reg_read(REG_MIC2_GAIN, &r44);
+        reg_read(REG_MIC12_BIAS, &r41);
+        reg_read(REG_ANALOG, &r40);
+        printf("ES7210 readback: REG11=%02x (want 60) REG43=%02x REG44=%02x "
+               "(want 1e/1e) BIAS41=%02x ANALOG40=%02x gain=%d\n",
+               r11, r43, r44, r41, r40, global_settings.rec_mic_gain);
+    }
 
     return true;
 }
@@ -214,12 +250,19 @@ void es7210_set_gain(int code)
 
 void es7210_start(void)
 {
-    unsigned char off;
+    /* The clock-off register is restored from the saved pattern rather than from
+       what the chip currently reports, because stop() deliberately leaves 0x7f
+       there. Reading it back and writing it unchanged would keep the ADC powered
+       down forever after the first session. The readback still refreshes the
+       saved value whenever it looks like a real configuration. */
+    {
+        unsigned char off;
 
-    /* The clock-off register is read back so that stop() can restore exactly
-     * the channels that were enabled, rather than assuming a pattern. */
-    if (reg_read(REG_CLOCK_OFF, &off) && off != 0x7f && off != 0xff)
-        reg_write(REG_CLOCK_OFF, off);
+        if (reg_read(REG_CLOCK_OFF, &off) && off != 0x7f && off != 0xff)
+            clk_off_save = off;
+
+        reg_write(REG_CLOCK_OFF, clk_off_save);
+    }
 
     reg_write(REG_POWER_DOWN, 0x00);
     reg_write(REG_ANALOG, 0x43);
