@@ -300,6 +300,18 @@ void pcm_rec_dma_start(void *addr, size_t size)
     rx_err_count = 0;
     rx_bytes = 0;
 
+    /* Bring the ADC up for this session, at the rate the bus is already running.
+     * It used to be reset and clock-programmed from sink_init(), i.e. on every
+     * boot and every playback rate change, which is the wrong layer and two 10ms
+     * bus holds before the UI is even up. The result is checked: with the return
+     * value dropped, an ADC that never answered on the bus is indistinguishable
+     * from one that configured perfectly, and every symptom downstream reads as a
+     * fault in the capture path rather than an absent device. */
+    if (!es7210_init(i2s_rx_sample_rate()))
+        printf("ES7210: init FAILED (no answer at 0x41?)\n");
+    else
+        printf("ES7210: init ok\n");
+
     /* The receiver cannot clock anything out of pads it does not own, so take
      * them before enabling the channel. */
     i2s_rx_pads_take();
