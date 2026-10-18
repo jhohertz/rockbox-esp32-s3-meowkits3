@@ -38,6 +38,7 @@
 #include <stdlib.h>     /* abort(): esp_cache.h used to drag it in, cache_hal.h does not */
 
 #include "system.h"
+#include "memory-xtensa.h"   /* XT_LOADADDRESS_ADDR -- needs config.h first */
 
 #include "sdkconfig.h"
 
@@ -67,6 +68,35 @@ void system_init(void)
         if ((unsigned long)rb_ext_ram_end > (unsigned long)codecbuf)
             printf("MEMORY: .ext_ram.bss ends %p, past pinned codecbuf %p\n",
                    (void *)rb_ext_ram_end, (void *)codecbuf);
+    }
+
+    /* The other end of the same problem, and the check that was missing.
+     *
+     * The external window is MEMORYSIZE MB starting at 0x3C000000, and the flash
+     * MMU has exactly that many 64 KB entries pointing at PSRAM -- entries
+     * 0..(MEMORYSIZE*16 - 1), ending at 0x3C000000 + MEMORYSIZE MB. There is no
+     * entry beyond that to map: all 128 physical pages are already claimed.
+     *
+     * XT_DROMORIG carries a +0x20 so that flash-mapped segments satisfy the
+     * cache's page-congruence rule (paddr % 64KB == vaddr % 64KB), but codecbuf
+     * and pluginbuf are derived from it and inherit that offset -- which puts the
+     * top of the arena 32 bytes PAST the last mapped entry.
+     *
+     * Not academic: the last 32 bytes of the plugin buffer are served by MMU
+     * entry 128, which the boot map reports as INVALID, and
+     * fill_random_playlist_indexes() in apps/tagtree.c writes the whole buffer
+     * -- for (i = 0; i < arr_sz; i++) -- making it the one thing in the tree that
+     * ever touches them. Observed as A9 = 0x3c80001f in a Core 0
+     * IllegalInstruction crash entered by "all tracks" from the database. */
+    {
+        unsigned long top = XT_LOADADDRESS_ADDR;
+        unsigned long win = 0x3C000000UL + (MEMORYSIZE * 0x100000);
+
+        if (top > win)
+            printf("MEMORY: arena top %p is %lu bytes past the mapped window "
+                   "%p (MMU entry %lu, want <= %lu)\n", (void *)top, top - win,
+                   (void *)win, (top & 0x1FFFFFFu) >> 16,
+                   (unsigned long)(MEMORYSIZE * 16) - 1);
     }
 
     /* udelay() in system-target.h counts core cycles, so it needs the frequency
