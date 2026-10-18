@@ -884,6 +884,20 @@ static void sink_init(void)
 {
     xt_sink_init_n++;
 
+#ifdef HAVE_RECORDING
+    /* Bring up IDF's receive channel BEFORE the transmitter is configured.
+     *
+     * i2s_new_channel() acquires IDF's GDMA group and, on first acquisition,
+     * calls gdma_ll_reset_register(group) -- which resets every channel in the
+     * block, including the OUT channel that i2s_init() then configures by hand.
+     * Going first meant that reset landed on top of our transmitter and nothing
+     * ever put it back: GDMA_TX_INT_ENA 0x06 -> 0x00 and the descriptor address
+     * 0x0cf700 -> 0, with playback dead for the rest of the boot from the moment
+     * recording was first armed. See i2s_rx_chan_create() in pcm-xtensa.c. */
+    if (!i2s_rx_chan_create())
+        printf("AUDHW: RX channel create failed\n");
+#endif
+
     i2s_init();
 
     audiohw_preinit();
@@ -919,3 +933,15 @@ struct pcm_sink builtin_pcm_sink = {
         .stop     = sink_stop,
     },
 };
+
+/* TEMPORARY: two registers, on demand, from the recording path. i2s_audio_probe()
+ * prints a whole wall of state and is only reachable at boot and at a playback
+ * stop that this bug never lets happen, so narrowing it to the two numbers that
+ * actually changed -- GDMA_TX_INT_ENA going 0x06 -> 0x00 and GDMA_TX_LINK's
+ * address field going 0x0cf700 -> 0x000000 -- and calling it either side of each
+ * IDF call in the session lifecycle is what names the offender. */
+void i2s_tx_gdma_peek(const char *where)
+{
+    printf("GDMA %-22s ena=%08x link=%08x\n", where,
+           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK));
+}
