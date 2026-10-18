@@ -164,8 +164,17 @@ bool es7210_init(unsigned long rate)
 
     program_clock(rate);
 
-    /* 16-bit samples, standard I2S format, two channels on SDOUT1. */
-    reg_write(REG_SDP_IF1, (16 << 5) | 0x00);
+    /* 16-bit samples, standard I2S (REG11 bits 1:0 = 0), two channels on SDOUT1.
+     *
+     * Bits 7:6 select the word length and the encoding is NOT a bit count:
+     * 0x60 is 16-bit, 0x00 is 24-bit and 0x80 is 32-bit. This was written as
+     * (16 << 5), which is 0x200 -- and reg_write() takes an unsigned char, so it
+     * silently landed as 0x00, configuring the ADC for 24-bit. The receiver then
+     * sampled 16 of every 24-bit word, which is why captured peaks sat around 90
+     * out of 32767 no matter what the mic gain was set to. The truncation is also
+     * why the mistake was invisible: the expression looks deliberate and no
+     * warning is possible on a constant argument to a narrowing parameter. */
+    reg_write(REG_SDP_IF1, 0x60);
     reg_write(REG_SDP_IF2, 0x00);
 
     /* MIC1 and MIC2 only: SDOUT1 carries two channels, and Rockbox records

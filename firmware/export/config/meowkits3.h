@@ -292,6 +292,18 @@
 /* The ES7210 is the only input the board has. */
 #define INPUT_SRC_CAPS SRC_CAP_MIC
 
+/* Rockbox only creates the "rec mic gain" setting when DEFAULT_REC_MIC_GAIN is
+ * defined, and settings_list.c defines it solely for UDA1380, TLV320, WM8975,
+ * WM1870, WM8758 and WM8731 targets. This board is an ES8311 with an ES7210 on
+ * the receive half, so none of those apply: the setting was never created,
+ * global_settings.rec_mic_gain stayed 0, and es7210_init() therefore programmed
+ * gain code 0 -- 0 dB, the bottom of the ladder. The MeowKit reference firmware
+ * defaults its ES7210 to ES7210_GAIN_30DB, and REG43/44 bits 3:0 step 3 dB from
+ * 0 to 30 dB, which is what gain_code() maps onto. Without this the captured
+ * samples peak around 10-13 out of 32767, roughly -68 dBFS, and the VU meter
+ * correctly shows nothing at all. */
+#define DEFAULT_REC_MIC_GAIN 30
+
 /* Recording shares the I2S clock with playback, so the reachable rates are the
  * same set. */
 #define REC_SAMPR_CAPS HW_SAMPR_CAPS
