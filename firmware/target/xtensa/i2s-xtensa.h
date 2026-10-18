@@ -221,6 +221,10 @@ void i2s_init(void);
 /* TEMPORARY: playback-chain diagnostic, remove with the counters in
  * i2s-xtensa.c. */
 void i2s_audio_probe(void);
+void i2s_tx_gdma_peek(const char *where);   /* TEMPORARY */
+#ifdef HAVE_RECORDING
+bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
+#endif
 void i2s_set_frequency(unsigned long rate);
 #ifdef HAVE_RECORDING
 /* The receiver is a full ESP-IDF I2S channel created per recording session in
