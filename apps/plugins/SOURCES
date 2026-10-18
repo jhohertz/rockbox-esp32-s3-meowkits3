@@ -6,10 +6,14 @@ battery_bench.c
 db_folder_select.c
 tagcache/tagcache.c
 #endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 chessclock.c
+#endif
 countdown_timer.c
 credits.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 cube.c
+#endif
 cue_playlist.c
 dart_scorer.c
 dict.c
@@ -27,7 +31,9 @@ playing_time.c
 properties.c
 random_folder_advance_config.c
 rb_info.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 rockblox.c
+#endif
 search.c
 settings_dumper.c
 snow.c
@@ -44,7 +50,9 @@ vbrfix.c
 md5sum.c
 dice.c
 disktidy.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 flipit.c
+#endif
 shopper.c
 resistor.c
 otp.c
@@ -66,7 +74,9 @@ pitch_detector.c
 pitch_screen.c
 #endif
 
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 mp3_encoder.c
+#endif
 wav2wv.c
 
 #if CONFIG_RTC
@@ -131,39 +141,79 @@ amaze.c
 #endif
 
 rockblox1d.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 brickmania.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 calendar.c
+#endif
 maze.c
 mazezam.c
 text_editor.c
 wavview.c
 robotfindskitten.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 xobox.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 spacerocks.c
+#endif
 
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 blackjack.c
+#endif
 bounce.c
 bubbles.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 calculator.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 chip8.c
+#endif
 chopper.c
 demystify.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 jewels.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 minesweeper.c
+#endif
 open_plugins.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 oscilloscope.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 pegbox.c
+#endif
 periodic_table.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 pong.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 sliding_puzzle.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 snake.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 snake2.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 solitaire.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 sokoban.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 star.c
+#endif
 starfield.c
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 vu_meter.c
+#endif
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 wormlet.c
+#endif
 
 #ifdef HAVE_HOTKEY
 announce_status.c
@@ -180,7 +230,9 @@ fire.c
 plasma.c
 
 #ifdef HAVE_LCD_COLOR
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 clix.c
+#endif
 codebuster.c
 #endif
 
@@ -190,7 +242,9 @@ fireworks.c
 
 #if LCD_DEPTH == 16
 /* FIXME: make it work with 24bit (needs lot of memory) */
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 rockpaint.c
+#endif
 #endif
 
 rocklife.c
@@ -201,7 +255,9 @@ matrix.c
 speedread.c
 
 #if (LCD_WIDTH > 138)
+#ifndef MEOWKIT_ESP32S3 /* no ESP32S3_PAD keymap in this plugin yet */
 invadrox.c
+#endif
 superdom.c
 #endif
 
