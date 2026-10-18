@@ -66,17 +66,19 @@ Measured from the linked image.
 |---|---|---|---|---|
 | `dram0_0_seg` (internal data) | 341,760 (`0x53700`) | **340,740** | **1,020** | IDF `memory.ld` |
 | `iram0_0_seg` (internal code) | — | ~78,000 | — | IDF |
-| `.flash.text` (IROM window) | — | 549,398 | — | flash |
-| PSRAM window | 8,388,608 | ~7,338,000 | **~1,050,000** | see §3 |
+| `.flash.text` (IROM window) | — | 549,430 | — | flash |
+| PSRAM window | 8,388,608 | 8,363,324 | **25,284** | see §3 |
 
 **Internal SRAM is the constraint, and it is now down to 1,020 bytes.** That is
 the direct cost of `CONFIG_ESP_PANIC_HANDLER_IRAM`, which needs ~5,464 bytes of
 DRAM and only fit after `file.o` was moved to PSRAM. Before that change the
 figure was 4,376 free; the handler alone would not have fitted.
 
-Note the asymmetry: **~1 MiB of PSRAM is idle** while internal SRAM is 99.7%
-full. Almost everything in DRAM is there because `rockbox_memory.lf` defaults to
-`* (rb_dram)`, not because it has to be.
+**There is no spare PSRAM.** An earlier revision of this file claimed ~1 MiB of
+PSRAM was idle, and decisions were made against that claim. It was wrong: it
+added up `.ext_ram.bss`, `codecbuf` and `pluginbuf` and missed the two `_text`
+reservations below `codecbuf`. The real idle figure is 25,284 bytes, and §3 shows
+every byte of where the rest went.
 
 ### DRAM is now close enough to the edge to need a guard
 
@@ -98,20 +100,33 @@ codec.
 
 ```
 0x3C000020  +--------------------------+  entry 0
-            | IDF .flash_rodata_dummy  |  576 KiB   (IDF's reservation)
-            | IDF .ext_ram.dummy       |  1.125 MiB (same span, other view)
-0x3C090020  | .flash.appdesc           |  256 B
-0x3C090120  | .flash.rodata            |  550,640 B
-0x3C120000  | .ext_ram.bss             |  4,560,124 B  (audiobuffer, framebuffer,
-            |                          |                codecbuf contents, buflib arena)
-0x3C5794FC  +--------------------------+  entry 87
-            |                          |
-            |     1,051,648 B FREE     |  <- nothing maps here today
-            |                          |
-0x3C680000  | codecbuf                 |  1 MiB    entry 104
-0x3C780000  | pluginbuf                |  512 KiB  entry 120
+            | IDF .flash_rodata_dummy  |  sized SIZEOF(.flash.text)
+            | IDF .ext_ram.dummy       |  1,179,616 B (same span, other view)
+0x3C090120  | .flash.rodata            |  548,576 B
+0x3C120000  | .ext_ram.bss             |  4,562,236 B  entry 18
+0x3C15D2C0  |   audiobuffer            |    4,194,304 B (the buflib arena) entry 21
+0x3C55D2C0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
+0x3C579D3C  +--------------------------+  end of .ext_ram.bss, entry 85
+            |     25,284 B free        |  <- the only idle bytes in the window
+0x3C580000  | plugin_text              |  524,288 B  entry 88
+0x3C600000  | codec_text               |  524,288 B  entry 96
+0x3C680000  | codecbuf                 |  1 MiB      entry 104
+0x3C780000  | pluginbuf                |  512 KiB    entry 120
 0x3C800000  +--------------------------+  == end of the 8 MB window, entry 128
 ```
+
+Every byte is accounted for: 1.125 MB firmware mapping + 4.36 MB `.ext_ram.bss`
++ 1 MB `_text` reservations + 1.5 MB codec/plugin buffers + 25 KB idle = 8 MB.
+
+**The 1.125 MB firmware reservation is not reclaimable.** It looks like the cost
+of IDF's PSRAM-XIP options (`CONFIG_SPIRAM_RODATA`, `SPIRAM_FETCH_INSTRUCTIONS`,
+`SPIRAM_XIP_FROM_PSRAM`), so those were turned off and the image relinked. The
+layout came out **byte-identical**: `.ext_ram.dummy` is sized
+`_rodata_reserved_end - _flash_rodata_dummy_start` and `flash_rodata_dummy` is
+sized `SIZEOF(.flash.text)` regardless of those configs. The reservation exists
+because `extern_ram_seg` and `drom0_0_seg` share one bus and one linear range,
+so the firmware's own text and rodata must hold address space whether or not
+they are also copied to PSRAM. The configs were reverted.
 
 `codecbuf` and `pluginbuf` are **pinned absolute symbols**, not section contents.
 `apps/codecs.c` and `apps/plugin.c` reject any image whose declared `load_addr`
@@ -143,6 +158,83 @@ reached by "all tracks" from the database. Fixed by subtracting the offset in
 the pre-existing one that compares `rb_ext_ram_end` against `codecbuf`. The old
 check only guarded the *bottom* of the arena; nothing guarded the top, which is
 why this sat latent.
+
+### That second check has its own blind spot (open)
+
+`memory-xtensa-syms.S` describes `rb_ext_ram_end` as the end of `.ext_ram.bss`
+and the boot check trusts it. It is not:
+
+```
+rb_ext_ram_end    0x3C55D2C0   <- what the check compares against codecbuf
+.ext_ram.bss end  0x3C579D3C   <- the real end, 119 KB further
+```
+
+Other objects contribute to `.ext_ram.bss` through `PSRAM_BSS_ATTR` and are
+placed *after* the arena, so the guard that exists specifically to catch
+`.ext_ram.bss` growing into the pinned codec buffer cannot see 119 KB of it. IDF
+already exports `_ext_ram_bss_end` for exactly this purpose; the check should use
+it. Not yet fixed.
+
+---
+
+## 3b. Who actually holds the arena
+
+Measured by walking buflib at three points (boot, first playback frame, after a
+recording session closes). The full arena is 4,095 KiB and reads
+`used=4095 KiB, free=0 KiB in 0 runs` in steady state.
+
+| Bytes | Owner (resolved from the `ops` pointer) | Can it yield? |
+|---|---|---|
+| 1,980,744 | `apps/playback.c:1069` — playback file buffer | **yes** — registers `shrink_callback` |
+| 1,980,824 | `buflib_ops_locked` — recording ring | **no** — cannot move or shrink |
+| 1,179,668 | `dircache_runinfo.ops` — dircache | **no** — `move_callback` only |
+| 200,016 + 100,016 | `apps/tree.c:1197` — recent dir/file caches | movable, no shrink |
+| 153,616 x2 | `apps/gui/skin_engine/skin_backdrops.c:81` | movable, no shrink |
+| 153,040 | `apps/tagtree.c:290` | movable, no shrink |
+| 120,016 / 16,200 | `core_alloc()` with NULL ops | movable, no shrink |
+| 40,016 | `apps/playlist.c:1940` | movable, no shrink |
+| 20,496 | `apps/gui/icon.c:169` | movable, no shrink |
+| 20,256 / 15,656 / 9,016 | `apps/gui/skin_engine/skin_parser.c:2050` x3 | movable, no shrink |
+| 11,216 | `firmware/font.c:159` | movable, no shrink |
+
+Three things this settles:
+
+1. **There is no leak.** The allocation count goes 22 -> 21 across a recording
+   session, so `core_free(pcmrec_handle)` runs. `free=0` is not exhaustion by
+   attrition, it is the design: playback and recording each take everything left
+   with `core_alloc_maximum()`, and they are mutually exclusive so only one is
+   ever resident.
+
+2. **`DIRCACHE_LIMIT` is load-bearing, not a workaround.** Dircache registers
+   `move_callback` only, so buflib can relocate it but never take bytes back.
+   `dircache_set()` has no callers outside `dircache.c`, and there is no
+   `DC_OP_SET_SIZE_LIMIT`. The only brake is the compile-time cap, and
+   `prepare_build()` takes the *whole* arena when the cache is stuffed:
+
+   ```c
+   int syncbuild = size > 0 && !stuffed ? 0 : 1;
+   if (syncbuild)
+       size = audio_buffer_available() + dircache_runinfo.bufsize;  /* grab */
+   else
+       size = MAX(size, DIRCACHE_RESERVE) + DIRCACHE_RESERVE*2;     /* +192 KB */
+   ```
+
+   A card large enough to stuff the cache therefore hits the grab path on every
+   rebuild. The upstream default `DIRCACHE_LIMIT` is 6 MB, bigger than this whole
+   window, so it must be lowered here. It is set to 1 MB (`DIRCACHE_MIN`).
+
+3. **That is what fixed the EOM panic.** With the cap at 2 MB, dircache held
+   2,228,228 B and playback's file buffer came back at 932,184 B -- less than
+   crossfade's `MIN_BUFFER_SIZE + (fade_delay + fade_duration) * BYTERATE`
+   demand of ~1.15 MB, hence `audio_reset_buffer_noalloc(): EOM (1149612 >
+   932248)`. At a 1 MB cap dircache holds 1,179,668 B and the file buffer is
+   1,980,744 B, which clears the demand with ~800 KB of margin.
+
+**`CODEC_SIZE` was left alone deliberately.** Measured codec images peak at
+182 KB text and 362 KB data, so 1 MB looks generous, but 78 of 87 targets use
+`0x100000`; the `0x80000` cases are three and `0x48000` are IRAM-starved legacy
+targets. There is no precedent for shrinking it on a target of this size, and
+plugin support is the next feature, which needs the room.
 
 ---
 
@@ -187,9 +279,10 @@ and now `file` are the ones that have moved.
 
 ## 5. Known gaps and opportunities
 
-1. **1 MiB of PSRAM is unused** between `.ext_ram.bss` and `codecbuf`. Anything
-   that needs internal SRAM relief can be rebalanced against this rather than
-   shrinking a real buffer.
+1. **The arena has no headroom.** 25,284 bytes of the window are idle and the
+   three largest holders are all either pinned or grab-everything. Any new
+   resident consumer has to be funded by shrinking dircache, the theme, or the
+   tree caches -- see §3b before assuming there is somewhere to put it.
 
 2. **The arena top is only guarded by a printf.** A layout overrun reports
    itself at boot but does not stop the build. It should arguably be a link-time
@@ -243,4 +336,13 @@ for c in $(find lib/rbcodec/codecs -name '*.codec'); do
 done
 
 # the live MMU map is printed at boot by sd-idf.c (TEMPORARY probe)
+
+# Name every arena allocation from an xt_arena_dump() log: buflib stores no
+# owner names, but it does store the ops pointer, and every caller passes its own
+# file-static struct buflib_callbacks, which carries a symbol. dircache is the
+# exception -- it passes &dircache_runinfo.ops, a field, so resolve it to the
+# nearest symbol *below* the pointer.
+for p in $(grep -ao 'ops=0x[0-9a-f]*' LOG | sed 's/ops=//' | sort -u); do
+  printf "%s " "$p"; $BIN/xtensa-esp32s3-elf-addr2line -e rockbox.elf -f $p | tail -1
+done
 ```

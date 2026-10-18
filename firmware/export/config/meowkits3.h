@@ -136,15 +136,42 @@
  * built unconditionally and every target config defines these. Codecs are real:
  * they are loaded from storage into CODEC_SIZE worth of PSRAM at runtime. */
 /* A synchronous dircache build takes audio_buffer_available() outright -- the
- * whole arena -- capped only by DIRCACHE_LIMIT. This target's arena is 4 MB
- * (XT_AUDIOBUF_SIZE, half of PSRAM), so the default 6 MB limit lets the cache
- * claim all of it and everything allocated afterwards from the same arena
- * fails: playlist_init()'s 117 KB fileref table came back as
+ * whole arena -- capped only by DIRCACHE_LIMIT:
+ *
+ *     size = audio_buffer_available() + dircache_runinfo.bufsize;
+ *     size = MAX(DIRCACHE_MIN, MIN(size, DIRCACHE_LIMIT));
+ *
+ * This target's arena is 4 MB (XT_AUDIOBUF_SIZE, half of PSRAM), so the default
+ * 6 MB limit lets the cache claim all of it and everything allocated afterwards
+ * from the same arena fails: playlist_init()'s 117 KB fileref table came back as
  * BUFLIB_ERRCODE_MEMBLOCK_ALLOC_FAILED, and because buflib reports failure as a
- * negative code while the caller only tests for zero, that surfaced three
- * frames later as a NULL write. Cap the cache below the arena so the rest of
- * Rockbox still has somewhere to allocate. */
-#define DIRCACHE_LIMIT   (1024*1024*2) /* 2 MB of the 4 MB arena */
+ * negative code while the caller only tests for zero, that surfaced three frames
+ * later as a NULL write.
+ *
+ * 2 MB was still too generous, and that was measured rather than judged. Walking
+ * the allocator at the moment playback sizes its file buffer:
+ *
+ *   ARENA at playback start: used=4095 KiB in 22 allocs, free=0 KiB in 0 runs
+ *     +2228228 B  dircache          <- 53% of the arena
+ *     +932184  B  playback file buffer
+ *     ...playlist, skins, fonts...
+ *
+ * Zero free bytes and zero free runs. The 932 KiB file buffer is what
+ * audio_reset_buffer_noalloc() carves pcmbuf out of, and with crossfade enabled
+ * pcmbuf wants MIN_BUFFER_SIZE (3 s x BYTERATE = 529 KB) plus
+ * (fade_out_delay + fade_out_duration) x BYTERATE -- about 1.15 MB total. It
+ * does not fit in 932 KiB, and the result is
+ * "audio_reset_buffer_noalloc(): EOM (1149612 > 932248)".
+ *
+ * Dropping to DIRCACHE_MIN is the right lever, not turning crossfade off: the
+ * cache is a performance feature whose size is already understood to be
+ * negotiable (dircache.h calls MIN/LIMIT "provision" bounds), while the audio
+ * path has no fallback. Costs directory-browse speed on a very large card;
+ * raises the ceiling on everything that allocates after boot, which on this
+ * target is everything that matters. The stored size is clamped by
+ * dircache_init() -> MIN(last_size, DIRCACHE_LIMIT), so an existing card setting
+ * cannot defeat this. */
+#define DIRCACHE_LIMIT   (1024*1024*1) /* 1 MB: DIRCACHE_MIN, leaves ~3 MB free */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
  * allocated with core_alloc_maximum(), which grants whatever is left in the

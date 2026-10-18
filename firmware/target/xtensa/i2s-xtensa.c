@@ -790,8 +790,15 @@ static void sink_play(const void *addr, size_t size)
        masked and the transmitter legitimately not started. An early dump cannot
        tell a muted consumer from a normal snapshot. */
     if (xt_sink_play_n == 1)
+    {
         printf("SINK: first play addr=%p size=%lu\n", addr,
                (unsigned long)size);
+        /* TEMPORARY: playback allocates its file buffer around here, and this is
+           where the EOM panic fires. Dumping at the first frame shows what is
+           left at the moment the decision gets made, rather than after it has
+           already failed. */
+        xt_arena_dump("at playback start");
+    }
 
     if (!playing)
     {
@@ -908,6 +915,10 @@ static void sink_init(void)
      * 10ms delays to do it, belongs to the recording session that needs it and
      * nowhere else. It now happens in pcm_rec_dma_start(). */
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
+
+    /* TEMPORARY: the boot baseline. Every later arena dump is read as a delta
+       from this picture of who holds what. */
+    xt_arena_dump("at boot");
 
     /* Snapshot the transmit path the instant initialisation completes. Compared
      * against the same dump later, this says whether the configuration was ever
