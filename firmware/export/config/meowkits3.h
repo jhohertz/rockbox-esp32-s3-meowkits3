@@ -146,6 +146,23 @@
  * Rockbox still has somewhere to allocate. */
 #define DIRCACHE_LIMIT   (1024*1024*2) /* 2 MB of the 4 MB arena */
 
+/* The recording PCM ring is sized at compile time from these two, but it is
+ * allocated with core_alloc_maximum(), which grants whatever is left in the
+ * arena rather than what the caller hoped for. The MEMORYSIZE <= 16 branch in
+ * pcm_record.c leaves both at their defaults, 256 chunks of 2048 samples, which
+ * is a 2 MB ring in a 4 MB arena already holding a 2 MB dircache cap plus the
+ * fonts and skins. The grant came back short, every ring index still wrapped at
+ * the compile-time 2 MB, and the capture path wrote audio off the end of its own
+ * allocation -- straight onto buflib's handle table, which grows down from the
+ * top of that same arena. A font's handle entry ended up holding PCM data.
+ *
+ * 64 * 1024 * 4 = 256 KiB, which is 1.4 seconds of stereo 44.1 kHz. The WAV
+ * encoder asks for 2048 samples per call, so the ring is 32x deeper than any
+ * single request; enc_pcmbuf_read() refuses to progress if a request ever
+ * exceeds the whole ring, so keep that ratio. */
+#define PCM_NUM_CHUNKS   64
+#define PCM_CHUNK_SAMP  1024
+
 /* The tagcache is what Rockbox calls the database: it indexes the ID3/Vorbis
  * tags on the card so the Tree can offer Artist / Album / Genre / Critter
  * browsing, and it is what "View database info" under Debug refers to. This
@@ -262,6 +279,14 @@
 
 /* The ES7210 ADC sits on the same I2S bus as the codec, on the receiver half of a
  * second I2S port. See firmware/target/xtensa/pcm-xtensa.c. */
+/* NOTE for future bisects: HAVE_RECORDING cannot be toggled to isolate a
+ * regression. struct codec_api in lib/rbcodec/codecs/codecs.h has members inside
+ * #ifdef HAVE_RECORDING, so switching it off moves the offset of every member
+ * after them -- and the codecs are separately linked .codec images that call
+ * through those pointers at fixed offsets. Turning it off makes every codec on
+ * the card call the wrong function: codec_load_file starts returning -1 and the
+ * UI misbehaves, which looks like a new fault but is only the ABI shift. Any
+ * bisect that touches this define must rebuild and recopy the codecs too. */
 #define HAVE_RECORDING
 
 /* The ES7210 is the only input the board has. */

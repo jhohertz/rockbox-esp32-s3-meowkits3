@@ -141,7 +141,10 @@ static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)))
 static volatile const void *pend_addr;
 static volatile size_t pend_size;
 static volatile int pend_valid;
-static int locked;
+/* Guards a hardware interrupt mask, and is read from the probe while the mixer
+ * holds it, so it must not be cached in a register across the read-modify-write
+ * of GDMA_TX_INT_ENA. */
+static volatile int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
  * retires; refill() only asks the core for a buffer when the ring has run dry,
@@ -759,6 +762,15 @@ static void sink_play(const void *addr, size_t size)
     xt_sink_play_n++;
     xt_sink_last_size = size;
 
+    /* TEMPORARY: the first frame of a playback. The chain dump is taken after
+       start_tx() below, not here: the pcm core holds the play lock across the
+       whole start sequence, so at this point GDMA_INT_DONE is legitimately
+       masked and the transmitter legitimately not started. An early dump cannot
+       tell a muted consumer from a normal snapshot. */
+    if (xt_sink_play_n == 1)
+        printf("SINK: first play addr=%p size=%lu\n", addr,
+               (unsigned long)size);
+
     if (!playing)
     {
         /* First frame of a playback. Fill slot 0 with it and every other slot
@@ -773,6 +785,18 @@ static void sink_play(const void *addr, size_t size)
         playing = true;
         start_tx();
         wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+
+        /* TEMPORARY: give the engine time to take a descriptor, then dump. If
+           dma irq climbs and gdma out goes nonzero the transmit path is alive and
+           the fault is elsewhere; if both stay zero with the lock released, the
+           engine really is parked. Blocking here is acceptable precisely because
+           playback is already not progressing. */
+        if (xt_sink_play_n == 1)
+        {
+            sleep(HZ/5);
+            printf("CHAIN: 200ms after first start_tx --\n");
+            i2s_audio_probe();
+        }
     }
     else
     {
@@ -806,6 +830,20 @@ static void sink_stop(void)
         desc[i].dw0 = 0;
     commit_dcache_range((const void *)desc, sizeof(desc));
     pend_valid = 0;
+
+    /* Restore the interrupt invariant. sink_lock() masks GDMA_INT_DONE on the
+     * first lock and sink_unlock() only unmasks it when the count returns to
+     * zero, so a stop that arrives while the mixer still holds the play lock
+     * leaves the count nonzero and the completion masked for good: the next
+     * session's sink_unlock() decrements to a nonzero count and skips the
+     * re-enable, no OUT_DONE ever fires, and playback hangs with the buffer
+     * full. Measured that way -- locked=2, int_ena 0x4 with the DONE bit clear,
+     * dma irq=0, pcmbuf 181504/524288 and rising.
+     *
+     * A stop ends the session, so any lock still held is moot: drop the
+     * accounting and unmask unconditionally. */
+    locked = 0;
+    wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
 }
 
 static void sink_set_freq(uint16_t freq)
@@ -821,22 +859,11 @@ static void sink_init(void)
 
     audiohw_preinit();
 
-    /* Reset and configure the ADC before the first rate is programmed, so the
-     * clock registers land on a chip that has actually been reset.
-     *
-     * The result is checked and reported. It was discarded, which is exactly the
-     * mistake that hid the ES8311 I2C bug for so long: with the return value
-     * dropped, an ADC that never answered on the bus is indistinguishable from
-     * one that configured perfectly, and every symptom downstream of it -- no
-     * captured audio, no data on the I2S input -- looks like a fault in the
-     * capture path rather than an absent device. */
-#ifdef HAVE_RECORDING
-    if (!es7210_init(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]))
-        printf("ES7210: init FAILED (no answer at 0x41?)\n");
-    else
-        printf("ES7210: init ok\n");
-#endif
-
+    /* The capture ADC is deliberately not brought up here. This is the playback
+     * sink: resetting the ES7210 and programming its dividers on every boot --
+     * and on every playback rate change -- and holding the I2C bus across two
+     * 10ms delays to do it, belongs to the recording session that needs it and
+     * nowhere else. It now happens in pcm_rec_dma_start(). */
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
 
     /* Snapshot the transmit path the instant initialisation completes. Compared

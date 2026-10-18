@@ -721,6 +721,24 @@ struct font* font_get(int font)
         if (buflib_allocations[font] > 0)
         {
             struct buflib_alloc_data *alloc = core_get_data(buflib_allocations[font]);
+            /* TEMPORARY probe: reads nothing but alloc itself, so it is safe on
+               a bad handle. The last line before a panic names the font id and
+               the handle that produced the bad pointer. */
+            static int fg_probe = 0;
+            /* Fire only on a pointer that cannot be a data address. Valid
+               buflib memory is the external window (0x3C......) or internal
+               DRAM (0x3F......); anything else is a bad handle reading past
+               the handle table. No cap that benign calls can exhaust. */
+            if ((unsigned int)alloc < 0x3c000000u ||
+                (unsigned int)alloc >= 0x40000000u)
+            {
+                if (fg_probe < 8)
+                {
+                    fg_probe++;
+                    printf("fg BAD: font=%d h=%d alloc=%p\n", font,
+                           buflib_allocations[font], (void *)alloc);
+                }
+            }
             pf = &alloc->font;
             if (pf && pf->height)
                 return pf;
