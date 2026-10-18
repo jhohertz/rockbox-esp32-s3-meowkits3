@@ -167,6 +167,13 @@ void ICODE_ATTR gdma_irq(void);
 static void gdma_tx_isr(void *arg)
 {
     (void)arg;
+    /* Nothing may print here. A printf in this handler takes the newlib stdout
+       lock, lock_acquire_generic() sees it claimed from interrupt context and
+       aborts the process -- measured backtrace: gdma_tx_isr -> printf ->
+       _vfprintf_r -> __retarget_lock_acquire_recursive -> lock_acquire_generic
+       -> abort. gdma_irq() already counts entries in xt_dma_irq_n, which
+       i2s_audio_probe() reports from thread context, so nothing is lost by
+       keeping quiet. */
     gdma_irq();
 }
 
@@ -754,7 +761,22 @@ static void sink_lock(void)
 static void sink_unlock(void)
 {
     if (--locked == 0)
+    {
+        /* TEMPORARY: event-driven, so it cannot sample the wrong moment the way
+           a dump taken inside sink_play() did -- the mixer holds this lock across
+           mixer_start_pcm(), so any snapshot in that call is inside the locked
+           region by construction. If "SINK: first play" prints and this never
+           does, the play lock is never released: GDMA_INT_DONE stays masked for
+           the rest of the session and the codec blocks waiting for pcmbuf to
+           drain while the mixer blocks waiting for the codec. */
+        static bool unlocked_once = false;
+        if (!unlocked_once)
+        {
+            unlocked_once = true;
+            printf("SINK: play lock released (first unlock to zero)\n");
+        }
         wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
+    }
 }
 
 static void sink_play(const void *addr, size_t size)
@@ -786,17 +808,6 @@ static void sink_play(const void *addr, size_t size)
         start_tx();
         wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
 
-        /* TEMPORARY: give the engine time to take a descriptor, then dump. If
-           dma irq climbs and gdma out goes nonzero the transmit path is alive and
-           the fault is elsewhere; if both stay zero with the lock released, the
-           engine really is parked. Blocking here is acceptable precisely because
-           playback is already not progressing. */
-        if (xt_sink_play_n == 1)
-        {
-            sleep(HZ/5);
-            printf("CHAIN: 200ms after first start_tx --\n");
-            i2s_audio_probe();
-        }
     }
     else
     {
@@ -807,6 +818,17 @@ static void sink_play(const void *addr, size_t size)
         pend_size = size;
         pend_valid = 1;
         queued++;
+    }
+
+    /* TEMPORARY: dump from thread context once the engine has had many
+       completions, so dma irq, gdma out and the descriptor lengths are live.
+       Not on the first play: the mixer still holds the play lock there, so a
+       masked OUT_DONE and started=0 are both correct and say nothing. And never
+       from the ISR -- a printf there takes the newlib stdout lock and aborts. */
+    if (xt_sink_play_n == 16)
+    {
+        printf("CHAIN: at 16th play --\n");
+        i2s_audio_probe();
     }
 }
 
