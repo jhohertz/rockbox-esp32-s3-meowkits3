@@ -43,7 +43,16 @@
  * regions do not overlap, rather than letting a collision corrupt silently.
  */
 #define XT_DROMORIG         0x3C000020
-#define XT_CODECBUF_ADDR    (XT_DROMORIG + (MEMORYSIZE * 0x100000) \
+/* The window is MEMORYSIZE MB from 0x3C000000 and the flash MMU has exactly that
+ * many 64 KB entries pointing at PSRAM, so the arena must END at
+ * 0x3C000000 + MEMORYSIZE MB -- there is no entry beyond it to map, because all
+ * MEMORYSIZE*16 physical pages are already claimed. XT_DROMORIG carries +0x20 so
+ * flash-mapped segments satisfy the cache's page-congruence rule, and codecbuf /
+ * pluginbuf are derived from it, so without subtracting that offset here the top
+ * of the arena lands 32 bytes past the last mapped entry -- the defect the boot
+ * check in system-xtensa.c reports. Subtracting it also page-aligns both buffers,
+ * which they wanted anyway. */
+#define XT_CODECBUF_ADDR    (XT_DROMORIG + (MEMORYSIZE * 0x100000) - 0x20 \
                              - PLUGIN_BUFFER_SIZE - CODEC_SIZE)
 #define XT_PLUGINBUF_ADDR   (XT_CODECBUF_ADDR + CODEC_SIZE)
 #define XT_LOADADDRESS_ADDR (XT_PLUGINBUF_ADDR + PLUGIN_BUFFER_SIZE)
