@@ -1531,6 +1531,18 @@ static void tap(void)
             ps->bpm = 60*timerfreq_div*tap_count/tap_time;
 
             if(ps->bpm > 400) ps->bpm = 400;
+            /* The upper clamp above had no lower counterpart, and this division
+             * truncates. Tap once, wait, tap again: tap_time keeps growing
+             * because the timeout reset in timer_callback() is guarded by
+             * `tap_count > 1`, so a lone tap never expires. Past roughly 60s of
+             * ticks (tap_time > 60*timerfreq_div) the quotient becomes 0, and
+             * calc_period() then does fp_div(..., bpm<<16, 16) with bpm == 0 --
+             * a divide-by-zero exception straight out of the timer path.
+             *
+             * 1 is not a new policy invented here: change_bpm() already clamps to
+             * [1, 400] two hundred lines below, so bpm >= 1 is this plugin's own
+             * invariant and tap() was simply the one writer that skipped it. */
+            if(ps->bpm < 1) ps->bpm = 1;
         }
         tap_timeout = (tap_count+2)*tap_time/tap_count;
     }
