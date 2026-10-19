@@ -158,31 +158,9 @@ pong.c
 sliding_puzzle.c
 snake.c
 snake2.c
-#ifndef MEOWKIT_ESP32S3
-/* Needs its own ESP32S3_PAD keymap. Un-gating the rest showed these have
- * no usable HAVE_TOUCHSCREEN fallback: either none at all, or one that omits
- * the action the plugin cannot work without (blackjack's BJACK_QUIT, and
- * solitaire's SOL_QUIT is literally commented out at solitaire.c:806). The
- * 3x3 grid here is complete and canonical -- BUTTON_TOPLEFT..BUTTON_BOTTOMRIGHT
- * including MIDDLE/CENTER, which is what button.h:124 checks -- so the buttons
- * exist; these files just never name them. 16 sibling plugins needed nothing
- * more than guarding their #error, so check that pattern before writing a
- * keymap here. */
 solitaire.c
-#endif
 sokoban.c
-#ifndef MEOWKIT_ESP32S3
-/* Needs its own ESP32S3_PAD keymap. Un-gating the rest showed these have
- * no usable HAVE_TOUCHSCREEN fallback: either none at all, or one that omits
- * the action the plugin cannot work without (blackjack's BJACK_QUIT, and
- * solitaire's SOL_QUIT is literally commented out at solitaire.c:806). The
- * 3x3 grid here is complete and canonical -- BUTTON_TOPLEFT..BUTTON_BOTTOMRIGHT
- * including MIDDLE/CENTER, which is what button.h:124 checks -- so the buttons
- * exist; these files just never name them. 16 sibling plugins needed nothing
- * more than guarding their #error, so check that pattern before writing a
- * keymap here. */
 star.c
-#endif
 starfield.c
 vu_meter.c
 wormlet.c

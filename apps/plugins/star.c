@@ -722,6 +722,27 @@
 #define STAR_LEVEL_DOWN_NAME "Start"
 #define STAR_LEVEL_REPEAT_NAME "Square"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define STAR_TOGGLE_CONTROL_NAME   "A"
+#define STAR_QUIT_NAME             "B"
+#define STAR_LEVEL_DOWN_NAME       "PREV"
+#define STAR_LEVEL_REPEAT_NAME     "RESET"
+#define STAR_LEVEL_UP_NAME         "NEXT"
+#define STAR_UP    BUTTON_UP
+#define STAR_DOWN  BUTTON_DOWN
+#define STAR_LEFT  BUTTON_LEFT
+#define STAR_RIGHT BUTTON_RIGHT
+#define STAR_TOGGLE_CONTROL  BUTTON_A
+#define STAR_TOGGLE_CONTROL2 BUTTON_CENTER
+#define STAR_LEVEL_UP   BUTTON_MIDRIGHT
+#define STAR_LEVEL_DOWN BUTTON_MIDLEFT
+#define STAR_LEVEL_REPEAT BUTTON_TOPMIDDLE
+#define STAR_QUIT     BUTTON_B
 #else
 #error No keymap defined!
 #endif

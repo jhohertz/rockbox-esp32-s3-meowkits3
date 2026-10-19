@@ -655,6 +655,28 @@ void I_ShutdownGraphics(void)
 #define DOOMBUTTON_ENTER   BUTTON_POWER
 #define DOOMBUTTON_WEAPON  BUTTON_USER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+/* Movement on the pad, which is the one thing that must be simultaneous and
+ * repeat-friendly; everything else is a discrete action and goes on the
+ * screen. */
+#define DOOMBUTTON_UP    BUTTON_UP
+#define DOOMBUTTON_DOWN  BUTTON_DOWN
+#define DOOMBUTTON_LEFT  BUTTON_LEFT
+#define DOOMBUTTON_RIGHT BUTTON_RIGHT
+#define DOOMBUTTON_SHOOT BUTTON_A
+#define DOOMBUTTON_ESC   BUTTON_B
+#define DOOMBUTTON_OPEN  BUTTON_MIDRIGHT
+#define DOOMBUTTON_ENTER BUTTON_MIDLEFT
+#define DOOMBUTTON_SCROLLWHEEL
+#define DOOMBUTTON_SCROLLWHEEL_CW BUTTON_TOPMIDDLE
+#define DOOMBUTTON_SCROLLWHEEL_CC BUTTON_BOTTOMMIDDLE
+#define DOOMBUTTON_WEAPON   BUTTON_TOPRIGHT
+#define DOOMBUTTON_MAP      BUTTON_BOTTOMRIGHT
 #else
 #error Keymap not defined!
 #endif

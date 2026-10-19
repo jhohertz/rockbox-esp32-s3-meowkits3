@@ -320,6 +320,19 @@
 #define ZX_SELECT       BUTTON_SELECT
 #define ZX_MENU         BUTTON_MENU
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define ZX_UP     BUTTON_UP
+#define ZX_DOWN   BUTTON_DOWN
+#define ZX_LEFT   BUTTON_LEFT
+#define ZX_RIGHT  BUTTON_RIGHT
+#define ZX_SELECT  BUTTON_A
+#define ZX_SELECT2 BUTTON_CENTER
+#define ZX_MENU    BUTTON_B
 #else
 #error Keymap not defined!
 

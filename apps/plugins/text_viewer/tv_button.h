@@ -604,6 +604,27 @@
 #define TV_MENU         BUTTON_MENU
 #define TV_AUTOSCROLL   BUTTON_USER
 #define TV_BOOKMARK     BUTTON_SELECT
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid.
+
+ * Only the physical keys are named here on purpose. The HAVE_TOUCHSCREEN block
+ * below already assigns a second binding to each action it has room for
+ * (TV_SCROLL_UP2, TV_SCROLL_DOWN2, TV_MENU2, TV_QUIT2) onto TOPMIDDLE,
+ * BOTTOMMIDDLE, TOPRIGHT and TOPLEFT, so defining those cells here too just
+ * produced duplicate case labels (text_viewer.c:176). What is left free after
+ * it runs is the bottom row and the middle sides, which is where the fine
+ * scroll and the bookmark go -- fine scroll under the thumb at the bottom,
+ * because that is the one you want while reading. */
+#define TV_SCROLL_UP    BUTTON_UP
+#define TV_SCROLL_DOWN  BUTTON_DOWN
+#define TV_SCREEN_LEFT  BUTTON_LEFT
+#define TV_SCREEN_RIGHT BUTTON_RIGHT
+#define TV_MENU         BUTTON_A
+#define TV_QUIT         BUTTON_B
+#define TV_AUTOSCROLL   BUTTON_CENTER
+#define TV_LINE_UP      BUTTON_BOTTOMLEFT
+#define TV_LINE_DOWN    BUTTON_BOTTOMRIGHT
+#define TV_BOOKMARK     BUTTON_MIDLEFT
 
 #else
 #error No keymap defined!
