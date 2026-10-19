@@ -223,6 +223,7 @@ void i2s_init(void);
 void i2s_audio_probe(void);
 void i2s_tx_gdma_peek(const char *where);   /* TEMPORARY */
 void xt_arena_dump(const char *why);        /* TEMPORARY: debug-xtensa.c */
+void xt_stack_report(const char *why);      /* TEMPORARY: thread-idf.c */
 #ifdef HAVE_RECORDING
 bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
 #endif
