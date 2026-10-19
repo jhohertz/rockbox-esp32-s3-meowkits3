@@ -118,20 +118,26 @@ int button_read_device(int *data)
     if (!gpio_read_pin(PIN_JOY_RIGHT)) b |= BUTTON_RIGHT;
 
 #ifdef HAVE_TOUCHSCREEN
-    /* The read queued on the previous tick has usually finished by now; the driver's
-     * callback has already filled ft6x06_state. If it has not, the state still holds
-     * the last completed read, which is what a polled panel means in practice.
+    /* The panel is polled, not interrupt-driven: FT6336's INT pin is not wired
+     * on this board. ft6x06_irq_handler() only queues the next read
+     * (i2c_async_queue with TIMEOUT_NOBLOCK and I2C_Q_ONCE), so it never blocks
+     * here; the 14-byte transfer happens on the I2C controller's own interrupt
+     * and its callback fills ft6x06_state whenever it lands. The read queued on
+     * the previous tick has usually finished by now, and if it has not, the state
+     * still holds the last completed read -- which is what a polled panel means
+     * in practice.
+     *
+     * This call was `if (0)` for a long time on the stated grounds that
+     * button_read_device() runs inside the level-1 handler and a 1.5 ms transfer
+     * every tick would burn a third of the CPU in the interrupt. That premise was
+     * wrong, and main.c says so: the gptimer alarm advances current_tick only,
+     * and the tick tasks -- including button_tick, registered by button_init via
+     * tick_add_task -- run in tick_task_thread, ordinary thread context. So there
+     * is no ISR cost to pay and no reason to throttle. If touch ever stops
+     * responding again, check that this call is live before suspecting the panel,
+     * the calibration, or the driver.
      */
-    /* The panel is polled, not interrupt-driven, but a 14-byte read at 100 kHz
-     * costs about 1.5 ms and this runs inside the level-1 handler. Polling every
-     * tick would spend a third of the CPU in the interrupt; every fifth tick is
-     * plenty for a finger.
-     */
-    /* Bring-up: the touch poll is disabled so the tick does not perform I2C.
-     * Re-enable once the main-thread stall is resolved.
-     */
-    if (0)
-        ft6x06_irq_handler();
+    ft6x06_irq_handler();
 
     if (touchscreen_get_mode() == TOUCHSCREEN_POINT) {
         /* Point mode can only carry one coordinate pair per button event. */
