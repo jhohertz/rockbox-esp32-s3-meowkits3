@@ -2936,8 +2936,8 @@ sim config (`sim => 1` in `tools/builds.pm`).
 ./tools/rockboxdev.sh --target=e
 
 # configure + build
-mkdir build-esp32s3 && cd build-esp32s3
-../tools/configure --target=<modelname>
+mkdir build-meowkits3 && cd build-meowkits3   # the directory NAME matters, see below
+../tools/configure --target=meowkit-esp32s3
 make
 ```
 
@@ -3156,7 +3156,15 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and depends on generated headers (`lang.h`, `sysfont.h`) existing — a fresh
   tree needs at least one full run.
 - `tools/configure` must be run from the build directory; `tools/autoconf.pl`
-  infers the target from the directory name.
+  infers the target from the directory name. Two consequences, both learned the
+  hard way: the directory must be named `build-<modelname>` (so `build-meowkits3`,
+  not `build-esp32s3`), and `--target` takes the *buildfor* name
+  (`meowkit-esp32s3`), which is not the modelname. A scratch directory with any
+  other name prints "Please select a supported target platform!". Separately,
+  configure detects the arch by running `$CPP -dD`, so the ESP toolchain must be on
+  `PATH` (`export IDF_PATH=$HOME/esp/esp-idf; . $IDF_PATH/export.sh`); without it
+  configure warns "Could not determine target arch" and **still writes autoconf.h
+  and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
 - Anything the DMA writes back must be `volatile`. A descriptor's owner bit changes
