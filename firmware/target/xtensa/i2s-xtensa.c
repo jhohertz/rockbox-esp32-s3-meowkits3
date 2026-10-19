@@ -413,15 +413,33 @@ static void arm(int i, unsigned long len)
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
     /* Zero terminates the link list: the engine stops rather than wrapping.
      *
-     * These descriptors were briefly self-linked, on the theory that a stray
-     * restart then could not walk into a slot nobody had armed. It could not
-     * walk anywhere, but it also never stopped. Measured consequences: one
-     * out_dscr_err per frame (err tracked irq exactly, +1, because the engine
-     * followed next back into desc[0] after we had taken it back), and a
-     * noticeable lag on pause while it replayed the last buffer.
+     * Three variants, and the record matters because two of them were conflated
+     * for a long time:
      *
-     * This is the encoding of imx233's `dma.next = NULL`: the transfer ends, and
-     * the driver restarts it deliberately. */
+     *  - next = &desc[i] (SELF-linked) was tried and is genuinely bad: the engine
+     *    follows one slot forever, giving one out_dscr_err per frame (err tracked
+     *    irq exactly, +1) and a noticeable lag on pause while it replayed the last
+     *    buffer. That measurement is real and is what motivated this line.
+     *
+     *  - next = &desc[(i+1) % XT_TX_RING] (a real ring, which is what gdma_init()
+     *    already builds before the first arm() call un-chains it) was tried on the
+     *    reasoning that self-linking does not predict it -- the engine walks
+     *    forward instead of looping, and the owner bit already gates every slot.
+     *    Result: no improvement. Clicks at frame boundaries persisted, and the CHAIN
+     *    probe captured no non-zero gdma counters during playback at all, so there
+     *    is no evidence the ring ever engaged, and no evidence that it did not.
+     *    Reverted. This is NOT a refutation of the ring; it is an inconclusive
+     *    experiment, and the reason is the next bullet.
+     *
+     *  - next = 0 (what is here) is the encoding of imx233's `dma.next = NULL`:
+     *    the transfer ends and the driver restarts it deliberately.
+     *
+     * The blocker on all of this is observability, not the descriptor link. The
+     * CHAIN dump does not sample during steady playback, so a per-frame property
+     * like slot occupancy cannot be measured by it -- every comparison so far has
+     * been against a snapshot taken at some other moment. Before this line is
+     * changed again, the probe needs a periodic sample while audio is running;
+     * otherwise any result here is unfalsifiable. */
     desc[i].next   = 0;
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
