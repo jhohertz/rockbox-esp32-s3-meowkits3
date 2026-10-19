@@ -342,3 +342,48 @@ the swvol/mixer path's assumption about caller context, not in this driver.
 - Peak amplitude computed as `int16` is meaningless if the width assumption is
   wrong; it reported maxima above 32767, which is impossible. Count non-zero
   bytes instead.
+
+## CONCLUSION — Stage 1b cannot be completed: IDF's esp_driver_i2s TX cannot satisfy Rockbox's driver contract
+
+Proven from IDF source, not inferred:
+
+    components/esp_hw_support/dma/gdma.c:900
+        if ((intr_status & GDMA_LL_EVENT_TX_EOF) && tx_chan->cbs.on_trans_eof)
+            need_yield |= tx_chan->cbs.on_trans_eof(...);
+
+`tx_chan->cbs` is a single stored struct, not a list. IDF's I2S driver occupies
+`on_trans_eof` with `i2s_dma_tx_callback` (i2s_common.c:843), and *that callback is
+what refills `dma.msg_queue`*. Registering our own overwrites it, after which
+`i2s_channel_write()` blocks forever. The two are mutually exclusive by
+construction:
+
+| who owns the GDMA completion callback | consequence |
+|---|---|
+| IDF | the driver's only completion observable is `msg_queue`, reachable only by calling `i2s_channel_write()`. There is no way to invoke `pcm_play_dma_complete_callback()` at the hardware moment. |
+| us | IDF's write path breaks, so it is no longer "using IDF drivers". |
+
+Rockbox requires the driver to call the core's completion callback when the
+hardware has actually finished transmitting — that call is what makes the mixer
+produce, and what wakes the codec via pcmbuf space. IDF offers no hook for it
+(`grep` for `register_tx_callback` / `i2s_done_cb_t` across `esp_driver_i2s`:
+nothing). The MeowKit reference firmware never needs one because it has no such
+contract: `Speaker_Class::_i2s_write()` is a bare `i2s_write(..., portMAX_DELAY)`
+producer loop with no consumption reporting at all.
+
+**Therefore the hand-rolled GDMA ring is not incidental complexity to be removed;
+it is the integration point.** The parts of the migration that were always sound
+stay: TX uses IDF's *HAL* (`i2s_hal_std_set_tx_slot`), and RX uses full IDF
+`esp_driver_i2s` end to end. Only the TX GDMA layer is DIY, and it has to be.
+
+Do not re-attempt Stage 1b. If IDF ever exposes a per-descriptor TX completion
+hook, revisit.
+
+## Where the remaining defects actually live
+
+`arm()` runs with `out_auto_wrback` cleared and `next = 0`, so the engine STOPS
+after each descriptor and software restarts it. Despite `XT_TX_RING 4`, only one
+frame — 5.8 ms — is ever in flight. Any hiccup longer than that is audible, which
+is the single-frame dropout and the micro-stutter. The fix is the other mode our
+own AGENTS.md records: `out_auto_wrback` ON with every slot DMA-owned and filled,
+so 3-4 frames (17-23 ms) are queued continuously and there is no per-frame
+restart at all.
