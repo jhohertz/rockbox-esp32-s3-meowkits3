@@ -252,6 +252,13 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * never a descriptor it is not allowed to take and therefore no error and no
  * park. Depth 4 also matches what the board's reference firmware uses
  * (dma_buf_count = 4), which is the same conclusion reached independently. */
+/* Four, free-running. Depth is what makes the refill race winnable: OUT_DONE on
+ * this GDMA means "transferred to the peripheral", not "played", and the I2S FIFO
+ * is only ~256 bytes (1.45ms), so it bridges nothing. With two slots the DONE
+ * that tells us to refill slot 0 arrives while the engine is already heading back
+ * to it (measured: fifo f0/e1, stutter slightly worse than the 1-frame design).
+ * With four, the engine takes three more descriptors -- 17ms -- before it needs
+ * the slot we just rearmed. */
 #define XT_TX_RING 4
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
@@ -284,6 +291,18 @@ static bool playing;
  * because in the normal case reporting the completion causes ops.play to hand us
  * the next one before we ever need to ask. */
 static volatile int queued;
+/* The slot that has just been retired and may be rearmed. The engine retires
+ * slots in the order we arm them, so one modulo counter tracks it. */
+static volatile int done_slot;
+/* Rockbox's own convention for a completion arriving inside the play lock
+ * (as3525's play_callback_pending): record it, replay it on unlock. */
+static volatile int cb_pending;
+/* Length of the last real frame, so an armed silence slot matches the timing. */
+static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
+/* DSCR_ERR entries with no intervening DONE. Two in a row means the engine is
+ * hitting a slot the CPU owns, and restarting onto it again is a storm -- the
+ * interrupt-watchdog panic measured at first play with a free-running ring. */
+static volatile int dscr_streak;
 
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
@@ -550,6 +569,9 @@ void i2s_set_frequency(unsigned long rate)
 #endif
 }
 
+static void refill(void);      /* defined with the transmit path below */
+static void fill(int i, const void *src, unsigned long len);
+
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
@@ -582,7 +604,9 @@ static void arm(int i, unsigned long len)
      * been against a snapshot taken at some other moment. Before this line is
      * changed again, the probe needs a periodic sample while audio is running;
      * otherwise any result here is unfalsifiable. */
-    desc[i].next   = 0;
+    /* Keep the chain gdma_init() built -- see the note in gdma_init() on why
+     * auto-writeback and next = 0 are the one combination that cannot work. */
+    desc[i].next   = (uint32_t)(unsigned long)&desc[(i + 1) % XT_TX_RING];
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
      * slot safe rather than fatal. */
@@ -611,8 +635,56 @@ static struct {
  * itself become the dropout we are trying to observe. */
 static volatile unsigned long bl_n, bl_zero, bl_sum;
 
+/* Arm a slot with silence. auto-writeback means the engine walks the ring
+ * whether or not we have data, so an empty slot still has to be owned and filled;
+ * that is the invariant this mode buys and the price it charges. */
+static void fill_silence(int i)
+{
+    unsigned long len = tx_frame_len;
+
+    memset(dma_buf[i], 0, len);
+    discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
+    arm(i, len);
+    commit_dcache_range(dma_buf[i], len);
+    commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
+}
+
+/* Take the walk down, make every slot owned and filled, and start exactly once.
+ *
+ * This is the storm guard. With a free-running ring a single unowned descriptor
+ * is self-sustaining: the engine reaches it, raises out_dscr_err, and the handler
+ * answers with link.start -- onto the same unowned descriptor. Measured as an
+ * interrupt-watchdog panic on CPU0 in ISR context at first play. Re-arming the
+ * WHOLE ring before restarting is what makes the second error impossible rather
+ * than unlikely, because there is then no slot the CPU owns anywhere in the
+ * cycle. */
+static void tx_recover(void)
+{
+    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
+
+    for (int i = 0; i < XT_TX_RING; i++)
+    {
+        if (pend_valid)
+        {
+            fill(i, (const void *)pend_addr, (unsigned long)pend_size);
+            pend_valid = 0;
+        }
+        else
+            fill_silence(i);
+    }
+
+    done_slot = 0;
+    dscr_streak = 0;
+
+    wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
+}
+
 static void fill(int i, const void *src, unsigned long len)
 {
+    if (len)
+        tx_frame_len = len;
+
     memcpy(dma_buf[i], (const void *)src, len);
 
     {
@@ -742,7 +814,11 @@ static void gdma_init(void)
      * keep auto-writeback on, chain next through all four slots, and keep every
      * slot owned by the DMA and filled. What cannot work is either setting with
      * next = 0. */
-    wr(GDMA_TX_CONF0, (1u << 4));            /* outdscr_burst_en */
+    /* Free-running: the engine follows next unconditionally. This is only safe
+     * with every slot owned and filled at all times, which is what start_tx()'s
+     * preroll, the ISR's refill-the-completed-slot rule and tx_recover()
+     * guarantee. Paired with the chained next in arm(). */
+    wr(GDMA_TX_CONF0, (1u << 4) | (1u << 2));   /* outdscr_burst_en | out_auto_wrback */
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
 
@@ -1642,9 +1718,40 @@ static void start_tx(void)
      * after its bounded wait expires. */
     semaphore_release(&tx_sem);
 #else
+    /* Preroll every slot before the walk begins, so the engine never reaches a
+     * descriptor the CPU owns. Ask the core at most once per slot and stop
+     * asking at the first decline -- driving pcm_play_dma_complete_callback()
+     * repeatedly at start makes the swvol path call pcm_play_stop_int() once it
+     * runs out, which re-enters sink_stop() mid-preroll. Silence for the rest is
+     * correct regardless: the invariant is "owned and filled", not "real audio". */
+    {
+        bool core_exhausted = false;
+
+        for (int i = 0; i < XT_TX_RING; i++)
+        {
+            if (!pend_valid && !core_exhausted)
+            {
+                refill();
+                if (!pend_valid)
+                    core_exhausted = true;
+            }
+
+            if (pend_valid)
+            {
+                fill(i, (const void *)pend_addr, (unsigned long)pend_size);
+                pend_valid = 0;
+            }
+            else
+                fill_silence(i);
+        }
+
+        done_slot = 0;
+        dscr_streak = 0;
+    }
+
     i2s_ll_tx_start(tx_hal.dev);
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
-    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
+    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
 #endif
 }
 
@@ -1789,7 +1896,16 @@ void ICODE_ATTR gdma_irq(void)
            comment has always said, and what the code did not do: it wrote
            link.stop, guaranteeing the deadlock described above. Now it starts. */
         xt_dscr_err_n++;
-        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));      /* link.start */
+
+        /* The storm guard. One DSCR_ERR is a transient and restarting is right.
+         * Two in a row with no DONE between means the engine is sitting on a slot
+         * the CPU owns, so restarting onto it just errors again -- and the handler
+         * re-enters itself forever. Recover properly instead: stop, re-arm the
+         * whole ring so no slot can be unowned, start once. */
+        if (++dscr_streak >= 2)
+            tx_recover();
+        else
+            wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));  /* link.start */
     }
 
     if (st & GDMA_INT_DONE)
@@ -1807,7 +1923,10 @@ void ICODE_ATTR gdma_irq(void)
          *
          * The I2S FIFO bridges the gap; it was measured running full, so there is
          * real capacity between a stopped outlink and the DAC. */
-        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
+        int slot = done_slot;
+
+        done_slot = (slot + 1) % XT_TX_RING;
+        dscr_streak = 0;      /* a DONE proves the walk is healthy again */
 
         /* desc[0] is the only descriptor in play. The outlink was stopped above
          * before anything else could be fetched, so there is no ring position to
@@ -1819,21 +1938,31 @@ void ICODE_ATTR gdma_irq(void)
         if (queued > 0)
             queued--;
 
-        /* Report the consumption first: that is what makes the mixer build the
-         * next frame and hand it down through sink_play(), which lands in the
-         * pending slot. */
+        /* A completion arriving inside the play lock is recorded and replayed on
+         * unlock -- as3525's play_callback_pending convention, not a mask and
+         * hope. */
+        if (locked)
+        {
+            cb_pending = 1;
+            trefill = esp_cpu_get_cycle_count();
+            goto done_exit;
+        }
+
         refill();
         trefill = esp_cpu_get_cycle_count();
 
         if (pend_valid)
         {
-            fill(0, (const void *)pend_addr, (unsigned long)pend_size);
+            fill(slot, (const void *)pend_addr, (unsigned long)pend_size);
             pend_valid = 0;
-            /* Re-arm and go again. Writing the address re-latches the descriptor
-             * list at desc[0]; start begins the walk from there. */
-            wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
-            wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
         }
+        else
+            fill_silence(slot);
+
+        /* No link.stop and no link.start: the engine is already walking on. The
+         * restart that used to sit here is the gap that clicked. */
+done_exit:
+        ;
         /* Nothing to play: stay stopped. The core's stop path handles the end of
          * stream; a genuine underrun simply pauses the transport rather than
          * feeding the DAC a descriptor the engine is not allowed to read. */
@@ -1902,6 +2031,23 @@ static void sink_unlock(void)
     if (tx_locked > 0)
         tx_locked--;
 #endif
+
+    if (locked == 0 && cb_pending)
+    {
+        int slot = done_slot;
+
+        cb_pending = 0;
+        done_slot = (slot + 1) % XT_TX_RING;
+        refill();
+
+        if (pend_valid)
+        {
+            fill(slot, (const void *)pend_addr, (unsigned long)pend_size);
+            pend_valid = 0;
+        }
+        else
+            fill_silence(slot);
+    }
 
     if (locked == 0)
     {
