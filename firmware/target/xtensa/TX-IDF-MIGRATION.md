@@ -387,3 +387,33 @@ is the single-frame dropout and the micro-stutter. The fix is the other mode our
 own AGENTS.md records: `out_auto_wrback` ON with every slot DMA-owned and filled,
 so 3-4 frames (17-23 ms) are queued continuously and there is no per-frame
 restart at all.
+
+## Follow-up: does >1 frame in flight break the mixer? NO — measured on the DIY path
+
+Asked because the IDF failure looked like it might be "Rockbox's contract cannot
+tolerate a driver that keeps more than one buffer live". It is not. Converting the
+hand-rolled path to a free-running double buffer (`out_auto_wrback` on, `next`
+chained, ring prerolled, ISR refilling the completed slot with no
+`link.stop`/`link.start`) gave **continuous play** with `all-zero` frames at 4%
+against the 1-frame baseline's 1%. So multi-frame lookahead is safe, and the IDF
+silence was specific to IDF's `i2s_channel_write()` path.
+
+Two facts that came out of it, both load-bearing for any future attempt:
+
+1. **`OUT_DONE` means "transferred to the peripheral", not "played by the DAC".**
+   The I2S FIFO is ~256 bytes — about 1.45 ms — so it bridges nothing. With two
+   slots the DONE that tells us to refill slot 0 arrives while the engine is
+   already heading back to it, so we arm a descriptor the engine may be about to
+   fetch. Measured symptom: `fifo f0/e1` (empty) and stutter slightly *worse* than
+   the 1-frame design.
+2. **Four slots hung**: interrupt-watchdog panic on CPU0 in ISR context, right at
+   `SINK: first play`. Making the preroll conservative (ask the core at most once
+   per slot, stop at the first decline, arm silence for the rest) did **not** fix
+   it, so the storm is in the free-running ring itself, not in over-asking the
+   core. The prime suspect is the `GDMA_INT_DSCR_ERR` branch, which does
+   `link.start` unconditionally: if any slot ends up unowned, that re-triggers
+   forever. Not yet proven.
+
+Reverted; the shipping path is unchanged. If this is picked up, prove the
+DSCR_ERR-storm theory first (count DSCR_ERR entries and refuse to `link.start`
+twice in a row without an intervening DONE) rather than varying ring depth again.
