@@ -302,6 +302,23 @@ const struct button_mapping pla_main_ctx[] =
     { PLA_DOWN_REPEAT,      BUTTON_DOWN|BUTTON_REPEAT,          BUTTON_NONE },
     { PLA_LEFT_REPEAT,      BUTTON_LEFT|BUTTON_REPEAT,          BUTTON_NONE },
     { PLA_RIGHT_REPEAT,     BUTTON_RIGHT|BUTTON_REPEAT,         BUTTON_NONE },
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+    /* MeowKit: the 5-way gives the four directions directly.
+     *
+     * Worth knowing why this was needed at all rather than assumed to work. The
+     * #else below does not #error when HAVE_TOUCHSCREEN is defined -- it compiles
+     * the list with no PLA_* entries whatsoever. So a touchscreen target that also
+     * has real buttons silently gets a deaf pluginlib: the plugin loads, runs,
+     * draws, and ignores every key. 2048 was exactly that. If you are on a
+     * touchscreen target and plugins respond to nothing, look here first. */
+    { PLA_UP,               BUTTON_UP,                          BUTTON_NONE },
+    { PLA_DOWN,             BUTTON_DOWN,                        BUTTON_NONE },
+    { PLA_LEFT,             BUTTON_LEFT,                        BUTTON_NONE },
+    { PLA_RIGHT,            BUTTON_RIGHT,                       BUTTON_NONE },
+    { PLA_UP_REPEAT,        BUTTON_UP|BUTTON_REPEAT,            BUTTON_NONE },
+    { PLA_DOWN_REPEAT,      BUTTON_DOWN|BUTTON_REPEAT,          BUTTON_NONE },
+    { PLA_LEFT_REPEAT,      BUTTON_LEFT|BUTTON_REPEAT,          BUTTON_NONE },
+    { PLA_RIGHT_REPEAT,     BUTTON_RIGHT|BUTTON_REPEAT,         BUTTON_NONE },
 #else
 #   ifndef HAVE_TOUCHSCREEN
 #       error pluginlib_actions: No directions defined
@@ -554,6 +571,15 @@ const struct button_mapping pla_main_ctx[] =
     {PLA_EXIT,              BUTTON_POWER,                       BUTTON_NONE},
     {PLA_SELECT,            BUTTON_A,                           BUTTON_NONE},
     {PLA_SELECT_REL,        BUTTON_A|BUTTON_REL,                BUTTON_SELECT},
+    {PLA_SELECT_REPEAT,     BUTTON_A|BUTTON_REPEAT,             BUTTON_NONE},
+#elif (CONFIG_KEYPAD == ESP32S3_PAD)
+    /* No power key is wired to the GPIO matrix as a button, so exit is a held B.
+     * The REPEAT entry must come first: the list is searched in order and a bare
+     * BUTTON_B entry would otherwise swallow the held press too. */
+    {PLA_EXIT,              BUTTON_B|BUTTON_REPEAT,             BUTTON_NONE},
+    {PLA_CANCEL,            BUTTON_B,                           BUTTON_NONE},
+    {PLA_SELECT,            BUTTON_A,                           BUTTON_NONE},
+    {PLA_SELECT_REL,        BUTTON_A|BUTTON_REL,                BUTTON_A},
     {PLA_SELECT_REPEAT,     BUTTON_A|BUTTON_REPEAT,             BUTTON_NONE},
 #else
 #   ifndef HAVE_TOUCHSCREEN
