@@ -296,7 +296,15 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * without a session starting. The bursts are track switches. Depth may still
  * blunt them, but it is not aimed at the mechanism, and the transition itself is
  * where the real answer is. */
-#define XT_TX_RING 7
+/* Four slots, the geometry the audio was judged best on. Reverted from seven
+ * for one-variable-at-a-time measurement: the build that carried seven slots
+ * plus the playing-gate reported 257 err over 14029 frames (~1.8%) against 85
+ * over 31062 (~0.27%) at four, and DSCR_ERR bursts are counted in wraps of the
+ * ring, so a deeper ring can report more errors per transition for the same
+ * underlying fault. Geometry is held constant while the gate is evaluated; the
+ * slot right-sizing (which saves 4KB of DRAM on its own merits) is being
+ * re-tested separately rather than folded into this A/B. */
+#define XT_TX_RING 4
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
 /* GDMA requires a 4-byte aligned buffer address */
@@ -313,6 +321,15 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * dram0_0_seg by 8296 bytes. Right-sizing it buys eight slots of runway for the
  * same 8KB. The static assert in arm() still rejects any handover larger than
  * the slot, so an unexpected bigger frame cannot silently overrun. */
+/* One mixer frame, not two. The *2 here is dead capacity: arm() sets length to
+ * the size we are handed -- measured constant at 1024 across thousands of
+ * handovers -- so the second half of every slot was never written and never
+ * transferred. It cost 4KB of dram0_0_seg, which is the tightest region on this
+ * target: after the ring was restored to four, an 8-byte diagnostic counter
+ * overflowed it. Runway is unchanged (4 slots x 1024 bytes = 23ms, exactly what
+ * the audio was judged best on); the memory is freed for diagnostics and for
+ * future depth. The static assert in arm() still rejects any handover larger
+ * than the slot, so an unexpectedly big frame cannot silently overrun. */
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4)
 
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
@@ -348,6 +365,14 @@ static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
  * hitting a slot the CPU owns, and restarting onto it again is a storm -- the
  * interrupt-watchdog panic measured at first play with a free-running ring. */
 static volatile int dscr_streak;
+/* Splits err by when it happens. The gate experiment showed errors per switch are
+ * the same with and without it (38/10/10/28 vs 7/52/10/16), so the source is the
+ * transition itself, not a handler restarting a stopped transport. err_startup
+ * counts DSCR_ERR entries raised before the current session's first completion:
+ * those mean the walk was started over a ring that was not ready. err_late is the
+ * remainder -- errors during steady playback, i.e. a refill that lost the race. */
+static volatile int err_startup;
+static volatile int irq_at_start;
 
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
@@ -722,7 +747,11 @@ static void tx_recover(void)
     dscr_streak = 0;
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
-    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
+
+    /* Re-arming the ring is right whether or not we are playing; starting the
+     * walk is not. See the note in the DSCR_ERR branch. */
+    if (playing)
+        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
 }
 
 static void fill(int i, const void *src, unsigned long len)
@@ -1793,6 +1822,8 @@ static void start_tx(void)
     }
 
     i2s_ll_tx_start(tx_hal.dev);
+    irq_at_start = xt_sink_irq_n;
+
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
 #endif
@@ -1945,12 +1976,33 @@ void ICODE_ATTR gdma_irq(void)
            link.stop, guaranteeing the deadlock described above. Now it starts. */
         xt_dscr_err_n++;
 
+        /* Before or after this session's first completion? */
+        if (xt_sink_irq_n == irq_at_start)
+            err_startup++;
+
         /* The storm guard. One DSCR_ERR is a transient and restarting is right.
          * Two in a row with no DONE between means the engine is sitting on a slot
          * the CPU owns, so restarting onto it just errors again -- and the handler
          * re-enters itself forever. Recover properly instead: stop, re-arm the
          * whole ring so no slot can be unowned, start once. */
-        if (++dscr_streak >= 2)
+        /* Only restart if the core actually wants a transport running.
+         *
+         * This was the burst. err steps to +52, +10 and +16 landed on exactly
+         * the samples where (refill - irq) steps by 4 -- one start_tx() preroll,
+         * i.e. a playback session starting -- and never on samples with heavy
+         * volume or touch traffic and no session start. At a track switch
+         * stop_tx() halts the walk, sink_stop() then clears every descriptor to
+         * CPU-owned with zero length, and DSCR_ERR stays armed. Any error
+         * pending across that teardown fired this branch, which started a
+         * transport the core had just stopped -- straight onto the cleared
+         * descriptors, producing more errors, which tripped tx_recover(), which
+         * also started. Self-sustaining, anchored at the transition. */
+        if (!playing)
+        {
+            /* Stopped: nothing to restart. Clear the pending error and stay down. */
+            dscr_streak = 0;
+        }
+        else if (++dscr_streak >= 2)
             tx_recover();
         else
             wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));  /* link.start */
@@ -2386,9 +2438,10 @@ static void i2s_dma_line(void)
     }
     ow[o] = '\0';
 
-    printf("DMA: err=%d irq=%lu refill=%lu br=%d q=%d lk=%d play=%d | "
+    printf("DMA: err=%d startup=%d irq=%lu refill=%lu br=%d q=%d lk=%d play=%d | "
            "ena=%08x link=%08x own=%s len=%s | fifo f%d/e%d\n",
-           xt_dscr_err_n, xt_sink_irq_n, xt_refill_n, xt_refill_branch,
+           xt_dscr_err_n, err_startup, xt_sink_irq_n, xt_refill_n,
+           xt_refill_branch,
            queued, locked, playing,
            (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK),
            ow, ln,
