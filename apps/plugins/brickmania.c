@@ -387,6 +387,28 @@ CONFIG_KEYPAD == SANSA_M200_PAD
 #define UP          BUTTON_UP
 #define DOWN        BUTTON_DOWN
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define LEFT      BUTTON_LEFT
+#define RIGHT     BUTTON_RIGHT
+#define UP        BUTTON_UP
+#define DOWN      BUTTON_DOWN
+#define SELECT    BUTTON_A
+#define QUIT      BUTTON_B
+/* no RC_QUIT: this board has no infrared remote, and the code guards
+ * it with #ifdef, so leaving it undefined is what we want */
+/* the alternate set is the touch row under the pad: same game, no need to
+ * reach for the physical keys */
+#define ALTLEFT   BUTTON_MIDLEFT
+#define ALTRIGHT  BUTTON_MIDRIGHT
+#define ALTSELECT BUTTON_CENTER
+/* no scroll wheel on this hardware */
+#define SCROLL_FWD(x)  (0)
+#define SCROLL_BACK(x) (0)
 #else
 #error No keymap defined!
 #endif
