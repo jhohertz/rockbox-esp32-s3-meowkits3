@@ -747,6 +747,21 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define LVL_DOWN_TEXT "Start"
 #define SELECT_TEXT "Cross"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define PEGBOX_UP       BUTTON_UP
+#define PEGBOX_DOWN     BUTTON_DOWN
+#define PEGBOX_LEFT     BUTTON_LEFT
+#define PEGBOX_RIGHT    BUTTON_RIGHT
+#define PEGBOX_SELECT   BUTTON_A
+#define PEGBOX_QUIT     BUTTON_B
+#define PEGBOX_RESTART  BUTTON_CENTER
+#define PEGBOX_LVL_UP   BUTTON_TOPMIDDLE
+#define PEGBOX_LVL_DOWN BUTTON_BOTTOMMIDDLE
 #else
 #error "Unsupported keymap!"
 #endif

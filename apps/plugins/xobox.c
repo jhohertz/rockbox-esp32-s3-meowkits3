@@ -380,6 +380,22 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define DOWN  BUTTON_DOWN
 #define PAUSE BUTTON_SELECT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define LEFT      BUTTON_LEFT
+#define RIGHT     BUTTON_RIGHT
+#define UP        BUTTON_UP
+#define DOWN      BUTTON_DOWN
+#define PAUSE     BUTTON_A
+#define MENU_UP   BUTTON_TOPMIDDLE
+#define MENU_DOWN BUTTON_BOTTOMMIDDLE
+#define QUIT      BUTTON_B
+/* no RC_QUIT: this board has no infrared remote, and the code guards
+ * it with #ifdef, so leaving it undefined is what we want */
 #else
 #error "No keymap defined!"
 #endif
