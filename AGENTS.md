@@ -3449,19 +3449,13 @@ What is known for certain, measured this session:
   oen=1 en1=1` now, matching SCLK and MOSI. That was a real bug and is worth
   keeping, but it did not by itself bring pixels up.
 
-So the remaining candidates are, in order: JTAG still holding pads 39-41; the
-GPSPI2 clock source or the pad drive strength; and the ST7789 init sequence
-itself. The decisive measurement is the spike's edge-counting probe -- sample
-`GPIO_IN1` for pin 41 during a known 64-byte transfer at 1 MHz and count
-transitions. 512 edges means the pad is really clocking and the fault is at the
-panel; zero means it is still the pad, and the JTAG question is then the answer.
-
-**Do this change as its own session**, batched with anything else that costs a
-boot-button cycle. The IDF API that releases the JTAG pads was not located in
-this tree's `esp_hw_support`/`esp_system` Kconfig during this pass -- find it
-before assuming `usb_serial_jtag_ll_phy_enable_pad()` is the right lever; that
-bit selects whether the JTAG PHY is on the USB pads, which is a different
-question from whether legacy JTAG drives GPIO 39-42.
+All three of those candidates are now settled, and the display works: JTAG does
+not hold pads 39-41 (measured, see below), GPSPI2 needed `spi_bus_initialize()` to
+route its clock rather than only the gate bit (see below), and the panel needed the
+expander-driven reset timing in "The display works -- what it actually took". The
+edge-counting probe that distinguished them lived in the ESP-IDF bring-up spike,
+which has been deleted; the measurements it produced are recorded inline here, so
+nothing below depends on that artifact.
 
 ## GPSPI2 needs spi_bus_initialize() for clock routing, not just the gate bit
 
@@ -3481,7 +3475,7 @@ module clock has never been routed. The symptom is not an error — it is silenc
 that looks like success: `USR` reads 0, so the completion loop exits at once and
 the driver reports thousands of clean, instant, empty transfers.
 
-The recipe the spike wrote down and the reference follows: call
+What the reference firmware does, and what the port now does: call
 **`spi_bus_initialize()` for pin and clock routing**, then hand-program
 `SPI_USER` / `SPI_MS_DLEN` / `SPI_CMD` yourself. Skipping the first half is what
 made the display dead while every check passed. After adding it: 1024 edges for
@@ -3546,20 +3540,30 @@ Final register set, matching the painting reference byte for byte:
   entered and holds it for the whole transfer. The transition is structurally
   outside the sampling window.
 
-### Remaining blocker
+### Resolved: the `thread_exit_final()` reboot loop
 
-The board reboots roughly every nine seconds. `rb_task_body -> thread_exit ->
-thread_exit_final -> THREAD_PANICF -> abort`. `thread_exit_final()` is
-`NORETURN` and panics after `switch_thread()` returns, on the kernel's assumption
-that abandoning the current thread never comes back — which the FreeRTOS task
-model does not honour. The panel now renders Rockbox's own panic screen, so this
-is visible on the glass as well as the console.
+This section described a board that rebooted roughly every nine seconds with
+`rb_task_body -> thread_exit -> thread_exit_final -> THREAD_PANICF -> abort`, and
+proposed an edge-counting probe on the ESP-IDF spike as the next measurement. Both
+are done. `thread_exit_final()`'s assumption -- that abandoning the current thread
+never returns -- no longer holds against the task model, and the port now reaches
+`root_menu`, plays audio and runs plugins without it firing. The spike it was to be
+measured on has been deleted; the findings it produced are all stated inline in this
+file (LDO4 feeding the PCA9557, GPSPI2 clock routing, the JTAG pad question), so
+nothing here depends on it.
 
-## Codecs load now; they cannot execute from either window as things stand
+For any future fault, the `.noinit` breadcrumb trail
+(`xtensa_breadcrumb()`, dumped by `xtensa_paniclog_dump()`) is the instrument. It
+survives `panic_restart()`, which a register dump does not.
 
-Two separate facts, both measured this session, and they conflict.
+## Codecs and plugins load, and execute through a split-window mapping
 
-**The load path is fully working.** With `codecbuf` pinned to the address
+This section records how the two cache windows behave, which is durable, and then
+what was built on top of it: images are written through the data window and
+executed through the instruction-window alias of the same physical page. See the
+header comment of `firmware/target/xtensa/lc-xtensa.c` and `XT_IROM_OFF`.
+
+**The load path works.** With `codecbuf` pinned to the address
 `plugin.lds` computes (see `XT_CODECBUF_ADDR` in `memory-xtensa.h`), a codec from
 the card validates completely:
 
@@ -3588,12 +3592,14 @@ The two windows share MMU entries -- index is `(vaddr & 0x1FFFFFF) >> 16`, and
 they differ by exactly `0x06000000` -- but the *bus* still decides what is legal:
 fetch only from `0x42…`, load/store only from `0x3c…`.
 
-So the fix is not a base address. It is splitting the two roles: images stay
-linked at the instruction-window address, and every data access to `codecbuf` /
-`pluginbuf` -- `lc_open`'s `read()` into `hdr.load_addr`, the bounds checks in
-`apps/codecs.c` and `apps/plugin.c`, and the codec's own heap at
-`&codecbuf[codec_size]` -- has to go through a data-window alias. That touches
-core files, so it wants a deliberate pass rather than a patch.
+So the fix is not a base address; it is splitting the two roles. That is what the
+loader does now: an image is linked and *executed* at its instruction-window
+address, while every data access to it -- `lc_open`'s `read()` into
+`hdr.load_addr`, the bounds checks in `apps/codecs.c` and `apps/plugin.c`, the
+codec's own heap at `&codecbuf[codec_size]`, and the segment writes themselves --
+goes through the data-window alias of the same physical page, i.e. the same MMU
+entry seen from the other bus. `XT_IROM_OFF` is that offset. Codecs play audio and
+160 plugins run.
 
 `CONFIG_SPIRAM_XIP_FROM_PSRAM` / `FETCH_INSTRUCTIONS` / `RODATA` are enabled and
 do work -- the firmware's own `.text` now runs from `0x4202xxxx` on PSRAM, and
