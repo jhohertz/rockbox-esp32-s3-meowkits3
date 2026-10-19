@@ -427,6 +427,25 @@
 #define CHC_SETTINGS_OK     BUTTON_A
 #define CHC_SETTINGS_CANCEL BUTTON_B
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define CHC_QUIT              BUTTON_B
+#define CHC_STARTSTOP         BUTTON_A
+#define CHC_RESET             BUTTON_CENTER
+#define CHC_MENU              BUTTON_MIDLEFT
+#define CHC_SETTINGS_INC      BUTTON_UP
+#define CHC_SETTINGS_DEC      BUTTON_DOWN
+/* the settings OK/cancel pairs get their own touch corners rather than reusing
+ * A and B: the same switch handles play and settings keys, and giving two
+ * labels one button is a duplicate case, not a shortcut */
+#define CHC_SETTINGS_OK       BUTTON_TOPMIDDLE
+#define CHC_SETTINGS_OK2      BUTTON_TOPRIGHT
+#define CHC_SETTINGS_CANCEL   BUTTON_BOTTOMMIDDLE
+#define CHC_SETTINGS_CANCEL2  BUTTON_BOTTOMRIGHT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

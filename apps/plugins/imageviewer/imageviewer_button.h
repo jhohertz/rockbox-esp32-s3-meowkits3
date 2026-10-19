@@ -583,6 +583,33 @@
 #define IMGVIEW_MENU        BUTTON_START
 #define IMGVIEW_QUIT        BUTTON_POWER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define IMGVIEW_UP    BUTTON_UP
+#define IMGVIEW_DOWN  BUTTON_DOWN
+#define IMGVIEW_LEFT  BUTTON_LEFT
+#define IMGVIEW_RIGHT BUTTON_RIGHT
+/* IMGVIEW_SCROLL_UP/DOWN deliberately left undefined: they are #ifdef-guarded
+ * for targets with a separate scroll wheel, and the switch already covers
+ * `IMGVIEW_UP | BUTTON_REPEAT` itself, so defining them here is a duplicate
+ * case label rather than a feature. */
+#define IMGVIEW_PREVIOUS        BUTTON_MIDLEFT
+#define IMGVIEW_PREVIOUS_REPEAT (BUTTON_MIDLEFT | BUTTON_REPEAT)
+#define IMGVIEW_NEXT            BUTTON_MIDRIGHT
+#define IMGVIEW_NEXT_REPEAT     (BUTTON_MIDRIGHT | BUTTON_REPEAT)
+#define IMGVIEW_ZOOM_IN         BUTTON_TOPMIDDLE
+#define IMGVIEW_ZOOM_OUT        BUTTON_BOTTOMMIDDLE
+#define IMGVIEW_MENU_PRE        BUTTON_A
+#define IMGVIEW_MENU            (BUTTON_A | BUTTON_REL)
+#define IMGVIEW_SLIDE_SHOW_PRE  BUTTON_CENTER
+#define IMGVIEW_SLIDE_SHOW      (BUTTON_CENTER | BUTTON_REL)
+#define IMGVIEW_SLIDE_SHOW2     BUTTON_TOPRIGHT
+#define IMGVIEW_QUIT_PRE        BUTTON_B
+#define IMGVIEW_QUIT            (BUTTON_B | BUTTON_REPEAT)
 #else
 #error No keymap defined!
 #endif

@@ -643,6 +643,30 @@ enum {
 #define BJACK_RIGHT         BUTTON_RIGHT
 #define BJACK_LEFT          BUTTON_LEFT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define BJACK_SELECT_NAME    "A"
+#define BJACK_STAY_NAME      "STAY"
+#define BJACK_QUIT_NAME      "B"
+#define BJACK_DOUBLE_NAME    "DBL"
+#define BJACK_RESUME_NAME    "A"
+#define BJACK_SELECT         BUTTON_A
+#define BJACK_QUIT           BUTTON_B
+/* the four betting/play actions are discrete and used one at a time, which is
+ * exactly what the touch row is for; they stay off the pad so the directions
+ * are never ambiguous mid-bet */
+#define BJACK_STAY           BUTTON_MIDRIGHT
+#define BJACK_DOUBLEDOWN     BUTTON_MIDLEFT
+#define BJACK_MAX            BUTTON_TOPMIDDLE
+#define BJACK_MIN            BUTTON_BOTTOMMIDDLE
+#define BJACK_UP             BUTTON_UP
+#define BJACK_DOWN           BUTTON_DOWN
+#define BJACK_RIGHT          BUTTON_RIGHT
+#define BJACK_LEFT           BUTTON_LEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

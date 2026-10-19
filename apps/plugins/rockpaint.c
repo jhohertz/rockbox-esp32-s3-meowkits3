@@ -450,6 +450,23 @@
 #define ROCKPAINT_LEFT      BUTTON_LEFT
 #define ROCKPAINT_RIGHT     BUTTON_RIGHT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define ROCKPAINT_UP       BUTTON_UP
+#define ROCKPAINT_DOWN     BUTTON_DOWN
+#define ROCKPAINT_LEFT     BUTTON_LEFT
+#define ROCKPAINT_RIGHT    BUTTON_RIGHT
+#define ROCKPAINT_DRAW     BUTTON_A
+#define ROCKPAINT_QUIT     BUTTON_B
+/* menu and toolbar are overlays, not part of the drawing gesture, so they go
+ * on the screen where they cannot be mistaken for a stroke */
+#define ROCKPAINT_MENU     BUTTON_CENTER
+#define ROCKPAINT_TOOLBAR  BUTTON_TOPMIDDLE
+#define ROCKPAINT_TOOLBAR2 BUTTON_BOTTOMMIDDLE
 #else
 #error "Please define keys for this keypad"
 #endif
