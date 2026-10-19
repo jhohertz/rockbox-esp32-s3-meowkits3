@@ -2046,12 +2046,39 @@ void ICODE_ATTR gdma_irq(void)
         if (queued > 0)
             queued--;
 
-        /* A completion arriving inside the play lock is recorded and replayed on
-         * unlock -- as3525's play_callback_pending convention, not a mask and
-         * hope. */
+        /* Deferred is the CORE PULL, not the descriptor arming.
+         *
+         * This was the steady-state err mechanism, and it was my porting error.
+         * The old design's answer to the play lock was to mask GDMA_INT_DONE, so
+         * nothing at all happened while it was held -- which is safe with a
+         * stop-and-restart transport and actively harmful with a free-running
+         * one. The version above inherited that: on a locked completion it set
+         * cb_pending and skipped everything, including arming the slot that just
+         * retired. That slot stayed CPU-owned, the engine walked onto it under
+         * auto-writeback, and out_dscr_err fired. Every locked window longer
+         * than the ring's runway produced a wrap, and a wrap produces one error
+         * per slot -- which is also why deepening the ring made err look WORSE
+         * (257 at seven slots against 19 at four) without changing harm: err
+         * counts wraps, and wraps are priced by depth.
+         *
+         * Arming a descriptor with silence involves the core not at all, so it
+         * runs unconditionally. Only pcm_play_dma_complete_callback() is
+         * deferred, via cb_pending, and replayed on unlock as as3525 does.
+         */
         if (locked)
         {
             cb_pending = 1;
+
+            if (pend_valid)
+            {
+                /* A buffer already published by ops.play() is ours to transmit;
+                 * handing it over is not asking the core for anything. */
+                fill(slot, (const void *)pend_addr, (unsigned long)pend_size);
+                pend_valid = 0;
+            }
+            else
+                fill_silence(slot);
+
             trefill = esp_cpu_get_cycle_count();
             goto done_exit;
         }
