@@ -128,30 +128,6 @@ int sd_init(void)
     ESP_LOGI(TAG, "SD card up: %d x %d byte sectors, %d MHz, %d-bit",
              card.csd.capacity, card.csd.sector_size, host.max_freq_khz, slot.width);
 
-    /* TEMPORARY: the flash MMU is a 512-entry table of 32-bit values at
-       0x600C5000, indexed by the masked address (vaddr & 0x1FFFFFF) >> 16, with
-       bit 15 = target (1 = PSRAM), bit 14 = invalid, bits 13:0 = physical page.
-       Rockbox's .ext_ram.bss starts at entry 17, so anything past the flash
-       window has to be a valid PSRAM entry or the access faults. */
-    {
-        const volatile uint32_t* mmu = (const volatile uint32_t*)0x600C5000;
-        int i;
-        /* Summarise the whole 512-entry table as runs, so any address the image
-           uses can be checked against the entry that serves it. */
-        for (i = 0; i < 512; )
-        {
-            uint32_t v = mmu[i];
-            int j = i + 1;
-            while (j < 512 && (mmu[j] == v + (uint32_t)(j - i) ||
-                               ((mmu[j] & 0x4000u) && (v & 0x4000u))))
-                j++;
-            ESP_LOGI(TAG, "MMU[%3d..%3d] = %08x %s page %d", i, j - 1, v,
-                     (v & 0x4000u) ? "INVALID " : (v & 0x8000u) ? "PSRAM  "
-                                                                : "flash  ",
-                     (int)(v & 0x3fffu));
-            i = j;
-        }
-    }
     return 0;
 }
 
@@ -170,24 +146,8 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
     sd_last_activity = current_tick;
 
     {
-        extern void scan_trace(int, unsigned long, unsigned long, unsigned long);
-        esp_err_t e;
-
-        /* TEMPORARY: the crash is reported by the asynchronous cache-error
-           interrupt with both cores sitting in waiti, which means the agent
-           that tripped it is a DMA engine rather than a CPU instruction. The
-           SD host's IDMAC is the busiest one at that moment, and a descriptor
-           buffer in the PSRAM window is exactly the kind of address the cache
-           MMU is consulted for. Record every read whose buffer lands in that
-           window. */
-        if ((unsigned long)buf >= 0x3c000000ul &&
-            (unsigned long)buf < 0x3d000000ul)
-            scan_trace(97, (unsigned long)buf, (unsigned long)start,
-                       (unsigned long)count);
-
-        scan_trace(71, (unsigned long)start, (unsigned long)count, 0);
-        e = sdmmc_read_sectors(&card, buf, (uint32_t)start, (uint32_t)count);
-        scan_trace(72, (unsigned long)start, (unsigned long)count, (unsigned long)e);
+        esp_err_t e = sdmmc_read_sectors(&card, buf, (uint32_t)start,
+                                         (uint32_t)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }
@@ -201,11 +161,8 @@ int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *bu
     sd_last_activity = current_tick;
 
     {
-        extern void scan_trace(int, unsigned long, unsigned long, unsigned long);
-        esp_err_t e;
-        scan_trace(73, (unsigned long)start, (unsigned long)count, 0);
-        e = sdmmc_write_sectors(&card, buf, (uint32_t)start, (uint32_t)count);
-        scan_trace(74, (unsigned long)start, (unsigned long)count, (unsigned long)e);
+        esp_err_t e = sdmmc_write_sectors(&card, buf, (uint32_t)start,
+                                          (uint32_t)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }
