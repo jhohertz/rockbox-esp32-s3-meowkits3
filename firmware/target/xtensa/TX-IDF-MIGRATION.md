@@ -417,3 +417,40 @@ Two facts that came out of it, both load-bearing for any future attempt:
 Reverted; the shipping path is unchanged. If this is picked up, prove the
 DSCR_ERR-storm theory first (count DSCR_ERR entries and refuse to `link.start`
 twice in a row without an intervening DONE) rather than varying ring depth again.
+
+## SOLVED — free-running ring + DSCR_ERR storm guard (best audio the port has produced)
+
+The build that hung at four slots was not refuted by depth; it was refuted by a
+self-sustaining error. Adding deterministic recovery and re-running:
+
+```
+faults: 0
+census: all-zero 0%  (11 of 1283), mean-nonzero 985
+irq=11431  refill=11435          <- 4 ahead: the preroll, as designed
+err=0 -> err=24                   <- 1 DSCR_ERR per 476 frames, survivable
+```
+
+Against the 1-frame baseline's 1% all-zero frames and the two-slot attempt's 4%.
+
+**What actually mattered was the guard, not the depth.** `err` climbing to 24
+proves unowned slots still occur about 0.2% of frames. Depth alone did not remove
+them -- it only made them survivable, because with four slots the engine takes
+three more descriptors (17ms) before it needs the slot we just rearmed, so a
+transient no longer lands under the engine's feet. The guard handles the rest: a
+second `DSCR_ERR` with no intervening `DONE` means the engine is parked on a slot
+the CPU owns, so instead of `link.start` onto it again we stop, re-arm **every**
+slot so none can be unowned, and start once.
+
+Design now in the shipping path:
+
+- `XT_TX_RING 4`, `out_auto_wrback` **on**, `next` chained (never zero)
+- `start_tx()` prerolls all four slots, asking the core at most once per slot and
+  stopping at the first decline; remaining slots armed with silence
+- ISR `DONE` refills the slot that completed; **no `link.stop`/`link.start`**
+- A completion arriving inside the play lock sets `cb_pending` and is replayed on
+  unlock (as3525's `play_callback_pending` convention)
+- `DSCR_ERR` twice with no `DONE` between calls `tx_recover()`
+
+Still open: why slots go unowned at 0.2%. The guard makes it survivable, not
+impossible, and the honest reading is that a refill occasionally loses the race
+even with 17ms of margin. Worth a look when something else is not on fire.
