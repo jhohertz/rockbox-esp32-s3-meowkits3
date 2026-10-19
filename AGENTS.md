@@ -179,6 +179,13 @@ still uses IDF's *HAL* (`i2s_hal_std_set_tx_slot`) and RX uses full IDF
 `esp_driver_i2s`. Full evidence and twelve builds of refuted hypotheses:
 `firmware/target/xtensa/TX-IDF-MIGRATION.md`.
 
+There is no A/B switch in `i2s-xtensa.c`: the Stage-1b scaffolding was deleted
+rather than left defined-off, so the dead branch cannot drift or be mistaken for an
+option. That file also records one variant that was **never** tried, which is the
+only honest route back to IDF's writer -- ride `i2s_channel_write()` without touching
+GDMA, accept IDF's buffer granularity, and drive the completion from `write()`
+returning. Its cost is lookahead (~11.6 ms at `desc_num = 2`), not correctness.
+
 ## 5. ESP32-S3 notes
 
 ### Use IDF's drivers; do not bit-bang peripherals
