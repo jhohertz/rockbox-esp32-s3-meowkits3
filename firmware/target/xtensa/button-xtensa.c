@@ -137,7 +137,21 @@ int button_read_device(int *data)
      * responding again, check that this call is live before suspecting the panel,
      * the calibration, or the driver.
      */
-    ft6x06_irq_handler();
+    /* Throttled to every fifth tick, and the reason is bus load, not the ISR
+     * story that used to be written here (that was wrong -- button_read_device()
+     * runs in tick_task_thread, see apps/main.c). A 14-byte read at 100 kHz is
+     * about 1.1 ms, so polling every tick at HZ=100 keeps the I2C controller busy
+     * roughly a tenth of the time and issues 100 transactions a second on a bus
+     * shared with the codec, the PMU and the IO expander. Every fifth tick is
+     * 20 Hz, which is far faster than a finger moves and cuts that to ~2%. */
+    {
+        static unsigned poll_div;
+        if (++poll_div >= 5)
+        {
+            poll_div = 0;
+            ft6x06_irq_handler();
+        }
+    }
 
     if (touchscreen_get_mode() == TOUCHSCREEN_POINT) {
         /* Point mode can only carry one coordinate pair per button event. */

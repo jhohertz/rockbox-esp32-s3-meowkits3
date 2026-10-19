@@ -70,6 +70,35 @@ static const char *os_mismatch_real;
 static TaskHandle_t os_task[MAXTHREADS];
 static TaskHandle_t os_task0;
 
+/* Requested stack size in bytes, recorded at create time. FreeRTOS will tell us
+ * the high-water mark (least remaining) but not what we asked for, and a
+ * watermark without the budget it belongs to is not actionable -- 500 words free
+ * means nothing until you know whether the stack was 1024 or 256. */
+static unsigned os_task_stack_sz[MAXTHREADS];
+
+/* Base of the same stack. Needed because NEITHER ready-made measurement works
+ * here, and both failures were measured rather than reasoned:
+ *
+ *   - uxTaskGetStackHighWaterMark() and CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY
+ *     both inspect the BOTTOM of the buffer for tskSTACK_FILL_BYTE. But
+ *     pxPortInitialiseStack() has already written the initial context frame over
+ *     that region, so the canary always looks consumed: enabling the check
+ *     reported "stack overflow in task tick", then "in task power", for perfectly
+ *     healthy threads. Both were artefacts of the check, not bugs.
+ *   - scanning for Rockbox's DEADBEEF does not work either. thread.c:1302 fills
+ *     with DEADBEEF, then xTaskCreateStatic() memsets the whole buffer with 0xa5
+ *     and destroys it, and asm/xtensa/thread.c:95 restores only stack[0]. So the
+ *     fill actually present is 0xa5a5a5a5 with a single DEADBEEF word at index 0,
+ *     which is why a DEADBEEF scan reported used = req - 4 (99%) for every thread.
+ *
+ * The fill is therefore 0xa5, and the scan must run TOP-DOWN: the stack grows
+ * downward from the high end, so the first fill word met coming down from the top
+ * marks the deepest point ever written. Scanning from the bottom instead walks
+ * into the initial frame and measures that. */
+static uintptr_t *os_task_stack[MAXTHREADS];
+
+#define XT_STACK_FILL  0xa5a5a5a5U   /* tskSTACK_FILL_BYTE spread over a word */
+
 /* eTaskGetState() returns an enum with no name table, and the whole point is
  * readability under a serial console at the moment things are going wrong. */
 static const char *os_state_name(eTaskState st)
@@ -132,6 +161,56 @@ int rb_thread_os_states(char *out, int sz)
                  os_mismatch_ctx ? os_mismatch_ctx : "?",
                  os_mismatch_real ? os_mismatch_real : "?");
     return pos;
+}
+
+/* TEMPORARY: per-thread stack high-water marks, by scanning Rockbox's own
+ * DEADBEEF fill (see os_task_stack above for why the FreeRTOS APIs cannot be
+ * used).
+ *
+ * Rockbox's stacks grow downward from the high end of the buffer, and the fill
+ * is written across the whole thing at create time, so the first word from the
+ * TOP that is still filled marks one past the deepest point ever touched.
+ * Reported as a percentage of the requested budget, which is what a sizing
+ * decision needs.
+ *
+ * A thread that has never run reports 0%. */
+void xt_stack_report(const char *why)
+{
+    int i;
+
+    printf("STACK %s:\n", why);
+
+    for (i = 0; i < MAXTHREADS; i++)
+    {
+        uintptr_t *base;
+        unsigned req, words, used_words, j;
+
+        if (os_task[i] == NULL || os_task_stack[i] == NULL)
+            continue;
+
+        base = os_task_stack[i];
+        req = os_task_stack_sz[i];
+        words = req / sizeof(uintptr_t);
+        used_words = 0;
+
+        /* Down from the top: the stack grows toward lower addresses, so the
+         * first still-filled word met coming down is one past the deepest point
+         * ever written. Deliberately does not look at the bottom of the buffer,
+         * where the initial context frame lives and which is what made the
+         * bottom-up readings (FreeRTOS's and my own first attempt) lie. */
+        for (j = words; j > 0; j--)
+        {
+            if (base[j - 1] == XT_STACK_FILL)
+                used_words = words - j;
+            else
+                break;
+        }
+
+        printf("  s%-2d %-12s  req=%6u  used=%6u (%2u%%)\n",
+               i, pcTaskGetName(os_task[i]), req,
+               used_words * (unsigned)sizeof(uintptr_t),
+               words ? used_words * 100 / words : 0);
+    }
 }
 
 /* The body every Rockbox thread runs on: wait for the scheduler to hand over
@@ -237,7 +316,11 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
     vTaskSetThreadLocalStoragePointer((TaskHandle_t)ctx->task, 0, ctx);
 
     if (slot < MAXTHREADS)
+    {
         os_task[slot] = (TaskHandle_t)ctx->task;
+        os_task_stack_sz[slot] = ref->stack_size;
+        os_task_stack[slot] = (uintptr_t *)ref->stack;
+    }
 }
 
 /* Thread 0 is not created here: it is the task rockbox_app.c started Rockbox's

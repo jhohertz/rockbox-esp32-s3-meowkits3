@@ -35,6 +35,7 @@
 #include "pcm_sink.h"
 #include "audiohw.h"
 #include "kernel.h"
+#include "tick.h"
 #include "pcm_sampr.h"
 #include "pcm_mixer.h"
 #include "panic.h"
@@ -53,6 +54,8 @@
 #include <hal/i2s_ll.h>
 #include <esp_rom_gpio.h>
 #include <esp_clk_tree.h>
+#include <esp_private/esp_clk.h>
+#include <esp_cpu.h>
 
 /* The transmitter port. ESP32-S3 has no soc/i2s_periph.h and therefore no
  * I2S_NUM_1 enumerator; the port index is simply the register block, I2S1 at
@@ -450,9 +453,72 @@ static void arm(int i, unsigned long len)
 /* Place one frame into slot i and hand it to the DMA. len 0 leaves the slot
  * owned with nothing to move, which is what keeps the ring fully owned between
  * hand-offs. */
+/* TEMPORARY: sample-width capture. fill() runs inside gdma_tx_isr and may not
+ * print, so it stores the frame head here and i2s_probe_tick() prints it from
+ * thread context. ready is set last and cleared by the printer, so a frame
+ * captured mid-print is simply reported next time round. */
+static struct {
+    volatile int ready;
+    volatile int n;
+    volatile int nonzero;
+    volatile unsigned long len;
+    volatile unsigned long filln;
+    unsigned short data[128];
+} xt_width;
+
 static void fill(int i, const void *src, unsigned long len)
 {
     memcpy(dma_buf[i], (const void *)src, len);
+
+    /* What width is actually on the wire? The mixer frame is
+     * MIX_FRAME_SAMPLES*4 = 1024 bytes, which reads as 32-bit samples, but
+     * i2s_init() configures I2S_DATA_BIT_WIDTH_16BIT in
+     * I2S_SLOT_BIT_WIDTH_16BIT slots. If both are true the DAC is fed the low half
+     * of every 32-bit sample as a separate channel: near zero and harmless when
+     * quiet, garbage when loud. That is amplitude-dependent distortion with a
+     * compressed character, which is what it sounds like.
+     *
+     * This is in fill(), not sink_play(), and that took four attempts to get
+     * right. In Rockbox's buffered model ops.play() fires ONCE per playback to arm
+     * the initial buffer; every later frame arrives through the pcm_play_data
+     * callback, which lands here. A probe in sink_play() therefore samples one
+     * frame per session -- which is exactly why it printed nothing across 18k
+     * frames while the counter never reached its threshold.
+     *
+     * It may not PRINT, though. fill() is reached from refill() inside
+     * gdma_tx_isr, and the comment at the top of that handler says outright that
+     * nothing may print there: printf takes the newlib stdout lock and aborts.
+     * Putting it here froze the device about 1.2 s in, at the sample point, which
+     * was the probe and not the audio. So the ISR only copies; i2s_probe_tick()
+     * prints it from thread context. */
+    {
+        const unsigned short *w = (const unsigned short *)src;
+        static unsigned long fill_n;
+        int i2, nonzero = 0;
+        int n = 128;
+
+        if ((unsigned long)n > len / 2)
+            n = (int)(len / 2);
+
+        fill_n++;
+        if (!xt_width.ready && fill_n >= 200 && n > 0)
+        {
+            for (i2 = 0; i2 < n; i2++)
+            {
+                if (w[i2] != 0)
+                    nonzero++;
+            }
+
+            for (i2 = 0; i2 < n; i2++)
+                xt_width.data[i2] = w[i2];
+
+            xt_width.n = n;
+            xt_width.nonzero = nonzero;
+            xt_width.len = len;
+            xt_width.filln = fill_n;
+            xt_width.ready = 1;     /* last: the printer reads this first */
+        }
+    }
 
     /* Take the line from memory before modifying it, then push it back. The
      * engine wrote the owner bit clear through the bus, and our cached copy of
@@ -493,7 +559,30 @@ static void gdma_init(void)
     /* conf0: auto write-back so the DMA hands the descriptor back to the CPU
      * after it has transmitted the buffer. Without this the owner bit stays
      * set to DMA forever and the ring never frees. */
-    wr(GDMA_TX_CONF0, (1u << 2) | (1u << 4));   /* out_auto_wrback, outdscr_burst_en */
+    /* conf0: outdscr_burst_en only.
+     *
+     * out_auto_wrback (bit 2) is deliberately NOT set, and that single bit is
+     * what the whole crackle came from. arm() writes next = 0 on the stated
+     * understanding that "zero terminates the link list: the engine stops rather
+     * than wrapping". This GDMA has no such convention. With auto-writeback
+     * enabled the engine follows next unconditionally the moment a descriptor
+     * retires, so next = 0 told it to fetch its next descriptor from address
+     * 0x00000000 -- garbage, owner clear, length zero -- and raised out_dscr_err.
+     * Measured: err tracked irq exactly 1:1 (360 per 379 interrupts), i.e. one
+     * descriptor fault per audio frame, 172 times a second. Each one stalls the
+     * transport until the handler restarts it. That stall is the crackle.
+     *
+     * Without auto-writeback the engine halts at the end of the descriptor it was
+     * given and waits for software, which is the behaviour the DONE handler has
+     * always assumed: complete, re-arm desc[0], link.start. The imx233 model this
+     * file is written against gets the same effect from a DMA command carrying
+     * next = NULL, because that peripheral really does treat NULL as a stop.
+     *
+     * If the ring is ever wanted for real, the change is the other way round:
+     * keep auto-writeback on, chain next through all four slots, and keep every
+     * slot owned by the DMA and filled. What cannot work is either setting with
+     * next = 0. */
+    wr(GDMA_TX_CONF0, (1u << 4));            /* outdscr_burst_en */
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
 
@@ -697,9 +786,66 @@ static void refill(void)
 
 /* Runs on the interrupted thread's stack, so it has to stay small. The handler in
  * vectors.S has already saved a0 and a12-a15; this is the C part of the frame. */
+/* TEMPORARY: how long the transmit path is torn down for.
+ *
+ * The design stops the outlink on every completion, runs the mixer through
+ * pcm_play_dma_status_callback(), memcpy's the next frame in, and restarts the
+ * walk -- 172 times a second at 1024-byte frames. The only thing between a
+ * stopped outlink and silence at the DAC is the I2S FIFO, so the question that
+ * decides whether this is the click is simply how long that window is, and how
+ * much of it belongs to the mixer rather than the copy.
+ *
+ * Measured in core cycles because that needs no assumptions; i2s_probe_tick()
+ * converts. Nothing prints here -- see the note on gdma_tx_isr(). */
+static volatile unsigned long xt_isr_n;
+static volatile unsigned long xt_isr_cyc_max;      /* entry -> exit */
+static volatile unsigned long xt_isr_refill_max;   /* entry -> after refill() */
+static volatile unsigned long xt_isr_cyc_sum;
+/* Never reset. The per-window max is read by the tick thread as four separate
+ * volatile reads while the ISR keeps updating them, so a long sample landing
+ * between the read and the reset is lost and max under-reports -- which is how
+ * it came to print max=10us against avg=16us. A monotonic worst case cannot be
+ * lost that way, so the number that actually matters ("is it ever large?") is
+ * race-free. The windowed max only biases low, never high. */
+static volatile unsigned long xt_isr_cyc_worst;
+
 void ICODE_ATTR gdma_irq(void)
 {
     unsigned int st = rd(GDMA_TX_INT_ST);
+    unsigned long t0 = esp_cpu_get_cycle_count();
+    unsigned long trefill = t0;
+
+    /* DSCR_ERR is handled BEFORE DONE, and the order is the bug this fixes.
+     *
+     * Both branches act on the same st, captured once at entry. When DONE and
+     * DSCR_ERR are pending together -- which is exactly what "the engine ran off
+     * the end of the list while the refill was still in here" looks like -- the
+     * DONE path used to restart the walk and the DSCR_ERR path then stopped it
+     * again in the same handler. A stopped outlink raises no completions, so
+     * nothing restarted it: one transient became a silent transport until some
+     * later event kicked it. Measured rate was about one DSCR_ERR every two
+     * frames (err climbing ~173 per 345 interrupts).
+     *
+     * Handling it first means DONE's restart is the last word on the link, which
+     * is what we want: DONE has just armed a real buffer. */
+    if (st & GDMA_INT_DSCR_ERR)
+    {
+        /* Owner error or a bad descriptor word.
+
+           This handler used to reset cur to 0 as well as re-pointing the link.
+           That is what turned a single transient into a permanent fault: cur is
+           the driver's idea of which slot is free, and forcing it to 0 while the
+           engine was somewhere else in the ring meant every later arm() targeted
+           a slot the engine had already passed. Measured directly -- write_desc
+           armed slot 0 on both of its calls and slot 1 was never armed.
+
+           With every slot owned from init onward this should not fire at all, so
+           leave the ring alone and only restart the walk -- which is what this
+           comment has always said, and what the code did not do: it wrote
+           link.stop, guaranteeing the deadlock described above. Now it starts. */
+        xt_dscr_err_n++;
+        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));      /* link.start */
+    }
 
     if (st & GDMA_INT_DONE)
     {
@@ -732,6 +878,7 @@ void ICODE_ATTR gdma_irq(void)
          * next frame and hand it down through sink_play(), which lands in the
          * pending slot. */
         refill();
+        trefill = esp_cpu_get_cycle_count();
 
         if (pend_valid)
         {
@@ -747,25 +894,22 @@ void ICODE_ATTR gdma_irq(void)
          * feeding the DAC a descriptor the engine is not allowed to read. */
     }
 
-    if (st & GDMA_INT_DSCR_ERR)
-    {
-        /* Owner error or a bad descriptor word.
-
-           This handler used to reset cur to 0 as well as re-pointing the link.
-           That is what turned a single transient into a permanent fault: cur is
-           the driver's idea of which slot is free, and forcing it to 0 while the
-           engine was somewhere else in the ring meant every later arm() targeted
-           a slot the engine had already passed. Measured directly -- write_desc
-           armed slot 0 on both of its calls and slot 1 was never armed.
-
-           With every slot owned from init onward this should not fire at all, so
-           leave the ring alone and only restart the walk. */
-        xt_dscr_err_n++;
-        wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));      /* link.stop */
-    }
-
     /* Clear only what fired. int_clr is write-to-clear. */
     wr(GDMA_TX_INT_CLR, st);
+
+    {
+        unsigned long d = esp_cpu_get_cycle_count() - t0;
+
+        xt_isr_n++;
+        xt_isr_cyc_sum += d;
+        if (d > xt_isr_cyc_max)
+            xt_isr_cyc_max = d;
+        if (d > xt_isr_cyc_worst)
+            xt_isr_cyc_worst = d;
+        d = trefill - t0;
+        if (d > xt_isr_refill_max)
+            xt_isr_refill_max = d;
+    }
 }
 
 /* Mask the event rather than the slot, so a completion that happens while the mixer
@@ -811,12 +955,19 @@ static void sink_play(const void *addr, size_t size)
     {
         printf("SINK: first play addr=%p size=%lu\n", addr,
                (unsigned long)size);
+
         /* TEMPORARY: playback allocates its file buffer around here, and this is
            where the EOM panic fires. Dumping at the first frame shows what is
            left at the moment the decision gets made, rather than after it has
            already failed. */
         xt_arena_dump("at playback start");
     }
+
+    /* The sample-width probe lives in fill(), not here. sink_play() is
+     * ops.play(), which the pcm core calls once per playback to arm the initial
+     * buffer; every later frame comes through pcm_play_data into refill() and
+     * then fill(). Sampling here sees one frame per session, and it is the silent
+     * head of the track. */
 
     if (!playing)
     {
@@ -905,6 +1056,138 @@ static void sink_set_freq(uint16_t freq)
     i2s_set_frequency(hw_freq_sampr[freq]);
 }
 
+/* TEMPORARY: periodic CHAIN sample.
+ *
+ * i2s_audio_probe() was only ever called from event sites -- sink_play, sink_stop,
+ * pcm close -- so every snapshot in the logs describes the transmitter at some
+ * moment other than steady playback. That made a per-frame property like slot
+ * occupancy unmeasurable: the ring experiment compared one event snapshot against
+ * another and called the difference a verdict, twice, and neither was one.
+ *
+ * This samples while audio is actually running. It runs from tick_task_thread
+ * (the tick tasks are NOT run in the interrupt on this core -- see the note in
+ * apps/main.c), so printf is legal here; the ISR must never reach this path.
+ * Every 200 ticks at HZ=100 is two seconds, which is often enough to see drift
+ * and rare enough not to drown the console. */
+static void i2s_probe_tick(void)
+{
+    static int div;
+
+    if (!pcm_playing)
+    {
+        div = 0;
+        return;
+    }
+
+#ifdef XT_PANIC_SELFTEST
+    /* Diagnostic bisection, not a feature. The open question is why IDF's panic
+     * handler re-enters and aborts on every crash here, printing nothing but
+     * "Panic handler entered multiple times". Two causes fit and they need
+     * opposite fixes:
+     *
+     *   - the handler or its console path is broken in general. Then hooking the
+     *     exception vector buys nothing, because a hand-written recorder still has
+     *     to get its output somewhere across a reboot.
+     *   - our crashes corrupt something the handler depends on (stack, or a frame
+     *     that ended up in PSRAM). Then a trap from a clean thread context dumps
+     *     properly, and a vector hook is exactly the right move.
+     *
+     * __builtin_trap() emits an illegal instruction from ordinary thread context
+     * with a valid stack -- the same exception path, minus whatever a real crash
+     * may have already broken. Build with -DXT_PANIC_SELFTEST, play something for
+     * ~6 s, and read the dump. Compile-time guarded so it cannot ship.
+     *
+     * Separate counter on purpose: div resets every 200 ticks to drive the probe,
+     * so a threshold above 200 on div would never fire.
+     */
+    {
+        static int selftest_ticks;
+        if (++selftest_ticks == 600)
+        {
+            printf("SELFTEST: trapping now (clean thread context)\n");
+            __builtin_trap();
+        }
+    }
+#endif
+
+    if (++div < 200)
+        return;
+
+    div = 0;
+
+    /* How long the transport is down, in microseconds. The frame itself is 1024
+     * bytes = 5.8 ms at 44.1k stereo 16-bit, and the outlink is stopped for this
+     * whole window, so the FIFO has to cover it. Compare the two and the click
+     * either is explained or is not. Counters reset each interval so the report is
+     * a fresh worst case, not a monotonic mark that only ever shows one old sample. */
+    if (xt_isr_n > 0)
+    {
+        int hz = esp_clk_cpu_freq();
+        unsigned long n = xt_isr_n, mx = xt_isr_cyc_max;
+        unsigned long rm = xt_isr_refill_max, avg = xt_isr_cyc_sum / n;
+
+        xt_isr_n = 0; xt_isr_cyc_max = 0; xt_isr_refill_max = 0;
+        xt_isr_cyc_sum = 0;
+
+        printf("ISR: %lu in window  avg=%luus  max=%luus  worst=%luus"
+               "  (refill part max=%luus)  [%d MHz]\n",
+               n,
+               hz ? avg * 1000000UL / (unsigned long)hz : 0,
+               hz ? mx * 1000000UL / (unsigned long)hz : 0,
+               hz ? xt_isr_cyc_worst * 1000000UL / (unsigned long)hz : 0,
+               hz ? rm * 1000000UL / (unsigned long)hz : 0,
+               hz / 1000000);
+    }
+
+    /* Sample-width verdict, captured in gdma_tx_isr context by fill() and printed
+     * here where printing is legal. */
+    if (xt_width.ready)
+    {
+        int k, nz_even = 0, nz_odd = 0;
+
+        printf("SINK bytes: fill #%lu, len=%lu, first %d half-words"
+               " (%d nonzero):\n  ", xt_width.filln, xt_width.len,
+               xt_width.n, xt_width.nonzero);
+        for (k = 0; k < xt_width.n; k++)
+        {
+            printf("%04x ", xt_width.data[k]);
+            if (xt_width.data[k] != 0x0000 && xt_width.data[k] != 0xffff)
+            {
+                if (k & 1)
+                    nz_odd++;
+                else
+                    nz_even++;
+            }
+            if ((k & 7) == 7 && k + 1 < xt_width.n)
+                printf("\n  ");
+        }
+        printf("\nSINK width test: active even-half=%d odd-half=%d of %d"
+               "  => %s\n",
+               nz_even, nz_odd, xt_width.n / 2,
+               xt_width.nonzero == 0
+                   ? "HEAD IS SILENCE"
+                   : (nz_even > 3 * nz_odd || nz_odd > 3 * nz_even)
+                       ? "32-BIT samples: one half of each pair is quiet"
+                       : "16-bit PCM: both halves carry signal");
+        xt_width.ready = 0;
+    }
+
+    i2s_audio_probe();
+
+    /* xt_stack_report() is stood down. It has produced two artefacts in a row:
+     * first scanning for DEADBEEF, a fill xTaskCreateStatic overwrites; then with
+     * the loop inverted, so it counted the run of fill from the top and reported
+     * that as usage -- which is why all eleven threads showed an identical
+     * used=320, a property of the buffer layout and not of any thread.
+     *
+     * Nothing now indicates a stack problem. The reports that motivated this were
+     * the canary check reading FreeRTOS's own initial context frame at the bottom
+     * of the buffer and concluding the canary had been consumed. With that
+     * debunked there is no evidence left to size stacks against, and I have made
+     * the measurement wrong twice, so it is not worth a third attempt until a raw
+     * word dump establishes where the frame and the fill actually are. */
+}
+
 static void sink_init(void)
 {
     xt_sink_init_n++;
@@ -943,6 +1226,9 @@ static void sink_init(void)
      * there at all or was taken away afterwards. */
     printf("AUDHW -- immediately after sink_init --\n");
     i2s_audio_probe();
+
+    /* Periodic playback sample; see i2s_probe_tick(). */
+    tick_add_task(i2s_probe_tick);
 }
 
 struct pcm_sink builtin_pcm_sink = {
