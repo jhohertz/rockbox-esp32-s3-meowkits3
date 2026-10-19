@@ -3585,3 +3585,68 @@ absent from `nm` output twice — once because a `head -20` truncated it, once
 because the check ran between the Rockbox link and the IDF relink. The
 disassembly of `button_read_device` showing `call8 <ft6x06_irq_handler>` is what
 actually proved it.
+
+## Plugin keymaps on MeowKit
+
+Every plugin in `apps/plugins/SOURCES` and `SUBDIRS` builds for this target —
+there are no `MEOWKIT_ESP32S3` gates left. 160 `.rock` files. Two mechanisms got
+us there, and they are different problems that were conflated for a while.
+
+**Most plugins needed no keymap at all.** `apps/plugins/lib/pluginlib_actions.c`
+and `apps/plugins/lib/keymaps.h` are the shared headers; once both know about
+`ESP32S3_PAD`, any plugin using them is done. Beyond that, a plugin whose keypad
+chain ends in `#error No keymap defined!` and which *also* has a
+`#ifdef HAVE_TOUCHSCREEN` block of `#ifndef X / #define X BUTTON_<cell>` entries
+needs only the `#error` guarded:
+
+```c
+#else
+#if !defined(HAVE_TOUCHSCREEN)
+#error No keymap defined!
+#endif
+#endif
+```
+
+That is upstream's own convention — `SHANLING_Q1_PAD` and friends take an empty
+keypad case and let the fallback fill every action from the grid. 16 plugins
+were unlocked by that one-line change alone.
+
+**The shared scheme**, so the controls are learnable rather than 22 arbitrary
+maps. Inputs available: 4-way + A + B physical, and the 3×3 touch grid
+(`BUTTON_TOPLEFT` … `BUTTON_BOTTOMRIGHT`, all nine defined and canonical — this
+is the set `firmware/export/button.h:124` validates).
+
+| input | role |
+|---|---|
+| 4-way | movement / cursor, always |
+| A | confirm, select, fire |
+| B | quit, back, cancel |
+| `TOPMIDDLE` / `BOTTOMMIDDLE` | the up/down pair: scroll, level, zoom, menu-up/down |
+| `MIDLEFT` / `MIDRIGHT` | the prev/next pair: page, column, precision |
+| `CENTER` | the primary game action: place, draw, coin, pause, slideshow |
+| corners | secondary: restart, toolbar, bookmark, map |
+
+Where a plugin has more actions than the pad can carry, the rarer one moves to
+the screen and anything used in a continuous gesture stays physical.
+
+**Three traps found while doing this:**
+
+1. **An `#ifdef`-guarded macro means hardware you may not have — leave it
+   undefined.** `RC_QUIT` is for an infrared remote; `IMGVIEW_SCROLL_UP` is for
+   a scroll wheel, and the switch already covers `IMGVIEW_UP | BUTTON_REPEAT`
+   itself. Defining either produces `duplicate case value`, which is the
+   compiler correctly objecting to two labels with one button.
+2. **A touch fallback may already own the cells you chose.** `tv_button.h`
+   assigns a *second* binding for each action it has room for
+   (`TV_SCROLL_UP2` → `TOPMIDDLE`, `TV_MENU2` → `TOPRIGHT`, `TV_QUIT2` →
+   `TOPLEFT`). Defining those cells too collides. Name only the physical keys,
+   let the fallback place the touch variants, and use what it leaves free.
+3. **`mpeg_settings.c` has a real upstream bug:** its `HAVE_TOUCHSCREEN`
+   fallback assigns `BUTTON_TOPLEFT` to both `MPEG_START_TIME_RIGHT2` (line 413)
+   and `MPEG_START_TIME_EXIT` (line 416), so any target relying on it fails with
+   `duplicate case value` at line 960. We sidestep it with an explicit map; the
+   shared fallback is left alone.
+
+Also: an undefined `*_NAME` help-string macro does not report as undeclared —
+`STAR_QUIT_NAME ":"` in an initialiser list becomes `expected '}' before string
+constant`, which reads like a syntax error in code you never touched.
