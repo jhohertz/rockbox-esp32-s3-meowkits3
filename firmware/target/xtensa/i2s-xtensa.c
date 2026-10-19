@@ -596,6 +596,11 @@ static void tx_recover(void)
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
 
+    /* Clear only the error bit. This runs inside the handler, whose snapshot of
+     * INT_ST was taken before the ring was re-armed, so clearing DONE here could
+     * discard a completion that fired in the meantime and lose a mixer pace. */
+    wr(GDMA_TX_INT_CLR, GDMA_INT_DSCR_ERR);
+
     /* Re-arming the ring is right whether or not we are playing; starting the
      * walk is not. See the note in the DSCR_ERR branch. */
     if (playing)
@@ -884,6 +889,13 @@ static void start_tx(void)
         dscr_streak = 0;
     }
 
+    /* The ring is fully armed and the walk has not begun, so this is the only
+     * safe moment to clear what the previous session left pending and put the
+     * error interrupt back. Clearing while running would drop a completion that
+     * fired between reading INT_ST and writing INT_CLR. */
+    wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
+    wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DSCR_ERR);
+
     i2s_ll_tx_start(tx_hal.dev);
     xt_tx_sessions++;
     irq_at_start = xt_sink_irq_n;
@@ -899,8 +911,28 @@ static void stop_tx(void)
      * fragile. Stamped so the trail says whether a crash follows a stop. */
     xtensa_breadcrumb("txstop", xt_sink_stop_n, xt_sink_play_n);
 
+    /* Mask the descriptor-error interrupt before the ring is emptied on purpose.
+     *
+     * sink_stop() hands every descriptor back to the CPU (dw0 = 0) immediately
+     * after this returns. With out_auto_wrback set the engine mounts the next
+     * descriptor the instant the current one retires, and out_check_owner then
+     * rejects a slot we have just taken away: out_dscr_err. That is the teardown
+     * doing what it was designed to do, not a fault -- and it was being counted as
+     * one. This is where the transition bursts came from, including the nine
+     * entries measured in the very first session before any audio had completed,
+     * and a burst with no DONE between the entries is what trips tx_recover().
+     *
+     * Masked for the stopped period, re-armed in start_tx(). A genuine error
+     * during playback is still reported; a designed one during teardown is not. */
+    wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DSCR_ERR);
+
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
     i2s_ll_tx_stop(tx_hal.dev);
+
+    /* Drop whatever latched during the halt so nothing stale survives into the
+     * next session. Safe to clear the completion bit here: the transport is
+     * stopped, so a completion from the previous session has nothing to refill. */
+    wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
 }
 
 /* Nothing is started or stopped for the receiver in this file any more: it is an
