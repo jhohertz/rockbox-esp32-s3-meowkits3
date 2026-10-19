@@ -150,29 +150,73 @@ mode.
 Each stage has a pre-declared revert criterion. Honour it rather than salvaging
 a result after the fact.
 
-### Stage 0 — freeze the baseline
-Done. Recorded above.
+### Correction to the original staging, found by reading IDF source
 
-### Stage 1 — add the IDF TX channel alongside; route nothing
-Create the channel in `i2s_init()` but leave the hand-rolled path carrying all
-audio. Prove:
-- boots to `root_menu`, no new faults
-- RX's GDMA is not reset (channel ordering)
-- the shared clock pads are still driven
-- sample rate still measured correct
+Stage 1 was originally "create the IDF channel alongside and route nothing".
+**That state does not exist.** Chased through IDF:
 
-**Revert if** any of those fail, or if `rockbox.elf` behaviour changes at all.
+- `i2s_new_channel()` → `i2s_acquire_controller_obj()` → `i2s_hal_init()`, which
+  is *only* `hal->dev = I2S_LL_GET_HW(port_id)` (`i2s_hal.c:64-68`). Memory,
+  semaphores, a queue. **No GDMA allocation and no hardware writes.** Safe.
+- The GDMA grab is `i2s_init_dma_intr()` (`i2s_common.c:804`), which calls
+  `gdma_new_ahb_channel()` — and that is reached from
+  **`i2s_channel_init_std_mode()`** (`i2s_std.c:338`), not from
+  `i2s_new_channel()`.
+- `gdma_new_ahb_channel()` → `do_allocate_gdma_channel()` →
+  `gdma_acquire_group_handle()` → `gdma_ll_reset_register()` (`gdma.c:696`).
 
-### Stage 2 — route audio through the writer thread, `desc_num = 2`
-Judge against the baseline table above.
-**Revert if** `pcmbuf` shows the mixer stalling, `err`-equivalent or underrun
-counters move, or the crackle is worse than Stage 0 by ear.
+So the block reset the RX comment describes is real, but it is attributed to the
+wrong call: it lands at `init_std_mode`, not `new_channel`. `i2s_rx_chan_create()`
+calls both (pcm-xtensa.c:266 and :294), which is why the measurement looked like
+`new_channel` was the culprit.
+
+Why that kills the coexistence plan: our hand-rolled transmitter owns **GDMA OUT
+channel 0** (`GDMA_TX_CONF0 = GDMA_BASE + 0x60`). The moment
+`i2s_channel_init_std_mode()` runs for a TX channel, IDF allocates the first free
+OUT channel — and it has no knowledge that we are using channel 0, so it takes
+it, mid-playback. **The cutover is atomic by construction.**
+
+### Stage 1a — scaffolding, and `i2s_new_channel()` only
+Add a compile-time switch `TX_USE_IDF_DRIVER` (default **off**) so the two
+implementations are mutually exclusive and the A/B is a rebuild, not a race.
+With the switch on, call `i2s_new_channel()` for a TX channel on `I2S_NUM_1` and
+nothing further — no `init_std_mode`, no routing.
+
+Proves: IDF can claim the I2S1 controller while our HAL still drives it; the
+hand-rolled path still carries audio unchanged; RX is undisturbed; boots clean.
+
+**Revert if** any baseline metric moves, or the device fails to boot.
+
+### Stage 1b — the cutover (atomic)
+With the switch on: skip `gdma_init()` and the `gdma_irq` install entirely, and
+instead do `i2s_channel_init_std_mode()` + the writer thread. There is no
+in-between state to stage, so this is where all the risk lives and it cannot be
+split further.
+
+**Revert if** audio does not play, or the baseline metrics move.
+
+### Stage 2 — measure at `desc_num = 2`
+Judge against the baseline table above: descriptor-fault equivalent, mixer
+stall, `pcmbuf` fill band, and ears.
+**Revert if** the crackle is worse than Stage 0.
 
 ### Stage 3 — sweep `desc_num` 2 → 3 → 4
-Pick on measurement, not on reasoning.
+Pick on measurement, not on reasoning. Remember `desc_num = 2` also changes
+IDF's reserve predicate (`<= 0` rather than `<= 1`), so it is not linear.
 
 ### Stage 4 — delete the hand-rolled ring, ISR and descriptor code
-Only once Stages 2–3 are stable.
+Only once Stages 1b–3 are stable.
+
+---
+
+## Why bother, given the cutover is atomic and risky
+
+One concrete gain beyond "use IDF drivers": **the migration removes the single
+most dangerous interaction in this file.** The GDMA block reset only threatens us
+because the transmitter is invisible to IDF's GDMA bookkeeping — IDF resets the
+block and has no idea channel 0 is live. Once both directions are IDF's, IDF
+knows about both and the ordering hazard that killed playback the first time
+recording was armed (`pcm-xtensa.c:228-254`) stops existing.
 
 ---
 
@@ -180,4 +224,45 @@ Only once Stages 2–3 are stable.
 
 | stage | date | artifact | result |
 |---|---|---|---|
-| 0 | baseline frozen | `f5128bc2c87e` | see table above |
+| 0 | baseline frozen | `f5128bc2c87e` (see correction below) | see table above |
+| 1a | done | image `f838a7ae3570`, switch ON | **PASS** |
+
+### Stage 1a result
+
+```
+TX1a: IDF TX channel created 0x3c116990 (not configured, not routed)
+TX1a: GDMA INT_ENA 00000006 -> 00000006   LINK 008d05c0 -> 008d05c0  UNCHANGED
+root_menu: 1   faults: 0
+```
+
+Playback then ran on the hand-rolled path with the IDF channel existing
+alongside: 1399 frames, `refill` 1:1 with `irq`, `branch=3`, `queued=0`,
+`err` flat at 0–1, `locked` never negative, ISR worst 10 µs, no faults.
+
+**The claim is confirmed on hardware, not just in source:** `i2s_new_channel()`
+does not disturb a live GDMA OUT channel. The switch itself was verified by
+comparing `i2s-xtensa.o` built from the pre-scaffolding file against it built
+with the scaffolding present and the switch off — identical symbol sets,
+identical non-debug section sizes, and identical concatenated section content
+(`dc78a6799715651f3b39ff166453959a`).
+
+### Correction to the Stage 0 baseline record
+
+The `rockbox.elf` / `rockbox.esp32s3` hashes in the table above are **not valid
+comparators across commits**, for two reasons found while verifying Stage 1a:
+
+1. **There are two `rockbox.elf` files.** `build-meowkits3/rockbox.elf` is
+   Rockbox's own pre-link (`root.make:396`) and for ESP targets is *not in the
+   dependency chain of what gets flashed*. IDF links `idf-app/build/rockbox.elf`
+   from the archives; that becomes `rockbox.bin` and then `rockbox.esp32s3`.
+   The stale copy sat at `f5128bc2c87e` while the real artifact moved.
+2. **The ESP app descriptor embeds `git describe`** in its `version` field
+   (`f-174-g0f193de9` on this build), so the image hash changes on every commit
+   regardless of code. Within one commit it is deterministic (verified: two
+   rebuilds produced the same image).
+
+So the correct way to A/B this migration is **switch-vs-switch at the same
+commit**, and the correct object-level check is section content of the
+translated `.o`, as used above. Image hashes are only meaningful as "did
+something change", never as "is this the baseline".
+
