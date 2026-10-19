@@ -52,6 +52,17 @@
 #include <hal/i2s_hal.h>
 #include <hal/i2s_types.h>
 #include <hal/i2s_ll.h>
+
+/* Stage 1a of the esp_driver_i2s migration. Off by default: with this undefined
+ * the file behaves exactly as the frozen baseline in TX-IDF-MIGRATION.md, and
+ * the switch is the revert. Flip it to test the next stage; see that file for
+ * why the cutover itself cannot be staged any finer. */
+#define TX_USE_IDF_DRIVER
+
+#ifdef TX_USE_IDF_DRIVER
+#include "driver/i2s_common.h"
+#include "driver/i2s_std.h"
+#endif
 #include <esp_rom_gpio.h>
 #include <esp_clk_tree.h>
 #include <esp_private/esp_clk.h>
@@ -644,6 +655,71 @@ static void i2s_reg_snapshot(const char *tag)
            (unsigned)rd(I2S_TX_CLKM_DIV_CONF), (unsigned)rd(I2S_TX_STATE));
 }
 
+#ifdef TX_USE_IDF_DRIVER
+/* The IDF transmit channel, created but deliberately NOT yet configured.
+ *
+ * Stopping at i2s_new_channel() is the whole of Stage 1a, and it is a real
+ * boundary rather than an arbitrary one. From IDF source:
+ *
+ *   i2s_new_channel()            -> i2s_acquire_controller_obj() ->
+ *                                   i2s_hal_init(), which is only
+ *                                   hal->dev = I2S_LL_GET_HW(port) (i2s_hal.c:64)
+ *                                   plus heap, a queue and two semaphores.
+ *                                   No GDMA allocation. No register writes.
+ *
+ *   i2s_channel_init_std_mode()  -> i2s_init_dma_intr() (i2s_common.c:804) ->
+ *                                   gdma_new_ahb_channel() ->
+ *                                   do_allocate_gdma_channel() ->
+ *                                   gdma_acquire_group_handle() ->
+ *                                   gdma_ll_reset_register() (gdma.c:696)
+ *
+ * So the block reset that pcm-xtensa.c:228 documents is real, but it belongs to
+ * init_std_mode, not to new_channel. That matters here because our
+ * hand-rolled transmitter owns GDMA OUT channel 0 (GDMA_TX_CONF0 =
+ * GDMA_BASE + 0x60) and IDF has no idea: the first time init_std_mode runs for
+ * a TX channel it will allocate the first free OUT channel and take that one.
+ * There is therefore no state in which both transmitters are live, which is why
+ * the migration is a switch and an atomic cutover rather than a gradual
+ * handover.
+ *
+ * Creating the channel here is still worth doing on its own: it proves IDF will
+ * claim the I2S1 controller while our HAL still drives it, and the probe in
+ * sink_init() checks afterwards that the live GDMA configuration survived.
+ * That is the claim this stage rests on, so it gets measured rather than
+ * trusted. */
+static i2s_chan_handle_t tx_chan_idf;
+
+bool i2s_tx_chan_create(void)
+{
+    if (tx_chan_idf)
+        return true;
+
+    /* Sized to match the hand-rolled path for now: one descriptor is
+     * dma_frame_num * 2 slots * 2 bytes = 1024 bytes, which is exactly one
+     * Rockbox mixer frame. desc_num is the runway-vs-report-accuracy knob and
+     * is swept in Stage 3 -- see the table in TX-IDF-MIGRATION.md for why 8
+     * made the previous attempt bursty. */
+    i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1,
+                                                       I2S_ROLE_MASTER);
+    cfg.dma_desc_num  = 2;
+    cfg.dma_frame_num = 256;
+
+    esp_err_t e = i2s_new_channel(&cfg, &tx_chan_idf, NULL);
+
+    if (e != ESP_OK)
+    {
+        printf("TX1a: i2s_new_channel failed: %d\n", (int)e);
+        tx_chan_idf = NULL;
+        return false;
+    }
+
+    printf("TX1a: IDF TX channel created %p (not configured, not routed)\n",
+           (void *)tx_chan_idf);
+    return true;
+}
+#endif /* TX_USE_IDF_DRIVER */
+
+
 void i2s_init(void)
 {
     /* Peripheral clock and reset. IDF does this in periph_ctrl; entering from the
@@ -1230,6 +1306,29 @@ static void sink_init(void)
 #endif
 
     i2s_init();
+
+#ifdef TX_USE_IDF_DRIVER
+    /* Deliberately AFTER i2s_init(): if creating an IDF channel did disturb the
+     * GDMA block, we want to see it happen to a transmitter that is already
+     * configured, because that is the ordering the real cutover has to survive.
+     * The two registers printed are exactly the ones pcm-xtensa.c:240 records as
+     * the casualties of a block reset -- INT_ENA 0x06 -> 0x00 and LINK losing
+     * the descriptor address -- so this says directly whether the claim in
+     * i2s_tx_chan_create() holds on hardware and not just in source. */
+    {
+        uint32_t ena_before = rd(GDMA_TX_INT_ENA);
+        uint32_t link_before = rd(GDMA_TX_LINK);
+
+        bool ok = i2s_tx_chan_create();
+
+        printf("TX1a: GDMA INT_ENA %08x -> %08x   LINK %08x -> %08x  %s\n",
+               (unsigned)ena_before, (unsigned)rd(GDMA_TX_INT_ENA),
+               (unsigned)link_before, (unsigned)rd(GDMA_TX_LINK),
+               (ok && ena_before == rd(GDMA_TX_INT_ENA) &&
+                link_before == rd(GDMA_TX_LINK))
+                   ? "UNCHANGED (claim holds)" : "DISTURBED (revert stage 1a)");
+    }
+#endif
 
     audiohw_preinit();
 
