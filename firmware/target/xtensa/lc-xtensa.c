@@ -164,7 +164,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     fd = open(filename, O_RDONLY);
     if (fd < 0)
     {
-        DEBUGF("Could not open file");
+        printf("load fail: could not open %s\n", filename);
         return NULL;
     }
 
@@ -174,14 +174,14 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         || ident[XT_EI_CLASS] != XT_ELFCLASS32
         || ident[XT_EI_DATA] != XT_ELFDATA2LSB)
     {
-        DEBUGF("Not a 32-bit little-endian ELF");
+        printf("load fail: Not a 32-bit little-endian ELF\n");
         goto err;
     }
 
     if (lseek(fd, 0, SEEK_SET) < 0
         || read(fd, ehdr, sizeof ehdr) != (ssize_t)sizeof ehdr)
     {
-        DEBUGF("Could not read ELF header");
+        printf("load fail: Could not read ELF header\n");
         goto err;
     }
 
@@ -190,7 +190,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
     if (phoff == 0 || phnum == 0 || phnum > 16)
     {
-        DEBUGF("Bogus program header table");
+        printf("load fail: Bogus program header table\n");
         goto err;
     }
 
@@ -201,7 +201,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
         if (!read_phdr(fd, phoff, (unsigned int)i, &ph))
         {
-            DEBUGF("Could not read program header %d", i);
+            printf("load fail: Could not read program header %d\n", i);
             goto err;
         }
         if (ph.type != XT_PT_LOAD || ph.memsz == 0)
@@ -215,7 +215,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         if (dest < XT_LOAD_FLOOR || dest >= XT_LOAD_CEIL
             || dest + ph.memsz > XT_LOAD_CEIL)
         {
-            DEBUGF("Segment %d at %p does not fit the load region", i,
+            printf("load fail: Segment %d at %p does not fit the load region\n", i,
                    (void *)dest);
             goto err;
         }
@@ -224,13 +224,13 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         {
             if (lseek(fd, ph.offset, SEEK_SET) < 0)
             {
-                DEBUGF("Could not seek to segment %d", i);
+                printf("load fail: Could not seek to segment %d\n", i);
                 goto err;
             }
             n = read(fd, dest, ph.filesz);
             if (n != (ssize_t)ph.filesz)
             {
-                DEBUGF("Short read on segment %d (%ld of %u)", i,
+                printf("load fail: Short read on segment %d (%ld of %u)\n", i,
                        (long)n, ph.filesz);
                 goto err;
             }
@@ -262,7 +262,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
     if (loaded == 0)
     {
-        DEBUGF("No loadable segments");
+        printf("load fail: No loadable segments\n");
         return NULL;
     }
 
