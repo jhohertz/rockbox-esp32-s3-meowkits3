@@ -922,7 +922,30 @@ static void sink_lock(void)
 
 static void sink_unlock(void)
 {
-    if (--locked == 0)
+    /* Clamped, and the clamp is the fix for a drift that was easy to miss.
+     *
+     * sink_stop() sets locked = 0 deliberately (see the note there: a stop that
+     * arrives while the mixer still holds the play lock used to leave the count
+     * nonzero and GDMA_INT_DONE masked for good). But the mixer's own outstanding
+     * pcm_play_unlock() still runs afterwards, and with a bare --locked that took
+     * the count to -1 -- where it then stayed: measured locked=-1 in 500 of 548
+     * samples during ordinary playback.
+     *
+     * Once negative, neither transition ever equals zero again. sink_lock()'s
+     * "if (locked++ == 0)" never masks and this function's "if (--locked == 0)"
+     * never unmasks, so the pair silently stops doing anything and the completion
+     * interrupt is live at all times -- including inside the start and stop
+     * sequences the play lock exists to protect. That is a race window, not a
+     * cosmetic counter bug.
+     *
+     * Clamping at zero keeps the invariant the two guards depend on: the count is
+     * always the number of locks genuinely held, the 0<->1 edges still mean
+     * something, and an unlock that arrives after a stop simply re-asserts the
+     * unmask, which is what we want anyway. */
+    if (locked > 0)
+        locked--;
+
+    if (locked == 0)
     {
         /* TEMPORARY: event-driven, so it cannot sample the wrong moment the way
            a dump taken inside sink_play() did -- the mixer holds this lock across
