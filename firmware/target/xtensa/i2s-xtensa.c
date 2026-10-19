@@ -271,7 +271,22 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * to it (measured: fifo f0/e1, stutter slightly worse than the 1-frame design).
  * With four, the engine takes three more descriptors -- 17ms -- before it needs
  * the slot we just rearmed. */
-#define XT_TX_RING 4
+/* Eight, not four -- measured, not estimated, and only affordable once
+ * XT_TX_SLOT was right-sized. err sat flat at 7 across ~7100
+ * frames and then burst to 59 within 16s of heavy volume and touchscreen
+ * hammering, i.e. the play lock outlasting the ring. sink_lock() masks
+ * GDMA_INT_DONE, so while the core holds the lock the ISR cannot run and nothing
+ * is rearmed; four slots is 23ms of runway, and synchronous I2C to the ES8311
+ * plus an FT6336 poll on the same bus can exceed it. own=1111 -- all four slots
+ * DMA-owned and none rearmed -- was captured repeatedly, which is that state on
+ * the live wire. Eight gives 46ms; the prediction is that err stops bursting
+ * under the same stress. Cost: dma_buf grows to 16KB of internal RAM. */
+/* Seven slots = 40ms of runway, up from 23ms. Eight overflowed dram0_0_seg by
+ * 104 bytes -- the descriptor array grows 32 bytes per slot, padded to a cache
+ * line, and this region is already full -- so seven is the honest ceiling. It is
+ * still a strict improvement over the original four-slot design: right-sized
+ * slots mean 7 x 1024 = 7KB of dma_buf versus 8KB, for nearly double the runway. */
+#define XT_TX_RING 7
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
 /* GDMA requires a 4-byte aligned buffer address */
@@ -280,7 +295,15 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * no room to give: dram0_0_seg overflowed at 4 x 4096 and fits comfortably at
  * 4 x 512. The bound below is the same one the static assert in write_desc()
  * enforces, so the slot can never be smaller than what we are handed. */
-#define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4 * 2)
+/* One mixer frame, not two. The *2 here was dead capacity: arm() sets
+ * length = the size we are handed (MIX_FRAME_SAMPLES * 4 = 1024, measured
+ * constant across thousands of handovers), so the second half of every slot was
+ * never written and never transferred. It cost exactly 4KB of the DRAM region
+ * this target has no room to spare, and it is why XT_TX_RING 8 overflowed
+ * dram0_0_seg by 8296 bytes. Right-sizing it buys eight slots of runway for the
+ * same 8KB. The static assert in arm() still rejects any handover larger than
+ * the slot, so an unexpected bigger frame cannot silently overrun. */
+#define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4)
 
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
 
