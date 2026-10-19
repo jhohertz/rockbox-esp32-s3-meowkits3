@@ -284,8 +284,18 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 /* Seven slots = 40ms of runway, up from 23ms. Eight overflowed dram0_0_seg by
  * 104 bytes -- the descriptor array grows 32 bytes per slot, padded to a cache
  * line, and this region is already full -- so seven is the honest ceiling. It is
- * still a strict improvement over the original four-slot design: right-sized
- * slots mean 7 x 1024 = 7KB of dma_buf versus 8KB, for nearly double the runway. */
+ * a strict improvement over the original four-slot design on memory grounds:
+ * right-sized slots mean 7 x 1024 = 7KB of dma_buf versus 8KB, for nearly double
+ * the runway.
+ *
+ * NOT the fix for the err bursts. The hypothesis that motivated it was that
+ * sink_lock() masking GDMA_INT_DONE lets a long locked section outlast the ring.
+ * Measured, that is wrong: err steps to +52, +10 and +16 on exactly the samples
+ * where (refill - irq) steps by 4, i.e. one start_tx() preroll per playback
+ * session, and never on samples where volume or touchscreen traffic was heavy
+ * without a session starting. The bursts are track switches. Depth may still
+ * blunt them, but it is not aimed at the mechanism, and the transition itself is
+ * where the real answer is. */
 #define XT_TX_RING 7
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
