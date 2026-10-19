@@ -171,6 +171,12 @@ bool backlight_hw_init(void)
 
 void backlight_hw_on(void)
 {
+    /* Driven by the LCD/backlight timeout and by every UI wake. The two faults
+     * captured so far were both preceded by dense "BL at hw_on" traffic during
+     * rapid file cycling, and the panel's CS and reset live on the PCA9557 I2C
+     * expander -- so this shares a bus with the codec. */
+    xtensa_breadcrumb("blon", 0, 0);
+
     /* Wake the panel before light is applied, otherwise the backlight comes up
      * onto a panel that is still coming out of sleep and the first frame is lost.
      */
@@ -192,6 +198,8 @@ void backlight_hw_on(void)
 
 void backlight_hw_off(void)
 {
+    xtensa_breadcrumb("bloff", 0, 0);
+
     set_duty(0);
     bl_probe("at hw_off  ");
     lcd_enable(false);
