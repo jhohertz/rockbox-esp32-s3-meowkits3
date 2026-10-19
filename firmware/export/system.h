@@ -357,6 +357,12 @@ bool dbg_hw_info(void);
  * Implemented in target/xtensa/paniclog.c. */
 void xtensa_panic_log(const char *msg);
 void xtensa_paniclog_dump(void);
+void xtensa_panic_log(const char *msg);
+/* Record a step that might be the last one. Read back by
+ * xtensa_paniclog_dump() on the next boot; see paniclog.c for why this exists
+ * rather than a panic-time hook. */
+void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+void xtensa_paniclog_stamp_boot(unsigned long seq);
 #endif
 
 #endif /* __SYSTEM_H__ */
