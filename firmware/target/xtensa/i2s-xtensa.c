@@ -792,36 +792,34 @@ static void gdma_init(void)
     /* GDMA channel 0 -> I2S1 */
     wr(GDMA_TX_PERI_SEL, GDMA_TRIG_I2S1);
 
-    /* conf0: auto write-back so the DMA hands the descriptor back to the CPU
-     * after it has transmitted the buffer. Without this the owner bit stays
-     * set to DMA forever and the ring never frees. */
-    /* conf0: outdscr_burst_en only.
+    /* conf0: outdscr_burst_en | out_auto_wrback -- a free-running ring.
      *
-     * out_auto_wrback (bit 2) is deliberately NOT set, and that single bit is
-     * what the whole crackle came from. arm() writes next = 0 on the stated
-     * understanding that "zero terminates the link list: the engine stops rather
-     * than wrapping". This GDMA has no such convention. With auto-writeback
-     * enabled the engine follows next unconditionally the moment a descriptor
-     * retires, so next = 0 told it to fetch its next descriptor from address
-     * 0x00000000 -- garbage, owner clear, length zero -- and raised out_dscr_err.
-     * Measured: err tracked irq exactly 1:1 (360 per 379 interrupts), i.e. one
-     * descriptor fault per audio frame, 172 times a second. Each one stalls the
-     * transport until the handler restarts it. That stall is the crackle.
+     * The two GDMA settings are a pair, not a choice, and getting them
+     * mismatched is what produced the original crackle. The failure mode that
+     * was actually measured: auto-writeback ON together with arm() writing
+     * next = 0, on the misunderstanding that "zero terminates the link list".
+     * This GDMA has no such convention -- with auto-writeback on the engine
+     * follows next unconditionally, so it fetched its next descriptor from
+     * address 0x00000000: garbage, owner clear, length zero. err tracked irq
+     * exactly 1:1 (360 per 379 interrupts), one descriptor fault per audio
+     * frame at 172/s, each one stalling the transport until the handler
+     * restarted it. That stall was the crackle.
      *
-     * Without auto-writeback the engine halts at the end of the descriptor it was
-     * given and waits for software, which is the behaviour the DONE handler has
-     * always assumed: complete, re-arm desc[0], link.start. The imx233 model this
-     * file is written against gets the same effect from a DMA command carrying
-     * next = NULL, because that peripheral really does treat NULL as a stop.
+     * Auto-writeback OFF was the previous design: the engine halted after each
+     * descriptor and the DONE handler re-armed desc[0] and did link.start. That
+     * is the imx233 model, whose DMA really does treat NULL as a stop. Its cost
+     * was the second crackle: one 5.8ms descriptor in flight, and a restart gap
+     * opened on the I2S bus inside every interrupt 172 times a second -- OUT_DONE
+     * means "transferred to the peripheral", not "played", and the I2S FIFO is
+     * only ~256 bytes (1.45ms), so nothing bridges that gap.
      *
-     * If the ring is ever wanted for real, the change is the other way round:
-     * keep auto-writeback on, chain next through all four slots, and keep every
-     * slot owned by the DMA and filled. What cannot work is either setting with
-     * next = 0. */
-    /* Free-running: the engine follows next unconditionally. This is only safe
-     * with every slot owned and filled at all times, which is what start_tx()'s
-     * preroll, the ISR's refill-the-completed-slot rule and tx_recover()
-     * guarantee. Paired with the chained next in arm(). */
+     * The shipping combination is auto-writeback ON with next chained through all
+     * four slots and every slot owned and filled at all times, guaranteed by
+     * start_tx()'s preroll, the ISR's refill-the-completed-slot rule and
+     * tx_recover(). Depth is what makes the refill race winnable: the engine
+     * takes three more descriptors (17ms) between a slot's DONE and the moment it
+     * needs that slot again. next = 0 with either setting is the combination that
+     * cannot work. */
     wr(GDMA_TX_CONF0, (1u << 4) | (1u << 2));   /* outdscr_burst_en | out_auto_wrback */
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
