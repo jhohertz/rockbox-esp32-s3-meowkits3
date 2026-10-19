@@ -43,19 +43,44 @@ PUZZLESFLAGS = -I$(PUZZLES_SRCDIR)/dummy $(filter-out			\
 		$(PUZZLES_SRCDIR)/rbcompat.h -ffunction-sections	\
 		-fdata-sections -w -Wl,--gc-sections
 
-$(PUZZLES_OBJDIR)/sgt-%.rock: $(PUZZLES_OBJDIR)/src/%.o $(PUZZLES_OBJDIR)/help/%.o $(PUZZLES_SHARED_OBJ) $(TLSFLIB)
-	$(call PRINTS,LD $(@F))$(CC) $(PLUGINFLAGS) -o $(PUZZLES_OBJDIR)/$*.elf \
-		$(filter %.o, $^) \
-		$(filter %.a, $+) \
-		-lgcc $(filter-out -Wl%.map, $(PLUGINLDFLAGS)) -Wl,$(LDMAP_OPT),$(PUZZLES_OBJDIR)/src/$*.map
-	$(SILENT)$(call objcopy_plugin,$(PUZZLES_OBJDIR)/$*.elf,$@)
+# Each .rock needs an EXPLICIT rule, not a pattern rule -- and the reason is a
+# make behaviour that makes the pattern form fail invisibly.
+#
+# During pattern-rule selection make checks a candidate's explicitly listed
+# prerequisites for EXISTENCE only; it does not try to build them. pattern_search()
+# calls check_dep() and `make -d` shows it plainly:
+#
+#     Trying rule prerequisite '.../puzzles/rbwrappers.o'.
+#     Not found '.../puzzles/rbwrappers.o'.
+#
+# Any absent prerequisite rejects the whole candidate. make then falls through to
+# plugins.make's `$(BUILDDIR)/%.rock:`, which has no prerequisites at all, so it
+# always matches -- and links nothing but plugin_crt0.o and the plugin libraries.
+# The failure surfaces as `undefined reference to plugin_start`, which points
+# nowhere near the cause.
+#
+# The shared objects cannot exist before the first link, so the pattern form could
+# never fire on a clean tree: the rule was rejected precisely because the objects
+# it would have caused to be compiled were the ones it was checking for.
+# mikmod.make does not hit this because its .rock rule is explicit. This does the
+# same thing, generated once per game, with the recipe unchanged.
+#
+# Two source directories, matching the two pattern rules this replaces: games live
+# in src/, and a few in src/unfinished/. c2obj reproduces the object path either
+# way, so no special-casing is needed.
+define PUZZLES_ROCK_RULE
+$(PUZZLES_OBJDIR)/sgt-$(1).rock: $(2) $(PUZZLES_OBJDIR)/help/$(1).o \
+        $(PUZZLES_SHARED_OBJ) $(TLSFLIB)
+	$$(call PRINTS,LD $$(@F))$$(CC) $$(PLUGINFLAGS) -o $(PUZZLES_OBJDIR)/$(1).elf \
+		$$(filter %.o, $$^) \
+		$$(filter %.a, $$+) \
+		-lgcc $$(filter-out -Wl%.map, $$(PLUGINLDFLAGS)) -Wl,$$(LDMAP_OPT),$(PUZZLES_OBJDIR)/src/$(1).map
+	$$(SILENT)$$(call objcopy_plugin,$(PUZZLES_OBJDIR)/$(1).elf,$$@)
 
-$(PUZZLES_OBJDIR)/sgt-%.rock: $(PUZZLES_OBJDIR)/src/unfinished/%.o $(PUZZLES_OBJDIR)/help/%.o $(PUZZLES_SHARED_OBJ) $(TLSFLIB)
-	$(call PRINTS,LD $(@F))$(CC) $(PLUGINFLAGS) -o $(PUZZLES_OBJDIR)/$*.elf \
-		$(filter %.o, $^) \
-		$(filter %.a, $+) \
-		-lgcc $(filter-out -Wl%.map, $(PLUGINLDFLAGS)) -Wl,$(LDMAP_OPT),$(PUZZLES_OBJDIR)/src/$*.map
-	$(SILENT)$(call objcopy_plugin,$(PUZZLES_OBJDIR)/$*.elf,$@)
+endef
+
+$(foreach src,$(PUZZLES_GAMES_SRC), \
+    $(eval $(call PUZZLES_ROCK_RULE,$(basename $(notdir $(src))),$(call c2obj,$(src)))))
 
 $(PUZZLES_SRCDIR)/rbcompat.h:	$(APPSDIR)/plugin.h			\
 				$(APPSDIR)/plugins/lib/pluginlib_exit.h	\
