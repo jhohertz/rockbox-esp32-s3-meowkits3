@@ -266,3 +266,79 @@ commit**, and the correct object-level check is section content of the
 translated `.o`, as used above. Image hashes are only meaningful as "did
 something change", never as "is this the baseline".
 
+
+## Stage 1b — FAILED, reverted by switch (kept in tree, `TX_USE_IDF_DRIVER` off)
+
+Symptom: audio plays in short bursts separated by silence, correct pitch, nothing
+lost. Reproduced across twelve instrumented builds; every candidate fix measured
+no change.
+
+### The controlled A/B that localises it
+
+Same tree, same track, same mixer; only `TX_USE_IDF_DRIVER` differs. The probe is
+a byte census (count of non-zero bytes per 1024-byte handover) — scale-free, so it
+cannot be fooled by sample width the way a peak-amplitude probe was.
+
+| | hand-rolled path | IDF writer thread |
+|---|---|---|
+| mean non-zero bytes / frame | **992** | 0–430 |
+| all-zero frames | **1%** (43 / 2256) | **~50%** (82 / 171 windows entirely zero) |
+| audio | continuous | halting |
+
+Shape on the IDF path: a burst of 2–44 real frames, then 110–150 consecutive
+all-zero frames (0.6–0.9 s). The zeros are *extra* material, not replacements —
+which is why nothing sounds missing.
+
+### Everything on the TX side is identical and healthy on both paths
+
+`size min=1024 max=1024 mean=1024 (other=0) sameptr=0` · 172 writes/s ·
+`gap mean=5804us max=5811us` · `tmo=0 errs=0` · `park n=0` · `gate=0` ·
+`noask=0` · `nodata=0` · `en=1` throughout · `starve=0`.
+
+So the core hands the IDF writer silence and the hand-rolled path sound, from the
+same `pcm_play_dma_complete_callback()`.
+
+### Hypotheses tested and refuted by measurement
+
+| hypothesis | how it was refuted |
+|---|---|
+| `desc_num` too small | 2 → 4 → 12 → 24, no change |
+| IDF prefetch predicate (`<= desc_num>2 ? 1 : 0`) | same |
+| writer descheduled by priority | `PRIORITY_USER_INTERFACE` → `PRIORITY_REALTIME`, no change |
+| `sink_stop()` tearing the channel down | `TX_STOP_KEEPS_CHANNEL`, no change |
+| descriptor ≠ mixer frame (512 vs 256) | fixed to 256, no change |
+| lookahead over the mixer (deep ring) | ring back to 2, no change |
+| missing `refill()`'s `if (pend_valid) return` | added; `noask=0` — never applicable |
+| play-lock race on the swvol double buffer | gate moved to just before the pull; `gate=0` — lock never held at pull time |
+| probe lying about silence | replaced peak-amplitude (which reported impossible >32767 values) with a byte census; result held |
+
+### The one difference left
+
+The baseline calls `pcm_play_dma_status_callback()` /
+`pcm_play_dma_complete_callback()` from the GDMA `OUT_DONE` **ISR**; the IDF path
+calls them from a **thread**. With `WANT_SWVOL` the callback returns
+`pcm_dbl_buf[pcm_dbl_buf_num]` (`pcm_sw_volume.c:230`), and something in that
+path appears to be context-sensitive. `gate=0` and `noask=0` say the play lock and
+the `ops.play()` delivery path are never involved on the IDF side, which is itself
+part of the signature: on the baseline the same window shows `locked=1`.
+
+### If this is picked up again
+
+Do not start from ring sizes, priorities or descriptor geometry — all measured
+inert. Start by taking the completion interrupt back: register a done callback on
+IDF's GDMA channel (`gdma_register_done_callback()`) and run the pull in ISR
+context exactly as `refill()` does. If the zeros survive *that*, the fault is in
+the swvol/mixer path's assumption about caller context, not in this driver.
+
+### Instrument traps hit during this investigation (all since fixed in-tree)
+
+- `gap_sum / n * 1000000 / 240000000` overflows 32 bits — a 5804 µs gap printed
+  as 6 µs. Cycles→µs at 240 MHz is `/ 240`.
+- A `printf` format string gained a duplicated line from a bad edit; four `%lu`
+  then read garbage off the stack and printed `en=1024 stop=4294967295`.
+- `starve`/`idle` sampled at handover cannot see starvation: IDF's
+  `auto_clear_after_cb` zeroes each completed descriptor, so a starved writer
+  looks identical to a healthy one.
+- Peak amplitude computed as `int16` is meaningless if the width assumption is
+  wrong; it reported maxima above 32767, which is impossible. Count non-zero
+  bytes instead.
