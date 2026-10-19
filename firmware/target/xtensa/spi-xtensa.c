@@ -73,7 +73,7 @@ static void spi_apply_config(void)
 /* The value the display was confirmed working with, recorded in e2a8c24dd4 when
  * the RGBW quadrant test pattern rendered correctly on this glass: bit 31
  * CLK_EQU_SYSCLK, taking the source clock undivided -- 80 MHz from the PLL that
- * CLK_GATE bit 2 selects. Not a divided clock. Both the reference and the spike
+ * CLK_GATE bit 2 selects. Not a divided clock. Both the reference firmware and our own bring-up measurement
  * drive the panel this way, and every divided configuration tried since has
  * produced banding and noise over a solid fill. */
 #define SPI_CLK_80M     SPI_CLK_EQU_SYSCLK
