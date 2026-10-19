@@ -381,6 +381,24 @@ struct mpeg_settings settings;
 #define MPEG_START_TIME_DOWN        BUTTON_DOWN
 #define MPEG_START_TIME_EXIT        BUTTON_B
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Same shape as
+ * ECHO_R1 above, with the two seek keys on the middle row.
+ *
+ * Defining these explicitly is also what avoids an upstream collision: the
+ * HAVE_TOUCHSCREEN fallback below assigns BUTTON_TOPLEFT to both
+ * MPEG_START_TIME_RIGHT2 (line 413) and MPEG_START_TIME_EXIT (line 416), so a
+ * target that relies on it gets `duplicate case value` at the switch on
+ * line 960. Naming our own keys makes the #ifndef guards skip that block. */
+#define MPEG_START_TIME_SELECT      BUTTON_A
+#define MPEG_START_TIME_EXIT        BUTTON_B
+#define MPEG_START_TIME_LEFT        BUTTON_LEFT
+#define MPEG_START_TIME_RIGHT       BUTTON_RIGHT
+#define MPEG_START_TIME_UP          BUTTON_UP
+#define MPEG_START_TIME_DOWN        BUTTON_DOWN
+#define MPEG_START_TIME_LEFT2       BUTTON_MIDLEFT
+#define MPEG_START_TIME_RIGHT2      BUTTON_MIDRIGHT
+
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
