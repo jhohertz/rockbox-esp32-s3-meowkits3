@@ -242,6 +242,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         if (ph.memsz > ph.filesz)
             memset(dest + ph.filesz, 0, ph.memsz - ph.filesz);
 
+        xtensa_breadcrumb("seg", ph.vaddr, (unsigned long)dest);
         printf("codec load: seg %d vaddr=%08x -> write@%p filesz=%u memsz=%u\n",
                i, ph.vaddr, (void *)dest, ph.filesz, ph.memsz);
 
@@ -298,6 +299,12 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      * code. */
     commit_discard_idcache();
 
+    /* The last thing recorded before the caller jumps into freshly placed code.
+     * If the next boot's trail ends here, the fault is executing the image, not
+     * loading it -- which is the distinction the two WAV-resume crashes needed
+     * and could not make, because IDF's panic handler re-entered before printing
+     * anything at all. */
+    xtensa_breadcrumb("placed", (unsigned long)buf, (unsigned long)loaded);
     printf("codec load: %d segment(s) placed, handle=%p\n", loaded,
            (void *)buf);
 

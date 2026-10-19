@@ -55,6 +55,13 @@ _Static_assert(CPU_FREQ ==
 
 void system_init(void)
 {
+    /* Report anything the previous boot left behind, before this boot can
+     * overwrite it. Both the panic record and the breadcrumb trail live in
+     * .noinit internal SRAM, which survives the reset a panic causes, and the
+     * dump consumes them so a stale one is not replayed as a live fault. */
+    xtensa_paniclog_dump();
+    xtensa_paniclog_stamp_boot(0);
+
     /* The codec and plugin buffers are pinned to a fixed address so that this
      * side agrees with the CODEC_ORIGIN / PLUGIN_ORIGIN that plugin.lds gives
      * the images -- apps/codecs.c rejects anything else. Because they are
