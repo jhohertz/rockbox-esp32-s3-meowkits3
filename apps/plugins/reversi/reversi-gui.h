@@ -390,6 +390,19 @@
 #define REVERSI_BUTTON_MAKE_MOVE    BUTTON_A
 #define REVERSI_BUTTON_MENU         BUTTON_START
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define REVERSI_BUTTON_UP        BUTTON_UP
+#define REVERSI_BUTTON_DOWN      BUTTON_DOWN
+#define REVERSI_BUTTON_LEFT      BUTTON_LEFT
+#define REVERSI_BUTTON_RIGHT     BUTTON_RIGHT
+#define REVERSI_BUTTON_MAKE_MOVE BUTTON_A
+#define REVERSI_BUTTON_MENU      BUTTON_CENTER
+#define REVERSI_BUTTON_QUIT      BUTTON_B
 #else
 #error No keymap defined!
 #endif

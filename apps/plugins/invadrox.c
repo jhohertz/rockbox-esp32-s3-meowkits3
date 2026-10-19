@@ -311,6 +311,18 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define RIGHT BUTTON_RIGHT
 #define FIRE  BUTTON_A
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define QUIT  BUTTON_B
+#define LEFT  BUTTON_LEFT
+#define RIGHT BUTTON_RIGHT
+#define FIRE  BUTTON_A
+#define FIRE2 BUTTON_CENTER
+
 #else
     #error INVADROX: Unsupported keypad
 #endif

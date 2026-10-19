@@ -340,6 +340,20 @@
 #define CLIX_BUTTON_UP          BUTTON_UP
 #define CLIX_BUTTON_DOWN        BUTTON_DOWN
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define CLIX_BUTTON_UP          BUTTON_UP
+#define CLIX_BUTTON_DOWN        BUTTON_DOWN
+#define CLIX_BUTTON_LEFT        BUTTON_LEFT
+#define CLIX_BUTTON_RIGHT       BUTTON_RIGHT
+#define CLIX_BUTTON_CLICK       BUTTON_A
+#define CLIX_BUTTON_SCROLL_FWD  BUTTON_BOTTOMMIDDLE
+#define CLIX_BUTTON_SCROLL_BACK BUTTON_TOPMIDDLE
+#define CLIX_BUTTON_QUIT        BUTTON_B
 #else
 #error "no keymap"
 #endif

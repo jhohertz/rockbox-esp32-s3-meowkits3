@@ -452,6 +452,22 @@
 #define CALENDAR_NEXT_MONTH BUTTON_B
 #define CALENDAR_PREV_MONTH BUTTON_Y
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention used
+ * across every MeowKit plugin keymap: directions move, A confirms or fires,
+ * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
+ * prev/next pair, CENTER the primary game action, corners secondary. */
+
+#define CALENDAR_PREV_DAY   BUTTON_LEFT
+#define CALENDAR_NEXT_DAY   BUTTON_RIGHT
+#define CALENDAR_PREV_WEEK  BUTTON_UP
+#define CALENDAR_NEXT_WEEK  BUTTON_DOWN
+/* month steps are rarer than day/week, so they take the touch row that
+ * mirrors the horizontal axis rather than a physical key */
+#define CALENDAR_PREV_MONTH BUTTON_MIDLEFT
+#define CALENDAR_NEXT_MONTH BUTTON_MIDRIGHT
+#define CALENDAR_SELECT     BUTTON_A
+#define CALENDAR_QUIT       BUTTON_B
 #else
 #error "No keypad setting."
 #endif
