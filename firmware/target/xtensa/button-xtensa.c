@@ -133,7 +133,13 @@ int button_read_device(int *data)
      * wrong, and main.c says so: the gptimer alarm advances current_tick only,
      * and the tick tasks -- including button_tick, registered by button_init via
      * tick_add_task -- run in tick_task_thread, ordinary thread context. So there
-     * is no ISR cost to pay and no reason to throttle. If touch ever stops
+     * is no ISR cost to pay.
+     *
+     * There is still a cost, and it is why the call below is throttled: bus load.
+     * Removing the wrong reason must not be read as removing a right one that was
+     * attached to it -- that is exactly what happened the first time this was
+     * un-gated, and the resulting 100 Hz poll was an audible regression on a bus
+     * shared with the codec, the PMU and the IO expander. If touch ever stops
      * responding again, check that this call is live before suspecting the panel,
      * the calibration, or the driver.
      */
