@@ -3688,3 +3688,28 @@ the screen and anything used in a continuous gesture stays physical.
 Also: an undefined `*_NAME` help-string macro does not report as undeclared —
 `STAR_QUIT_NAME ":"` in an initialiser list becomes `expected '}' before string
 constant`, which reads like a syntax error in code you never touched.
+
+## FreeRTOS stack usage cannot be measured on this port
+
+Two ready-made routes were tried, and both were wrong for measured reasons. Do not
+reach for either:
+
+- `uxTaskGetStackHighWaterMark()` and `CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY`
+  inspect the **bottom** of the stack buffer for `tskSTACK_FILL_BYTE`.
+  `pxPortInitialiseStack()` has already written the initial context frame over that
+  region, so the canary always looks consumed. Enabling the check reported
+  "stack overflow in task tick", then "in task power", for perfectly healthy
+  threads.
+- Scanning for Rockbox's `DEADBEEF` fails too. `thread.c` fills the buffer with
+  `DEADBEEF`, then `xTaskCreateStatic()` `memset`s the whole buffer with `0xa5`,
+  and `asm/xtensa/thread.c` restores only `stack[0]`. The fill actually present is
+  `0xa5a5a5a5` with one `DEADBEEF` word at index 0, so a `DEADBEEF` scan reports
+  `used = req - 4` (99%) for every thread.
+
+A correct scan would look for `0xa5` and run **top-down**: Rockbox stacks grow
+downward from the high end of the buffer, so the first fill word met coming down
+from the top marks one past the deepest point ever written. Running it from the
+bottom walks into the initial context frame and measures that instead.
+
+The target therefore carries no stack report. Sizing decisions come from
+`DEFAULT_STACK_SIZE` and observed behaviour, not from a watermark.
