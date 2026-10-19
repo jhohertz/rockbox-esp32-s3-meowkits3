@@ -610,8 +610,25 @@ transport until the handler restarted it — audible as crackle at 172 Hz.
 Measured over 53,833 frames: faults went from one per frame to one for the
 whole run by clearing that one bit.
 
-Two related facts, both measured rather than read:
+Four related facts, all measured rather than read:
 
+- **`OUT_DONE` means "transferred to the peripheral", not "played by the DAC".**
+  The I2S FIFO holds ~256 bytes, about 1.45 ms at 44.1 kHz stereo 16-bit, so it
+  bridges nothing between descriptors. A completion therefore arrives ~1.45 ms
+  before the audio is actually gone, and a two-descriptor ring receives the DONE
+  for slot 0 while the engine is already heading back to it. This is why every
+  ring depth behaved identically on the IDF `i2s_channel_write()` path.
+- **A completion that arrives inside `pcm_play_lock()` must still arm the retired
+  slot.** `sink_lock()` masks `GDMA_INT_DONE`, so nothing runs while the core holds
+  the lock; with `out_auto_wrback` on, the engine keeps walking into slots nobody
+  rearmed and raises `out_dscr_err`. Only `pcm_play_dma_complete_callback()` should
+  be deferred (as3525's `play_callback_pending`), never the descriptor arming —
+  arming with silence involves the core not at all.
+- **`err` counts ring wraps, not audio dropouts.** A wrap costs one error per slot,
+  so a deeper ring reports a larger number for the same harm: seven slots measured
+  257 errors where four measured 19, with no audible difference and the FIFO never
+  once seen empty in either. Judging a geometry change by `err` alone will
+  therefore rank a *better* ring as worse. Judge by FIFO state and listening.
 - **`OUT_DSCR_STATE` (`OUT_STATE` bits 19:18) is undocumented.** `gdma_struct.h`
   declares the field `/*reserved*/` and `grep -rn last_dscr` across IDF returns
   nothing. Do not interpret its value.

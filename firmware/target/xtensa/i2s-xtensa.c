@@ -150,15 +150,12 @@
  * were never the ring -- they were sink_stop() tearing the channel down on the
  * play/stop pairs the core issues about once a second. See TX_STOP_KEEPS_CHANNEL.
  */
-/* At 1024 bytes (5.8ms) per descriptor, 24 gives 139ms of ring -- the depth
- * needed to cover the measured 106-125ms stop->play interval the core produces
- * about once every 4 seconds. Cost 24KB of internal DMA-capable RAM. */
-/* 2, not 24. The ring depth IS the lookahead we impose on the mixer: with 24
- * descriptors the writer stays 139ms ahead of the hardware and keeps asking the
- * mixer for chunks the codec has not produced yet, and the mixer answers with
- * its zero-filled output buffer. Two descriptors == two mixer frames == 11.6ms,
- * which is what the hand-rolled path effectively had (it armed one slot per
- * OUT_DONE and restarted). */
+/* Stage 1b is CLOSED as not viable -- see TX-IDF-MIGRATION.md for the proof from
+ * IDF source. GDMA exposes one completion slot and esp_driver_i2s owns it, so
+ * i2s_channel_write() cannot coexist with the per-frame handover Rockbox's
+ * contract requires. Everything guarded by TX_USE_IDF_DRIVER is kept as the record
+ * of that attempt, not as a live option; the descriptor-depth arguments that used
+ * to sit here (24 versus 2) belonged to the abandoned design. */
 #define TX_DMA_DESC_NUM   2
 /* 256 frames * 2 slots * 2 bytes = 1024 bytes = exactly one Rockbox mixer
  * frame (MIX_FRAME_SAMPLES * 4). Deliberate: it makes one descriptor and one
@@ -259,77 +256,42 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * driver and the engine permanently out of phase: write_desc armed slot 0 on both
  * of its calls (hist=0,0) and slot 1 was never armed at all.
  *
- * Owning every slot removes the race instead of trying to win it. A slot with no
- * data yet is armed with zero length, which the engine walks past, so there is
- * never a descriptor it is not allowed to take and therefore no error and no
- * park. Depth 4 also matches what the board's reference firmware uses
- * (dma_buf_count = 4), which is the same conclusion reached independently. */
-/* Four, free-running. Depth is what makes the refill race winnable: OUT_DONE on
- * this GDMA means "transferred to the peripheral", not "played", and the I2S FIFO
- * is only ~256 bytes (1.45ms), so it bridges nothing. With two slots the DONE
- * that tells us to refill slot 0 arrives while the engine is already heading back
- * to it (measured: fifo f0/e1, stutter slightly worse than the 1-frame design).
- * With four, the engine takes three more descriptors -- 17ms -- before it needs
- * the slot we just rearmed. */
-/* Eight, not four -- measured, not estimated, and only affordable once
- * XT_TX_SLOT was right-sized. err sat flat at 7 across ~7100
- * frames and then burst to 59 within 16s of heavy volume and touchscreen
- * hammering, i.e. the play lock outlasting the ring. sink_lock() masks
- * GDMA_INT_DONE, so while the core holds the lock the ISR cannot run and nothing
- * is rearmed; four slots is 23ms of runway, and synchronous I2C to the ES8311
- * plus an FT6336 poll on the same bus can exceed it. own=1111 -- all four slots
- * DMA-owned and none rearmed -- was captured repeatedly, which is that state on
- * the live wire. Eight gives 46ms; the prediction is that err stops bursting
- * under the same stress. Cost: dma_buf grows to 16KB of internal RAM. */
-/* Seven slots = 40ms of runway, up from 23ms. Eight overflowed dram0_0_seg by
- * 104 bytes -- the descriptor array grows 32 bytes per slot, padded to a cache
- * line, and this region is already full -- so seven is the honest ceiling. It is
- * a strict improvement over the original four-slot design on memory grounds:
- * right-sized slots mean 7 x 1024 = 7KB of dma_buf versus 8KB, for nearly double
- * the runway.
+ * Ring geometry, measured rather than estimated.
  *
- * NOT the fix for the err bursts. The hypothesis that motivated it was that
- * sink_lock() masking GDMA_INT_DONE lets a long locked section outlast the ring.
- * Measured, that is wrong: err steps to +52, +10 and +16 on exactly the samples
- * where (refill - irq) steps by 4, i.e. one start_tx() preroll per playback
- * session, and never on samples where volume or touchscreen traffic was heavy
- * without a session starting. The bursts are track switches. Depth may still
- * blunt them, but it is not aimed at the mechanism, and the transition itself is
- * where the real answer is. */
-/* Four slots, the geometry the audio was judged best on. Reverted from seven
- * for one-variable-at-a-time measurement: the build that carried seven slots
- * plus the playing-gate reported 257 err over 14029 frames (~1.8%) against 85
- * over 31062 (~0.27%) at four, and DSCR_ERR bursts are counted in wraps of the
- * ring, so a deeper ring can report more errors per transition for the same
- * underlying fault. Geometry is held constant while the gate is evaluated; the
- * slot right-sizing (which saves 4KB of DRAM on its own merits) is being
- * re-tested separately rather than folded into this A/B. */
+ * Four slots of XT_TX_SLOT each = 23ms of runway. This is the geometry the audio
+ * was judged best on, and it independently matches the board's reference firmware
+ * (dma_buf_count = 4).
+ *
+ * Two facts decide depth:
+ *
+ * 1. OUT_DONE on this GDMA means "transferred to the peripheral", NOT "played by
+ *    the DAC". The I2S FIFO holds ~256 bytes = 1.45ms, so it bridges nothing. A
+ *    two-slot ring receives the DONE for slot 0 while the engine is already
+ *    heading back to it (measured: fifo f0/e1); four gives the engine three more
+ *    descriptors -- 17ms -- before the slot just rearmed is needed again.
+ *
+ * 2. Depth is NOT the lever for DSCR_ERR, and err is not a harm metric. It counts
+ *    wraps of the ring, and a wrap costs one error per slot, so seven slots
+ *    reported 257 where four reported 19 for comparable audible harm. That is how
+ *    a depth experiment came out looking like deeper rings were worse. The actual
+ *    cause was in the completion handler: a locked completion deferred the whole
+ *    refill, leaving the retired slot CPU-owned in a ring the engine keeps
+ *    walking. Arming unconditionally (see gdma_irq) removes that, so a long
+ *    sink_lock no longer starves the ring and runway is not the constraint.
+ *
+ * A slot with no data yet is armed with silence and never left unowned: the
+ * engine must always be permitted to take the next descriptor. */
 #define XT_TX_RING 4
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
 /* GDMA requires a 4-byte aligned buffer address */
-/* Sized to the mixer's actual largest frame, not to GDMA_MAX_DESC_LEN. Four
- * 4096-byte slots is 16 KB of internal DRAM, which is the region this target has
- * no room to give: dram0_0_seg overflowed at 4 x 4096 and fits comfortably at
- * 4 x 512. The bound below is the same one the static assert in write_desc()
- * enforces, so the slot can never be smaller than what we are handed. */
-/* One mixer frame, not two. The *2 here was dead capacity: arm() sets
- * length = the size we are handed (MIX_FRAME_SAMPLES * 4 = 1024, measured
- * constant across thousands of handovers), so the second half of every slot was
- * never written and never transferred. It cost exactly 4KB of the DRAM region
- * this target has no room to spare, and it is why XT_TX_RING 8 overflowed
- * dram0_0_seg by 8296 bytes. Right-sizing it buys eight slots of runway for the
- * same 8KB. The static assert in arm() still rejects any handover larger than
- * the slot, so an unexpected bigger frame cannot silently overrun. */
-/* One mixer frame, not two. The *2 here is dead capacity: arm() sets length to
- * the size we are handed -- measured constant at 1024 across thousands of
- * handovers -- so the second half of every slot was never written and never
- * transferred. It cost 4KB of dram0_0_seg, which is the tightest region on this
- * target: after the ring was restored to four, an 8-byte diagnostic counter
- * overflowed it. Runway is unchanged (4 slots x 1024 bytes = 23ms, exactly what
- * the audio was judged best on); the memory is freed for diagnostics and for
- * future depth. The static assert in arm() still rejects any handover larger
- * than the slot, so an unexpectedly big frame cannot silently overrun. */
+/* One mixer frame: MIX_FRAME_SAMPLES * 4 = 1024 bytes, the size the core actually
+ * hands over (measured constant across thousands of handovers). The slot was
+ * previously twice this; the upper half was never written and never transferred,
+ * and that dead 4KB overflowed dram0_0_seg -- a region tight enough that two int
+ * diagnostic counters overflowed it by exactly 8 bytes. The static assert in
+ * write_desc() bounds the slot to what it enforces, so a larger handover can
+ * never silently overrun; it fails the build instead. */
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4)
 
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
@@ -2036,9 +1998,11 @@ void ICODE_ATTR gdma_irq(void)
         done_slot = (slot + 1) % XT_TX_RING;
         dscr_streak = 0;      /* a DONE proves the walk is healthy again */
 
-        /* desc[0] is the only descriptor in play. The outlink was stopped above
-         * before anything else could be fetched, so there is no ring position to
-         * track: complete, re-arm, start. */
+        /* Free-running: the engine walks the chained ring by itself, so this
+         * handler does not stop, restart, or clear next. done_slot is the
+         * position to arm next; the slot that just retired has to be rearmed
+         * before the engine wraps back onto it, which is what the runway
+         * measured above buys. */
 
         /* A completion can only mean audio was played: a slot the CPU owns is not
          * taken by the engine, so it never completes. */
