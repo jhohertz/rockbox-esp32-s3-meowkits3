@@ -202,9 +202,15 @@ $releasenotes="/wiki/ReleaseNotes400";
     },
     'meowkits3' => {
         name => 'MeowKit ESP32-S3',
-        status => 1,
+        # status: 0=retired, 1=unusable, 2=unstable, 3=stable. It builds, boots to
+        # the root menu, plays audio and runs plugins, so 1 ("unusable") was false.
+        # Not 3: recording, USB and long-running stability are still open.
+        status => 2,
         ram => 8,
-        sim => 1,
+        # There is no hosted Xtensa target, so a simulator build for this model
+        # cannot exist. builds.pm defaults sim to 0 for non-stable targets anyway;
+        # the explicit 1 was a claim the build farm would have tried to honour.
+        sim => 0,
     },
     'mrobe100' => {
         name => 'Olympus M-Robe 100',
