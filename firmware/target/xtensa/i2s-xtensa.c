@@ -67,6 +67,10 @@
  * what stalls the writer. See the note in i2s_probe_tick(). */
 #define TX_PROBE_QUIET
 
+/* Leave undefined for normal builds. The stop-path probe was localised as a
+ * crash suspect by the .noinit breadcrumb trail; see sink_stop(). */
+/* #define TX_STOP_PROBE */
+
 /* Keep the I2S channel enabled across sink_stop(). See the note in sink_stop().
  * Undefined = old behaviour (disable the channel on every stop). */
 #define TX_STOP_KEEPS_CHANNEL
@@ -1757,6 +1761,11 @@ static void start_tx(void)
 
 static void stop_tx(void)
 {
+    /* Stopping leaves every descriptor CPU-owned with length zero while
+     * GDMA_INT_DSCR_ERR is still armed, so this is the moment the ring is most
+     * fragile. Stamped so the trail says whether a crash follows a stop. */
+    xtensa_breadcrumb("txstop", xt_sink_stop_n, xt_sink_play_n);
+
 #ifdef TX_USE_IDF_DRIVER
     /* The channel is left configured and merely disabled: deleting it would
      * drop IDF's GDMA group refcount to zero and gate the block's bus clock
@@ -2241,7 +2250,17 @@ static void sink_stop(void)
        completed shows up here as sink play>0 with dma irq=0 and gdma out=0, which
        is the engine refusing to take a descriptor -- a different fault entirely
        from a codec or a data problem. Thread context, so printf is safe. */
+#ifdef TX_STOP_PROBE
+    /* Off by default. The breadcrumb trail localised a crash to the window
+     * between sink_stop()'s "stop" stamp and stop_tx()'s "txstop" stamp, and
+     * i2s_audio_probe() is the only non-trivial thing in it: register reads,
+     * two esp_clk_tree_src_get_freq_hz() calls and a 40-argument printf. The
+     * pcmbuf helpers it calls are pure integer arithmetic, so the suspect is the
+     * probe itself -- temporary instrumentation that had no business being in
+     * the shipping teardown path. Define TX_STOP_PROBE to put it back while
+     * debugging; it is still reachable from sink_play() and the tick probe. */
     i2s_audio_probe();
+#endif
 
     playing = false;
     queued = 0;

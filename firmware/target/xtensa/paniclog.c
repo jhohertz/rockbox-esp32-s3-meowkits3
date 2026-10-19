@@ -173,3 +173,23 @@ void xtensa_paniclog_dump(void)
  *   - the fault is at or after codec image placement, not inside the loader --
  *     both segments were placed and the load returned.
  */
+
+/* What the trail found, first try after widening it to cover backlight, volume
+ * and transport stop: a crash reproduced by rapid file cycling and by cancelling
+ * at the end of a playlist ended with
+ *
+ *   seg, seg, placed, blon x12, stop
+ *
+ * and no txstop. sink_stop() stamps "stop" and then calls stop_tx(), which stamps
+ * "txstop", so the fault was inside sink_stop() between those two -- a window
+ * whose only substantial content was i2s_audio_probe(), a temporary 40-argument
+ * diagnostic that had no business being in the teardown path. Removing it from
+ * that call site ended both repro modes. Both crashes in this file's history were
+ * the probe, not the audio path, not the codec, and not a malformed WAV: the
+ * recorder's headers are correct (0x0001, 2ch, 44100, 16-bit, byte_rate 176400,
+ * block_align 4, data_chunk == file - 44, riff_size == file - 8).
+ *
+ * The lesson worth keeping: an instrument placed in the path it observes can
+ * become the fault being observed. This one survived three crashes before the
+ * trail was wide enough to name it.
+ */
