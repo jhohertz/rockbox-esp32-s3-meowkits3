@@ -373,6 +373,13 @@ static volatile int dscr_streak;
  * remainder -- errors during steady playback, i.e. a refill that lost the race. */
 static volatile int err_startup;
 static volatile int irq_at_start;
+/* Direct session count. Inferring sessions from (refill - irq) proved
+ * unreliable: eighteen manual track switches produced only two observed
+ * prerolls, so err-per-switch could not be computed and err-per-frame was
+ * dominated by how many transitions happened. This counts start_tx() itself,
+ * making err/session an exact ratio. It also answers the side question the
+ * discrepancy raised: whether a track change stops and restarts the sink at all. */
+static volatile int xt_tx_sessions;
 
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
@@ -1822,6 +1829,7 @@ static void start_tx(void)
     }
 
     i2s_ll_tx_start(tx_hal.dev);
+    xt_tx_sessions++;
     irq_at_start = xt_sink_irq_n;
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
@@ -2438,9 +2446,12 @@ static void i2s_dma_line(void)
     }
     ow[o] = '\0';
 
-    printf("DMA: err=%d startup=%d irq=%lu refill=%lu br=%d q=%d lk=%d play=%d | "
+    printf("DMA: err=%d startup=%d sess=%d err/sess=%d | irq=%lu "
+           "refill=%lu br=%d q=%d lk=%d play=%d | "
            "ena=%08x link=%08x own=%s len=%s | fifo f%d/e%d\n",
-           xt_dscr_err_n, err_startup, xt_sink_irq_n, xt_refill_n,
+           xt_dscr_err_n, err_startup, xt_tx_sessions,
+           xt_tx_sessions ? xt_dscr_err_n / xt_tx_sessions : 0,
+           xt_sink_irq_n, xt_refill_n,
            xt_refill_branch,
            queued, locked, playing,
            (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK),
