@@ -380,10 +380,6 @@ static i2s_hal_context_t tx_hal;
 static unsigned long rx_rate;
 #endif
 
-/* TEMPORARY (transitional measurement only): the registers as IDF's HAL left
- * them, so they can be diffed against the values this file used to write by
- * hand. Remove together with the last hand-rolled setup. */
-static void i2s_reg_snapshot(const char *tag);
 
 /* TEMPORARY: one counter per link in the playback chain, so "it does not play"
  * becomes a statement about where the chain stops rather than which link is
@@ -591,7 +587,6 @@ void i2s_set_frequency(unsigned long rate)
     tx_set_rate(rate);
 #endif
 
-    i2s_reg_snapshot("after hal config");
 
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
@@ -911,16 +906,6 @@ static void gdma_init(void)
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
 }
-
-/* The transitional register dump declared above. */
-static void i2s_reg_snapshot(const char *tag)
-{
-    printf("I2SREG %s: conf=%08x conf1=%08x tdm=%08x clkm=%08x div=%08x state=%08x\n",
-           tag, (unsigned)rd(I2S_TX_CONF), (unsigned)rd(I2S_TX_CONF1),
-           (unsigned)rd(I2S_TX_TDM_CTRL), (unsigned)rd(I2S_TX_CLKM_CONF),
-           (unsigned)rd(I2S_TX_CLKM_DIV_CONF), (unsigned)rd(I2S_TX_STATE));
-}
-
 #ifdef TX_USE_IDF_DRIVER
 /* The IDF transmit channel, created but deliberately NOT yet configured.
  *
