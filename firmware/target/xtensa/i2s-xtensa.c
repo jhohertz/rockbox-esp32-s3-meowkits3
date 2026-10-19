@@ -2071,6 +2071,15 @@ static void sink_unlock(void)
 static void sink_play(const void *addr, size_t size)
 {
     xt_sink_play_n++;
+
+    /* Coarse trail of codec activity. Every 32nd frame, because at 172/s a
+     * per-frame stamp would turn a 16-slot ring into the last 93ms and wash out
+     * the image-placement entries that identified the last crash. What this
+     * answers is the question the "placed" trail could not: did the codec ever
+     * hand down a frame before it died, or did it fault on entry? */
+    if ((xt_sink_play_n & 31) == 0)
+        xtensa_breadcrumb("play", xt_sink_play_n, (unsigned long)size);
+
 #ifdef TX_USE_IDF_DRIVER
     tx_play_n++;
 #endif
@@ -2172,6 +2181,11 @@ static void sink_play(const void *addr, size_t size)
 static void sink_stop(void)
 {
     xt_sink_stop_n++;
+
+    /* Session boundaries are rare and meaningful: a stop in the trail means the
+     * core ran out of data rather than the transport dying mid-stream. */
+    xtensa_breadcrumb("stop", xt_sink_stop_n, xt_sink_play_n);
+
 #ifdef TX_USE_IDF_DRIVER
     tx_stop_n++;
 #endif
