@@ -454,3 +454,41 @@ Design now in the shipping path:
 Still open: why slots go unowned at 0.2%. The guard makes it survivable, not
 impossible, and the honest reading is that a refill occasionally loses the race
 even with 17ms of margin. Worth a look when something else is not on fire.
+
+## The scaffolding is deleted; the one variant that was never tested
+
+`TX_USE_IDF_DRIVER` and its ~1000 lines are gone from `i2s-xtensa.c`. What remains
+is the locked-in design, and it is worth stating in one line so nobody re-reads the
+history as an unfinished migration:
+
+**IDF's HAL configures the transmitter (`i2s_hal_set_tx_clock`,
+`i2s_hal_std_set_tx_slot`, `i2s_hal_std_enable_tx_channel`), IDF's
+`esp_driver_i2s` drives the receiver, IDF builds and boots the app. Rockbox owns
+exactly one thing: the TX GDMA descriptor ring, because GDMA exposes a single
+completion slot and IDF's own driver occupies it.**
+
+The recipe further up this file ("register a done callback on IDF's GDMA channel")
+is the route that *cannot* work, for the reason the CONCLUSION section proves: taking
+that slot overwrites `i2s_dma_tx_callback`, which is what refills `dma.msg_queue`,
+and `i2s_channel_write()` then blocks forever. Do not start there.
+
+Never tested, and it sidesteps the slot entirely:
+
+**Ride `i2s_channel_write()` without touching GDMA.** Leave `i2s_dma_tx_callback`
+installed, call `i2s_channel_write()` from a dedicated thread with a short timeout,
+and drive `pcm_play_dma_complete_callback()` from the moment `write()` returns. IDF
+returns a buffer once the peripheral has taken it, which is the same instant our
+`OUT_DONE` fires, so the consumption report is honest. It never asks for a
+per-descriptor signal, so there is no slot to fight over.
+
+The cost is lookahead rather than correctness. IDF keeps `desc_num` internal buffers
+in flight, so a report is late by up to `desc_num * dma_buf_len / bytes_per_second`:
+`desc_num = 2` at one mixer frame per buffer is ~11.6 ms, which `as3525` and
+`imx233` tolerate; `desc_num = 4`, the reference firmware's value, is ~23 ms and
+begins to matter for anything latency-sensitive.
+
+If it is attempted, watch the payload census and not `err`. `err` counts ring wraps
+and tells you nothing here. `all-zero` frames during *continuous* play means the
+mixer is being paced too slowly -- and compare the delta between consecutive census
+windows, because the counters are cumulative and a run that includes track switching
+will report historical transition silence as if it were current.
