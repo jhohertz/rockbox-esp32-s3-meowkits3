@@ -568,6 +568,24 @@ F3: equal to "="
 #define CALCULATOR_CALC  BUTTON_MENU
 #define CALCULATOR_CLEAR BUTTON_USER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define CALCULATOR_LEFT           BUTTON_LEFT
+#define CALCULATOR_RIGHT          BUTTON_RIGHT
+#define CALCULATOR_UP             BUTTON_UP
+#define CALCULATOR_DOWN           BUTTON_DOWN
+#define CALCULATOR_INPUT          BUTTON_A
+#define CALCULATOR_INPUT2         BUTTON_CENTER
+#define CALCULATOR_QUIT           BUTTON_B
+#define CALCULATOR_CLEAR          BUTTON_MIDLEFT
+#define CALCULATOR_CALC           BUTTON_MIDRIGHT
+#define CALCULATOR_OPERATORS      BUTTON_TOPMIDDLE
+#define CALCULATOR_UP_W_SHIFT     BUTTON_TOPLEFT
+#define CALCULATOR_DOWN_W_SHIFT   BUTTON_BOTTOMLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

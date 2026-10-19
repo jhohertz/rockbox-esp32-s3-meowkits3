@@ -488,6 +488,29 @@
 #define SUDOKU_BUTTON_TOGGLE     BUTTON_SELECT
 #define SUDOKU_BUTTON_POSSIBLE   BUTTON_USER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define SUDOKU_BUTTON_UP         BUTTON_UP
+#define SUDOKU_BUTTON_DOWN       BUTTON_DOWN
+#define SUDOKU_BUTTON_LEFT       BUTTON_LEFT
+#define SUDOKU_BUTTON_RIGHT      BUTTON_RIGHT
+/* digits are stepped, not typed, so the up/down pair sits directly under the
+ * thumb on the touch column */
+#define SUDOKU_BUTTON_TOGGLE     BUTTON_TOPMIDDLE
+#define SUDOKU_BUTTON_TOGGLEBACK BUTTON_BOTTOMMIDDLE
+#define SUDOKU_BUTTON_ALTTOGGLE  BUTTON_A
+#define SUDOKU_BUTTON_POSSIBLE   BUTTON_MIDLEFT
+#define SUDOKU_BUTTON_CHANGEDIR  BUTTON_MIDRIGHT
+/* one key, press opens the menu and hold quits -- the shape every other
+ * keypad here uses with its power/off key */
+#define SUDOKU_BUTTON_MENU_PRE   BUTTON_B
+#define SUDOKU_BUTTON_MENU       (BUTTON_B | BUTTON_REL)
+#define SUDOKU_BUTTON_QUIT_PRE   BUTTON_B
+#define SUDOKU_BUTTON_QUIT       (BUTTON_B | BUTTON_REPEAT)
 #else
 #error No keymap defined!
 #endif
