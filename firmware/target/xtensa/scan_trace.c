@@ -42,6 +42,22 @@ struct scan_ring
  * it in dram0_bss -- internal SRAM, which is what survives the reset. */
 static struct scan_ring ring __attribute__((section(".noinit"), aligned(4)));
 
+/* Wipe every record slot. Needed because .noinit is never cleared by startup, so
+ * on a first-ever boot the arrays hold whatever the previous contents of that RAM
+ * were -- and the dump only skips a record when its tag word is zero, which
+ * uninitialised memory almost never is. Without this the trace printed junk as
+ * if it were real (observed: seq=3483298609 with a run of random hex words),
+ * which is worse than printing nothing because it reads as evidence. */
+static void scan_ring_clear(void)
+{
+    for (unsigned i = 0; i < SCAN_STICKY_N; i++)
+        for (unsigned k = 0; k < 5; k++)
+            ring.sticky[i][k] = 0;
+    for (unsigned i = 0; i < SCAN_TRACE_N; i++)
+        for (unsigned k = 0; k < 6; k++)
+            ring.rec[i][k] = 0;
+}
+
 void scan_trace(int tag, unsigned long a, unsigned long b, unsigned long c)
 {
     if (ring.magic != SCAN_TRACE_MAGIC)
@@ -49,6 +65,7 @@ void scan_trace(int tag, unsigned long a, unsigned long b, unsigned long c)
         ring.magic = SCAN_TRACE_MAGIC;
         ring.head  = 0;
         ring.seq   = 0;
+        scan_ring_clear();   /* the arrays are NOT zeroed by coming here */
     }
 
     uint32_t *r = ring.rec[ring.head];
@@ -140,8 +157,5 @@ void scan_trace_early_dump(void)
     ring.magic = 0;
     ring.seq   = 0;
     ring.head  = 0;
-    for (unsigned i = 0; i < SCAN_STICKY_N; i++)
-        for (unsigned k = 0; k < 5; k++) ring.sticky[i][k] = 0;
-    for (unsigned i = 0; i < SCAN_TRACE_N; i++)
-        for (unsigned k = 0; k < 6; k++) ring.rec[i][k] = 0;
+    scan_ring_clear();
 }
