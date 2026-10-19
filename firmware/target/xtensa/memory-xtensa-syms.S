@@ -57,10 +57,12 @@ audiobuffer:
     .globl audiobufend
 audiobufend:
 
-    /* End of everything this file puts in PSRAM, and of the rest of
-     * .ext_ram.bss that IDF places here. Checked against codecbuf at boot: the
-     * codec and plugin buffers are pinned to a fixed address to agree with
-     * plugin.lds, so nothing can be left to grow into them unnoticed. */
+    /* End of what THIS file puts in PSRAM. It is not the end of .ext_ram.bss:
+     * IDF places its own content in that section around and beyond this label, and
+     * the linker's section end is _ext_ram_bss_end. On a recent build the two
+     * differed by 117,372 bytes, which is why the boot guard in system_init()
+     * checks both and takes the larger. Do not treat this symbol as the section
+     * bound -- that is exactly the mistake that made the guard blind. */
     .globl rb_ext_ram_end
 rb_ext_ram_end:
 

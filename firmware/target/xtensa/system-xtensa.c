@@ -63,11 +63,30 @@ void system_init(void)
      * corruption of a loaded codec is this check. Loud beats corrupt. */
     {
         extern char rb_ext_ram_end[];
+        extern char _ext_ram_bss_end[];
         extern unsigned char codecbuf[];
 
-        if ((unsigned long)rb_ext_ram_end > (unsigned long)codecbuf)
+        /* rb_ext_ram_end alone was the blind spot. It is a label in
+         * memory-xtensa-syms.S sitting right after audiobufend, so it marks the
+         * end of what THAT file puts in PSRAM -- not the end of the section. IDF
+         * places its own .ext_ram.bss content around and after it, and the
+         * linker's real section end is _ext_ram_bss_end. Measured on this build:
+         * rb_ext_ram_end 0x3c55d2c0 against _ext_ram_bss_end 0x3c579d3c, so
+         * 117,372 bytes of the section were invisible to the one check whose
+         * entire job is to watch that section. It would have reported a clean
+         * layout while .ext_ram.bss was already growing toward the pinned codec
+         * image.
+         *
+         * Take the larger of the two. Both symbols stay meaningful: one is our
+         * contribution, the other the whole section, and the guard cares about
+         * whichever reaches further. */
+        unsigned long ours = (unsigned long)rb_ext_ram_end;
+        unsigned long sect = (unsigned long)_ext_ram_bss_end;
+        unsigned long end = sect > ours ? sect : ours;
+
+        if (end > (unsigned long)codecbuf)
             printf("MEMORY: .ext_ram.bss ends %p, past pinned codecbuf %p\n",
-                   (void *)rb_ext_ram_end, (void *)codecbuf);
+                   (void *)end, (void *)codecbuf);
     }
 
     /* The other end of the same problem, and the check that was missing.
