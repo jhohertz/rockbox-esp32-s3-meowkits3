@@ -72,8 +72,16 @@
 /* #define TX_STOP_PROBE */
 
 /* Keep the I2S channel enabled across sink_stop(). See the note in sink_stop().
- * Undefined = old behaviour (disable the channel on every stop). */
+ * Undefined = old behaviour (disable the channel on every stop). Applies only to
+ * the IDF path, which is compiled out; kept so that path stays buildable. */
 #define TX_STOP_KEEPS_CHANNEL
+
+/* Full CHAIN dumps at event sites (16th play, boot snapshot). Off by default:
+ * the dump is ~900 bytes, holds the stdout lock for ~100ms, and calling it from
+ * a teardown path was the crash the breadcrumb trail localised. The tick task
+ * still emits the compact i2s_dma_line() every 2s with this off, so quiet does
+ * not mean blind. */
+/* #define TX_PROBE_FULL */
 
 #ifdef TX_USE_IDF_DRIVER
 #include "driver/i2s_common.h"
@@ -2178,11 +2186,13 @@ static void sink_play(const void *addr, size_t size)
        Not on the first play: the mixer still holds the play lock there, so a
        masked OUT_DONE and started=0 are both correct and say nothing. And never
        from the ISR -- a printf there takes the newlib stdout lock and aborts. */
+#ifdef TX_PROBE_FULL
     if (xt_sink_play_n == 16)
     {
         printf("CHAIN: at 16th play --\n");
         i2s_audio_probe();
     }
+#endif
 }
 
 static void sink_stop(void)
@@ -2309,6 +2319,50 @@ static void sink_set_freq(uint16_t freq)
  * apps/main.c), so printf is legal here; the ISR must never reach this path.
  * Every 200 ticks at HZ=100 is two seconds, which is often enough to see drift
  * and rare enough not to drown the console. */
+/* Compact transmit status: register reads and one short printf, nothing else.
+ *
+ * This exists because TX_PROBE_QUIET silenced the whole probe, which threw away
+ * the one number the DSCR_ERR storm guard is there to watch -- err, i.e. how many
+ * times the engine found a descriptor the CPU still owns. The guard makes those
+ * survivable (24 over ~11400 frames), so without err we cannot tell whether that
+ * rate is stable or climbing.
+ *
+ * Deliberately NOT the full CHAIN dump: that holds the newlib stdout lock for
+ * ~100ms pushing ~900 bytes over USB-serial, and it calls
+ * esp_clk_tree_src_get_freq_hz() and the pcmbuf helpers. A heavy probe on a hot
+ * path has already proved to be the fault being observed twice -- once as ~117ms
+ * stalls in the writer, once as the crash localised by the breadcrumb trail. This
+ * line is ~90 bytes and touches no locks the audio path takes.
+ */
+static void i2s_dma_line(void)
+{
+    char ow[XT_TX_RING + 2];
+    char ln[XT_TX_RING * 6 + 2];
+    int i, o = 0, l = 0;
+
+    /* The DMA writes descriptor results back through the bus, not through our
+     * D-cache, so drop the cached line first or the owner bits describe the
+     * CPU's memory rather than the hardware's. */
+    discard_dcache_range((const void *)desc, sizeof(desc));
+
+    for (i = 0; i < XT_TX_RING; i++)
+    {
+        ow[o++] = (char)('0' + (int)((desc[i].dw0 >> 31) & 1));
+        l += snprintf(ln + l, sizeof(ln) - l, "%d,",
+                      (int)((desc[i].dw0 >> 12) & 0xfff));
+    }
+    ow[o] = '\0';
+
+    printf("DMA: err=%d irq=%lu refill=%lu br=%d q=%d lk=%d play=%d | "
+           "ena=%08x link=%08x own=%s len=%s | fifo f%d/e%d\n",
+           xt_dscr_err_n, xt_sink_irq_n, xt_refill_n, xt_refill_branch,
+           queued, locked, playing,
+           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK),
+           ow, ln,
+           (int)((rd(GDMA_TX_FIFO_STATUS) >> 0) & 1),
+           (int)((rd(GDMA_TX_FIFO_STATUS) >> 1) & 1));
+}
+
 static void i2s_probe_tick(void)
 {
     static int div;
@@ -2337,8 +2391,17 @@ static void i2s_probe_tick(void)
     if (bl_n)
     {
         static unsigned long last_n;
-        if (bl_n != last_n)
+        static int cdiv;
+
+        /* Throttled to every 10s. As written it printed whenever bl_n moved --
+         * roughly ten times a second, because the census samples every 16th
+         * frame at 172/s. Each line is ~70 bytes, which at 115200 baud is ~6ms of
+         * blocking UART per line inside the tick task: 60ms of every second spent
+         * printing a diagnostic about audio timing. A trend over 10s says the same
+         * thing as a trend over 100ms. */
+        if (++cdiv >= 1000 && bl_n != last_n)
         {
+            cdiv = 0;
             printf("BLcensus: %lu frames sampled, mean-nonzero=%lu, all-zero=%lu (%lu%%)\n",
                    bl_n, bl_sum / bl_n, bl_zero, bl_zero * 100 / bl_n);
             last_n = bl_n;
@@ -2360,7 +2423,23 @@ static void i2s_probe_tick(void)
      * writer shows up as the DMA faithfully clocking silence, not an empty FIFO.
      *
      * If the halting disappears with this off, the bug was never in the
-     * transmit path. */
+     * transmit path.
+     *
+     * It turned out the halting was never the writer at all, and the dump itself
+     * was a hazard -- but quiet must not mean blind. err is the metric the
+     * DSCR_ERR storm guard exists to watch, so the compact register-only line
+     * stays on every 2s while playing, and only the full dump is silenced. */
+    if (!pcm_playing)
+    {
+        div = 0;
+        return;
+    }
+
+    if (++div >= 200)            /* 200 ticks at 100 Hz = every 2s */
+    {
+        div = 0;
+        i2s_dma_line();
+    }
     return;
 #endif
 
