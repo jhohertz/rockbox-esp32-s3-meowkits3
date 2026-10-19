@@ -55,7 +55,6 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # ---- SD card is on non-default pins, 1-bit only ----
 # CLK 47, CMD 48, D0 21. Only D0 is wired, so 1-bit is the ceiling, not a
 # fallback. Without the GPIO matrix these pins are unreachable.
-CONFIG_SDMMC_USE_GPIO_MATRIX=y
 
 # ---- Bluetooth: the reason for this whole exercise ----
 CONFIG_BT_ENABLED=y
