@@ -251,7 +251,7 @@ Largest DRAM objects in the linked image:
 | 12,288 | `scroll_stack$0` | default | **No** -- despite the name this is a *thread stack* (`static long scroll_stack[DEFAULT_STACK_SIZE*3]` in `scroll_engine.c`). Context switches happen in assembly and a PSRAM stack would be fatal with the cache disabled |
 | 12,288 | `codec_stack` | default | Thread stack |
 | 12,288 | `buffering_stack` | default | Thread stack |
-| 8,192 | `dma_buf` | required | **No** -- TX DMA staging |
+| 4,096 | `dma_buf` | required | **No** -- TX DMA staging (4 slots x 1024 B; was 8,192 while `XT_TX_SLOT` carried a second, never-transferred half per slot) |
 | 8,192 | `storage_thread_stack` | default | Thread stack |
 | 8,192 | `audio_stack` | default | Thread stack |
 | 6,144 | `playlist_stack` | default | Thread stack |
