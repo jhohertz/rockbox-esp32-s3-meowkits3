@@ -440,7 +440,12 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define BTN_STOPRESET   BUTTON_MENU
 
 #else
+#if !defined(HAVE_TOUCHSCREEN)
+/* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
+ * chain left undefined, so a touchscreen target is not missing a keymap --
+ * it is using the one upstream already provides for it. */
 #error No keymap defined!
+#endif
 #endif
 
 #ifdef HAVE_TOUCHSCREEN
