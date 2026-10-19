@@ -2903,40 +2903,50 @@ mkdir build-esp32s3 && cd build-esp32s3
 make
 ```
 
-### The build directory is shared by two build systems, and only one `Makefile` fits
+### One `make` builds everything — do not run CMake in the Rockbox build dir
 
-For this target the build dir (`build-meowkits3`) holds **both** Rockbox's build
-and the ESP-IDF/CMake build (`CMAKE_HOME_DIRECTORY` is `idf-app`). Each writes a
-file called `Makefile` there, and the second one to run wins:
+For this target Rockbox drives ESP-IDF itself. `tools/root.make` has the rule:
 
-- `../tools/configure` writes Rockbox's (`## Automatically generated. http://www.rockbox.org/`),
-  which includes `tools/root.make` and compiles every Rockbox source into archives.
-- `cmake .` overwrites it with CMake's (`# CMAKE generated file: DO NOT EDIT!`),
-  which only drives IDF and links the archives Rockbox already produced.
-
-**So once IDF has been configured in that directory, plain `make` compiles no
-Rockbox source at all.** It re-links whatever archives are there and exits 0. An
-edit to any `.c` or `.h` under `firmware/` or `apps/` is silently absent from the
-resulting image, and nothing warns you. This was found the hard way: a change to
-`pcm-xtensa.c` produced a clean build, a clean link and a `rockbox.elf` with no
-trace of it (`strings rockbox.elf | grep` for a new format string returned
-nothing).
-
-The correct sequence after editing Rockbox sources is therefore:
-
-```bash
-cd build-meowkits3
-../tools/configure --target=meowkit-esp32s3   # restores Rockbox's Makefile
-make                                           # compile Rockbox -> archives
-cmake .                                        # restores CMake's Makefile
-make                                           # link rockbox.elf / .bin
+```make
+$(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake
+	cd $(IDFDIR) && $(IDFPY) build
+	cp $(IDFDIR)/build/$(IDF_PROJECT).bin $@
 ```
 
-`../tools/configure` is safe to re-run: it regenerates `Makefile`, `config.h` and
-`autoconf.h` from the same target, and `cmake .` regenerates from the existing
-`CMakeCache.txt` without reconfiguring IDF.
+so the whole firmware is built by the ordinary Rockbox sequence, from one
+directory, with one `make`:
 
-A cheap sanity check that your edit actually landed, before flashing anything:
+```bash
+mkdir build-meowkits3 && cd build-meowkits3
+../tools/configure --target=meowkit-esp32s3
+make            # compiles Rockbox, then calls idf.py build, then copies the image
+```
+
+**IDF's binary directory is `idf-app/build`, never the Rockbox build dir.**
+`tools/configure` harvests flags from `idf-app/build/compile_commands.json`
+(running `idf.py reconfigure` there if absent), and `idf.py build` writes to the
+same place.
+
+#### The trap, and why it used to be documented as required
+
+Running `cmake .` inside `build-meowkits3` makes CMake treat that directory as a
+binary dir (`CMAKE_HOME_DIRECTORY` = `idf-app`) and **overwrite Rockbox's
+`Makefile` with CMake's**. From then on plain `make` compiles no Rockbox source:
+it re-links whatever archives are already there and exits 0, so an edit to any
+`.c` or `.h` vanishes from the image silently. It also removes the `zip` and
+`rocks` goals.
+
+An earlier version of this file presented that as the required sequence
+(`configure; make; cmake .; make`). That was wrong and self-perpetuating: the
+second half existed only to undo the first. Nothing needs CMake to run in the
+Rockbox build dir, and a single `make` has always been sufficient — verified by
+removing the CMake debris and rebuilding clean.
+
+If a `CMakeCache.txt` ever appears in a Rockbox build dir, it is debris; delete
+it along with `CMakeFiles/` and `cmake_install.cmake`. `make zip` and
+`make rocks` are the tell that the Makefile is Rockbox's again.
+
+Sanity check that an edit landed, before flashing:
 
 ```bash
 strings rockbox.elf | grep -F 'a string only your edit adds'
