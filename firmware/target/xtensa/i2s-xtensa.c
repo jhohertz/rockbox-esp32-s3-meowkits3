@@ -57,11 +57,130 @@
  * the file behaves exactly as the frozen baseline in TX-IDF-MIGRATION.md, and
  * the switch is the revert. Flip it to test the next stage; see that file for
  * why the cutover itself cannot be staged any finer. */
-#define TX_USE_IDF_DRIVER
+/* A/B: baseline hand-rolled TX path, with the payload census. */
+/* STAGE 1b FAILED -- see TX-IDF-MIGRATION.md. Left in tree, switched off.
+ * The IDF writer receives all-zero mixer buffers ~50% of the time versus 1%
+ * on this path, with every TX-side metric identical. See the stage log. */
+/* #define TX_USE_IDF_DRIVER */
+
+/* Silence the periodic CHAIN/arena dumps while testing whether the probe is
+ * what stalls the writer. See the note in i2s_probe_tick(). */
+#define TX_PROBE_QUIET
+
+/* Keep the I2S channel enabled across sink_stop(). See the note in sink_stop().
+ * Undefined = old behaviour (disable the channel on every stop). */
+#define TX_STOP_KEEPS_CHANNEL
 
 #ifdef TX_USE_IDF_DRIVER
 #include "driver/i2s_common.h"
 #include "driver/i2s_std.h"
+#include "semaphore.h"
+
+/* Ring geometry. desc_num >= 3 is a correctness requirement, not a tuning
+ * choice -- see the comment in i2s_tx_chan_create(). frame_num 256 makes one
+ * descriptor 256 * 2 slots * 2 bytes = 1024 bytes, exactly one Rockbox mixer
+ * frame, so the consumption report has the same granularity as the core's. */
+/* Matched to the MeowKit reference firmware's speaker path, which plays
+ * continuously on this exact board through IDF's I2S driver:
+ * src/bsp/devices.cpp:1207 sets dma_buf_count = 4 and dma_buf_len = 512.
+ *
+ * frame_num is in frames, so 512 frames * 2 slots * 2 bytes = 2048 bytes per
+ * descriptor and an 8192-byte ring (~46ms). The 256 tried first made one
+ * descriptor exactly one Rockbox mixer frame (1024 bytes), which is the worst
+ * case for IDF's descriptor fetch: every write has to take a fresh descriptor
+ * rather than topping up one in progress. desc_num 4 alone did not fix the
+ * gaps, so this is the other half of the geometry.
+ *
+ * Note the reference also differs in two ways we deliberately do NOT copy:
+ * use_apll = true and fixed_mclk = rate * 128. Our working baseline runs
+ * PLL160M with MCLK = rate * 256 and the ES8311 programmed to match, so
+ * changing those would break a clock that is demonstrably correct -- the audio
+ * heard on the IDF path is at the right pitch, which is the evidence that the
+ * clock is not the fault. */
+/* Diagnostic sizing, not tuning.
+ *
+ * Every phase inside the writer loop has now been measured and none of them
+ * accounts for the stall: wait max 0 (the core always has a buffer), nodata 0,
+ * pull max ~104us, write max 11.6ms, park n=0 -- yet inter-write gaps reach
+ * 799ms. The time is going outside the loop's own work, i.e. the thread is not
+ * being scheduled. That is the structural loss in this migration: the old hook
+ * was an ISR, which preempts everything, so refill() ran at the hardware moment
+ * regardless of what the codec or UI was doing. This is a thread at
+ * PRIORITY_USER_INTERFACE, outranked by PRIORITY_PLAYBACK and PRIORITY_SYSTEM.
+ *
+ * The ring is therefore the only thing between a deschedule and silence. At 512
+ * frames (11.6ms) per descriptor, 4 descriptors is 46ms of runway against
+ * 118-799ms stalls. 12 gives 139ms. If the gaps shorten in proportion to this
+ * number, starvation is confirmed and the real fix is the priority or an
+ * interrupt-driven hook, not the ring.
+ *
+ * Cost: 12 * 2048 = 24KB of internal DMA-capable RAM.
+ *
+ * SUPERSEDED -- 2 is the correct value, and 12 was an architectural error rather
+ * than a tuning choice. Rockbox's contract is that the driver reports a buffer
+ * consumed when it has FINISHED TRANSMITTING; pcm_play_dma_complete_callback()
+ * is what makes the mixer produce the next one, so the report IS the pacing
+ * signal for the whole audio pipeline. A deep ring makes every report a fiction
+ * by the depth of the ring (139ms here), and the core's buffering and latency
+ * logic trusts it.
+ *
+ * IDF 5.5 offers no public tx done-callback (no register_tx_callback, no
+ * i2s_done_cb_t anywhere in esp_driver_i2s). The only completion signal is a
+ * finished buffer pointer returned to dma.msg_queue by i2s_dma_tx_callback()
+ * (i2s_common.c:651), and the only way to observe it is i2s_channel_write(),
+ * which blocks on that queue. So the queue has to BE our OUT_DONE:
+ *
+ *   one descriptor == one mixer frame, ring of 2
+ *
+ * Then write() returns only once a descriptor has been retired by the hardware,
+ * which is exactly the moment the hand-rolled ISR used to fire in, and the
+ * consumption report that follows is true. The gaps that motivated going deep
+ * were never the ring -- they were sink_stop() tearing the channel down on the
+ * play/stop pairs the core issues about once a second. See TX_STOP_KEEPS_CHANNEL.
+ */
+/* At 1024 bytes (5.8ms) per descriptor, 24 gives 139ms of ring -- the depth
+ * needed to cover the measured 106-125ms stop->play interval the core produces
+ * about once every 4 seconds. Cost 24KB of internal DMA-capable RAM. */
+/* 2, not 24. The ring depth IS the lookahead we impose on the mixer: with 24
+ * descriptors the writer stays 139ms ahead of the hardware and keeps asking the
+ * mixer for chunks the codec has not produced yet, and the mixer answers with
+ * its zero-filled output buffer. Two descriptors == two mixer frames == 11.6ms,
+ * which is what the hand-rolled path effectively had (it armed one slot per
+ * OUT_DONE and restarted). */
+#define TX_DMA_DESC_NUM   2
+/* 256 frames * 2 slots * 2 bytes = 1024 bytes = exactly one Rockbox mixer
+ * frame (MIX_FRAME_SAMPLES * 4). Deliberate: it makes one descriptor and one
+ * handover the same unit, so write() returning means "one frame has left the
+ * hardware", which is the event pcm_play_dma_complete_callback() is supposed to
+ * report. At 512 a descriptor held two mixer frames and the report was off by
+ * half a descriptor even at the correct ring depth. */
+/* THE MIS-WIRING. dma_frame_num is in frames, and one frame is one stereo
+ * sample pair, so 512 made each descriptor 512 * 2 slots * 2 bytes = 2048 bytes
+ * while Rockbox hands over MIX_FRAME_SAMPLES*4 = 1024-byte mixer frames.
+ *
+ * Every descriptor was therefore half filled by us and half filled by IDF's
+ * auto_clear zeroing: sound, silence, sound, silence, at descriptor
+ * granularity. That is the burst-wait-burst, and it is why the payload census
+ * read ~75% silent frames while NO audio was actually missing -- the silence
+ * was extra material inserted into the stream, not audio being dropped. It is
+ * also why deepening the ring never helped: a bigger ring just meant more
+ * half-empty descriptors in the cycle.
+ *
+ * 256 frames * 2 * 2 = 1024 bytes == exactly one mixer frame, so a handover
+ * completes a descriptor instead of half-filling it.
+ *
+ * The reference firmware's dma_buf_len = 512 was NOT a mistake on its side: it
+ * pairs 512-byte... no -- it writes audio in chunks of its own choosing, so its
+ * descriptor size matches its chunk size. Ours must match OURS. */
+#define TX_DMA_FRAME_NUM  256
+
+/* i2s_set_frequency() sits above the Stage 1b block that defines these. */
+static bool tx_set_rate(unsigned long rate);
+bool i2s_tx_chan_create(void);
+bool i2s_tx_chan_configure(unsigned long rate);
+bool i2s_tx_chan_enable(bool en);
+void i2s_tx_thread_start(void);
+void i2s_tx_probe(void);
 #endif
 #include <esp_rom_gpio.h>
 #include <esp_clk_tree.h>
@@ -384,6 +503,7 @@ void i2s_set_frequency(unsigned long rate)
     };
     hal_utils_clk_div_t mclk_div;
 
+#ifndef TX_USE_IDF_DRIVER
     i2s_hal_set_tx_clock(&tx_hal, &clk, I2S_CLK_SRC_DEFAULT, &mclk_div);
 
     i2s_hal_slot_config_t slot = {
@@ -404,6 +524,14 @@ void i2s_set_frequency(unsigned long rate)
     /* Master role: this side generates BCLK and WS and feeds MCLK to both codecs. */
     i2s_hal_std_set_tx_slot(&tx_hal, false, &slot);
     i2s_hal_std_enable_tx_channel(&tx_hal);
+#else
+    (void)clk;
+    (void)mclk_div;
+
+    /* IDF programs clock and slot together; tx_set_rate() does disable ->
+     * reconfig_std_clock and start_tx() re-enables. */
+    tx_set_rate(rate);
+#endif
 
     i2s_reg_snapshot("after hal config");
 
@@ -477,9 +605,30 @@ static struct {
     unsigned short data[128];
 } xt_width;
 
+/* Baseline A/B counters. fill() runs in ISR context, so this only accumulates;
+ * the print lives in i2s_probe_tick() (thread context). Sampling every 16th
+ * call keeps the ISR cost bounded -- a full 1024-byte scan on every frame would
+ * itself become the dropout we are trying to observe. */
+static volatile unsigned long bl_n, bl_zero, bl_sum;
+
 static void fill(int i, const void *src, unsigned long len)
 {
     memcpy(dma_buf[i], (const void *)src, len);
+
+    {
+        static unsigned long bl_ctr;
+        if (++bl_ctr >= 16)
+        {
+            const unsigned char *bb = (const unsigned char *)src;
+            unsigned long nz = 0, j;
+
+            bl_ctr = 0;
+            for (j = 0; j < len; j++)
+                nz += (bb[j] != 0);
+            bl_n++; bl_sum += nz;
+            if (nz == 0) bl_zero++;
+        }
+    }
 
     /* What width is actually on the wire? The mixer frame is
      * MIX_FRAME_SAMPLES*4 = 1024 bytes, which reads as 32-bit samples, but
@@ -701,8 +850,24 @@ bool i2s_tx_chan_create(void)
      * made the previous attempt bursty. */
     i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1,
                                                        I2S_ROLE_MASTER);
-    cfg.dma_desc_num  = 2;
-    cfg.dma_frame_num = 256;
+    /* desc_num MUST be >= 3 on this path, and not for the runway reason.
+     *
+     * i2s_channel_write() only goes looking for the next descriptor when
+     *     uxQueueSpacesAvailable(msg_queue) <= (desc_num > 2 ? 1 : 0)
+     * and the queue is created with desc_num - 1 slots. At desc_num = 2 that
+     * threshold is 0 against a 1-slot queue, so it never prefetches: it fills
+     * one whole descriptor, then blocks in xQueueReceive until THAT descriptor
+     * has finished transmitting. The DMA therefore drains a burst, stalls, gets
+     * refilled, drains again -- which is exactly the "short burst, silence,
+     * next burst" that was heard, with pitch and content correct throughout
+     * because the bit clock was never the problem.
+     *
+     * At 3 the predicate becomes <= 1 and a descriptor is taken while one is
+     * still in flight, so the stream is continuous. Sweeping this is Stage 3;
+     * 2 was chosen for report accuracy and turned out to remove all pipelining.
+     */
+    cfg.dma_desc_num  = TX_DMA_DESC_NUM;
+    cfg.dma_frame_num = TX_DMA_FRAME_NUM;
 
     esp_err_t e = i2s_new_channel(&cfg, &tx_chan_idf, NULL);
 
@@ -715,6 +880,688 @@ bool i2s_tx_chan_create(void)
 
     printf("TX1a: IDF TX channel created %p (not configured, not routed)\n",
            (void *)tx_chan_idf);
+    return true;
+}
+
+/* ---- Stage 1b: the IDF transmit path -------------------------------------
+ *
+ * Everything below is what replaces gdma_init(), the descriptor ring,
+ * arm()/fill() and gdma_irq(). The hand-rolled versions stay in the file under
+ * the #else so the revert is a one-line flip of TX_USE_IDF_DRIVER and a
+ * rebuild, not a git operation.
+ *
+ * The shape mirrors the receiver in pcm-xtensa.c deliberately: IDF's API is a
+ * blocking call from task context, Rockbox's sink contract is a callback from
+ * interrupt context, and a small thread is what converts one into the other.
+ * It is the same seam, opposite direction, and the receiver already proves it
+ * works on this hardware. */
+
+static i2s_std_config_t tx_std_cfg;
+static unsigned long tx_std_rate;          /* rate the channel is set to */
+static bool tx_std_configured;
+static bool tx_chan_enabled;
+
+/* The frame awaiting transmission, published by sink_play() and consumed by
+ * the writer. Written under the pcm core's play lock, so only one producer. */
+static const unsigned char *tx_ptr;
+static size_t tx_size;
+static volatile bool tx_pend_valid;
+static volatile bool tx_writing;
+
+/* The writer gate. Replaces masking GDMA_INT_DONE: with IDF owning the
+ * channel there is no interrupt for us to mask, so lock() has to stop the
+ * writer from asking the core for more data instead. */
+static volatile int tx_locked;
+static struct semaphore tx_sem;
+
+static unsigned int tx_thread_id;
+static bool tx_thread_created;
+#define TX_THREAD_STACK_SIZE DEFAULT_STACK_SIZE
+static long tx_thread_stack[TX_THREAD_STACK_SIZE / sizeof(long)]
+    __attribute__((aligned(8)));
+static const char tx_thread_name[] = "i2stx";
+
+/* Counters the probe reports, so this path is measurable in the same terms as
+ * the baseline: writes issued, bytes handed over, errors, and how often the
+ * writer found nothing to do. */
+static volatile unsigned long tx_writes;
+static volatile unsigned long tx_bytes;
+static volatile unsigned long tx_errs;
+static volatile unsigned long tx_timeouts;
+/* Where the time goes, per blocking phase.
+ *
+ * The writer stalls up to 0.8s (max gap 799070us) yet tx_timeouts stays 0 --
+ * and that counter IS wired to i2s_channel_write()'s ESP_ERR_TIMEOUT, so the
+ * DMA genuinely never blocked us. The remaining suspect is the pull: the
+ * semaphore wait at HZ/50 is 20ms, and 0.8s is forty consecutive timeouts with
+ * the core offering nothing. These three timers say which it is instead of
+ * leaving me to reason about it. */
+static volatile unsigned long ph_write_c, ph_write_max;
+static volatile unsigned long ph_pull_c,  ph_pull_max;
+static volatile unsigned long ph_wait_c,  ph_wait_max;
+static volatile unsigned long ph_wait_to;   /* semaphore timeouts, previously uncounted */
+static volatile unsigned long tx_core_no_data;  /* complete_callback() returned false */
+/* The gap budget does not close: in the slow windows write max is 11.6ms and
+ * pull max 104us, yet the inter-write gap reaches 122ms. The only uninstrumented
+ * block between two handovers is the tx_locked park, whose sleep(1) is 10ms at
+ * 1000Hz -- ten of them is exactly the missing hundred milliseconds. This is a
+ * regression I introduced: the hand-rolled sink_lock() only masked OUT_DONE,
+ * which costs microseconds and never blocks, whereas the thread parks. */
+static volatile unsigned long tx_park_n, tx_park_c, tx_park_max;
+/* The writer's own cadence turned out to be the wrong quantity to watch. With
+ * 12 descriptors the ring is FULL and write() blocks at exactly the drain rate
+ * (mean 5800us unchanged from 4 descriptors), so a 135ms gap between writes is
+ * harmless -- the DMA still has 139ms of queued audio and plays right through
+ * it. The audio still halts anyway, so the silence is not lateness; something is
+ * DISABLING the path. The only things that do that are sink_stop() ->
+ * i2s_channel_disable() and the channel-enabled flag itself, and neither has
+ * been counted during playback. */
+static volatile unsigned long tx_play_n, tx_stop_n;
+/* The quantity that actually decides whether a stop->play cycle is audible:
+ * how long the core keeps the sink stopped. The writer exits its inner loop on
+ * playing=false, so the ring drains from that instant and nothing refills it
+ * until sink_play(). If that interval exceeds the ring's audio content the
+ * listener hears silence for (interval - ring). Everything so far inferred this
+ * from the writer's inter-write gap; measure the interval itself.
+ *
+ * Ring content on this build is 12 * 512 frames = 139ms, and the inferred
+ * interval is ~125ms -- barely covered, which matches "dropping out a lot"
+ * rather than "fixed". */
+/* Is the payload actually sound?
+ *
+ * Every TX-side explanation is now eliminated by measurement: the ring is full
+ * (write blocks at drain rate), the stop->play interval is 106-125ms against a
+ * 139ms ring so it is covered, the channel is never disabled, there are no
+ * errors, timeouts or parks, and the writer is paced to within 7us of the
+ * hardware. If the frames handed over are silence, every one of those counters
+ * reads exactly as it does now. So measure the payload: peak |sample| per frame.
+ *
+ * A window whose frames are all loud while the listener hears silence means the
+ * audio is lost after i2s_channel_write(). A window full of near-zero peaks
+ * means the core produced silence and TX has been innocent throughout. */
+static volatile unsigned long pk_sum, pk_min, pk_max, pk_quiet;
+static volatile unsigned long pk_zero;   /* handovers with len == 0 */
+static volatile unsigned long tx_noask;   /* pulls where ops.play already supplied */
+static volatile unsigned long tx_gate_waits;  /* waits on the play lock before pulling */
+/* What size does the core actually hand back? Never measured, and everything
+ * about the ring geometry assumes 1024. If pcm_play_dma_complete_callback()
+ * returns a different chunk size, the mixer is being asked at the wrong rate
+ * and its output buffer legitimately contains silence between real chunks --
+ * which is exactly what the byte census shows. */
+static volatile unsigned long sz_min, sz_max, sz_sum, sz_n;
+static volatile unsigned long sz_1024, sz_other;
+static const void *last_ptr;
+static volatile unsigned long same_ptr;   /* consecutive handovers, same address */
+static unsigned long pk_n;
+
+static unsigned long sp_t0;                    /* cycles at sink_stop() */
+static volatile unsigned long sp_n, sp_c, sp_max;
+
+static volatile unsigned long tx_starve;   /* handovers that found the DMA FIFO empty */
+static volatile unsigned long tx_idle;     /* handovers that found I2S TX idle */
+
+void i2s_tx_probe(void)
+{
+    printf("TX idf: chan=%p cfg=%d en=%d rate=%lu writes=%lu bytes=%lu "
+           "errs=%lu tmo=%lu pend=%d writing=%d locked=%d\n",
+           (void *)tx_chan_idf, tx_std_configured, tx_chan_enabled,
+           tx_std_rate, tx_writes, tx_bytes, tx_errs, tx_timeouts,
+           tx_pend_valid, tx_writing, tx_locked);
+}
+
+/* Build the std config to match, field for field, what the HAL path programs
+ * today (i2s_set_frequency): 16-bit data in 16-bit slots, stereo, ws_width
+ * SLOT_BITS, bit_shift on, left aligned, WS idle low.
+ *
+ * Deliberately NOT I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG: that leaves ws_width at
+ * the slot width times two, which is not what the ES8311 is currently being
+ * fed. If audio comes back wrong-pitched, wrong-channel or as noise, this is
+ * the first place to look. */
+static void tx_std_config(i2s_std_config_t *c, unsigned long rate)
+{
+    *c = (i2s_std_config_t){
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate),
+        .slot_cfg = {
+            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT,
+            .slot_mode      = I2S_SLOT_MODE_STEREO,
+            .slot_mask      = I2S_STD_SLOT_BOTH,
+            .ws_width       = SLOT_BITS,
+            .ws_pol         = false,
+            .bit_shift      = true,
+            .left_align     = true,
+            .big_endian     = false,
+            .bit_order_lsb  = false,
+        },
+        .gpio_cfg = {
+            .mclk = PIN_I2S_MCLK,
+            .bclk = PIN_I2S_BCLK,
+            .ws   = PIN_I2S_WS,
+            .dout = PIN_I2S_DOUT,
+            .din  = I2S_GPIO_UNUSED,
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false,
+                              .ws_inv = false },
+        },
+    };
+
+    c->clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+
+    /* Explicit about the source rather than leaving it to I2S_CLK_SRC_DEFAULT.
+     *
+     * This is NOT the burst cause. An earlier reading of I2S_TX_CLKM_CONF
+     * claimed tx_clk_sel had moved from 2 (PLL160M) to 3 (I2S_MCLK_in); that
+     * was a wrong bit decode. Per i2s_struct.h:153-157 the layout is
+     * tx_clkm_div_num[7:0], tx_clk_active[26], tx_clk_sel[28:27], clk_en[29],
+     * and decoding the two observed values correctly gives sel=2 in BOTH:
+     * baseline 0x1400000e and IDF 0x3400000e differ only in clk_en, the clock
+     * gate. Pinning the source here is just so the intent is visible and cannot
+     * drift if IDF's default ever changes. */
+    c->clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
+}
+
+/* Configure the channel. This is the call that grabs GDMA OUT channel 0 --
+ * i2s_channel_init_std_mode() -> i2s_init_dma_intr() -> gdma_new_ahb_channel()
+ * -- so it must not run while the hand-rolled transmitter is live. That is why
+ * the cutover is atomic and cannot be staged more finely. */
+bool i2s_tx_chan_configure(unsigned long rate)
+{
+    if (!tx_chan_idf)
+        return false;
+
+    tx_std_config(&tx_std_cfg, rate);
+
+    esp_err_t e = i2s_channel_init_std_mode(tx_chan_idf, &tx_std_cfg);
+
+    if (e != ESP_OK)
+    {
+        printf("TX idf: init_std_mode failed: %d\n", (int)e);
+        return false;
+    }
+
+    tx_std_configured = true;
+    tx_std_rate = rate;
+    printf("TX idf: configured at %lu Hz (desc=%u frame=%u)\n", rate,
+           TX_DMA_DESC_NUM, TX_DMA_FRAME_NUM);
+    return true;
+}
+
+/* Rate change. The channel cannot be re-initialised (init_std_mode asserts
+ * state REGISTER), so this is disable -> reconfig clock -> enable, the same
+ * route pcm-xtensa.c uses for the receiver. Rebuilding the channel instead
+ * would reset the whole GDMA block. */
+static bool tx_set_rate(unsigned long rate)
+{
+    if (!tx_std_configured)
+        return i2s_tx_chan_configure(rate);
+
+    if (rate == tx_std_rate)
+        return true;
+
+    if (tx_chan_enabled)
+    {
+        i2s_channel_disable(tx_chan_idf);
+        tx_chan_enabled = false;
+    }
+
+    i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+
+    clk.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    clk.clk_src = I2S_CLK_SRC_PLL_160M;   /* see tx_std_config() */
+
+    esp_err_t e = i2s_channel_reconfig_std_clock(tx_chan_idf, &clk);
+
+    if (e != ESP_OK)
+    {
+        printf("TX idf: reconfig_std_clock(%lu) failed: %d\n", rate, (int)e);
+        return false;
+    }
+
+    tx_std_rate = rate;
+    return true;
+}
+
+/* The writer. It exists because i2s_channel_write() returns when the bytes
+ * have been COPIED into a free descriptor, not when they have been played, and
+ * the only thing that paces it is the descriptor queue that the TX-done ISR
+ * refills. So the report to the pcm core has to happen after write() returns,
+ * and the ring depth decides how honest that report is -- see the table in
+ * TX-IDF-MIGRATION.md for why desc_num 8 made the previous attempt bursty.
+ *
+ * The loop is bounded rather than portMAX_DELAY: a task parked inside
+ * i2s_channel_write() cannot be cancelled, and the pcm core can reach
+ * sink_stop() from another thread, so a stop has to be able to land. Same
+ * reasoning the receiver documents. */
+static void i2s_tx_thread(void)
+{
+    /* TEMPORARY trace: the symptom is "about a second of audio then silence, app
+     * still alive", which could be the writer parked on the lock, blocked inside
+     * i2s_channel_write(), starved of buffers, or spinning on errors. Those look
+     * identical from outside and need opposite fixes, so each transition prints a
+     * few times and then goes quiet. */
+    static unsigned tr_iter, tr_write, tr_err, tr_lock;
+
+    while (true)
+    {
+        if (!playing)
+        {
+            tx_writing = false;
+            semaphore_wait(&tx_sem, HZ / 10);
+            continue;
+        }
+
+        tx_writing = true;
+
+        while (playing)
+        {
+            /* The play lock means "do not ask the core for more data". Sitting
+             * out the iteration is the thread-context equivalent of masking
+             * OUT_DONE. */
+            if (tx_locked)
+            {
+                unsigned long t0 = esp_cpu_get_cycle_count();
+
+                tx_park_n++;
+                sleep(1);
+                {
+                    unsigned long d = esp_cpu_get_cycle_count() - t0;
+                    tx_park_c += d;
+                    if (d > tx_park_max) tx_park_max = d;
+                }
+                continue;
+            }
+
+            if (!tx_pend_valid)
+            {
+                unsigned long t0 = esp_cpu_get_cycle_count();
+                if (semaphore_wait(&tx_sem, HZ / 50) == 0)
+                    ph_wait_to++;
+                ph_wait_c += esp_cpu_get_cycle_count() - t0;
+
+                if (!playing || tx_locked)
+                    continue;
+                if (!tx_pend_valid)
+                {
+                    if (tr_iter++ < 4)
+                        printf("TXtr: no buffer offered (underrun)\n");
+                    continue;
+                }
+            }
+
+            const unsigned char *ptr = tx_ptr;
+            size_t len = tx_size;
+
+            tx_pend_valid = false;
+
+            size_t off = 0;
+
+            if (tr_write++ < 4)
+                printf("TXtr: write #%u ptr=%p len=%lu en=%d\n",
+                       tr_write, (const void *)ptr, (unsigned long)len,
+                       tx_chan_enabled);
+
+            {
+                /* Scale-free census of the frame: how many bytes are non-zero.
+                 *
+                 * The previous version computed a peak |int16| and reported
+                 * maxima of 97193, which is IMPOSSIBLE for a 16-bit sample --
+                 * MIX_FRAME_SAMPLES*4 is 256 * (2 channels * 2 bytes) = 1024, so
+                 * the mixer output really is 16-bit stereo and no sample can
+                 * exceed 32767. The probe was lying, and I was about to conclude
+                 * from it that the core emits silence. Counting bytes has no
+                 * scale, no sign and no overflow to get wrong: an all-zero frame
+                 * is silence whatever the sample width, and a frame with 1024
+                 * non-zero bytes is definitely sound. */
+                const unsigned char *bb = (const unsigned char *)ptr;
+                unsigned long nz = 0, i;
+
+                if (sz_n == 0 || len < sz_min) sz_min = len;
+                if (len > sz_max) sz_max = len;
+                sz_sum += len; sz_n++;
+                if (len == 1024) sz_1024++; else sz_other++;
+                if (ptr == last_ptr) same_ptr++;
+                last_ptr = ptr;
+
+
+                for (i = 0; i < len; i++)
+                    nz += (bb[i] != 0);
+
+                /* Distinguish "the core handed us an empty buffer" from "the
+                 * core handed us silence". A zero-length handover writes
+                 * nothing and returns immediately, so counting it as a silent
+                 * audio frame would inflate the quiet ratio and send me looking
+                 * at the mixer when the fault is my handover size. */
+                if (len == 0)
+                    pk_zero++;
+                else if (nz == 0)
+                    pk_quiet++;
+
+                pk_n++;
+                pk_sum += nz;
+                if (nz > pk_max) pk_max = nz;
+                if (pk_min == 0 || nz < pk_min) pk_min = nz;
+            }
+
+            unsigned long tw0 = esp_cpu_get_cycle_count();
+
+            while (off < len && playing)
+            {
+                size_t got = 0;
+                /* timeout is in milliseconds, not ticks */
+                esp_err_t e = i2s_channel_write(tx_chan_idf, ptr + off,
+                                                len - off, &got, 200);
+
+                if (e != ESP_OK || got == 0)
+                {
+                    if (e == ESP_ERR_TIMEOUT)
+                        tx_timeouts++;
+                    else
+                        tx_errs++;
+
+                    if (tr_err++ < 6)
+                        printf("TXtr: write err=%d got=%lu off=%lu/%lu\n",
+                               (int)e, (unsigned long)got,
+                               (unsigned long)off, (unsigned long)len);
+
+                    if (!playing)
+                        break;
+                    /* Do not spin: this thread outranks the UI, and a hot retry
+                     * loop here starves the button and main threads outright. */
+                    sleep(1);
+                    continue;
+                }
+
+                off += got;
+            }
+
+            {
+                unsigned long d = esp_cpu_get_cycle_count() - tw0;
+                ph_write_c += d;
+                if (d > ph_write_max) ph_write_max = d;
+            }
+
+            if (!playing)
+                break;
+
+            tx_writes++;
+            tx_bytes += off;
+
+            /* Measure the actual handover rate instead of inferring it. At
+             * 44100 Hz stereo 16-bit, one 1024-byte frame is 5.8ms, so real
+             * time is 172 writes/second; anything much above that means the
+             * writer is running ahead of the DAC rather than in step with it.
+             * The tick-based probe cannot answer this -- during playback the
+             * tick task is starved and printed nothing at all -- so the writer
+             * has to time itself. */
+            {
+                /* Inter-write interval, in microseconds.
+                 *
+                 * The rate measurement came out at exactly 172/s with zero
+                 * timeouts, zero errors, zero parks and zero underruns -- so the
+                 * writer is not late on average. But "gappy with correct pitch
+                 * and nothing lost" is not an average problem, it is a
+                 * distribution problem, and an average cannot see it. If these
+                 * intervals are tight around the 5804us nominal frame time then
+                 * the writer is feeding the ring on time and the stall is in the
+                 * DMA/I2S side -- which would mean the re-arm, not the
+                 * scheduling. If they cluster and spike, the writer is being
+                 * descheduled and it is a priority problem.
+                 *
+                 * current_tick is 10ms, coarser than the 5.8ms frame it has to
+                 * measure, so this uses the core cycle counter directly. */
+                static unsigned long w_mark, t_mark, last_cyc;
+                static unsigned long gap_max, gap_sum, gap_big;
+                unsigned long now_tick = current_tick;   /* 10ms ticks */
+                unsigned long cyc = esp_cpu_get_cycle_count();
+
+                if (last_cyc != 0)
+                {
+                    unsigned long gap = cyc - last_cyc;
+
+                    if (gap > gap_max)
+                        gap_max = gap;
+                    gap_sum += gap;
+
+                    /* more than two frame-times of nothing handed over */
+                    if (gap > 2800000UL)   /* ~11.7ms at 240MHz */
+                        gap_big++;
+                }
+                last_cyc = cyc;
+
+                /* Starvation sampling, done on every handover rather than once a
+                 * second. The writer has now been measured delivering one frame
+                 * every ~5.8ms with no gap over 11.7ms, zero timeouts and zero
+                 * errors -- so if audio is still gappy, the silence is downstream
+                 * of us and the only way to see it is to ask the hardware whether
+                 * its FIFO ran dry. A once-a-second sample cannot catch a
+                 * transient; this catches every frame.
+                 *
+                 * GDMA_OUTFIFO_EMPTY_Ln are bits 1, 3 and 5; I2S_TX_STATE bit 0
+                 * is idle. Any of them set at the moment we hand a frame over
+                 * means the transmitter had already drained what we gave it. */
+                {
+                    unsigned fs = rd(GDMA_TX_FIFO_STATUS);
+                    unsigned st = rd(I2S_TX_STATE);
+
+                    if (fs & 0x2Au)      /* bits 1|3|5 */
+                        tx_starve++;
+                    if (st & TX_STATE_IDLE)
+                        tx_idle++;
+                }
+
+                if (t_mark == 0)
+                {
+                    t_mark = now_tick;
+                    w_mark = tx_writes;
+                }
+                else if (now_tick - t_mark >= 100)      /* one second */
+                {
+                    unsigned long n = tx_writes - w_mark;
+
+                    printf("TXtr: %lu writes/s  gap mean=%luus max=%luus "
+                           ">2frame=%lu  tmo=%lu errs=%lu "
+                           "starve=%lu idle=%lu\n"
+                           "      phases us: write mean=%lu max=%lu | pull "
+                           "mean=%lu max=%lu | wait mean=%lu max=%lu | "
+                           "timeouts=%lu nodata=%lu | park n=%lu mean=%luus "
+                           "max=%luus\n"
+                           "      session: play=%lu stop=%lu en=%d pend=%d | "
+                           "stopped n=%lu mean=%luus max=%luus\n"
+                           "      payload: nonzero-bytes min=%lu mean=%lu "
+                           "max=%lu of %lu | size min=%lu max=%lu mean=%lu "
+                           "(1024=%lu other=%lu) sameptr=%lu noask=%lu gate=%lu\n",
+                           n,
+                           n ? gap_sum / n / 240UL : 0,   /* cycles->us at 240MHz.
+                                                            * NOT *1000000/240000000:
+                                                            * that overflows 32 bits and
+                                                            * printed 6us for a 5800us
+                                                            * gap. */
+                           gap_max / 240UL,
+                           gap_big, tx_timeouts, tx_errs, tx_starve,
+                           tx_idle,
+                           ph_write_c / n / 240UL, ph_write_max / 240UL,
+                           ph_pull_c  / (n ? n : 1) / 240UL,
+                           ph_pull_max / 240UL,
+                           ph_wait_c  / (n ? n : 1) / 240UL,
+                           ph_wait_max / 240UL,
+                           ph_wait_to, tx_core_no_data,
+                           tx_park_n,
+                           tx_park_n ? tx_park_c / tx_park_n / 240UL : 0,
+                           tx_park_max / 240UL,
+                           tx_play_n, tx_stop_n, tx_chan_enabled,
+                           tx_pend_valid,
+                           sp_n,
+                           sp_n ? sp_c / sp_n / 240UL : 0,
+                           sp_max / 240UL,
+                           pk_min, pk_n ? pk_sum / pk_n : 0, pk_max,
+                           pk_quiet,
+                           sz_min, sz_max, sz_n ? sz_sum / sz_n : 0,
+                           sz_1024, sz_other, same_ptr, tx_noask,
+                           tx_gate_waits);
+                    tx_noask = 0; tx_gate_waits = 0;
+                    sz_min = 0; sz_max = 0; sz_sum = 0; sz_n = 0;
+                    sz_1024 = 0; sz_other = 0; same_ptr = 0;
+                    sp_n = 0; sp_c = 0; sp_max = 0;
+                    pk_sum = 0; pk_min = 0; pk_max = 0; pk_quiet = 0;
+                    pk_n = 0; pk_zero = 0;
+                    tx_play_n = 0; tx_stop_n = 0;
+                    tx_starve = 0; tx_idle = 0;
+                    tx_park_n = 0; tx_park_c = 0; tx_park_max = 0;
+                    ph_write_c = 0; ph_write_max = 0;
+                    ph_pull_c  = 0; ph_pull_max  = 0;
+                    ph_wait_c  = 0; ph_wait_max  = 0;
+                    ph_wait_to = 0; tx_core_no_data = 0;
+                    w_mark = tx_writes;
+                    t_mark = now_tick;
+                    gap_max = 0; gap_sum = 0; gap_big = 0;
+                }
+            }
+
+            /* The frame is in the DMA ring. Tell the core it has been consumed
+             * and take the next one -- same order refill() uses, and for the
+             * same reason: reporting consumption is what makes the mixer
+             * produce. */
+            {
+                unsigned long tp0 = esp_cpu_get_cycle_count();
+
+                /* The play-lock gate has to sit HERE, immediately before the
+                 * pull -- not at the top of the loop.
+                 *
+                 * Rockbox's play lock is not mutual exclusion. pcm_play_lock()
+                 * is just sinks[cur_sink]->ops.lock(), a counter; the exclusion
+                 * is supplied by the DRIVER masking its own completion interrupt,
+                 * which is why the hand-rolled refill() physically cannot run
+                 * while the core holds the lock (its CHAIN line reads locked=1
+                 * throughout playback). My writer checked tx_locked at the top of
+                 * the loop and then pulled 5.8ms later, after a blocking
+                 * i2s_channel_write(). park n=0 proved that check never engaged,
+                 * so the writer routinely called
+                 * pcm_play_dma_complete_callback() inside a locked section.
+                 *
+                 * With WANT_SWVOL active that callback hands back
+                 * pcm_dbl_buf[pcm_dbl_buf_num] (pcm_sw_volume.c:230) -- the half
+                 * the mixer is in the middle of filling. That is a silent frame,
+                 * with no audio lost and no error anywhere, which is exactly the
+                 * signature the baseline A/B produced: 1% all-zero frames on the
+                 * hand-rolled path against 50-75% on this one.
+                 *
+                 * Waiting here narrows the window from a full frame to the few
+                 * microseconds between the check and the callback. It is not
+                 * airtight -- only reclaiming the completion interrupt would be
+                 * -- but it reproduces the baseline's ordering in practice. */
+                while (tx_locked && playing)
+                {
+                    tx_gate_waits++;
+                    sleep(1);
+                }
+
+                pcm_play_dma_status_callback(PCM_DMAST_STARTED);
+
+                {
+                    const void *addr;
+                    size_t size;
+
+                    /* THIS is the missing signal-handling, and it is copied from
+                     * refill() verbatim in intent:
+                     *
+                     *     pcm_play_dma_status_callback(PCM_DMAST_STARTED);
+                     *     if (pend_valid) return;   // ops.play gave us one
+                     *     if (!pcm_play_dma_complete_callback(...)) return;
+                     *
+                     * The known-good path only asks the mixer for a buffer when
+                     * one has NOT already been published through ops.play(). My
+                     * writer asked unconditionally, so every sink_play() that
+                     * landed during a write made the mixer advance an extra time
+                     * for a frame the hardware had not consumed. Combined with a
+                     * deep ring -- which lets us ask up to 139ms ahead of the
+                     * hardware against a single mixer output buffer the codec
+                     * fills in real time -- the mixer legitimately hands back its
+                     * zero-filled buffer for chunks it has no data for. That is
+                     * the all-zero seconds the byte census caught, with no audio
+                     * lost, because the zeros are EXTRA requests rather than
+                     * replacements. */
+                    /* refill()'s `if (pend_valid) return;`, in thread form: if
+                     * ops.play() published a buffer while we were writing, that
+                     * IS the next one and the mixer must not be advanced again
+                     * for a frame the hardware has not consumed. */
+                    if (tx_pend_valid)
+                        tx_noask++;
+                    else if (pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr,
+                                                            &size))
+                    {
+                        tx_ptr = addr;
+                        tx_size = size;
+                        tx_pend_valid = true;
+                    }
+                    else
+                    {
+                        tx_core_no_data++;
+
+                        if (tr_iter++ < 8)
+                            printf("TXtr: core offered nothing (writes so far=%lu)\n",
+                                   tx_writes);
+                    }
+                }
+
+                {
+                    unsigned long d = esp_cpu_get_cycle_count() - tp0;
+                    ph_pull_c += d;
+                    if (d > ph_pull_max) ph_pull_max = d;
+                }
+            }
+        }
+    }
+}
+
+void i2s_tx_thread_start(void)
+{
+    if (tx_thread_created)
+        return;
+
+    tx_thread_created = true;
+    semaphore_init(&tx_sem, 1, 0);
+    tx_thread_id = create_thread(i2s_tx_thread, &tx_thread_stack,
+                                 sizeof(tx_thread_stack), 0, tx_thread_name
+                                 /* PRIORITY_REALTIME, not USER_INTERFACE.
+                                  *
+                                  * The hook this thread replaces was an ISR, and
+                                  * an ISR preempts every thread. As a thread at
+                                  * USER_INTERFACE (16) it sat BELOW
+                                  * PRIORITY_PLAYBACK (16) and PRIORITY_SYSTEM
+                                  * (18), so any long codec or SD-read burst ran
+                                  * it off the CPU: measured writer deschedules of
+                                  * 824ms with write max 11.6ms, pull max 1us,
+                                  * wait max 0 and park n=0 -- no phase inside the
+                                  * loop accounted for any of it. A 139ms ring
+                                  * cannot cover that.
+                                  *
+                                  * Safe to raise because the thread is blocked in
+                                  * i2s_channel_write() on dma.msg_queue for
+                                  * essentially the whole frame, doing ~1ms of
+                                  * memcpy per 5.8ms. It cannot starve the codec;
+                                  * both of its yield paths (tx_locked park and
+                                  * the write-error retry) sleep(1) rather than
+                                  * spin. */
+                                 IF_PRIO(, PRIORITY_REALTIME));
+}
+
+bool i2s_tx_chan_enable(bool en)
+{
+    if (!tx_chan_idf || !tx_std_configured)
+        return false;
+
+    if (en == tx_chan_enabled)
+        return true;
+
+    esp_err_t e = en ? i2s_channel_enable(tx_chan_idf)
+                     : i2s_channel_disable(tx_chan_idf);
+
+    if (e != ESP_OK)
+    {
+        printf("TX idf: %s failed: %d\n", en ? "enable" : "disable", (int)e);
+        return false;
+    }
+
+    tx_chan_enabled = en;
     return true;
 }
 #endif /* TX_USE_IDF_DRIVER */
@@ -744,7 +1591,15 @@ void i2s_init(void)
     gpio_set_direction(PIN_I2S_WS,   1);
     gpio_set_direction(PIN_I2S_DOUT, 1);
 
+#ifndef TX_USE_IDF_DRIVER
     gdma_init();
+#else
+    /* The hand-rolled GDMA channel, its descriptor ring and its interrupt are
+     * all skipped: i2s_channel_init_std_mode() will allocate GDMA OUT channel 0
+     * itself, and doing both would have IDF take the channel from under a live
+     * transmitter. */
+    printf("TX idf: hand-rolled gdma_init() skipped by design\n");
+#endif
 }
 
 #ifdef HAVE_RECORDING
@@ -781,15 +1636,29 @@ void i2s_rx_pads_release(void)
 
 static void start_tx(void)
 {
+#ifdef TX_USE_IDF_DRIVER
+    i2s_tx_chan_enable(true);
+    /* Wake the writer so a fresh session starts filling immediately rather than
+     * after its bounded wait expires. */
+    semaphore_release(&tx_sem);
+#else
     i2s_ll_tx_start(tx_hal.dev);
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start */
+#endif
 }
 
 static void stop_tx(void)
 {
+#ifdef TX_USE_IDF_DRIVER
+    /* The channel is left configured and merely disabled: deleting it would
+     * drop IDF's GDMA group refcount to zero and gate the block's bus clock
+     * outright, which takes the receiver with it. */
+    i2s_tx_chan_enable(false);
+#else
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
     i2s_ll_tx_stop(tx_hal.dev);
+#endif
 }
 
 /* Nothing is started or stopped for the receiver in this file any more: it is an
@@ -992,6 +1861,12 @@ void ICODE_ATTR gdma_irq(void)
  * is busy is not lost: int_raw stays set and fires as soon as the mask is lifted. */
 static void sink_lock(void)
 {
+#ifdef TX_USE_IDF_DRIVER
+    /* No interrupt of ours to mask any more -- IDF owns the GDMA interrupt.
+     * What the lock has to mean here is "writer, stop asking the core for
+     * data", which the thread checks between frames. */
+    tx_locked++;
+#endif
     if (locked++ == 0)
         wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DONE);
 }
@@ -1021,6 +1896,13 @@ static void sink_unlock(void)
     if (locked > 0)
         locked--;
 
+#ifdef TX_USE_IDF_DRIVER
+    /* Clamped for the same reason as `locked` above: a negative gate counter
+     * would never reach zero again and the writer would stay parked forever. */
+    if (tx_locked > 0)
+        tx_locked--;
+#endif
+
     if (locked == 0)
     {
         /* TEMPORARY: event-driven, so it cannot sample the wrong moment the way
@@ -1043,7 +1925,41 @@ static void sink_unlock(void)
 static void sink_play(const void *addr, size_t size)
 {
     xt_sink_play_n++;
+#ifdef TX_USE_IDF_DRIVER
+    tx_play_n++;
+#endif
     xt_sink_last_size = size;
+
+#ifdef TX_USE_IDF_DRIVER
+    /* The whole hand-rolled path below -- fill(), the descriptor ring, the
+     * link re-latch -- is replaced by publishing the buffer and waking the
+     * writer. Note this is called ONCE per playback: ops.play() arms the first
+     * frame and every later one arrives through pcm_play_data on the writer's
+     * own stack. */
+    {
+        /* Only meaningful if a stop actually preceded this play. */
+        if (sp_t0 != 0)
+        {
+            unsigned long d = esp_cpu_get_cycle_count() - sp_t0;
+            sp_n++; sp_c += d;
+            if (d > sp_max) sp_max = d;
+            sp_t0 = 0;
+        }
+    }
+
+    tx_ptr = addr;
+    tx_size = size;
+    tx_pend_valid = true;
+
+    if (!playing)
+    {
+        playing = true;
+        start_tx();
+    }
+
+    semaphore_release(&tx_sem);
+    return;
+#endif
 
     /* TEMPORARY: the first frame of a playback. The chain dump is taken after
        start_tx() below, not here: the pcm core holds the play lock across the
@@ -1110,6 +2026,55 @@ static void sink_play(const void *addr, size_t size)
 static void sink_stop(void)
 {
     xt_sink_stop_n++;
+#ifdef TX_USE_IDF_DRIVER
+    tx_stop_n++;
+#endif
+
+#ifdef TX_USE_IDF_DRIVER
+    playing = false;
+    tx_pend_valid = false;
+    sp_t0 = esp_cpu_get_cycle_count();
+
+#ifdef TX_STOP_KEEPS_CHANNEL
+    /* Do NOT tear the channel down here.
+     *
+     * The lifecycle counters settled the diagnosis: during ordinary continuous
+     * playback the core calls sink_play() and sink_stop() as a pair about once a
+     * second (7 of 32 windows showed play=1 stop=1). pcm_play_data() reaches
+     * ops.stop() whenever the codec has nothing queued at that instant, so this
+     * is normal traffic, not an error path.
+     *
+     * stop_tx() calls i2s_channel_disable(), which halts the transmitter and
+     * discards whatever the ring held; the matching sink_play() then pays
+     * i2s_channel_enable() to start from silence again. With the hand-rolled
+     * one-frame ring that cycle cost ~5.8ms, which is very plausibly the "minor
+     * crackle" the baseline always had. Deepen the ring to 139ms and make the
+     * teardown expensive, and the same cycle becomes the burst-silence-burst this
+     * whole investigation has been about -- correct pitch, nothing lost, no
+     * errors anywhere, because the clock and the DMA were never the fault.
+     *
+     * Leaving the channel enabled means a stop simply stops feeding it: the ring
+     * drains and IDF's auto_clear then holds silence, and a resume is immediate
+     * because the transmitter is still armed. */
+    tx_locked = 0;
+    locked = 0;
+    semaphore_release(&tx_sem);
+    return;
+#endif
+
+    tx_ptr = NULL;
+    tx_size = 0;
+
+    stop_tx();
+
+    /* A stop ends the session, so any lock still held is moot. Reset both
+     * counters so the next session starts from a known gate -- leaving them
+     * nonzero parks the writer for the rest of the boot. */
+    locked = 0;
+    tx_locked = 0;
+    semaphore_release(&tx_sem);
+    return;
+#endif
 
     /* TEMPORARY: read the transmit path out as the session ends, before stop_tx()
        and the descriptor handback below erase the evidence. A playback that never
@@ -1154,7 +2119,6 @@ static void sink_set_freq(uint16_t freq)
 {
     i2s_set_frequency(hw_freq_sampr[freq]);
 }
-
 /* TEMPORARY: periodic CHAIN sample.
  *
  * i2s_audio_probe() was only ever called from event sites -- sink_play, sink_stop,
@@ -1171,6 +2135,57 @@ static void sink_set_freq(uint16_t freq)
 static void i2s_probe_tick(void)
 {
     static int div;
+
+#ifdef TX_USE_IDF_DRIVER
+    /* Printed whether or not pcm_playing is set. The failure this is chasing is
+     * "audio stops but the app lives", and if the core has already cleared
+     * pcm_playing then a probe gated on it says nothing about the moment things
+     * went wrong -- which is exactly what happened on the first Stage 1b run:
+     * zero probe lines in the whole log. */
+    {
+        static int tdiv;
+
+        if (++tdiv >= 100)
+        {
+            tdiv = 0;
+            i2s_tx_probe();
+        }
+    }
+#endif
+
+    /* Baseline payload census readout (thread context). Compare against the
+     * IDF writer's "payload:" line: if the hand-rolled path shows the same
+     * ~all-zero fraction, the mixer's silence is normal and TX was never the
+     * fault; if it shows ~0%, the IDF path is causing it. */
+    if (bl_n)
+    {
+        static unsigned long last_n;
+        if (bl_n != last_n)
+        {
+            printf("BLcensus: %lu frames sampled, mean-nonzero=%lu, all-zero=%lu (%lu%%)\n",
+                   bl_n, bl_sum / bl_n, bl_zero, bl_zero * 100 / bl_n);
+            last_n = bl_n;
+        }
+    }
+
+#ifdef TX_PROBE_QUIET
+    /* Instrumentation is the suspect, so it has to be switchable without
+     * deleting it.
+     *
+     * The writer's own measurement came back with gap mean=5804us (exactly the
+     * nominal frame time) but recurring ~117ms stalls every few seconds, and
+     * 117ms is what this function's CHAIN dump costs to push over USB-serial.
+     * The dump holds the newlib stdout lock for that whole time; the writer's
+     * pull path goes through pcm_play_dma_complete_callback() into the mixer,
+     * which logs, so the writer blocks behind the probe that is supposed to be
+     * watching it. starve=0 during those stalls is consistent, not reassuring:
+     * IDF's auto_clear_after_cb zeroes each completed descriptor, so a stalled
+     * writer shows up as the DMA faithfully clocking silence, not an empty FIFO.
+     *
+     * If the halting disappears with this off, the bug was never in the
+     * transmit path. */
+    return;
+#endif
 
     if (!pcm_playing)
     {
@@ -1327,6 +2342,19 @@ static void sink_init(void)
                (ok && ena_before == rd(GDMA_TX_INT_ENA) &&
                 link_before == rd(GDMA_TX_LINK))
                    ? "UNCHANGED (claim holds)" : "DISTURBED (revert stage 1a)");
+
+        /* Stage 1b: the hand-rolled transmitter was never started above, so
+         * this is the point where IDF may take GDMA OUT channel 0. */
+        if (ok)
+        {
+            if (!i2s_tx_chan_configure(
+                    hw_freq_sampr[builtin_pcm_sink.caps.default_freq]))
+                printf("AUDHW: TX idf configure failed\n");
+
+            i2s_tx_thread_start();
+            printf("TX1b: writer thread created, configured=%d\n",
+                   tx_std_configured);
+        }
     }
 #endif
 
