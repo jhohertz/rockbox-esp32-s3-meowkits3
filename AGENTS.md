@@ -572,6 +572,41 @@ Verified from `components/soc/esp32s3/register/soc/reg_base.h` and `gdma_channel
 | GDMA channel stride | IN: `base + 0xC0 * n`; OUT: `base + 0x60 + 0xC0 * n` |
 | I2S registers | `INT_RAW/ST/ENA/CLR`, `RX_CONF`, `TX_CONF`, `RX_CONF1`, `TX_CONF1`, clock mux + divider, TDM ctrl, timing |
 
+### There is no NULL-terminated descriptor list on this GDMA
+
+`next = 0` does **not** end a link list. With `out_auto_wrback` (`OUT_CONF0`
+bit 2) set, the engine follows `next` unconditionally the moment a descriptor
+retires, so `next = 0` means "fetch the next descriptor from address
+`0x00000000`". It does that, reads owner clear and length zero, and raises
+`out_dscr_err`. Repeat per descriptor.
+
+The two settings are a choice, not a combination:
+
+| want | configure |
+|---|---|
+| stop at the end of one descriptor, restart from software | `out_auto_wrback` **off**; `next` is then never followed |
+| free-running ring | `out_auto_wrback` **on**; chain `next` through every slot and keep every slot DMA-owned and filled |
+
+Rockbox's own `imx233` sink gets "stop at the end" from a DMA command carrying
+`next = NULL`, because that peripheral really does treat NULL as a stop. That
+convention does not carry over. The xtensa TX path was written against the
+imx233 model and inherited the assumption while also enabling auto-writeback;
+the result was one descriptor fault per audio frame, each one stalling the
+transport until the handler restarted it — audible as crackle at 172 Hz.
+Measured over 53,833 frames: faults went from one per frame to one for the
+whole run by clearing that one bit.
+
+Two related facts, both measured rather than read:
+
+- **`OUT_DSCR_STATE` (`OUT_STATE` bits 19:18) is undocumented.** `gdma_struct.h`
+  declares the field `/*reserved*/` and `grep -rn last_dscr` across IDF returns
+  nothing. Do not interpret its value.
+- **A DSCR_ERR handler must not write `link.stop` after a DONE handler has
+  written `link.start`.** Both branches typically act on one snapshot of
+  `INT_ST`, so when the two bits are pending together the error branch cancels
+  the restart — and a stopped outlink raises no completions, so nothing ever
+  restarts it. Handle the error first, and let it start rather than stop.
+
 ### Buffers can be in PSRAM; descriptors cannot
 
 Settled by testing rather than inference.
