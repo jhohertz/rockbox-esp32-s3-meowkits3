@@ -552,7 +552,14 @@ CONFIG_KEYPAD == MROBE500_PAD
 #   define HK_REM2STACK    "POWER + RIGHT"
 
 #elif (CONFIG_KEYPAD == SONY_NWZ_PAD)
-#define SOL_QUIT      BUTTON_BACK
+#define SOL_QUIT      BUTTON_B
+/* help text names the cell rather than a key, since that is what the player
+ * is looking at */
+#   define HK_MOVE      "A"
+#   define HK_DRAW      "TOP"
+#   define HK_REM2CUR   "BOT"
+#   define HK_CUR2STACK "LEFT"
+#   define HK_REM2STACK "RIGHT"ACK
 #define SOL_UP        BUTTON_UP
 #define SOL_DOWN      BUTTON_DOWN
 #define SOL_LEFT      BUTTON_LEFT
@@ -797,6 +804,33 @@ CONFIG_KEYPAD == MROBE500_PAD
 #   define HK_CUR2STACK    "Long Cross.."
 #   define HK_REM2STACK    "Start"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+/* Cursor on the pad; the four pile operations, which are the whole game, get
+ * the four edge cells around the cursor so they are reachable without
+ * hunting. Upstream packs these onto POWER+direction combos because those
+ * targets are out of keys -- we are not, so they get cells of their own. */
+#define SOL_UP        BUTTON_UP
+#define SOL_DOWN      BUTTON_DOWN
+#define SOL_LEFT      BUTTON_LEFT
+#define SOL_RIGHT     BUTTON_RIGHT
+#define SOL_MOVE      BUTTON_A
+#define SOL_DRAW      BUTTON_TOPMIDDLE
+#define SOL_REM2CUR   BUTTON_BOTTOMMIDDLE
+#define SOL_CUR2STACK BUTTON_MIDLEFT
+#define SOL_REM2STACK BUTTON_MIDRIGHT
+#define SOL_QUIT      BUTTON_B
+/* help text names the cell rather than a key, since that is what the player
+ * is looking at */
+#   define HK_MOVE      "A"
+#   define HK_DRAW      "TOP"
+#   define HK_REM2CUR   "BOT"
+#   define HK_CUR2STACK "LEFT"
+#   define HK_REM2STACK "RIGHT"
 #else
 #error No keymap defined!
 #endif

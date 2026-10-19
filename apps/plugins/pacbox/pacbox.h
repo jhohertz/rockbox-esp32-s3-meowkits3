@@ -441,6 +441,24 @@
 #define PACMAN_COIN     BUTTON_USER
 #define PACMAN_MENU     BUTTON_MENU
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define PACMAN_UP   BUTTON_UP
+#define PACMAN_DOWN BUTTON_DOWN
+#define PACMAN_LEFT BUTTON_LEFT
+#define PACMAN_RIGHT BUTTON_RIGHT
+/* coin and 1UP are attract-screen actions, never mid-game, so they live on
+ * the screen and cannot be hit by accident while steering */
+#define PACMAN_1UP      BUTTON_TOPMIDDLE
+#define PACMAN_2UP      BUTTON_BOTTOMMIDDLE
+#define PACMAN_COIN_PRE BUTTON_CENTER
+#define PACMAN_COIN     (BUTTON_CENTER | BUTTON_REPEAT)
+#define PACMAN_MENU     BUTTON_B
+#define SKIP_LEVEL      BUTTON_TOPRIGHT
 #else
 
 #error Keymap not defined!

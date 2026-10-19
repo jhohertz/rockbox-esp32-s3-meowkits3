@@ -627,6 +627,26 @@
 #define CB_SCROLL_LEFT  (BUTTON_LEFT|BUTTON_REPEAT)
 #define CB_SCROLL_RIGHT (BUTTON_RIGHT|BUTTON_REPEAT)
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define CB_UP    BUTTON_UP
+#define CB_DOWN  BUTTON_DOWN
+#define CB_LEFT  BUTTON_LEFT
+#define CB_RIGHT BUTTON_RIGHT
+#define CB_SCROLL_UP    (BUTTON_UP | BUTTON_REPEAT)
+#define CB_SCROLL_DOWN  (BUTTON_DOWN | BUTTON_REPEAT)
+#define CB_SCROLL_LEFT  (BUTTON_LEFT | BUTTON_REPEAT)
+#define CB_SCROLL_RIGHT (BUTTON_RIGHT | BUTTON_REPEAT)
+#define CB_SELECT   BUTTON_A
+#define CB_PLAY     BUTTON_MIDRIGHT
+#define CB_PLAY_ALT BUTTON_CENTER
+#define CB_LEVEL    BUTTON_TOPMIDDLE
+#define CB_RESTART  BUTTON_BOTTOMMIDDLE
+#define CB_MENU     BUTTON_B
 #else
 #error No keymap defined!
 #endif
