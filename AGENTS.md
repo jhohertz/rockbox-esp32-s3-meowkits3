@@ -3139,6 +3139,13 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   through a store the compiler cannot see, so an empty spin loop on it gets folded into
   a single test and the driver never notices the buffer being handed back. Check the
   disassembly, not just the source.
+- **A probe placed in the path it observes can become the fault being observed.**
+  `i2s_audio_probe()` — a ~40-argument diagnostic — was called from `sink_stop()`
+  and was the thing crashing, on two independent repro modes, after three crashes
+  produced nothing because IDF's panic handler re-enters. It is now gated behind
+  `TX_STOP_PROBE` (off by default). Keep diagnostics out of teardown and ISR paths;
+  stamp a `.noinit` breadcrumb trail instead (`paniclog.c`), which needs no
+  console, lock, stack or working panic handler to survive a crash-reboot.
 - `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
   63, and the GPSPI signals are 101-103.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
