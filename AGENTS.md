@@ -477,7 +477,7 @@ Mapping the board against what Rockbox already has:
 | Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
 | PCF8563 RTC | `CONFIG_RTC` | done |
 | AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
-| FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from the button tick, because the INT pin is not connected |
+| FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done in `target/xtensa/psram-xtensa.c`, run from `crt0.S` before `mmu_init()`; neither the ROM nor ESP-IDF's bootloader does it |
 | USB-OTG | `usbstack` | open: the chip has a Synopsys DWC-OTG block (`soc/usb_reg.h`, registers at `SOC_DPORT_USB_BASE`, device side at +0xb00), but there is no `usb_hw` layer for this core. `usb-xtensa.c` is a stub. Not needed for charging (AXP173 reports VBUS) or storage (SD) |
@@ -3502,3 +3502,41 @@ do work -- the firmware's own `.text` now runs from `0x4202xxxx` on PSRAM, and
 there are no regressions -- but they do not by themselves make a freshly loaded
 image fetchable, because IDF only re-maps ranges that were in the image at link
 time.
+
+### Two silent-failure traps worth knowing
+
+**1. `pluginlib_actions.c` compiles a deaf plugin on any touchscreen target.**
+Both keypad chains in `apps/plugins/lib/pluginlib_actions.c` end in:
+
+```c
+#else
+#   ifndef HAVE_TOUCHSCREEN
+#       error pluginlib_actions: No actions defined
+#   endif
+#endif
+```
+
+So a target that defines `HAVE_TOUCHSCREEN` but has an unlisted `CONFIG_KEYPAD`
+does **not** fail the build. It gets a `pla_main_ctx` with no directional and no
+select entries, and every plugin using `pluginlib_getaction()` (53 of them)
+loads, draws, and ignores every key. MeowKit hit exactly this: 2048 ran perfectly
+and was completely unresponsive, including to the key that would exit it. If
+plugins load but no button works, check for an `ESP32S3_PAD` case here before
+suspecting the loader.
+
+**2. A wrong comment can disable a feature permanently.** The touch poll in
+`button_read_device()` was `if (0) ft6x06_irq_handler();` with the justification
+that the function "runs inside the level-1 handler" and a 1.5 ms I2C transfer per
+tick would cost a third of the CPU in the interrupt. That premise was false:
+`apps/main.c` runs the tick tasks in `tick_task_thread`, and the xtensa gptimer
+alarm advances `current_tick` only — `button_read_device()` is ordinary thread
+context. `ft6x06_irq_handler()` is also non-blocking (`i2c_async_queue` with
+`TIMEOUT_NOBLOCK`), so there was never a cost to avoid. Meanwhile `AGENTS.md`
+claimed touch was "done: polled from the button tick", so nothing looked wrong.
+The code was the only honest artefact.
+
+**Verifying a call is live:** the symbol table lies. `ft6x06_irq_handler` looked
+absent from `nm` output twice — once because a `head -20` truncated it, once
+because the check ran between the Rockbox link and the IDF relink. The
+disassembly of `button_read_device` showing `call8 <ft6x06_irq_handler>` is what
+actually proved it.
