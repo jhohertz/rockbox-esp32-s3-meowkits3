@@ -542,6 +542,28 @@
 #define FRACTAL_PRECISION_DEC   (BUTTON_USER|BUTTON_REPEAT)
 #define FRACTAL_RESET           BUTTON_POWER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
+ * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
+ * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
+ * pair, CENTER the primary game action, corners secondary. */
+
+#define FRACTAL_UP    BUTTON_UP
+#define FRACTAL_DOWN  BUTTON_DOWN
+#define FRACTAL_LEFT  BUTTON_LEFT
+#define FRACTAL_RIGHT BUTTON_RIGHT
+/* pan on the pad, zoom and precision on the screen: the two pairs are
+ * vertically arranged to match what they do */
+#define FRACTAL_ZOOM_IN_PRE       BUTTON_TOPMIDDLE
+#define FRACTAL_ZOOM_IN           (BUTTON_TOPMIDDLE | BUTTON_REL)
+#define FRACTAL_ZOOM_OUT_PRE      BUTTON_BOTTOMMIDDLE
+#define FRACTAL_ZOOM_OUT          (BUTTON_BOTTOMMIDDLE | BUTTON_REL)
+#define FRACTAL_PRECISION_INC_PRE BUTTON_MIDRIGHT
+#define FRACTAL_PRECISION_INC     (BUTTON_MIDRIGHT | BUTTON_REL)
+#define FRACTAL_PRECISION_DEC_PRE BUTTON_MIDLEFT
+#define FRACTAL_PRECISION_DEC     (BUTTON_MIDLEFT | BUTTON_REL)
+#define FRACTAL_RESET             BUTTON_CENTER
+#define FRACTAL_QUIT              BUTTON_B
 #else
 #error No keymap defined!
 #endif
