@@ -165,6 +165,20 @@ Practical facts about that toolchain:
 
 ---
 
+### Do not migrate TX GDMA to `esp_driver_i2s`
+
+Proven from IDF source: `gdma.c:900` dispatches through a **single** stored slot
+`tx_chan->cbs.on_trans_eof`, and IDF's I2S driver occupies it with the very
+callback that refills `dma.msg_queue`. Registering our own overwrites it and
+`i2s_channel_write()` then blocks forever; leaving it means the driver's only
+completion observable is `msg_queue`, reachable only by calling `write()`.
+Rockbox requires the driver to call `pcm_play_dma_complete_callback()` when the
+hardware has finished transmitting, and IDF exposes no hook for it. So the
+hand-rolled GDMA ring is the integration point, not incidental complexity. TX
+still uses IDF's *HAL* (`i2s_hal_std_set_tx_slot`) and RX uses full IDF
+`esp_driver_i2s`. Full evidence and twelve builds of refuted hypotheses:
+`firmware/target/xtensa/TX-IDF-MIGRATION.md`.
+
 ## 5. ESP32-S3 notes
 
 ### Use IDF's drivers; do not bit-bang peripherals
