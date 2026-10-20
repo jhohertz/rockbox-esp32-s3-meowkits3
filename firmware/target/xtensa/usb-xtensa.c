@@ -31,6 +31,7 @@
 #include "power.h"
 #include "axp173.h"
 #include "xtensa.h"
+#include "tick.h"
 
 #include <esp_intr_alloc.h>
 #include <soc/interrupts.h>
@@ -42,6 +43,7 @@
 #ifdef HAVE_USBSTACK
 #include "usb.h"
 #include "usb_drv.h"
+#include "usb_core.h"
 #include "usb-designware.h"
 
 /* Device FIFO RAM. IDF's usb_dwc_cfg.h says OTG_DFIFO_DEPTH 256, but the core
@@ -286,27 +288,94 @@ static int vbus_sample(void)
                                                      : USB_EXTRACTED;
 }
 
+/*
+ * Attaching the core is opt-in, and uncommenting the define below is the only
+ * switch. It is left off because the step is not recoverable from the console:
+ * usb_dw_target_enable_clocks() hands GPIO19/20 to the DWC core, and those pins
+ * are what USB-Serial-JTAG uses for the trace *and* for esptool. A hang inside
+ * USB mode therefore leaves nothing to read and nothing to flash with; the only
+ * way back is a power cycle, and the only power control on this board is the
+ * AXP173's PEK input. Do not turn this on away from the board.
+ *
+ * With it off, the stack is compiled, linked and reachable in the image, and
+ * inert at runtime: usb_enable() does nothing, so usb_core_init() and
+ * usb_drv_init() never run and the pads never move.
+ */
+/* #define USB_ALLOW_ATTACH */
+
+#ifdef USB_ALLOW_ATTACH
+
+/* VBUS presence has to come from the PMU. The OTG core cannot report it before
+ * it is armed, and the core is only armed in USB mode, which is what presence is
+ * supposed to trigger -- so polling the AXP173 is the only way to break the
+ * circular dependency. CONFIG_USBOTG == USBOTG_DESIGNWARE sets USB_STATUS_BY_EVENT,
+ * which means Rockbox does not poll usb_detect() itself: the target has to push
+ * changes through usb_status_event().
+ *
+ * The read costs about 1.6 ms on a command-list I2C controller shared with the
+ * codec, the IO expander, the touchscreen, the RTC and the PMU's own status, so it
+ * runs at roughly 4 Hz from the tick task thread rather than every tick.
+ */
+#define USB_VBUS_POLL_TICKS 4
+
+static void usb_vbus_poll(void)
+{
+    static unsigned ticks;
+    static int last = USB_EXTRACTED;
+    int status;
+
+    if (++ticks < USB_VBUS_POLL_TICKS)
+        return;
+    ticks = 0;
+
+    status = vbus_sample();
+    if (status != last)
+    {
+        last = status;
+        usb_status_event(status);
+    }
+}
+
+/*
+ * Reports the cable, which is what a target with real enumeration is supposed to
+ * answer. Rockbox uses this for more than the transport: apps/playlist.c refuses
+ * to save state while usb_detect() says USB_INSERTED, so a charging cable alone
+ * will stop a playlist save. That is standard behaviour on targets that sense
+ * VBUS, and it is the reason this stays behind the same gate as the attach.
+ */
+int usb_detect(void)
+{
+    return vbus_sample();
+}
+
+#else /* !USB_ALLOW_ATTACH */
+
+/*
+ * Hard gate, not a status read. VBUS is present whenever the board is powered
+ * from the host, which is most of the time, and Rockbox treats an insertion as a
+ * request to take over the disk. Until the core can actually enumerate,
+ * reporting an insertion would put the device into USB slave mode with no host to
+ * talk to: the card unmounted and nothing served. The PMU state stays available
+ * in vbus_sample() for the charging display; this reports the transport, not the
+ * cable.
+ */
+int usb_detect(void)
+{
+    return USB_EXTRACTED;
+}
+
+#endif /* USB_ALLOW_ATTACH */
+
 void usb_init_device(void)
 {
 #ifdef USB_HW_PROBE
     usb_hw_probe();
 #endif
-    /* Nothing else to start. The DWC core is armed by usb_enable(); until the
-     * pads are handed over -- which silences the console -- nothing here may
-     * reach the core. */
-}
 
-/*
- * Hard gate, not a status read. VBUS is present whenever the board is powered from
- * the host, which is most of the time, and Rockbox treats an insertion as a request
- * to take over the disk. Until the core can actually enumerate, reporting an
- * insertion would put the device into USB slave mode with no host to talk to: the
- * card unmounted and nothing served. The PMU state stays available in vbus_sample()
- * for the charging display; this function reports the transport, not the cable.
- */
-int usb_detect(void)
-{
-    return USB_EXTRACTED;
+#ifdef USB_ALLOW_ATTACH
+    tick_add_task(usb_vbus_poll);
+#endif
+    /* Everything else is armed by usb_enable(). */
 }
 
 /*
@@ -318,13 +387,21 @@ int usb_detect(void)
  * was a LoadProhibited at EXCVADDR 0x0c on the first boot with HAVE_USBSTACK.
  * idf-app/CMakeLists.txt adds -Wl,--wrap=usb_enable, which is what makes this the
  * function that actually runs. Do not rename it back.
+ *
+ * usb.h maps usb_hw_open()/usb_hw_close() onto this, and usb.c calls those when it
+ * enters or leaves USB mode; charge-only mode never opens the transport, so the
+ * pad handover only happens for a data profile.
  */
 void __wrap_usb_enable(bool on)
 {
-    /* Deliberately inert while usb_dw_check_hw() cannot pass on this core. When it
-     * is fixed, this becomes the usual shape: usb_core_init() on, usb_core_exit()
-     * off, with cpu_boost() around it if the FS transfer needs it. */
+#ifdef USB_ALLOW_ATTACH
+    if (on)
+        usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
+    else
+        usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+#else
     (void)on;
+#endif
 }
 
 #endif /* HAVE_USBSTACK */
