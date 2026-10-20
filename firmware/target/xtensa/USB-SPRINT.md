@@ -712,6 +712,13 @@ been all along, and it is why the console works with no firmware of ours involve
 deprecated USB-OTG device mode on esp32s2/esp32s3, and nothing on this board exercises the
 OTG core except our bring-up.
 
+Checked rather than assumed: arduino-esp32's TinyUSB enable path for this chip touches
+only `USB_SERIAL_JTAG` -- `esp32-hal-tinyusb.c:424` calls
+`usb_phy_ll_int_jtag_enable(&USB_SERIAL_JTAG)` and nothing in that file initialises the
+Wrap or the OTG core -- so the stock firmware's CDC *and* MSC both run on USJ, and the
+OTG core is exercised by nothing on this board except our bring-up. TinyUSB appearing in
+`usb_msc.cpp` is therefore not evidence that the OTG core works here.
+
 That matters for the sprint target. USJ gives a proven device-side path with a hard
 endpoint ceiling: EP0 plus two more, so CDC+HID or CDC+MSC, never CDC+HID+MSC and never
 Audio. The OTG core gives the two full profiles the target asks for but needs the
