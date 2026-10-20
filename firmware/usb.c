@@ -118,7 +118,14 @@ static struct event_queue usb_queue SHAREDBSS_ATTR;
 static bool usb_hid = true;
 #endif
 #ifdef USB_ENABLE_SERIAL
-static bool usb_serial = false;
+/* Default on. The only switch Rockbox offers for this class is apps/debug_menu.c's
+ * "USB Serial driver (logf)" entry, and the debug menu is not built on every target
+ * -- not on this one -- so a false default would make the driver unreachable rather
+ * than merely off. HID defaults to true just above for the same reason. No other
+ * target in the tree defines USB_ENABLE_SERIAL today, so this changes nothing for
+ * them.
+ */
+static bool usb_serial = true;
 #endif
 #ifdef USB_ENABLE_AUDIO
 static int usb_audio = 0;
