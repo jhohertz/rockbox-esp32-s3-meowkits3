@@ -132,7 +132,7 @@ void xtensa_paniclog_dump(void)
      * anything. Returning early on an absent record therefore hid the one thing
      * that could survive such a crash. */
     if (rec.magic == PANICLOG_MAGIC)
-        printf("prev panic #%u: %s\n", rec.seq, rec.msg);
+        printf("prev panic #%lu: %s\n", (unsigned long)rec.seq, rec.msg);
 
     /* The trail that led to it. Printed oldest first so the last line is the
      * last thing that happened before the reboot. */
@@ -147,7 +147,8 @@ void xtensa_paniclog_dump(void)
         {
             struct breadcrumb *e = &bc[(start + i) % BC_SLOTS];
 
-            printf("  %s a=%08x b=%08x\n", e->tag, e->a, e->b);
+            printf("  %s a=%08lx b=%08lx\n", e->tag,
+                   (unsigned long)e->a, (unsigned long)e->b);
         }
     }
 
