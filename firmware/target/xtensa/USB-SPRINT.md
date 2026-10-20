@@ -441,3 +441,36 @@ profile:
 3. **or add Audio instead**: one isochronous OUT plus one feedback IN. Mutually
    exclusive with MSC, because both together need six IN endpoints and the core has
    four.
+
+## GUSBCFG: what the driver writes, and the one bit nobody can settle offline
+
+Measured reset value at boot is `0x00001440`, which decodes against IDF's
+`usb_dwc_gusbcfg_reg_t` as `physel = 1` (bit 6) and `usbtrdtim = 5` (bits 13:10),
+with `phyif` (3) and `fsintf` (5) clear. The boot probe confirms both the reset
+value and that `fsintf` is writable (`0x1440 -> 0x1460`).
+
+`usb_dw_init()` builds the value from scratch rather than modifying it in place:
+
+```c
+gusbcfg = c->phytype | TRDT(USB_DW_TURNAROUND) | USB_DW_TOUTCAL | USB_DW_FORCED_MODE;
+```
+
+Two consequences:
+
+- **Turnaround.** Without an override, `USB_DW_TURNAROUND` is derived from the PHY
+  encoding -- 9 for anything that is not `DWC_PHYTYPE_UTMI_16` -- which is a
+  statement about an 8-bit UTMI PHY at 60 MHz and has nothing to do with this core.
+  `meowkits3.h` now sets it to 5, the value the silicon chose for itself. Eight other
+  targets do the same, `firmware/export/stm32h743.h` among them, and that target's
+  internal FS PHY is the closest analogue here. Verified through the target
+  preprocessor that the macro expands to 5, which is what actually determines
+  whether the driver's `#ifndef` branch is taken.
+- **`physel` gets cleared.** The full-register write drops the reset's `physel = 1`.
+  Whether that matters is a hardware question with no offline answer: `physel`
+  selects between UTMI and ULPI on cores that have both, and this core has neither,
+  so the plausible reading is that the bit is vestigial. The board session should
+  enumerate once with the plain write and, if it fails, once with
+  `DWC_GUSBCFG |= BIT(6)` restored, before concluding anything about the PHY. Note
+  the driver's own comment on this register -- capability bits that are not
+  supported read back unchanged -- so a readback cannot tell us which reading is
+  right.

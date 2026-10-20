@@ -367,6 +367,17 @@
  * build -- hence the two profiles, and never a combination of them.
  */
 #define USB_NUM_ENDPOINTS 7
+
+/* Turnaround time, in PHY clocks, written to GUSBCFG.usbtrdtim (bits 13:10).
+ * The driver's default is 9, derived from an 8-bit UTMI PHY at 60 MHz; this core
+ * has an internal full-speed PHY and its own reset value for the field is 5,
+ * measured at boot as GUSBCFG=0x1440. Eight other targets in the tree override it
+ * to 5, including stm32h743.h, whose internal FS PHY is the closest analogue to
+ * this one. TRDT too long only delays the turnaround, but there is no reason to
+ * ask the silicon for a value it did not choose for itself.
+ */
+#define USB_DW_TURNAROUND 5
+
 #define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
 #define USB_ENABLE_SERIAL
 #define USB_VENDOR_ID  0x303A       /* Espressif */
