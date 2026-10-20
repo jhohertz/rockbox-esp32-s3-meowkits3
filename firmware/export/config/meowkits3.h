@@ -284,6 +284,28 @@
  */
 #define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
 
+/* The sector cache is sized by fs_defines.h from MEMORYSIZE, which on this board
+ * is 16 -- the flash size. That is the wrong input here: cache_buffer[] is
+ * DMA-visible (the SDHOST IDMAC fills it directly), and DMA-visible memory is
+ * the one class of object this platform cannot move to PSRAM, because esp32s3
+ * declares no SOC_SDMMC_PSRAM_DMA_CAPABLE. Its budget is therefore the 337 KB
+ * internal DRAM region, which is full to 1,020 bytes.
+ *
+ * 64 entries is 32 KB of that region. Taking it to the small-memory figure
+ * (32 entries, one sector each = 16 KB) halves the number of distinct sectors
+ * held; directory traversal is already served by the 1 MB dircache in PSRAM, so
+ * this is a cache-depth decision rather than a correctness one.
+ *
+ * MAX_OPEN_FILES has to come down with it: the comment in fs_defines.h requires
+ * the cache to have enough buffers for every handle plus a few for the cache
+ * client and the filesystem code, and 32 entries against 31 handles leaves one
+ * spare. 11 handles is the value the tree already uses below MEMORYSIZE 8.
+ */
+#define DC_NUM_ENTRIES      32
+#define DC_MAP_NUM_ENTRIES  128
+#define MAX_OPEN_FILES      11
+#define MAX_OPEN_DIRS       12
+
 /*
  * USB: not built.
  *
