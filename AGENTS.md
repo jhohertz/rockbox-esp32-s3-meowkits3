@@ -451,6 +451,38 @@ us the D-cache address room is DRAM0 (`0x3FC88000-0x3FD00000`, exactly
 `SDMMC_DSCADDR_REG` is a plain 32-bit register; GDMA cannot, because its descriptor
 address comes from a 20-bit window based at `0x3FC00000`.
 
+### Self-triggered flashing over Rockbox's own USB serial
+
+`make usbflash` (from `tools/espflash.make`, running `tools/esp-usbflash.py`) flashes
+the board without the BOOT button and without a power cycle: one `'f'` byte on the CDC
+OUT endpoint makes the firmware release the pads, write
+`RTC_CNTL_OPTION1.FORCE_DOWNLOAD_BOOT` and reset; esptool then runs with
+`--before no_reset` and its default `--after hard_reset`, which boots Rockbox again.
+Measured end to end in ~13 s. Facts that are not obvious from the register names:
+
+- **`SYSTEM.perip_clk_en1.usb_device_clk_en` (bit 10) is shared** between the DWC core
+  and USB-Serial-JTAG (`usb_serial_jtag_ll.h:326` gates the USJ with that same bit).
+  Clearing it when releasing the pads clocks the console and the flash port out too. A
+  detach used to leave no console, and the first handover attempt left the host seeing
+  no device at all, because the USJ pad write landed in an unclocked block.
+- **The ROM comes up on the OTG core, not the USJ, when the reset is software-driven.**
+  USJ `CONF0` (`0x60009018`) reads `0x00000800` afterwards -- `usb_pad_enable` (bit 14)
+  clear -- and the host keeps its stale `/dev/ttyACM` entry, which is why esptool works
+  on the node it already had. DTR/RTS therefore do nothing on this path: esptool's
+  `default_reset` cannot be used, and neither can a manual line-state pulse.
+- **`FORCE_DOWNLOAD_BOOT` is consumed by the ROM**: `RTC_CNTL_OPTION1`
+  (`DR_REG_RTCCNTL_BASE 0x60008000 + 0x12C`) reads 0 afterwards. It is not sticky.
+- **`--after no_reset` parks the board in download mode.** If the flash then fails for
+  another reason, nothing resets it out, the app never runs, and the host sits on a
+  stale device entry that looks like a working Rockbox. Recover with
+  `esptool --before no_reset --after hard_reset flash_id`.
+- `flash_args` contains **relative** paths (`bootloader/bootloader.bin`, …), so esptool
+  must run with the IDF build directory as its cwd.
+- The RX hook that carries the trigger is `usb_serial_target_rx()`, weak in
+  `usb_serial.c` with an empty body, so every target that does not define one behaves
+  exactly as before. It runs in interrupt context; the target records the byte and acts
+  from the tick task.
+
 ### MeowKit board (the reference hardware)
 
 From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
