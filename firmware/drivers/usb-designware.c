@@ -51,6 +51,25 @@
 #define COMMIT_DCACHE_RANGE(b,s)    commit_dcache_range(b,s)
 #endif
 
+/* Width of the transfer-size field in an endpoint's EPTSIZ register.
+ *
+ * The ESP32-S3's DWC configuration packs EP0 differently from the per-endpoint
+ * registers. Its own SVD (IDF's soc/esp32s3/include/soc/usb_dwc_struct.h) says
+ * doeptsiz0 / diep0tsiz carry xfersize as 7 bits with pktcnt at bit 19 and supcnt at
+ * bit 29, while the generic dieptsiz / doeptsiz carry the usual 19-bit xfersize and a
+ * 10-bit pktcnt. Reading EP0 with the wide mask therefore returns pktcnt's bit as part
+ * of the size: 0x20080040 & 0x7ffff is 524352, not 64, so every control stage computes
+ * a nonsense transferred count and the driver hands the host a malformed transaction --
+ * which from the inside is what "device descriptor read/64, error -71" looks like. The
+ * core's own DOEPTSIZ(0) write (STUPCNT(1) | PKTCNT(1) | 64) is correct for this
+ * layout; only the read back was wrong. Other cores keep the 19-bit mask.
+ */
+#if defined(CPU_XTENSA)
+#define EPTSIZ_XFERSZ(epnum)      ((epnum) == 0 ? 0x7fu : 0x7ffffu)
+#else
+#define EPTSIZ_XFERSZ(epnum)      0x7ffffu
+#endif
+
 /* USB_DW_PHYSADDR(x) converts the address of buffer x to one usable with DMA.
  * For example, converting a virtual address to a physical address.
  *
@@ -272,7 +291,7 @@ static unsigned usb_dw_bytes_in_txfifo(int epnum, uint32_t *sentbytes)
     if (!packetsleft) return 0;
     uint32_t maxpktsize = usb_dw_maxpktsize(epnum, USB_DW_EPDIR_IN);
     uint32_t packets = usb_dw_calc_packets(size, maxpktsize);
-    uint32_t bytesleft = dieptsiz & 0x7ffff;
+    uint32_t bytesleft = dieptsiz & EPTSIZ_XFERSZ(epnum);
     uint32_t bytespushed = size - bytesleft;
     uint32_t bytespulled = (packets - packetsleft) * maxpktsize;
 
@@ -340,7 +359,7 @@ static void usb_dw_try_push(int epnum)
     if (epmis_msk & (1 << epnum))
         return;
 
-    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & 0x7ffff) + 3) >> 2;
+    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
     if (!wordsleft) return;
 
     /* Get fifo space for NPTXFIFO or PTXFIFO */
@@ -379,7 +398,7 @@ static void usb_dw_handle_dtxfifo(int epnum)
     if (!dw_ep->busy)
         return;
 
-    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & 0x7ffff) + 3) >> 2;
+    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
 
     while (wordsleft)
     {
@@ -884,7 +903,7 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
         return;
     }
 
-    uint32_t bytes_left = DWC_EPTSIZ(epnum, epdir) & 0x7ffff;
+    uint32_t bytes_left = DWC_EPTSIZ(epnum, epdir) & EPTSIZ_XFERSZ(epnum);
     uint32_t transferred = dw_ep->size - bytes_left;
 
     if(transferred > dw_ep->sizeleft)
