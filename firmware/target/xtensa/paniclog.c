@@ -30,6 +30,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_rom_sys.h"
+#include "tick.h"
 
 #define PANICLOG_MAGIC 0x434e504cu   /* "LNPL" */
 
@@ -124,6 +125,40 @@ void xtensa_panic_log(const char *msg)
 }
 
 /* Called early in the next boot, before anything can panic of its own accord. */
+/* Bring-up switch. Remove with the attach instrumentation once enumeration works.
+ * Deliberately a define in this file rather than in the model header: nothing else
+ * needs to know about it, and it must not silently survive into a shipping build. */
+#define XT_BRINGUP_TRAIL_REPEAT 1
+
+#ifdef XT_BRINGUP_TRAIL_REPEAT
+/* Bring-up only: re-print the trail from the tick task thread every ~10 s.
+ *
+ * The dump in app_main() lands about a second after boot, which is before the
+ * host has finished enumerating USB-Serial-JTAG and created /dev/ttyACM0 -- so
+ * the trail existed, was never consumed (bc_next is deliberately left alone),
+ * and was still uncatchable: there was no reader and no node to read from. A
+ * repeating print means any listener at any time sees the same history, and it
+ * costs nothing to remove once the attach is proven.
+ */
+static bool xt_repeat_started;
+
+static void xt_trail_repeat(void)
+{
+    static unsigned ticks;
+
+    if (++ticks < 10 * HZ)
+        return;
+    ticks = 0;
+
+    xtensa_paniclog_dump();
+}
+
+static void xtensa_paniclog_repeat_start(void)
+{
+    tick_add_task(xt_trail_repeat);
+}
+#endif
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -162,6 +197,14 @@ void xtensa_paniclog_dump(void)
      * leaving it in place means the next crash overwrites the oldest entries
      * rather than starting from a blank slate -- and clearing it here would also
      * erase the boot stamp that proves the trail survived the reset at all. */
+
+#ifdef XT_BRINGUP_TRAIL_REPEAT
+    if (!xt_repeat_started)
+    {
+        xt_repeat_started = true;
+        xtensa_paniclog_repeat_start();
+    }
+#endif
 }
 
 /* Proven on hardware the first time it was used: a crash during WAV resume

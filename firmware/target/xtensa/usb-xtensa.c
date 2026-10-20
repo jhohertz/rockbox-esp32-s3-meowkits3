@@ -37,6 +37,10 @@
 
 #include <esp_intr_alloc.h>
 #include <soc/interrupts.h>
+#include <esp_rom_gpio.h>
+#include <esp_system.h>
+#include <soc/gpio_sig_map.h>
+#include <soc/gpio_pins.h>
 
 /* The USB headers are inside the guard on purpose: firmware/SOURCES lists this
  * file unconditionally, so it has to compile when the stack is off, and
@@ -104,11 +108,19 @@ void INT_USB_FUNC(void);      /* usb-designware.c: usb_dw_irq() */
  * the enable/disable hooks below are a handle, not an INTENABLE bit. */
 static intr_handle_t usb_intr = NULL;
 
+/* Counting core interrupts, and nothing else. A host that sees a connection but
+ * gets no reply to GET_DESCRIPTOR (kernel: "device descriptor read/64, error -110")
+ * is either a core that never interrupts or a driver that mishandles the interrupt;
+ * this counter separates the two, and the poll below carries it to the breadcrumb
+ * trail because the console is gone by then. */
+static volatile uint32_t xt_usb_irqs;
+
 static void usb_dwc_isr(void *arg)
 {
     (void)arg;
     /* Nothing may print here: printf takes the newlib stdout lock, which aborts
      * from interrupt context. See the note on gdma_tx_isr(). */
+    xt_usb_irqs++;
     INT_USB_FUNC();
 }
 
@@ -144,6 +156,49 @@ void usb_dw_target_enable_clocks(void)
        (rd(XT_USB_OTG_CONF) & ~XT_USB_DFIFO_FORCE_PD) |
        XT_USB_DFIFO_FORCE_PU | XT_USB_PHY_CLK_FORCE | XT_USB_AHB_CLK_FORCE);
 
+    /* Force the session-end signal to "VBUS present".
+     *
+     * This board routes VBUS to the AXP173 only -- the SoC has no VBUS input, and
+     * GPIO19/20 are D+/D-. With OTG_CONF.srp_sessend_override clear, IDF's own
+     * usb_wrap_ll says the signal is "controlled by the chip input", and there is no
+     * chip input, so the DWC core sees a floating session-end and behaves as if
+     * VBus were below 0.2 V. Measured on hardware: after a full attach (both gates
+     * on, both resets cleared, pads handed over, DCTL = 0 so soft-disconnect is
+     * released) GINTSTS read 0x14008020 -- bit 22 fetsusp, forced device suspend --
+     * with bit 12 usbrst, bit 13 enumdone and bit 23 resetdet all clear. The host
+     * never drove a reset because the core never asserted the D+ pull-up.
+     *
+     * srp_sessend_value = 0 means "VBus > 0.8V", which is the truth whenever the
+     * board is powered from a host -- and on this board that is whenever it is
+     * plugged in at all. */
+    wr(XT_USB_OTG_CONF,
+       (rd(XT_USB_OTG_CONF) & ~XT_USB_SESSEND_VALUE) | XT_USB_SESSEND_OVERRIDE);
+
+    /* Tie the internal FS PHY's OTG status inputs, through the GPIO matrix.
+     *
+     * This is the piece that was missing, and it is why a fully armed core still
+     * drew no reset from the host. The FSLS PHY's OTG state machine is fed four
+     * status signals -- iddig, bvalid, vbusvalid, avalid -- as *inputs to the GPIO
+     * matrix*, and nothing on this board drives them: VBUS goes to the AXP173 and
+     * the USB-C connector's ID pin is not wired to the SoC at all. Floating, the PHY
+     * sees no valid session and never lets the core assert the D+ pull-up.
+     *
+     * IDF's own usb_phy.c does exactly this for device mode (components/usb/
+     * usb_phy.c:183-188): iddig = 1 (mini-B side), bvalid = 1 (force device mode),
+     * vbusvalid = 1 (valid VBUS present), avalid = 0 (not an A-device/host). Its
+     * host-mode branch is the mirror image, plus pull-downs on D+ and D-. Note that
+     * avalid must be 0 for device: leaving these unconnected is not "neutral", it is
+     * undefined.
+     */
+    esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT,
+                                   USB_OTG_IDDIG_IN_IDX, false);
+    esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT,
+                                   USB_SRP_BVALID_IN_IDX, false);
+    esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT,
+                                   USB_OTG_VBUSVALID_IN_IDX, false);
+    esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ZERO_INPUT,
+                                   USB_OTG_AVALID_IN_IDX, false);
+
     /* The last thing that runs before the console disappears: from here on the
      * breadcrumb trail is the only record, until the next boot prints it. */
     xtensa_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
@@ -158,7 +213,8 @@ void usb_dw_target_disable_clocks(void)
      * second attach starts from the state this one found. */
     wr(XT_USB_OTG_CONF,
        rd(XT_USB_OTG_CONF) & ~(XT_USB_DFIFO_FORCE_PU | XT_USB_PHY_CLK_FORCE |
-                              XT_USB_AHB_CLK_FORCE | XT_USB_WRAP_CLK_EN));
+                              XT_USB_AHB_CLK_FORCE | XT_USB_WRAP_CLK_EN |
+                              XT_USB_SESSEND_OVERRIDE));
 
     /* Give the pins back. USB-Serial-JTAG is the console and the flash port, so
      * leaving the mux pointed at the DWC would silence both after disconnect. */
@@ -168,12 +224,20 @@ void usb_dw_target_disable_clocks(void)
 
 void usb_dw_target_enable_irq(void)
 {
+    esp_err_t err = ESP_OK;
+
     if (usb_intr == NULL)
     {
-        if (esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LEVEL1,
-                           usb_dwc_isr, NULL, &usb_intr) != 0)
+        err = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LEVEL1,
+                             usb_dwc_isr, NULL, &usb_intr);
+        if (err != ESP_OK)
         {
+            /* Silent before: a failed allocation means the core can interrupt
+             * forever and nobody ever runs the handler, which is indistinguishable
+             * from a dead bus from the outside. Record the code -- ESP_ERR_INVALID_STATE
+             * means something else already owns this source. */
             usb_intr = NULL;
+            xtensa_breadcrumb("usbIrqE", (unsigned long)err, 0);
             return;
         }
     }
@@ -328,9 +392,19 @@ static int vbus_sample(void)
  * usb_drv_init() never run and the pads never move.
  */
 #define USB_ALLOW_ATTACH
-/* TEMPORARY: report the core's state on the LCD ~8 s after attaching, then halt.
- * See the comment in __wrap_usb_enable(). */
-#define USB_ATTACH_REPORT 1
+/* Bring-up only. Restart an attach that produced no interrupts, so the board keeps
+ * returning to a readable console while the transport is dead, and stops restarting
+ * once it isn't. Remove with USB_ALLOW_ATTACH once enumeration works. */
+#define USB_ATTACH_RESTART 1
+/* How long to let an attach run before judging it. */
+#define USB_ATTACH_COLLECT (90 * HZ)
+
+/* .noinit so the judgement survives esp_restart() -- a chip reset -- and a power-on
+ * reset starts genuinely fresh. */
+uint32_t xt_attach_judged __attribute__((section(".noinit"), aligned(4)));
+/* When the attach being judged began. Plain static: it only matters while the core
+ * is armed, and every attach rewrites it. */
+static uint32_t xt_attach_tick;
 
 #ifdef USB_ALLOW_ATTACH
 
@@ -370,11 +444,64 @@ static bool usb_attach_allowed(void)
     return current_tick >= USB_ATTACH_DELAY;
 }
 
+/* Set between usb_enable(true) and usb_enable(false), purely so the poll can
+ * report what the armed core is doing. Deliberately not used by usb_detect(),
+ * which answers the cable as usb.h:80 requires. */
+static bool xt_armed;
+
 static void usb_vbus_poll(void)
 {
     static unsigned ticks;
+    static unsigned report;
     static int last = USB_EXTRACTED;
     int status;
+
+    /* While the core is armed, carry its state to the trail every ~4 s. Two
+     * entries, oldest-first on the next boot:
+     *   usbIRQ  a = interrupt count, b = GINTSTS
+     *   usbDsts a = DSTS (bit 0 suspend, bits 1:2 enum speed), b = DAINT
+     * DSTS enum speed is the answer to "did the host finish enumerating us at
+     * full speed", and DAINT says which endpoints the core thinks are active.
+     * A count stuck at 0 with DSTS unchanging means the interrupt never arrives;
+     * a growing count means the core sees the bus and the driver is the problem.
+     */
+#ifdef USB_ATTACH_RESTART
+    /* Bring-up watchdog, judged from the poll rather than a sleep, so the tick task
+     * thread keeps scanning buttons and running the backlight timeout.
+     *
+     * After USB_ATTACH_COLLECT of attach, judge it. If the core never interrupted
+     * us then nothing came from the host, and the board is stuck holding two pads
+     * it cannot use -- so restart. A chip reset keeps the breadcrumb trail, the
+     * boot hook puts the pads back on USB-Serial-JTAG, and the console is readable
+     * again for a fresh window. That repeats while the attach is dead, which is
+     * what brings the board back on its own during unattended testing.
+     *
+     * Once interrupts have been seen the transport is alive and we leave it alone:
+     * restarting a working device would break audio for no information.
+     */
+    /* xt_attach_tick != 0 matters: xt_armed is set in __wrap_usb_enable before
+     * usb_enable() records the tick, and the two run on different threads, so a
+     * poll landing in that gap would otherwise compare against tick 0 and judge
+     * the attach instantly. */
+    if (xt_armed && xt_attach_tick != 0 && !xt_attach_judged &&
+        current_tick - xt_attach_tick >= USB_ATTACH_COLLECT)
+    {
+        xt_attach_judged = 1;
+        if (xt_usb_irqs == 0)
+        {
+            xtensa_breadcrumb("usbDead", DWC_GINTSTS, DWC_DSTS);
+            esp_restart();
+        }
+        xtensa_breadcrumb("usbAlive", xt_usb_irqs, DWC_DSTS);
+    }
+#endif
+
+    if (xt_armed && ++report >= 4 * USB_VBUS_POLL_TICKS / 4)
+    {
+        report = 0;
+        xtensa_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
+        xtensa_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
+    }
 
     if (++ticks < USB_VBUS_POLL_TICKS)
         return;
@@ -406,6 +533,14 @@ static void usb_vbus_poll(void)
  */
 int usb_detect(void)
 {
+    /* The boot window applies here too, and it has to: usb_start_monitoring() posts
+     * whatever usb_detect() returns at startup, so a cable-accurate answer here is
+     * what put the board into a 10-second reboot cycle -- insertion fired ~2 s after
+     * boot, the pins went to the OTG core, the attach report panicked 8 s later, and
+     * PRINT_REBOOT turned that into a loop. Gating only the poll left that hole open.
+     */
+    if (!usb_attach_allowed())
+        return USB_EXTRACTED;
     return vbus_sample();
 }
 
@@ -482,9 +617,16 @@ void __wrap_usb_enable(bool on)
     xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
 
     if (on)
+    {
+        xt_usb_irqs = 0;
+        xt_armed = true;
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
+    }
     else
+    {
+        xt_armed = false;
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+    }
 
     /* Both halves of the register state, recorded before anything can change it.
      * The trail survives the reset, and app_main() replays it inside the boot
@@ -495,37 +637,41 @@ void __wrap_usb_enable(bool on)
                       DWC_GSNPSID, rd(XT_USB_OTG_CONF));
     xtensa_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
 
-#ifdef USB_ATTACH_REPORT
-    if (!on)
-        return;   /* the report is about the attach, not the teardown */
-    /* TEMPORARY: once the pads are handed over the screen is the only channel
-     * left. panicf() draws on the LCD (see panic.c), and the abort resets the chip,
-     * which returns the pins to USB-Serial-JTAG -- so the next boot prints the
-     * breadcrumb trail on a live console. Read both.
+    /* The register state after the attach, recorded rather than panicked. The
+     * earlier version of this slept 8 s and called panicf() so the values would
+     * reach the LCD -- but PRINT_REBOOT turned that into the 10-second reboot loop
+     * the kernel log shows, and the trail carries the same numbers to a live console
+     * on the next boot anyway. Nothing here should stop the device.
      *
-     * What to look for: DCTL bit 0 (SDIS) says whether the core is still soft
-     * disconnected, i.e. whether D+ has a pull-up at all. GINTSTS bit 2 (reset
-     * detected) and bit 3 (enum speed) say whether a host ever touched the bus.
-     * GUSBCFG bit 5 (fsintf) and bit 30 (fdmod) say the PHY and device-mode writes
-     * took. OTG_CONF bit 18 (pad_enable) says the mux moved the pins.
+     * Reading the trail: DCTL bit 0 is soft-disconnect (clear means the core is
+     * connected); GINTSTS bit 12 usbrst, bit 13 enumdone and bit 23 resetdet are the
+     * only evidence a host ever touched the bus; GUSBCFG bit 5 fsintf and bit 30
+     * fdmod say the PHY and device-mode writes took; OTG_CONF bit 18 pad_enable says
+     * the mux moved the pins, and bit 0 the session-end override.
      */
-    sleep(HZ * 8);
-    /* Record everything in the trail as well as on the screen. The pads are gone by
-     * now, so the console cannot see this line; but the abort resets the chip, the
-     * boot hook puts the pins back on USB-Serial-JTAG, and app_main() replays the
-     * trail on a live console -- which is how this gets read back without anyone
-     * having to transcribe the LCD.
-     *
-     * clk0 bit 23 and rst0 bit 23 distinguish the two failure shapes: a block that
-     * is clocked but held in reset reads zero just like a block that is ungated, so
-     * the gate and reset words have to be in the report, not inferred from it. */
-    xtensa_breadcrumb("usbDctl", DWC_DCTL, DWC_GINTSTS);
-    xtensa_breadcrumb("usbClk3", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+    if (on)
+    {
+        xtensa_breadcrumb("usbPost", DWC_DCTL, DWC_GINTSTS);
+    }
 
-    panicf("USB: id=%08lx dctl=%08lx gsts=%08lx wrap=%08lx clk0=%08lx rst0=%08lx",
-           (unsigned long)DWC_GSNPSID, (unsigned long)DWC_DCTL,
-           (unsigned long)DWC_GINTSTS, (unsigned long)rd(XT_USB_OTG_CONF),
-           (unsigned long)rd(XT_PERIP_CLK_EN0), (unsigned long)rd(XT_PERIP_RST_EN0));
+    /* Bring-up only: collect ~90 s of interrupt and bus state, then restart the
+     * chip exactly once per power-on.
+     *
+     * Why a restart rather than a report on screen: the breadcrumb trail lives in
+     * .noinit, which survives a chip reset and is destroyed by a power-on reset.
+     * With the pins handed to the OTG core there is no console to read, so the only
+     * way to get this data out is for the firmware to reset itself -- the boot hook
+     * puts the pins back on USB-Serial-JTAG, and app_main() replays the trail on a
+     * live console. The once-per-power-on flag is what kept the earlier version from
+     * looping: a panic every 10 seconds is how the board ended up popping the amp
+     * over and over.
+     */
+#ifdef USB_ATTACH_RESTART
+    if (on)
+    {
+        xt_attach_tick = current_tick;
+        xt_attach_judged = 0;
+    }
 #endif
 #else
     (void)on;
