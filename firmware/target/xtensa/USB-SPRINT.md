@@ -770,3 +770,50 @@ diagnostic, not a transport.
 the next suspect is exactly the ordering above rather than the size arithmetic:
 `DOEPTSIZ(0)` is programmed correctly (`0x20080040` = supcnt 1, pktcnt 1, 64 bytes) and
 `DIEPINT` shows bit 7 with `xfercompl` clear, i.e. no IN transfer ever completed.
+
+## Step 2 done: the host enumerates Rockbox
+
+```
+usb 3-1.1: New USB device found, idVendor=303a, idProduct=4002
+usb 3-1.1: Product: Rockbox media player
+usb 3-1.1: Manufacturer: Rockbox.org
+cdc_acm 3-1.1:1.0: ttyACM0: USB ACM device
+usbhid 3-1.1:1.2: can't add hid device: -71
+```
+
+Interrupts are delivered (`usbIRQ a=00000024`), the device descriptor and configuration
+descriptor were read, and `cdc_acm` bound and created a tty. The HID interface still
+fails with `-71`, and the host then dropped the device -- which releases the pads through
+`usb_core_exit()`, so this is a genuine failure of the composite descriptor path rather
+than the bring-up judge interfering.
+
+Two things fixed it, and one of them is a general lesson about this driver:
+
+1. **`usb_dw_target_clear_irq()` actually clears.** Rockbox has a target hook for exactly
+   this and the xtensa implementation was an empty function with a comment saying the
+   driver handled it. It does not. TinyUSB's `dwc2_core_init()` writes `0xFFFFFFFF` to
+   `gintsts` and `gotgint` *before* enabling any mask, and that ordering matters: status
+   bits that were already set when `GINTMSK` was programmed never produce a fresh
+   assertion of a level interrupt. After clearing them, the core asserts and the handler
+   runs.
+2. **The wrap's `pad_pull_override` must stay clear for a device.** IDF 4.4's
+   `usb_phy_ll_int_load_conf()` set it with D+ pull-up and D- pull-down for device mode,
+   and copying that made things strictly worse: with the override on, `GINTSTS` lost
+   `usbrst` and the host made no enumeration attempt at all. IDF 5.5's `usb_new_phy()` --
+   the path TinyUSB's device examples actually use -- only calls
+   `usb_wrap_ll_phy_enable_pull_override()` in the host branch. The core drives its own
+   pull-up on connect.
+
+Two claims I made earlier here were wrong and are corrected in the code comments:
+
+- PHYSEL is not a bit this core can be talked out of, nor into. `GHWCFG2` reports no
+  high-speed PHY, and `GUSBCFG` reads `0x40001460` with bit 6 set even when the driver
+  assigns a value that omits it. Setting `.phytype = FSINTF | PHYSEL` changed nothing;
+  the run where the connection vanished was the one that added the pull override.
+- `#define USB_BRINGUP_POLLED_IRQ 0` does not disable anything: `#ifdef` is satisfied by
+  a definition of 0. The polled dispatch was still running (`usbPoll` non-zero) while I
+  believed it was off. The guard is `#if USB_BRINGUP_POLLED_IRQ` now.
+
+Still open: the `-71` on the HID interface, and after that MSC and the audio profile. The
+bring-up scaffolding (the 120 s attach window, the register report, the restart judge) is
+still in and should come out once the composite descriptor is fully accepted.
