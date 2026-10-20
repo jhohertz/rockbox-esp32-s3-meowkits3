@@ -373,3 +373,27 @@ this core does not fault -- it writes into reserved space or reads zero.
 4. **`usb_mode` needs `HAVE_USB_POWER` to exist as a setting**, and that also
    pulls the charging indicator into the status bar -- a screen change that can
    only be judged on the board.
+
+## Interrupt level: the USB ISR and the audio ISR are peers, not nested
+
+Both are allocated `ESP_INTR_FLAG_LEVEL1` (`i2s-xtensa.c:807` for GDMA OUT channel 0,
+`usb-xtensa.c:149` for the OTG core). On Xtensa, same-level interrupts do not nest,
+so while the GDMA handler runs the USB interrupt is held pending, and the reverse.
+That is acceptable rather than ideal, for a reason that is about *when* each is live:
+
+- In the mass-storage profile Rockbox stops playback on entering USB mode (the
+  volumes are unmounted), so GDMA is idle and the only contention is during
+  enumeration, where control transfers have host-side timeouts measured in seconds.
+- In the USB-DAC profile the codec output is USB, not the I2S sink, so GDMA again
+  does nothing.
+- The case that would actually hurt is isochronous USB audio (1 ms service interval)
+  while I2S TX is also running. That combination is not reachable through either
+  profile, because the DAC profile does not drive the I2S sink.
+
+If measurement ever shows the GDMA handler's worst-case duration hurting USB (the
+`isr ... worst=` field in `i2s_dma_line()` is the number to read), moving USB to
+`ESP_INTR_FLAG_LEVEL2` is a one-line change: IDF's dispatcher supports levels 1-3,
+and nothing in Rockbox's own vector handling is involved on this branch. Note that
+neither handler carries `ESP_INTR_FLAG_IRAM` -- the GDMA one deliberately does not,
+because it reaches code in the instruction-cache window -- so a higher level buys
+latency, not safety.
