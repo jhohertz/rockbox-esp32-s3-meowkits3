@@ -336,7 +336,7 @@ void usb_dw_target_disable_clocks(void)
     /* The last thing the transport does before the core is torn down. If a crash
      * follows an unplug and this entry is absent, the fault is upstream of the pad
      * release rather than in it. */
-    xtensa_breadcrumb("usbRel", DWC_DAINT, DWC_GINTSTS);
+    xtensa_breadcrumb_rtc("usbRel", DWC_DAINT, DWC_GINTSTS);
 }
 
 void usb_dw_target_enable_irq(void)
@@ -628,7 +628,9 @@ static volatile bool xt_flash_request;
  * are the OTG core's while USB mode is up, so after an unplug that ended in a reboot the
  * trail is only reachable through the transport that survived it. */
 static volatile bool xt_trail_request;
-static bool xt_boot_trail_sent;
+/* When the last compact post-mortem went out, in ticks. */
+static unsigned xt_boot_report;
+#define XT_RTC_WINDOW 24
 /* How long to ignore further command bytes, in ticks.
  *
  * Reading the trail over CDC produced 3177 breadcrumb lines for one 't': the OUT endpoint
@@ -648,11 +650,14 @@ static int xt_flash_hold;
 
 /* Panic record line plus the whole retained ring, chunked. Same buffer reused per chunk
  * because the static region cannot hold forty formatted lines. */
-static void xt_send_trail(void)
+/* The part that survives a watchdog reset: the panic record line, the reset reason and
+ * the RTC-slow ring. Small enough to send repeatedly. */
+static void xt_send_rtc_trail(void)
 {
-    static char trail[352];
+    static char trail[256];
     int start;
     extern int xtensa_paniclog_head(char *buf, int bufsize);
+    extern int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count);
 
     {
         char head[128];
@@ -661,6 +666,25 @@ static void xt_send_trail(void)
             usb_serial_send((unsigned char *)head, n);
     }
 
+    usb_serial_send((unsigned char *)"rtc:\r\n", 5);
+    for (start = 0; start < XT_RTC_WINDOW; start += 8)
+    {
+        int n = xtensa_breadcrumb_rtc_window(trail, sizeof trail, start, 8);
+        if (n <= 0)
+            break;
+        usb_serial_send((unsigned char *)trail, n);
+    }
+    usb_serial_send((unsigned char *)"rtc end\r\n", 8);
+}
+
+/* Everything, including the internal-SRAM ring that a watchdog reset clears. Asked for
+ * explicitly, because it is a 1.6 KB burst. */
+static void xt_send_trail(void)
+{
+    static char trail[352];
+    int start;
+    extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
+
     for (start = 0; start < 40; start += 10)
     {
         int n = xtensa_breadcrumb_window(trail, sizeof trail, start, 10);
@@ -668,7 +692,7 @@ static void xt_send_trail(void)
             break;
         usb_serial_send((unsigned char *)trail, n);
     }
-    usb_serial_send((unsigned char *)"trail end\r\n", 10);
+    xt_send_rtc_trail();
 }
 
 void usb_serial_target_rx(const unsigned char *data, int length)
@@ -837,10 +861,20 @@ static void usb_vbus_poll(void)
      * attach, the previous boot's entries are still in the ring (this boot writes about
      * sixteen), and the transport is up, so a device that crashed on unplug delivers its
      * own post-mortem to whoever plugs it in. */
-    if (!xt_boot_trail_sent && xt_armed && current_tick - xt_attach_tick >= 3 * HZ)
+    /* Repeat it rather than sending once. The bulk IN endpoint drops whatever the host
+     * has not read, and at the moment this fires nobody has the ACM port open yet, so a
+     * single 1.6 KB post-mortem can vanish entirely -- measured: the head line arrived,
+     * the body did not. Twelve sends at five-second intervals covers the first minute of
+     * anyone plugging in, and stops rather than running forever. */
+    /* Repeated, and compact. One burst at boot is lost: the bulk IN endpoint drops what
+     * the host has not read, and nobody holds the ACM port open at that moment -- measured,
+     * the head line arrived and the body did not. The RTC section is a few hundred bytes, so
+     * sending it every five seconds means whoever opens the port gets the surviving trail
+     * whenever they open it. The full internal-SRAM ring stays behind 't'. */
+    if (xt_armed && current_tick - xt_boot_report >= 5 * HZ)
     {
-        xt_boot_trail_sent = true;
-        xt_send_trail();
+        xt_boot_report = current_tick;
+        xt_send_rtc_trail();
     }
 
     if (xt_flash_request && xt_flash_hold == 0)
@@ -870,7 +904,7 @@ static void usb_vbus_poll(void)
          * transition belongs in the trail: whether the cable event was seen at all,
          * and when, is half of the question. */
         last = status;
-        xtensa_breadcrumb("usbEv", (unsigned long)status, current_tick);
+        xtensa_breadcrumb_rtc("usbEv", (unsigned long)status, current_tick);
         usb_status_event(status);
     }
 }

@@ -109,6 +109,9 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
  * record of any kind can work here. */
 void xtensa_paniclog_stamp_boot(unsigned long seq)
 {
+    /* A boundary in the RTC ring. It survives resets, so without a marker there a reader
+     * cannot tell the entries the dead boot wrote from the ones this boot wrote. */
+    xtensa_breadcrumb_rtc("rBoot", (unsigned long)seq, 0);
     xtensa_breadcrumb("boot", seq, 0);
 }
 
@@ -129,14 +132,112 @@ void xtensa_paniclog_set_reset(unsigned reason)
     xt_reset_reason = reason;
 }
 
+/* ---------------------------------------------------------------------------
+ * Teardown trail in RTC slow memory
+ *
+ * The .noinit ring above lives in internal SRAM, and a task-watchdog reset
+ * clears it: after the unplug crash the ring came back holding only the new
+ * boot's entries, so the last steps of the boot that hung are gone. The reset
+ * reason survives because it lives in the RTC power domain, and that is the
+ * property this ring needs.
+ *
+ * RTC *fast* memory is not available for it. IDF's own heap is placed there --
+ * heap_init reports "At 600FE000 len 00001FE8 (7 KiB): RTCRAM" -- and the first
+ * attempt at this used 0x600FFC00 for the ring and 0x600FFE00 for the panic
+ * record, which is inside that heap. That build did not boot, and the RTC
+ * overlap was the reason, not the access itself.
+ *
+ * RTC slow (SOC_RTC_DATA_LOW 0x50000000, HIGH 0x50002000) is the other bank.
+ * Only the first 0x20 bytes are claimed by the image's RTC_DATA segment, so
+ * 0x50001000 is free, and this ring is deliberately small and only used for the
+ * steps that can end in a hang: the USB teardown.
+ */
+#define XT_RTC_SLOW_BASE   0x50001000u
+#define XT_RTC_SLOW_MAGIC  0x43525455u   /* "CRTU": bumped from "CRTT", whose slots were the
+                             * old 16-byte char-tag layout. Anything under the old magic is stale and is
+                             * ignored rather than printed as nonsense. */
+#define XT_RTC_SLOTS       24
+
+/* RTC slow memory on this chip only accepts 32-bit accesses: the first version of this
+ * stored the tag one byte at a time and those stores did nothing, while the word-wise
+ * counter advanced happily -- which is why the ring read back as nothing but stale entries.
+ * Every field here is a full word. Tags are truncated to four characters. */
+struct rtc_slot
+{
+    uint32_t tag;   /* up to four characters, little endian */
+    uint32_t a;
+    uint32_t b;
+};
+
+struct rtc_store
+{
+    uint32_t magic;
+    uint32_t next;
+    struct rtc_slot slot[XT_RTC_SLOTS];
+};
+
+static volatile struct rtc_store *rtc_store =
+    (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
+
+void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b)
+{
+    struct rtc_store *s = (struct rtc_store *)rtc_store;
+    uint32_t i;
+    uint32_t code = 0;
+    int n;
+
+    if (s->magic != XT_RTC_SLOW_MAGIC)
+    {
+        /* First power-on: the bank is whatever the reset left it. */
+        s->magic = XT_RTC_SLOW_MAGIC;
+        s->next  = 0;
+    }
+
+    for (n = 0; n < 4 && tag[n]; n++)
+        code |= (uint32_t)(unsigned char)tag[n] << (8 * n);
+
+    i = s->next % XT_RTC_SLOTS;
+    s->next++;
+    s->slot[i].tag = code;
+    s->slot[i].a = (uint32_t)a;
+    s->slot[i].b = (uint32_t)b;
+}
+
+/* Copy an rtc slot out before formatting it, so snprintf never reads the volatile
+ * bank directly. */
+static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
+{
+    char tag[5];
+    uint32_t code = slot->tag;
+    int i;
+
+    for (i = 0; i < 4; i++)
+        tag[i] = (char)((code >> (8 * i)) & 0xff);
+    tag[4] = '\0';
+
+    return snprintf(buf, bufsize, "%s a=%08lx b=%08lx\n",
+                    tag, (unsigned long)slot->a, (unsigned long)slot->b);
+}
+
+/* Same window contract as xtensa_breadcrumb_window(), over the RTC-slow ring, so the
+ * post-mortem a device pushes over CDC after a crash carries the part that survived. */
+
 int xtensa_paniclog_head(char *buf, int bufsize)
 {
-    if (rec.magic != PANICLOG_MAGIC)
-        return snprintf(buf, bufsize, "reset-reason %lu, no panic record\r\n",
-                        (unsigned long)xt_reset_reason);
+    /* The RTC count rides on the head line because the bulk IN endpoint drops whatever
+     * the host has not read, and the body of a post-mortem is the part most likely to be
+     * lost. One number here says whether the surviving ring was ever written. */
+    uint32_t rtc = rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0xFFFFFFFFu;
 
-    return snprintf(buf, bufsize, "reset-reason %lu, prev panic #%lu: %s\r\n",
-                    (unsigned long)xt_reset_reason, (unsigned long)rec.seq, rec.msg);
+    if (rec.magic != PANICLOG_MAGIC)
+        return snprintf(buf, bufsize,
+                        "reset-reason %lu, rtc %lu, no panic record\r\n",
+                        (unsigned long)xt_reset_reason, (unsigned long)rtc);
+
+    return snprintf(buf, bufsize,
+                    "reset-reason %lu, rtc %lu, prev panic #%lu: %s\r\n",
+                    (unsigned long)xt_reset_reason, (unsigned long)rtc,
+                    (unsigned long)rec.seq, rec.msg);
 }
 
 int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
@@ -217,6 +318,41 @@ static void xtensa_paniclog_repeat_start(void)
 }
 #endif
 
+int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count)
+{
+    struct rtc_store *s = (struct rtc_store *)rtc_store;
+    int n, len = 0;
+    uint32_t total, avail;
+
+    if (s->magic != XT_RTC_SLOW_MAGIC || s->next == 0)
+    {
+        buf[0] = '\0';
+        return 0;
+    }
+
+    total = s->next;
+    if (total > XT_RTC_SLOTS)
+        total = XT_RTC_SLOTS;
+
+    avail = total > (uint32_t)start ? total - (uint32_t)start : 0;
+    n = count < (int)avail ? count : (int)avail;
+
+    for (int i = 0; i < n; i++)
+    {
+        uint32_t idx = (s->next - total + (uint32_t)start + (uint32_t)i) % XT_RTC_SLOTS;
+        int used = rtc_slot_line(buf + len, bufsize - len, &s->slot[idx]);
+
+        if (used <= 0 || len + used >= bufsize)
+            break;
+        len += used;
+    }
+
+    buf[len] = '\0';
+    return len;
+}
+
+
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -243,6 +379,29 @@ void xtensa_paniclog_dump(void)
             printf("  %s a=%08lx b=%08lx\n", e->tag,
                    (unsigned long)e->a, (unsigned long)e->b);
         }
+
+    /* The RTC-slow teardown trail. Printed after the SRAM ring because it is
+     * shorter and is the one that survives a watchdog reset. */
+    {
+        struct rtc_store *s = (struct rtc_store *)rtc_store;
+        char line[48];
+
+        if (s->magic == XT_RTC_SLOW_MAGIC && s->next != 0)
+        {
+            uint32_t cnt = s->next < XT_RTC_SLOTS ? s->next : XT_RTC_SLOTS;
+            uint32_t begin = s->next - cnt;
+            uint32_t k;
+
+            printf("rtc teardown trail (%lu):\n", (unsigned long)cnt);
+            for (k = 0; k < cnt; k++)
+            {
+                int len = rtc_slot_line(line, sizeof line,
+                                        &s->slot[(begin + k) % XT_RTC_SLOTS]);
+                if (len > 0)
+                    printf("%s", line);
+            }
+        }
+    }
     }
 
     /* Consume the record, so a stale one is not replayed forever: a fault that looks
