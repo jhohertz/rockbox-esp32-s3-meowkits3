@@ -636,6 +636,27 @@ Four related facts, all measured rather than read:
   257 errors where four measured 19, with no audible difference and the FIFO never
   once seen empty in either. Judging a geometry change by `err` alone will
   therefore rank a *better* ring as worse. Judge by FIFO state and listening.
+- **`ICODE_ATTR` is inert on this target, so the TX completion ISR executes from
+  PSRAM.** `firmware/export/config.h` defines it as
+  `__attribute__((section(".icode")))`, and nothing in `idf-app/main/rockbox_memory.lf`
+  or any xtensa linker script provides a `.icode` region -- `readelf -S` on the built
+  ELF shows no such section, so it is absorbed into `.flash.text` at `0x42000020`,
+  which is PSRAM-backed because `CONFIG_SPIRAM_XIP_FROM_PSRAM`,
+  `SPIRAM_FETCH_INSTRUCTIONS` and `SPIRAM_RODATA` are all enabled. Verified from the
+  symbol table: `gdma_irq` `0x420578fc`, `gdma_tx_isr` `0x42057ad0`, `arm`
+  `0x42056864`, `fill` `0x42056aa0`, `start_tx` `0x42056cf4` -- every one in the PSRAM
+  instruction window. `.iram0.text` contains only IDF's code, and
+  `.iram0.text_end` at `0x40387017` leaves roughly 4 KB of internal IRAM free.
+  This is also why the GDMA interrupt is allocated *without* `ESP_INTR_FLAG_IRAM`.
+  Consequence beyond the err counter: any PSRAM-heavy operation can delay the
+  completion handler, because the handler's own instruction fetches contend with the
+  operation on the same MSPI bus. Codec loads are the case that shows up --
+  a ~700 KB `memset` of the codec heap plus a `commit_discard_idcache()` that
+  invalidates every instruction line, so the ISR re-fills its cache while the bus is
+  saturated. That is the mechanism proposed for the 115 ms of rearm delay behind the
+  20-error burst; the placement is verified, the causal timing is not yet measured.
+  The instrument exists and is switched off: `i2s_audio_probe()` prints
+  `ISR: avg/max/worst` in microseconds and is suppressed by `TX_PROBE_QUIET`.
 - **The remaining `err` is codec reload, not the transport.** After the teardown was
   quiesced (see `stop_tx()`), a 26-sample window over 15,138 frames showed
   `err` moving in exactly one sample: the one containing **nine codec loads in 2.5
