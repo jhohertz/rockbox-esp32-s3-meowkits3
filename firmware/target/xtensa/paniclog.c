@@ -119,15 +119,24 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
  * can only reach the device over USB (the next boot's CDC transport, once the pads are the
  * core's again) needs this alongside the trail: the trail says where execution got to, the
  * record says whether panicf() named a reason. */
+/* Reset reason of the reset that produced this boot, kept here so the post-mortem can name
+ * it. The breadcrumb ring is only forty slots and a busy attach fills them in seconds, so an
+ * rstR entry is gone before anyone can read it; the head line is not. */
+static uint32_t xt_reset_reason;
+
+void xtensa_paniclog_set_reset(unsigned reason)
+{
+    xt_reset_reason = reason;
+}
+
 int xtensa_paniclog_head(char *buf, int bufsize)
 {
     if (rec.magic != PANICLOG_MAGIC)
-    {
-        buf[0] = '\0';
-        return 0;
-    }
-    return snprintf(buf, bufsize, "prev panic #%lu: %s\r\n",
-                    (unsigned long)rec.seq, rec.msg);
+        return snprintf(buf, bufsize, "reset-reason %lu, no panic record\r\n",
+                        (unsigned long)xt_reset_reason);
+
+    return snprintf(buf, bufsize, "reset-reason %lu, prev panic #%lu: %s\r\n",
+                    (unsigned long)xt_reset_reason, (unsigned long)rec.seq, rec.msg);
 }
 
 int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
