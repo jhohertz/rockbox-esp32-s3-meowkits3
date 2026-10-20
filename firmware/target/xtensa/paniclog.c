@@ -115,6 +115,21 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
 /* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
  * absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore yields
  * chronological order whether or not the ring has wrapped. */
+/* One line describing the retained panic record, empty if there is none. A caller that
+ * can only reach the device over USB (the next boot's CDC transport, once the pads are the
+ * core's again) needs this alongside the trail: the trail says where execution got to, the
+ * record says whether panicf() named a reason. */
+int xtensa_paniclog_head(char *buf, int bufsize)
+{
+    if (rec.magic != PANICLOG_MAGIC)
+    {
+        buf[0] = '\0';
+        return 0;
+    }
+    return snprintf(buf, bufsize, "prev panic #%lu: %s\r\n",
+                    (unsigned long)rec.seq, rec.msg);
+}
+
 int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
 {
     int n, i, len = 0;
