@@ -286,7 +286,19 @@ static inline void usb_slave_mode(bool on)
     else
     {
         /* Entered exclusive mode */
+#if defined(CPU_XTENSA)
+        /* This is the variant that compiles for us: the other usb_slave_mode() further
+         * down sits in the branch guarded by !HAVE_USBSTACK, which is why an earlier
+         * attempt to mark the remount produced no markers at all.
+         * the esp32s3 detach crash now happens after the controller teardown completes,
+         * so this is the live suspect: it hands work to the storage thread, which is
+         * mid-handshake at this moment. */
+        xtensa_breadcrumb_rtc("dMnt", 0, 0);
+#endif
         rc = disk_mount_all();
+#if defined(CPU_XTENSA)
+        xtensa_breadcrumb_rtc("dMnD", rc, 0);
+#endif
         if(rc <= 0) /* no partition */
             panicf("mount: %d",rc);
     }
@@ -383,27 +395,13 @@ static inline void usb_slave_mode(bool on)
         sleep(HZ*1);
 
         usb_enable(false);
-#if defined(CPU_XTENSA)
-        /* Bringing the card back after a detach goes through IDF's sdmmc host again, and
-         * the card is exactly in the state an unplug leaves it: mid-transfer with no host.
-         * This is the likeliest place to stall. */
-        xtensa_breadcrumb_rtc("sIni", 0, 0);
-#endif
+
         rc = storage_init();
-#if defined(CPU_XTENSA)
-        xtensa_breadcrumb_rtc("sInD", rc, 0);
-#endif
         if(rc)
             panicf("storage: %d",rc);
 
         sleep(HZ/10);
-#if defined(CPU_XTENSA)
-        xtensa_breadcrumb_rtc("dMnt", 0, 0);
-#endif
         rc = disk_mount_all();
-#if defined(CPU_XTENSA)
-        xtensa_breadcrumb_rtc("dMnD", rc, 0);
-#endif
         if(rc <= 0) /* no partition */
             panicf("mount: %d",rc);
     }
