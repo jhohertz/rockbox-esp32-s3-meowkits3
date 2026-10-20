@@ -84,6 +84,16 @@
 #define XT_USB_WRAP_BASE        0x60039000
 #define XT_USB_OTG_CONF         (XT_USB_WRAP_BASE + 0x00)
 #define XT_USB_PHY_SEL_EXT      (1u << 2)      /* 1 = external PHY */
+/* The wrap's own PHY pad loads, from IDF 4.4's usb_phy_ll.h for this chip
+ * (usb_phy_ll_int_load_conf(), which is what usb_enable(USB_MODE_DEVICE) called).
+ * A full-speed device needs D+ pulled up *and* D- pulled down, with
+ * pad_pull_override set so these values actually drive the pads. */
+#define XT_USB_PAD_PULL_OVERRIDE  (1u << 12)
+#define XT_USB_DP_PULLUP          (1u << 13)
+#define XT_USB_DP_PULLDOWN        (1u << 14)
+#define XT_USB_DM_PULLUP          (1u << 15)
+#define XT_USB_DM_PULLDOWN        (1u << 16)
+#define XT_USB_PULLUP_VALUE       (1u << 17)
 #define XT_USB_PAD_ENABLE       (1u << 18)
 #define XT_USB_SESSEND_OVERRIDE   (1u << 0)      /* 1 = software drives session end */
 #define XT_USB_SESSEND_VALUE      (1u << 1)      /* 1 = VBus < 0.2V, 0 = VBus > 0.8V */
