@@ -43,6 +43,7 @@
 #include <soc/interrupts.h>
 #include <soc/soc.h>          /* REG_WRITE */
 #include <soc/rtc_cntl_reg.h>  /* RTC_CNTL_OPTION1_REG, FORCE_DOWNLOAD_BOOT */
+#include <soc/usb_serial_jtag_reg.h> /* USJ CONF0, for the handover to USJ */
 #include <esp_rom_gpio.h>
 #include <esp_system.h>
 #include <stdlib.h>
@@ -632,6 +633,13 @@ void usb_serial_target_rx(const unsigned char *data, int length)
     }
 }
 
+/* USJ CONF0 usb_pad_enable. Computed from the bitfield layout in
+ * usb_serial_jtag_struct.h rather than guessed: phy_sel is bit 0, exchg_pins_override
+ * 1, exchg_pins 2, vrefh 3:4, vrefl 5:6, vref_override 7, pad_pull_override 8,
+ * dp_pullup 9, dp_pulldown 10, dm_pullup 11, dm_pulldown 12, pullup_value 13,
+ * usb_pad_enable 14. */
+#define XT_USJ_CONF0_PAD_ENABLE   (1u << 14)
+
 /* Hand the port back, then ask the ROM to come up in download mode.
  *
  * The trigger arrives over our CDC, but the ESP32-S3 ROM's USB download mode is the
@@ -640,6 +648,15 @@ void usb_serial_target_rx(const unsigned char *data, int length)
  * without an explicit release the ROM would find D+/D- still routed to a core it does
  * not speak to in download mode. usb_dw_target_disable_clocks() is the same release a
  * detach performs: it clears the wrap's pad_enable and the RTC override together.
+ *
+ * Then the USJ has to be connected *before* the reset. The ROM chooses between UART and
+ * USB download at the very start of boot, and it can only choose USB if it sees a host
+ * on these pins -- measured without this, the board entered download mode and
+ * enumerated nothing on USB at all, which is the UART path. phy_sel (bit 0) stays clear
+ * so the internal PHY is the one used, and no pull override is set: like the OTG core,
+ * the USJ drives its own pull-up once its pad is enabled. Its bus clock is the same bit
+ * the OTG core uses (SYSTEM.perip_clk_en1.usb_device_clk_en, usb_serial_jtag_ll.h:326),
+ * so usb_dw_target_enable_clocks() already left it on.
  *
  * Persist flags are deliberately not set. chip_usb_set_persist_flags(USBDC_PERSIST_ENA)
  * is the ESP32-S2 shape of this, where the ROM's download mode does run on the OTG
@@ -650,7 +667,9 @@ static void xt_usb_enter_download_mode(void)
     xtensa_breadcrumb("usbFlsh", DWC_DCTL, rd(XT_USB_OTG_CONF));
 
     DWC_DCTL = SDIS;                /* stop answering the host before the pads move */
-    usb_dw_target_disable_clocks(); /* back to USB-Serial-JTAG, which the ROM uses */
+    usb_dw_target_disable_clocks(); /* wrap releases the pads */
+    REG_WRITE(USB_SERIAL_JTAG_CONF0_REG,
+              REG_READ(USB_SERIAL_JTAG_CONF0_REG) | XT_USJ_CONF0_PAD_ENABLE);
     REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
     esp_restart();
 }
