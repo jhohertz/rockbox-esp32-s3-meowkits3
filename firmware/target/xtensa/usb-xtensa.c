@@ -28,6 +28,8 @@
 #include "system.h"
 #include "kernel.h"
 #include "thread.h"
+#include "panic.h"
+#include "button.h"
 #include "power.h"
 #include "axp173.h"
 #include "xtensa.h"
@@ -130,6 +132,18 @@ void usb_dw_target_enable_clocks(void)
     wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) | XT_USB_PAD_ENABLE |
                         XT_USB_WRAP_CLK_EN);
 
+    /* The three force bits are not set by IDF's driver at all -- IDF's device stack
+     * reaches the core through its own HCD -- but they are what made this core
+     * answer on this board. The pad-free boot probe read GSNPSID = 0x00000000 with
+     * both gates on and both resets cleared, and 0x4f54400a only after
+     * USB_WRAP_CLK_EN, DFIFO_FORCE_PU, PHY_CLK_FORCE and AHB_CLK_FORCE were set.
+     * A block whose FIFO RAM is powered down reads as all zeroes rather than
+     * faulting, and a core with no PHY clock cannot drive D+ -- which is the exact
+     * symptom: the host sees no device at all, not a bad one. */
+    wr(XT_USB_OTG_CONF,
+       (rd(XT_USB_OTG_CONF) & ~XT_USB_DFIFO_FORCE_PD) |
+       XT_USB_DFIFO_FORCE_PU | XT_USB_PHY_CLK_FORCE | XT_USB_AHB_CLK_FORCE);
+
     /* The last thing that runs before the console disappears: from here on the
      * breadcrumb trail is the only record, until the next boot prints it. */
     xtensa_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
@@ -139,6 +153,12 @@ void usb_dw_target_disable_clocks(void)
 {
     wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) & ~XT_USB_CLK_EN);
     wr(XT_PERIP_CLK_EN1, rd(XT_PERIP_CLK_EN1) & ~XT_USB_DEVICE_CLK_EN);
+
+    /* Release the forced clocks so the FIFO power follows the gate again and a
+     * second attach starts from the state this one found. */
+    wr(XT_USB_OTG_CONF,
+       rd(XT_USB_OTG_CONF) & ~(XT_USB_DFIFO_FORCE_PU | XT_USB_PHY_CLK_FORCE |
+                              XT_USB_AHB_CLK_FORCE | XT_USB_WRAP_CLK_EN));
 
     /* Give the pins back. USB-Serial-JTAG is the console and the flash port, so
      * leaving the mux pointed at the DWC would silence both after disconnect. */
@@ -307,7 +327,10 @@ static int vbus_sample(void)
  * inert at runtime: usb_enable() does nothing, so usb_core_init() and
  * usb_drv_init() never run and the pads never move.
  */
-/* #define USB_ALLOW_ATTACH */
+#define USB_ALLOW_ATTACH
+/* TEMPORARY: report the core's state on the LCD ~8 s after attaching, then halt.
+ * See the comment in __wrap_usb_enable(). */
+#define USB_ATTACH_REPORT 1
 
 #ifdef USB_ALLOW_ATTACH
 
@@ -324,6 +347,37 @@ static int vbus_sample(void)
  */
 #define USB_VBUS_POLL_TICKS 4
 
+/*
+ * Hold the pads for the first 15 seconds after boot.
+ *
+ * This is not a debug hack, it is the recovery invariant for this board. Taking
+ * GPIO19/20 away from USB-Serial-JTAG removes the console *and* esptool, so a
+ * firmware that attaches immediately can leave no way to put a different firmware
+ * back on -- an attach that fails to enumerate does that on purpose. With a window
+ * at boot, `make flash` always wins: esptool resets the chip into download mode
+ * before the app reaches this point, and the pins are still USJ when it asks.
+ *
+ * The window is also what makes flashing reliable. A flash attempt races the
+ * attach: if the pins move to the OTG wrap while esptool is mid-handshake, the
+ * ROM's SLIP responses stop and esptool reports "the chip stopped responding" --
+ * which is exactly what happened here when a cable went in shortly before a flash.
+ * 120 s is generous enough that the host always gets the port first.
+ */
+#define USB_ATTACH_DELAY (120 * HZ)
+
+static bool usb_attach_allowed(void)
+{
+    return current_tick >= USB_ATTACH_DELAY;
+}
+
+static bool usb_transport_wanted(void)
+{
+    bool mass_storage = (usb_get_mode() == USB_MODE_MASS_STORAGE);
+    bool button_held = (button_status() & ~USBPOWER_BTN_IGNORE) != 0;
+
+    return mass_storage != button_held;   /* the inversion usb.c applies */
+}
+
 static void usb_vbus_poll(void)
 {
     static unsigned ticks;
@@ -333,6 +387,9 @@ static void usb_vbus_poll(void)
     if (++ticks < USB_VBUS_POLL_TICKS)
         return;
     ticks = 0;
+
+    if (!usb_attach_allowed())
+        return;
 
     status = vbus_sample();
     if (status != last)
@@ -351,6 +408,8 @@ static void usb_vbus_poll(void)
  */
 int usb_detect(void)
 {
+    if (!usb_attach_allowed())
+        return USB_EXTRACTED;   /* inside the boot window: pads stay on USJ */
     return vbus_sample();
 }
 
@@ -374,6 +433,26 @@ int usb_detect(void)
 
 void usb_init_device(void)
 {
+#ifdef USB_ALLOW_ATTACH
+    /* Put the pins back before anything else, and do it every boot.
+     *
+     * The mux override lives in the RTC block (RTCCNTL.usb_conf), which is *not*
+     * cleared by a chip reset -- only by a power-on reset. So once a boot hands the
+     * pads to the wrap, a panic, an abort or esp_restart leaves them there: the
+     * next boot has no USB-Serial-JTAG console and esptool cannot open a port, and
+     * the only way back is to take the board off power. That is what happened on
+     * this board's first attach attempt -- a report panic reset into a boot that
+     * could not be reached at all.
+     *
+     * Clearing the override at boot makes the console unconditional: every boot
+     * starts with the pins on USJ, so there is always a window to flash from,
+     * whatever the previous boot did.
+     */
+    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~(XT_USB_PAD_ENABLE |
+                                               XT_USB_WRAP_CLK_EN));
+    wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
+#endif
+
 #ifdef USB_HW_PROBE
     usb_hw_probe();
 #endif
@@ -401,13 +480,81 @@ void usb_init_device(void)
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
+    /* Whether this board should hand its pins over at all.
+     *
+     * Rockbox's documented gesture for this is holding a button while plugging in
+     * (usb.h: "By default any button will prevent the USB mode from kicking-in"),
+     * and usb.c implements it by inverting the usb_mode setting. The catch is that
+     * usb.c does that at usb.c:492, several lines after usb_stack_enable(true) has
+     * already called this function at line 483 -- so on a software stack the
+     * gesture only decides which classes get composed, never whether the
+     * transceiver is opened. That is fine on targets whose USB connector is its own
+     * pins. Here GPIO19/20 are what USB-Serial-JTAG uses for the console and the
+     * flash port, and the mux override lives in the RTC domain, so taking them is
+     * not something to do on an assumption.
+     *
+     * So the target recomputes the same rule at the moment it matters:
+     * transport wanted = (mode is mass storage) XOR (a button is held). With the
+     * factory default of charge mode, plugging in leaves the pins alone and the
+     * console stays alive; picking Settings -> General -> USB mode: Mass storage
+     * makes insertion attach, and holding a button at insertion suppresses it
+     * again. That is the precedent's semantics, just evaluated where it can bind.
+     */
+    if (on && !usb_transport_wanted())
+    {
+        xtensa_breadcrumb("usbSkip", (unsigned long)usb_get_mode(),
+                          button_status());
+        return;
+    }
+
     xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
 
     if (on)
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
     else
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
-    xtensa_breadcrumb("usbEnD", on ? 1 : 0, 0);
+
+    /* Both halves of the register state, recorded before anything can change it.
+     * The trail survives the reset, and app_main() replays it inside the boot
+     * window, so one power cycle tells us what the previous boot did -- including
+     * whether this function was called with false, which is the other explanation
+     * for a report that reads all zeroes. */
+    xtensa_breadcrumb(on ? "usbIn" : "usbOut",
+                      DWC_GSNPSID, rd(XT_USB_OTG_CONF));
+    xtensa_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+
+#ifdef USB_ATTACH_REPORT
+    if (!on)
+        return;   /* the report is about the attach, not the teardown */
+    /* TEMPORARY: once the pads are handed over the screen is the only channel
+     * left. panicf() draws on the LCD (see panic.c), and the abort resets the chip,
+     * which returns the pins to USB-Serial-JTAG -- so the next boot prints the
+     * breadcrumb trail on a live console. Read both.
+     *
+     * What to look for: DCTL bit 0 (SDIS) says whether the core is still soft
+     * disconnected, i.e. whether D+ has a pull-up at all. GINTSTS bit 2 (reset
+     * detected) and bit 3 (enum speed) say whether a host ever touched the bus.
+     * GUSBCFG bit 5 (fsintf) and bit 30 (fdmod) say the PHY and device-mode writes
+     * took. OTG_CONF bit 18 (pad_enable) says the mux moved the pins.
+     */
+    sleep(HZ * 8);
+    /* Record everything in the trail as well as on the screen. The pads are gone by
+     * now, so the console cannot see this line; but the abort resets the chip, the
+     * boot hook puts the pins back on USB-Serial-JTAG, and app_main() replays the
+     * trail on a live console -- which is how this gets read back without anyone
+     * having to transcribe the LCD.
+     *
+     * clk0 bit 23 and rst0 bit 23 distinguish the two failure shapes: a block that
+     * is clocked but held in reset reads zero just like a block that is ungated, so
+     * the gate and reset words have to be in the report, not inferred from it. */
+    xtensa_breadcrumb("usbDctl", DWC_DCTL, DWC_GINTSTS);
+    xtensa_breadcrumb("usbClk3", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+
+    panicf("USB: id=%08lx dctl=%08lx gsts=%08lx wrap=%08lx clk0=%08lx rst0=%08lx",
+           (unsigned long)DWC_GSNPSID, (unsigned long)DWC_DCTL,
+           (unsigned long)DWC_GINTSTS, (unsigned long)rd(XT_USB_OTG_CONF),
+           (unsigned long)rd(XT_PERIP_CLK_EN0), (unsigned long)rd(XT_PERIP_RST_EN0));
+#endif
 #else
     (void)on;
 #endif

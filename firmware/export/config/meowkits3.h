@@ -402,6 +402,18 @@
  * board. See firmware/target/xtensa/USB-SPRINT.md.
  */
 #define USBMODE_DEFAULT USB_MODE_CHARGE
+
+/* The mode choice is only built when this is defined (apps/settings_list.c:2546),
+ * and it is the reason USBMODE_DEFAULT above is inert without it. Charge mode as
+ * the default is what makes a bring-up boot safe: Rockbox senses the cable, goes to
+ * USB_POWERED, and never calls usb_hw_open(), so the pads stay on USB-Serial-JTAG
+ * and the console and the flash port survive. Mass storage -- the CDC+HID+MSC
+ * profile -- is then a deliberate choice under Settings -> General -> USB.
+ *
+ * It also brings the charging indication into the status bar, which is a screen
+ * change: look at it rather than assume it.
+ */
+#define HAVE_USB_POWER
 /* ALLOCATE_BUFFER_SIZE is 2 * max(read, write), and it is static because the DWC's
  * DMA is an AHB master on the internal bus and cannot reach the PSRAM window where
  * Rockbox's arena lives. Full speed caps the useful size anyway: the default 64 KB
@@ -455,3 +467,15 @@
  * AUDIOHW_SETTING itself lives in es8311.h, which audiohw.h includes after
  * defining the macro. */
 #define AUDIOHW_CAPS MONO_VOL_CAP
+
+/* logf, deliberately. Once GPIO19/20 go to the OTG core there is no printf: the
+ * console lives on USB-Serial-JTAG, and IDF's stdout goes with it. logf() pushes
+ * straight to usb_serial_send() under USB_ENABLE_SERIAL (firmware/logf.c:246), so
+ * the trace continues over the CDC endpoint the moment the class enumerates --
+ * which is the only way to see usb_core.c and usb-designware.c messages during the
+ * attach. The 16 KB logfbuffer is already PSRAM_BSS_ATTR, so this costs nothing in
+ * internal SRAM; it does take 16 KB of the ~26 KB idle in the PSRAM window.
+ * Precedent for enabling it from a model header rather than the build mode:
+ * ipod6g.h, ipodnano3g.h, ipodnano4g.h.
+ */
+#define ROCKBOX_HAS_LOGF 1
