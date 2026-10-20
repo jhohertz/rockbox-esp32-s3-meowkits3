@@ -149,7 +149,13 @@ enum
 #if defined(BOOTLOADER)
 #define USBMODE_DEFAULT USB_MODE_MASS_STORAGE
 #else
+/* Overridable, because mass storage is not a safe factory default on every
+ * target: usb_slave_mode() unmounts the storage volumes, and where the USB pads
+ * are shared with the debug console, taking them also takes the console and the
+ * flash port. Such a target wants charge mode until the user asks for storage. */
+#ifndef USBMODE_DEFAULT
 #define USBMODE_DEFAULT USB_MODE_MASS_STORAGE
+#endif
 #endif
 
 #endif

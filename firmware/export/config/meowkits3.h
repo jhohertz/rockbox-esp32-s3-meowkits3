@@ -374,6 +374,23 @@
 /* DMA buffers must start on a cache line: committing or invalidating a range would
  * otherwise drag lines belonging to other objects along. */
 #define USB_DEVBSS_ATTR __attribute__((aligned(32)))
+/* Charge mode as the factory default. Rockbox's default is mass storage, which
+ * on this board is the wrong first answer: usb_slave_mode() unmounts the volumes,
+ * and taking the OTG core onto GPIO19/20 removes USB-Serial-JTAG -- which is both
+ * the bring-up console and the flash port. The user picks mass storage from
+ * General -> USB mode when they want the card exposed; the profile then becomes
+ * CDC+HID+MSC, and charge mode with "USB DAC: while charge only" gives
+ * CDC+HID+Audio. Neither can be built at once: the core has four dedicated IN
+ * FIFOs and both profiles need exactly four.
+ *
+ * This takes effect once HAVE_USB_POWER is defined: apps/settings_list.c builds
+ * the "USB mode" choice only under HAVE_USB_POWER || HAVE_USB_ADB, and usb.c's
+ * power-monitoring path is keyed on the same define. It is deliberately not
+ * enabled in this commit -- HAVE_USB_POWER pulls the charging display into the
+ * status bar, and that is a screen change this port can only be checked on the
+ * board. See firmware/target/xtensa/USB-SPRINT.md.
+ */
+#define USBMODE_DEFAULT USB_MODE_CHARGE
 /* ALLOCATE_BUFFER_SIZE is 2 * max(read, write), and it is static because the DWC's
  * DMA is an AHB master on the internal bus and cannot reach the PSRAM window where
  * Rockbox's arena lives. Full speed caps the useful size anyway: the default 64 KB
