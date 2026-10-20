@@ -1462,18 +1462,59 @@ static void i2s_dma_line(void)
     }
     ow[o] = '\0';
 
+    /* How long the completion handler actually runs.
+     *
+     * This is the measurement that decides whether the codec-reload err bursts are
+     * instruction-fetch stalls: the handler and everything it calls sit in the
+     * PSRAM instruction window (ICODE_ATTR has no .icode region here, see AGENTS.md),
+     * so a codec load that memsets ~700KB of PSRAM and then invalidates every
+     * instruction line can make the handler's own fetches miss on a saturated MSPI
+     * bus. If the handler's worst case inside those bursts reaches tens of
+     * milliseconds, it exceeds the ring's 23ms runway and the engine wraps onto a
+     * slot nobody rearmed -- which is exactly the err signature.
+     *
+     * xt_isr_cyc_worst is monotonic and race-free by construction (see its
+     * declaration). The windowed max is NOT: reading it and resetting it races the
+     * handler, which is the trap that once printed max=10us against avg=16us. So the
+     * honest fields are the worst ever seen, and whether that worst grew in this
+     * window -- growth attributes the sample to the interval without needing a
+     * racy max.
+     *
+     * Cycles to microseconds is a divide, not a multiply-then-divide: cycles *
+     * 1000000 overflows 32 bits at any interesting length, which is how a 5804us
+     * gap once printed as 6us. */
+    static unsigned long last_worst;
+    static unsigned long cycles_per_us;
+    unsigned long w = xt_isr_cyc_worst;
+    unsigned long n = xt_isr_n;
+    unsigned long avg_cyc = n ? xt_isr_cyc_sum / n : 0;
+
+    if (cycles_per_us == 0)
+        cycles_per_us = (unsigned long)(esp_clk_cpu_freq() / 1000000);
+    if (cycles_per_us == 0)
+        cycles_per_us = 1;
+
+    xt_isr_n = 0;
+    xt_isr_cyc_sum = 0;
+
     printf("DMA: err=%d startup=%d sess=%d err/sess=%d | irq=%lu "
            "refill=%lu br=%d q=%d lk=%d play=%d | "
+           "isr n=%lu avg=%lus worst=%lus grew=%lus | "
            "ena=%08x link=%08x own=%s len=%s | fifo f%d/e%d\n",
            xt_dscr_err_n, err_startup, xt_tx_sessions,
            xt_tx_sessions ? xt_dscr_err_n / xt_tx_sessions : 0,
            xt_sink_irq_n, xt_refill_n,
            xt_refill_branch,
            queued, locked, playing,
+           n, avg_cyc / cycles_per_us,
+           w / cycles_per_us,
+           (w > last_worst ? w - last_worst : 0) / cycles_per_us,
            (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK),
            ow, ln,
            (int)((rd(GDMA_TX_FIFO_STATUS) >> 0) & 1),
            (int)((rd(GDMA_TX_FIFO_STATUS) >> 1) & 1));
+
+    last_worst = w;
 }
 
 static void i2s_probe_tick(void)
