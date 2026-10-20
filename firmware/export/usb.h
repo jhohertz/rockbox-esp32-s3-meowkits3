@@ -215,6 +215,9 @@ void usb_status_event(int current_status);
 #ifdef HAVE_USB_POWER
 /* returns whether the USB is in powered-only state */
 bool usb_powered_only(void);
+/* the configured usb_mode setting, independent of the current state -- see
+ * usb_get_mode() for why a target needs it before enabling the transport */
+int usb_get_mode(void);
 #ifdef HAVE_USB_CHARGING_ENABLE
 enum {
     USB_CHARGING_DISABLE, /* the USB code will never ask for more than 100mA */
