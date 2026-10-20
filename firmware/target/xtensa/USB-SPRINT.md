@@ -817,3 +817,26 @@ Two claims I made earlier here were wrong and are corrected in the code comments
 Still open: the `-71` on the HID interface, and after that MSC and the audio profile. The
 bring-up scaffolding (the 120 s attach window, the register report, the restart judge) is
 still in and should come out once the composite descriptor is fully accepted.
+
+## Step 3 done: interrupt-driven, no scaffolding, self-triggered flashing
+
+Delivery was fixed at its source. The polled dispatch is gone, as is the bring-up
+judge, the periodic register dump and the 120-second attach window -- `usb_detect()`
+answers the cable from the first tick, which is what every other target does and what
+`usb.h` requires. What earned its place: the interrupt allocated enabled with
+`ESP_INTR_FLAG_LOWMED` (CherryUSB's dwc2 port for this controller does exactly that, and
+Rockbox's `ESP_INTR_FLAG_INTRDISABLED` meant the first pending event never drew the
+line), and the handler clearing `GINTSTS`/`GOTGINT` when it fires before the driver is
+armed -- the latter has never actually been observed running, so it is insurance rather
+than a measured fix.
+
+`make usbflash` now flashes the board over Rockbox's own CDC: `'f'` on the OUT endpoint
+-> release the pads -> `RTC_CNTL_OPTION1.FORCE_DOWNLOAD_BOOT` -> reset -> esptool with
+`--before no_reset` -> default `--after hard_reset` puts Rockbox back. Measured in ~13
+s with no BOOT button and no power cycle. Details, including the clock bit the USJ
+shares with the DWC core and the fact that a software-driven reset lands the ROM on the
+OTG core rather than the USJ, are in `AGENTS.md`.
+
+Remaining for the driver: the two profiles (`CDC+HID+MSC` and `CDC+HID+Audio`), and
+suspend/resume -- the host runtime-suspends an idle composite device today and the
+driver's mask covers only `USBRST|ENUMDNE|IEPINT|OEPINT`.

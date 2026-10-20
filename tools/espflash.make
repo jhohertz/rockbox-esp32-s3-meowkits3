@@ -39,3 +39,15 @@ flash: $(BUILDDIR)/$(BINARY)
 espverify: $(BUILDDIR)/$(BINARY)
 	$(ESPTOOL) --chip $(ESPCHIP) image_info $(BUILDDIR)/$(BINARY)
 .PHONY: espverify
+
+# Flash over Rockbox's own USB serial. The firmware answers one byte on the CDC
+# OUT endpoint by handing the pads over and asking the ROM for download mode, so
+# this needs neither the BOOT button nor a power cycle. esptool runs with
+# --before no_reset because the OTG core has no DTR/RTS wiring, and with its
+# default --after hard_reset so the ROM boots Rockbox again at the end.
+#
+# Use `make flash` (with BOOT held) for a board that is not answering on USB.
+usbflash: $(BUILDDIR)/$(BINARY)
+	python3 $(TOOLSDIR)/esp-usbflash.py --build $(IDFDIR)/build \
+		--chip $(ESPCHIP) $(IDFPORTOPT)
+.PHONY: usbflash
