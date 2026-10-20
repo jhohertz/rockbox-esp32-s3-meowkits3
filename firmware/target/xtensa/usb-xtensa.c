@@ -324,8 +324,14 @@ void usb_dw_target_enable_clocks(void)
 
 void usb_dw_target_disable_clocks(void)
 {
+    /* Only the wrap/PHY gate is ours to drop. XT_USB_DEVICE_CLK_EN (bit 10 of
+     * PERIP_CLK_EN1) is shared: usb_serial_jtag_ll.h:326 gates USB-Serial-JTAG with the
+     * same bit, SYSTEM.perip_clk_en1.usb_device_clk_en. Clearing it on release clocks
+     * the console and the flash port out along with the DWC core -- measured, after a
+     * release the USJ pad write landed in an unclocked block, D+ never got its pull-up,
+     * and the host saw no device at all. Leaving the core clocked while idle costs a
+     * little power and buys both paths back. */
     wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) & ~XT_USB_CLK_EN);
-    wr(XT_PERIP_CLK_EN1, rd(XT_PERIP_CLK_EN1) & ~XT_USB_DEVICE_CLK_EN);
 
     /* Release the forced clocks so the FIFO power follows the gate again and a
      * second attach starts from the state this one found. */
@@ -656,7 +662,7 @@ void usb_serial_target_rx(const unsigned char *data, int length)
  * so the internal PHY is the one used, and no pull override is set: like the OTG core,
  * the USJ drives its own pull-up once its pad is enabled. Its bus clock is the same bit
  * the OTG core uses (SYSTEM.perip_clk_en1.usb_device_clk_en, usb_serial_jtag_ll.h:326),
- * so usb_dw_target_enable_clocks() already left it on.
+ * so usb_dw_target_disable_clocks() has to leave that one set -- see the note there.
  *
  * Persist flags are deliberately not set. chip_usb_set_persist_flags(USBDC_PERSIST_ENA)
  * is the ESP32-S2 shape of this, where the ROM's download mode does run on the OTG
