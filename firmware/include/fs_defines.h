@@ -37,6 +37,11 @@
 /* limits for number of open descriptors - if you increase these values, make
    certain that the disk cache has enough available buffers */
 
+#ifndef MAX_OPEN_FILES
+/* MEMORYSIZE describes the storage size, so this picks a generous set of handle
+ * limits whenever the player has a lot of flash. A target whose DMA-capable RAM
+ * is tighter than its flash can override the pair -- both halves, since the
+ * comment above requires the disk cache to cover the handles. */
 #if MEMORYSIZE < 8
 #define MAX_OPEN_FILES  11
 #define MAX_OPEN_DIRS   12
@@ -44,6 +49,7 @@
 #define MAX_OPEN_FILES  31
 #define MAX_OPEN_DIRS   32
 #endif /* MEMORYSIZE */
+#endif
 
 
 /* internal functions open streams as well; make sure they don't fail if all
@@ -91,6 +97,10 @@
  * volumes that would slow cache probing. IOC_MAP_NUM_ENTRIES is the number
  * for each map per volume. The buffers themselves are shared.
  */
+#ifndef DC_NUM_ENTRIES
+/* See MAX_OPEN_FILES: the sector cache is DMA-visible, so a target may need to
+ * size it against internal RAM rather than against its storage. The pair has to
+ * be overridden together because the map bitarrays are sized in entries. */
 #if MEMORYSIZE < 8
 #define DC_NUM_ENTRIES      32
 #define DC_MAP_NUM_ENTRIES  128
@@ -98,6 +108,7 @@
 #define DC_NUM_ENTRIES      64
 #define DC_MAP_NUM_ENTRIES  256
 #endif /* MEMORYSIZE */
+#endif
 
 /* increasing this will increase the total memory used by the cache; the
    cache, as noted in disk_cache.h, has other minimum requirements that may

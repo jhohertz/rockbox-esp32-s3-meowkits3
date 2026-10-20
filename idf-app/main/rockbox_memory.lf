@@ -127,6 +127,10 @@ entries:
     #     libfirmware.a, so they are granted in that mapping instead -- putting
     #     them here silently did nothing.)
     playback (rb_psram)
+    # lang_core.o -- its only static is language_strings[] (3508 bytes), the
+    # compiled markup table. No thread stack, never a DMA destination. Added to
+    # buy internal SRAM for the USB stack: dram0_0_seg was 7488 bytes over.
+    lang_core (rb_psram)
     # Deliberately NOT moved despite looking like data: scroll_engine.o and
     # playlist.o each contain a thread stack, dir.o and disk_cache.o are disk
     # read destinations, talk.o and beep.o feed the audio path, and
@@ -138,6 +142,10 @@ entries:
 archive: librbcodec.a
 entries:
     buffering (rb_psram)
+    # resample.o -- resample_data (152) and resample_out_bufs (2304), the
+    # resampler's history and staging buffers. Written by the codec thread, never
+    # by the GDMA completion path, and no stack. Same purpose as lang_core above.
+    resample (rb_psram)
     * (rb_dram)
 
 [mapping:rb_skin]

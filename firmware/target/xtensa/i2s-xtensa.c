@@ -187,7 +187,38 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * never silently overrun; it fails the build instead. */
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4)
 
-static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT] __attribute__((aligned(4)));
+/* The ring's *buffer* lives in PSRAM; the descriptors above stay in internal
+ * DRAM. That split is what the hardware actually allows, and it is easy to get
+ * backwards:
+ *
+ *  - esp32s3 declares SOC_PSRAM_DMA_CAPABLE and SOC_AHB_GDMA_SUPPORT_PSRAM, so
+ *    GDMA can read a PSRAM buffer.
+ *  - GDMA's 20-bit window (base 0x3FC00000) applies to the *descriptor address
+ *    register* GDMA_TX_LINK, and to the first descriptor's address. Inside a
+ *    descriptor the buffer pointer is a full 32-bit word the engine reads from
+ *    memory, so PSRAM addresses are legal there.
+ *  - ESP-IDF's own restriction list for this chip says transaction descriptors
+ *    cannot be in PSRAM -- which is desc[], kept internal.
+ *
+ * Two things have to be true for a PSRAM target, and are:
+ *
+ *  - out_ext_mem_bk_size in conf1 is never programmed, so it holds its reset
+ *    value 0 = 16-byte blocks. The PSRAM controller refuses bursts larger than
+ *    64 bytes (GDMA_LL_MAX_BURST_SIZE_PSRAM), so 16 is inside the limit. If
+ *    data burst is ever enabled here, this becomes a bug.
+ *  - the buffer is write-back cached through the Ext_RAM window like every other
+ *    address in it, so the commit_dcache_range() calls in write_desc() and
+ *    fill() are what make the engine see the mixer's frames. They were defensive
+ *    in DRAM; in PSRAM they are load-bearing.
+ *
+ * The cost is documented rather than guessed: "the bandwidth that DMA accesses
+ * external RAM is very limited, especially when the core is trying to access the
+ * external RAM at the same time", and this target reads PSRAM constantly (codec
+ * images, dircache, tagcache). 4096 bytes leaves internal DRAM, which is the
+ * point -- that region had 1,020 bytes free.
+ */
+static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT]
+    PSRAM_BSS_ATTR __attribute__((aligned(4)));
 
 /* cur is the slot that is free to write. When DONE fires, the slot that just
  * finished transmitting is the one retire points at, so the mixer's next frame
