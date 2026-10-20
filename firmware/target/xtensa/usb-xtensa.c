@@ -308,6 +308,11 @@ static void usb_hw_probe(void)
  * from the OTG interrupt (the core reports its own connection state) rather than
  * from a poll of the PMU; the PMU read stays here for the charging display.
  */
+/* Set only when the core is actually armed, i.e. between usb_core_init() and
+ * usb_core_exit(). Charge mode refuses the attach, so this stays false while a
+ * cable is present -- see usb_detect(). */
+static bool xt_attached;
+
 static int vbus_sample(void)
 {
     return (axp173_input_status() & POWER_INPUT_USB) ? USB_INSERTED
@@ -391,7 +396,22 @@ static void usb_vbus_poll(void)
     if (!usb_attach_allowed())
         return;
 
-    status = vbus_sample();
+    /* Cable presence is not a request. usb.c treats any USB_INSERTED event as
+     * "enter USB mode": it sets usb_state = USB_INSERTED at line 499 whatever the
+     * mode is, and charge mode only changes which classes get composed. Reporting
+     * the cable would therefore park this player on the USB screen for as long as
+     * it is charging, which on this hardware is most of the time -- charging is
+     * done by the AXP173 and is not something Rockbox can decline.
+     *
+     * So the event is gated by the same rule that gates the pins: post insertion
+     * only when a data profile is actually wanted, which usb.c will then hand to
+     * __wrap_usb_enable(), which applies the same predicate and attaches. Post
+     * extraction when that is no longer true. The charging display is unaffected:
+     * it comes from power_input_status(), which is the honest source for the cable.
+     */
+    status = (vbus_sample() == USB_INSERTED && usb_transport_wanted())
+             ? USB_INSERTED : USB_EXTRACTED;
+
     if (status != last)
     {
         last = status;
@@ -406,11 +426,26 @@ static void usb_vbus_poll(void)
  * will stop a playlist save. That is standard behaviour on targets that sense
  * VBUS, and it is the reason this stays behind the same gate as the attach.
  */
+/*
+ * Reports the transport, not the cable.
+ *
+ * The two are different things on this board and Rockbox uses them for different
+ * purposes. The cable drives the state machine -- usb_status_event() from the poll
+ * below, which is what makes the charging display and the USB mode screen work.
+ * usb_detect() is the *raw* value, and the apps use it to decide whether the
+ * device is unavailable: apps/playlist.c:1127 suppresses a write-error report when
+ * it says USB_INSERTED, treating the failure as "USB has the disk". On this board
+ * VBUS is present whenever the unit is powered from a host, which is most of the
+ * time, so reporting the cable would quietly swallow every real disk error and
+ * claim the player owns nothing while it is merely charging.
+ *
+ * So: cable state goes to the state machine, transport state answers usb_detect().
+ * They diverge deliberately in charge mode, where Rockbox's own usb_inserted()
+ * reports the state and usb_detect() says there is no transport to wait for.
+ */
 int usb_detect(void)
 {
-    if (!usb_attach_allowed())
-        return USB_EXTRACTED;   /* inside the boot window: pads stay on USJ */
-    return vbus_sample();
+    return xt_attached ? USB_INSERTED : USB_EXTRACTED;
 }
 
 #else /* !USB_ALLOW_ATTACH */
@@ -510,9 +545,15 @@ void __wrap_usb_enable(bool on)
     xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
 
     if (on)
+    {
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
+        xt_attached = true;
+    }
     else
+    {
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+        xt_attached = false;
+    }
 
     /* Both halves of the register state, recorded before anything can change it.
      * The trail survives the reset, and app_main() replays it inside the boot
