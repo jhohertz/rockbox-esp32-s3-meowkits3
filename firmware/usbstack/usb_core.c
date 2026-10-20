@@ -490,6 +490,11 @@ void usb_core_exit(void)
     if(initialized) {
         usb_drv_exit();
         initialized = false;
+#if defined(CPU_XTENSA)
+        /* The controller is gone once this returns; anything that hangs from here on is
+         * above the driver. */
+        xtensa_breadcrumb_rtc("dRet", usb_state, 0);
+#endif
     }
     usb_state = DEFAULT;
 #ifdef HAVE_USB_CHARGING_ENABLE
