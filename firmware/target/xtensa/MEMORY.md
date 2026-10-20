@@ -64,15 +64,23 @@ Measured from the linked image.
 
 | Region | Budget | Used | Free | Owner of the budget |
 |---|---|---|---|---|
-| `dram0_0_seg` (internal data) | 341,760 (`0x53700`) | **340,740** | **1,020** | IDF `memory.ld` |
+| `dram0_0_seg` (internal data) | 341,760 (`0x53700`) | **339,200** | **2,560** | IDF `memory.ld` |
 | `iram0_0_seg` (internal code) | — | ~78,000 | — | IDF |
 | `.flash.text` (IROM window) | — | 549,430 | — | flash |
-| PSRAM window | 8,388,608 | 8,363,324 | **25,284** | see §3 |
+| PSRAM window | 8,388,608 | 8,362,292 | **26,316** | see §3 |
 
-**Internal SRAM is the constraint, and it is now down to 1,020 bytes.** That is
-the direct cost of `CONFIG_ESP_PANIC_HANDLER_IRAM`, which needs ~5,464 bytes of
-DRAM and only fit after `file.o` was moved to PSRAM. Before that change the
-figure was 4,376 free; the handler alone would not have fitted.
+Measured from the linked image with the USB stack compiled in: `.dram0.data`
+26,840 B at `0x3fc97100`, `.dram0.bss` 248,320 B at `0x3fc9e300`, high water
+`0x3fcdad00`, region end `0x3fcdb700`. IDF's internal heap starts at that high
+water, so every byte of Rockbox DRAM static is a byte taken from the heap: the
+boot reports `heap_init: At 3FCDAD00 len 0000EA10 (58 KiB)`, against 87 KiB
+before the USB stack was enabled.
+
+**Internal SRAM is the constraint and the margin is single-digit KB.** It is not
+enlargeable: `DRAM0_0_SEG_LEN` is capped at `I_D_SRAM_SIZE`, which this build
+already sits on, and the cache size configs feed IRAM rather than DRAM. Most of
+what is left is thread stacks (a PSRAM stack faults) and DMA destinations (the
+DWC and SDHOST masters cannot reach the PSRAM window).
 
 **There is no spare PSRAM.** An earlier revision of this file claimed ~1 MiB of
 PSRAM was idle, and decisions were made against that claim. It was wrong: it
@@ -103,11 +111,11 @@ codec.
             | IDF .flash_rodata_dummy  |  sized SIZEOF(.flash.text)
             | IDF .ext_ram.dummy       |  1,179,616 B (same span, other view)
 0x3C090120  | .flash.rodata            |  548,576 B
-0x3C120000  | .ext_ram.bss             |  4,562,236 B  entry 18
+0x3C120000  | .ext_ram.bss             |  4,561,204 B  entry 18
 0x3C15D2C0  |   audiobuffer            |    4,194,304 B (the buflib arena) entry 21
 0x3C55D2C0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
-0x3C579D3C  +--------------------------+  end of .ext_ram.bss, entry 85
-            |     25,284 B free        |  <- the only idle bytes in the window
+0x3C579934  +--------------------------+  end of .ext_ram.bss, entry 85
+            |     26,316 B free        |  <- the only idle bytes in the window
 0x3C580000  | plugin_text              |  524,288 B  entry 88
 0x3C600000  | codec_text               |  524,288 B  entry 96
 0x3C680000  | codecbuf                 |  1 MiB      entry 104
@@ -116,7 +124,7 @@ codec.
 ```
 
 Every byte is accounted for: 1.125 MB firmware mapping + 4.36 MB `.ext_ram.bss`
-+ 1 MB `_text` reservations + 1.5 MB codec/plugin buffers + 25 KB idle = 8 MB.
++ 1 MB `_text` reservations + 1.5 MB codec/plugin buffers + 26 KB idle = 8 MB.
 
 **The 1.125 MB firmware reservation is not reclaimable.** It looks like the cost
 of IDF's PSRAM-XIP options (`CONFIG_SPIRAM_RODATA`, `SPIRAM_FETCH_INSTRUCTIONS`,
@@ -251,7 +259,11 @@ Largest DRAM objects in the linked image:
 | 12,288 | `scroll_stack$0` | default | **No** -- despite the name this is a *thread stack* (`static long scroll_stack[DEFAULT_STACK_SIZE*3]` in `scroll_engine.c`). Context switches happen in assembly and a PSRAM stack would be fatal with the cache disabled |
 | 12,288 | `codec_stack` | default | Thread stack |
 | 12,288 | `buffering_stack` | default | Thread stack |
-| 4,096 | `dma_buf` | required | **No** -- TX DMA staging (4 slots x 1024 B; was 8,192 while `XT_TX_SLOT` carried a second, never-transferred half per slot) |
+| 17,024 | `usb_stack` (`usb.c`) | thread stack | **No** -- `DEFAULT_STACK_SIZE*4` plus `DUMP_BMP_LINESIZE`; the USB thread runs the GUI |
+| 8,192 | `_transfer_buffer` (`usb_storage.c`) | DWC DMA | **No** -- the core's AHB master cannot reach PSRAM, hence `USB_STATIC_ALLOC` for ESP32S3 in `usb_storage.c:450`. 2 x 4 KB; the default 64 KB per direction overflowed the region by 152,968 B |
+| 1,024 | `send_buffer` / `receive_buffer` (`usb_serial.c`) | DWC DMA | **No** -- same master |
+| 4,096 | `cache_buffer` | SDHOST IDMAC destination | **No**, and it was halved: `fs_defines.h` sizes it from `MEMORYSIZE` (16 = flash size, not DMA-capable RAM), so 64 entries became 32. esp32s3 declares no `SOC_SDMMC_PSRAM_DMA_CAPABLE` |
+| 4,096 | `dma_buf` | **moved to PSRAM** | TX DMA staging, 4 slots x 1024 B. GDMA can reach PSRAM for buffers (`SOC_AHB_GDMA_SUPPORT_PSRAM`, and the 20-bit window applies only to the descriptor address register), so this one moved; `desc[]` stayed, 128 B, because descriptors cannot |
 | 8,192 | `storage_thread_stack` | default | Thread stack |
 | 8,192 | `audio_stack` | default | Thread stack |
 | 6,144 | `playlist_stack` | default | Thread stack |
@@ -279,7 +291,7 @@ and now `file` are the ones that have moved.
 
 ## 5. Known gaps and opportunities
 
-1. **The arena has no headroom.** 25,284 bytes of the window are idle and the
+1. **The arena has no headroom.** 26,316 bytes of the window are idle and the
    three largest holders are all either pinned or grab-everything. Any new
    resident consumer has to be funded by shrinking dircache, the theme, or the
    tree caches -- see §3b before assuming there is somewhere to put it.

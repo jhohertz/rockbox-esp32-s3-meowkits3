@@ -3782,3 +3782,101 @@ bottom walks into the initial context frame and measures that instead.
 
 The target therefore carries no stack report. Sizing decisions come from
 `DEFAULT_STACK_SIZE` and observed behaviour, not from a watermark.
+
+## IDF's ROM linker script silently shadows Rockbox function names
+
+`esp32s3.rom.ld` assigns about 2,100 **absolute** symbols naming mask ROM
+routines. A linker script's absolute assignment takes precedence over a
+definition in an object file, and **ld says nothing**: the reference binds to the
+ROM address, and the Rockbox definition is garbage-collected because nothing
+points at it any more. Measured by listing the `A` symbols in the linked ELF and
+matching them against function definitions in the tree — 15 collisions:
+
+| Name | ROM | Effect |
+|---|---|---|
+| `memcpy`, `memset` | `0x400011e8`, `0x400011f4` | harmless; this is why Rockbox's own libc copies are absent from the image |
+| `atoi`, `strtol`, `strtoul`, `strstr`, `strcasecmp`, `strcasestr`, `strncasecmp`, `strcat`, `strlcpy`, `strtok_r`, `rand`, `srand` | `0x400012xx`–`0x400014xx` | harmless; correct C implementations |
+| **`usb_enable`** | `0x4000297c` | **fatal.** It is Rockbox's target hook (`usb.h`), called by `usb_init()` with a bool. The ROM's `usb_enable` is part of the USB download/console path. First boot with `HAVE_USBSTACK` died with `LoadProhibited`, `EXCVADDR 0x0c`, and `usb_init()` disassembled to `l32r a8, (4000297c <usb_enable>) ; callx8 a8` |
+
+Fixed with `-Wl,--wrap=usb_enable` in `idf-app/CMakeLists.txt`; the real
+implementation is `__wrap_usb_enable` in `firmware/target/xtensa/usb-xtensa.c`.
+Any new target hook whose name appears in the ROM list needs the same treatment —
+check with `nm rockbox.elf | awk '$2=="A"'` against the names you are adding.
+
+## DMA reach is per master, and internal DRAM cannot be enlarged
+
+| Master | Buffers in PSRAM | Descriptors in PSRAM | Evidence |
+|---|---|---|---|
+| GDMA (I2S audio, SPI) | **yes** | no | `SOC_PSRAM_DMA_CAPABLE 1`, `SOC_AHB_GDMA_SUPPORT_PSRAM 1`, `GDMA_LL_MAX_BURST_SIZE_PSRAM 64`; `external-ram.rst` for esp32s3 states descriptors cannot be in PSRAM and that DMA-to-PSRAM bandwidth is "very limited, especially when the core is trying to access the external RAM at the same time" |
+| SDHOST IDMAC (SD card) | **no** | no | `SOC_SDMMC_PSRAM_DMA_CAPABLE` exists in IDF's symbol set but is **not defined for esp32s3** |
+| DWC2 (USB OTG) | no | n/a (FIFO controller) | its AHB master is on the internal bus; `usb_storage.c:450` already lists `CONFIG_CPU == ESP32S3` in the `USB_STATIC_ALLOC` group for this reason |
+
+Consequences that are easy to get wrong:
+
+- `dram0_0_seg` is `0x53700` and **is not enlargeable**: `DRAM0_0_SEG_LEN` is
+  capped at `I_D_SRAM_SIZE`, which this build already sits on. The instruction /
+  data cache configs feed **IRAM**, not DRAM, so shrinking a cache buys no DRAM.
+- IDF's internal heap starts at the DRAM high water, so every Rockbox DRAM static
+  is a byte taken from the heap: 87 KiB before the USB stack, 58 KiB after.
+- A per-object census of `.bss`/`.data` is **not** a census of DRAM, because
+  per-symbol section attributes redirect objects: `lcd_static_framebuffer` is in
+  PSRAM through `IRAM_LCDFRAMEBUFFER` (`meowkits3.h`) while `lcd-16bit.o` still
+  reads as 153,600 B in an object-level count. Read the placed addresses from the
+  map, not the archive.
+
+## The sector cache is sized from the wrong number
+
+`fs_defines.h` picks `DC_NUM_ENTRIES` and `MAX_OPEN_FILES` from `MEMORYSIZE`,
+which on this board is 16 — **the flash size**, not the DMA-capable RAM.
+`cache_buffer[]` is an SDHOST read destination and therefore cannot leave DRAM,
+so the input should be internal SRAM. `fs_defines.h` now guards both pairs with
+`#ifndef` (defaults unchanged for every other target) and `meowkits3.h` selects
+the small-memory figures: 32 entries and 11 handles, which frees 16 KB of
+`cache_buffer` plus ~2 KB of map bitarrays. `MAX_OPEN_FILES` has to move with it:
+the file's own comment requires the cache to cover every handle plus a few.
+
+## Build hygiene on the IDF-backed link
+
+- Archives are **rebuilt from scratch**. `ar rcs` only replaces the members it is
+  handed, so an object that a configuration change stopped building stayed in
+  `libfirmware.a` and kept being linked: turning the USB stack off still pulled
+  out `usb.o` and then failed on `undefined reference to usb_detect`. The
+  `make_archive` macro in `tools/functions.make` removes the archive first and
+  creates its own directory (an archive's objects live elsewhere, so nothing else
+  re-created `lib/` after a `clean`). All 50 archive recipes use it.
+- `firmware/SOURCES` lists `usb.c` **unconditionally**, so `USB_NONE` is
+  load-bearing: without it, nothing provides the dummy `usb_detect()` /
+  `usb_inserted()` and the link fails.
+- `tools/root.make` now owns IDF's state: `$(BUILDDIR)/idf.make` is a rule
+  harvested from `idf-app/build/compile_commands.json`, that file is regenerated
+  by `idf.py reconfigure`, the three objects compiled with IDF flags depend on
+  `idf.make`, and the binary rule **reseeds `sdkconfig` whenever
+  `sdkconfig.defaults` is newer** — IDF seeds `sdkconfig` once and ignores the
+  defaults forever after, so an edit there silently changes nothing.
+- `make clean` deliberately does **not** fullclean IDF. `SOURCES` files are run
+  through the target compiler while make parses the makefile, and those
+  compilations need IDF's generated `sdkconfig.h`; removing it breaks the next
+  build at parse time and a failed preprocess yields an *empty file list*, so it
+  looks like a missing source. `make idf-clean` is the goal that resets IDF state
+  and re-establishes the generated headers.
+- `make clean` also deletes `rockbox.zip`. Verify packaging with `make zip`
+  afterwards: 411 entries, `.rockbox/rockbox.esp32s3`, 160 `.rock`, 43 `.codec`.
+- Dependency tracking is *not* the problem: `make.dep` already lists
+  `config/meowkits3.h` for 5,320 objects. Staleness came from the archive and
+  directory semantics above, and from deleting the wrong object path
+  (`firmware/drivers/lcd-16bit.o`, not `firmware/lcd-16bit.o`).
+
+## Console access, reset polarity, and what a silent boot means
+
+- The console is USB-Serial-JTAG (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`), and
+  the system `esptool` has no `stub_flasher_32s3.json` — use `make flash
+  ESPPORT=/dev/ttyACM0`, which runs IDF's `idf.py`. Kill any watcher first: it
+  holds the port and the flash then blocks.
+- Reset through the serial lines: **`dtr = False` then pulse `rts`** boots from
+  flash. `dtr = True` asserts IO0 and puts the chip in **download mode**, which
+  prints `boot:0x3 (DOWNLOAD(USB/UART0))` and then nothing — that is a tooling
+  error, not a firmware fault, and it is easy to misread as a dead image.
+- **A quiet boot log is not a failure.** This target has no `CONFIG_BOOKMARKS`
+  and no resume-on-boot, so playback only appears after someone presses play.
+  Absence of `codec load` / `DMA:` lines says nothing about health; check
+  `SD card up`, `entering root_menu` and the absence of `Guru Meditation`.
