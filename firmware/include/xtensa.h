@@ -85,6 +85,8 @@
 #define XT_USB_OTG_CONF         (XT_USB_WRAP_BASE + 0x00)
 #define XT_USB_PHY_SEL_EXT      (1u << 2)      /* 1 = external PHY */
 #define XT_USB_PAD_ENABLE       (1u << 18)
+#define XT_USB_SESSEND_OVERRIDE   (1u << 0)      /* 1 = software drives session end */
+#define XT_USB_SESSEND_VALUE      (1u << 1)      /* 1 = VBus < 0.2V, 0 = VBus > 0.8V */
 #define XT_USB_WRAP_CLK_EN      (1u << 31)     /* the wrap block's own gate */
 #define XT_USB_PHY_CLK_FORCE    (1u << 20)
 #define XT_USB_AHB_CLK_FORCE    (1u << 19)

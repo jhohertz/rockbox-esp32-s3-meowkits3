@@ -120,3 +120,13 @@ CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
 # a core" from "we are faulting inside the panic handler".
 # CONFIG_ESP_TASK_WDT_PANIC is not set
 # CONFIG_TASK_WDT_PANIC is not set
+
+/* A panic should reboot, not halt. With PRINT_HALT the chip stops with the USB pad
+ * mux still handed to the OTG wrap (that override is in the RTC domain and only a
+ * power-on reset clears it), so the board keeps no console and no flash port until
+ * someone unplugs it. Rebooting instead runs the boot hook that returns the pins to
+ * USB-Serial-JTAG, prints the breadcrumb trail on a live console, and preserves
+ * .noinit -- esp_restart is a chip reset, so the trail survives it.
+ */
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+# CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT is not set

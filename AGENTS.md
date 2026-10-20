@@ -3296,6 +3296,37 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   byte-identical" is only a meaningful claim at a fixed HEAD. To compare builds
   across commits, read section sizes and addresses from the ELF instead.
 
+### Console, pads and the attach trade
+
+USB-Serial-JTAG and the DWC OTG core share pads 19 (D-) and 20 (D+), so taking the
+pins for USB **takes the console and esptool with them**. Three consequences that
+are easy to get wrong:
+
+- The pad mux lives in the RTC domain. `esp_restart()` is a chip reset and does
+  *not* restore the USJ override; only a power-on does. `usb_init_device()` therefore
+  clears pad_enable, the wrap clock and the RTC domain override at every boot, so a
+  board that died mid-attach comes back as a console. Recovery without touching the
+  hardware: unplug the cable. The poll posts extraction, `usb_core_exit()` runs,
+  `disable_clocks()` releases the OTG pads and the USJ comes back.
+- `CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT` meant one bring-up report left the board
+  unreachable for an entire power cycle. `PRINT_REBOOT` prints the trail and then
+  restores the pads through the boot hook, and `.noinit` survives the reset, so the
+  same trail is still there to read.
+- A bring-up report that panics from a tick task thread reboots into the same
+  condition it just reported. That loop is what looked like "crashing a lot":
+  boot, attach at +120 s, report, reboot, repeat every 10 s, and the amp popping
+  static each cycle. The report is breadcrumbs now; a restart is taken only by the
+  attach judge, and only when the core has produced no interrupts at all.
+
+The OTG core needs `iddig`, `bvalid`, `vbusvalid` and `avalid` from the GPIO matrix,
+not from pins — IDF ties them in `usb_phy.c` to `GPIO_MATRIX_CONST_ONE_INPUT`
+(0x38) and `GPIO_MATRIX_CONST_ZERO_INPUT` (0x3C) for device mode, and Rockbox never
+did. Without those ties D+ is never asserted and the host sees nothing at all; with
+them it reports "new full-speed USB device" immediately. Signals: `USB_OTG_IDDIG_IN
+= 58`, `USB_SRP_BVALID_IN = 60`, `USB_OTG_VBUSVALID_IN = 61`, `USB_OTG_AVALID_IN = 59`.
+This is also why `DSTS fetsusp` proved nothing: it was the reset default (bit 22 set
+in a probe where the OTG core was never armed), not a VBUS judgement.
+
 ### Scheduler bring-up: three separate faults that each hid the next
 
 Boot appeared to "hang" at `storage_init`. It was three independent bugs, and
