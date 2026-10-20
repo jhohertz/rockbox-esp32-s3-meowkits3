@@ -29,4 +29,4 @@ $(BUILDDIR)/lib/tlsf/src/%.o: $(TLSFLIB_DIR)/src/%.c
 
 $(TLSFLIB): $(TLSFLIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)

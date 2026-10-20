@@ -18,4 +18,4 @@ CORE_LIBS += $(MICROTARLIB)
 
 $(MICROTARLIB): $(MICROTARLIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)

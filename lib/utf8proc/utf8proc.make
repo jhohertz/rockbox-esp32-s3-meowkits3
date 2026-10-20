@@ -21,4 +21,4 @@ DEFINES += -DUTF8PROC_EXPORTS
 
 $(LIBUTF8PROC): $(UTF8PROC_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
