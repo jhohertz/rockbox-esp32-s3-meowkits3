@@ -218,10 +218,49 @@ static void usb_dw_set_address(uint8_t address)
     DWC_DCFG = (DWC_DCFG & ~(0x7f0)) | DAD(address);
 }
 
+/*
+ * Both waits below are unbounded on every other target. On ESP32-S3 a hang here
+ * is the likeliest failure of a first attach: the core only answers once both
+ * clock gates are enabled and both reset bits are cleared, and the pad handover
+ * that makes the core usable also takes GPIO19/20 away from USB-Serial-JTAG -- so
+ * the console and esptool are both gone at exactly the moment a spin loop would
+ * matter. An unbounded spin then means a silent board and a power cycle with no
+ * diagnosis left behind. Bounding them turns that into a panic, which the LCD
+ * shows and which the breadcrumb trail records for the next boot.
+ */
+#if defined(CPU_XTENSA)
+#define XT_USB_SPIN_LIMIT 2000000u
+
+static void usb_dw_wait_for_ahb_idle(void)
+{
+    uint32_t n = XT_USB_SPIN_LIMIT;
+
+    while (!(DWC_GRSTCTL & AHBIDL))
+        if (--n == 0)
+            panicf("usb: AHB never went idle (grstctl=%08lx)",
+                   (unsigned long)DWC_GRSTCTL);
+}
+
+static void usb_dw_wait_for_soft_reset(void)
+{
+    uint32_t n = XT_USB_SPIN_LIMIT;
+
+    while (DWC_GRSTCTL & CSRST)
+        if (--n == 0)
+            panicf("usb: core soft reset never completed (grstctl=%08lx)",
+                   (unsigned long)DWC_GRSTCTL);
+}
+#else
 static void usb_dw_wait_for_ahb_idle(void)
 {
     while (!(DWC_GRSTCTL & AHBIDL));
 }
+
+static void usb_dw_wait_for_soft_reset(void)
+{
+    while (DWC_GRSTCTL & CSRST);
+}
+#endif
 
 #ifdef USB_DW_SHARED_FIFO
 static unsigned usb_dw_bytes_in_txfifo(int epnum, uint32_t *sentbytes)
@@ -1280,6 +1319,12 @@ static void usb_dw_init(void)
     DWC_PCGCCTL = 0;
 
     usb_dw_check_hw();
+#if defined(CPU_XTENSA)
+    /* Console-less bring-up: if what follows ever stalls, the trail says where.
+     * xtensa_breadcrumb() is a .noinit store; it needs no console, no lock, no
+     * stack and no working panic handler. */
+    xtensa_breadcrumb("usbPhy", DWC_GUSBCFG, DWC_GSNPSID);
+#endif
 
     /* Configure PHY type (must be done before reset) */
 #ifndef USB_DW_TURNAROUND
@@ -1298,10 +1343,13 @@ static void usb_dw_init(void)
     udelay(100);
     usb_dw_wait_for_ahb_idle();
     DWC_GRSTCTL = CSRST;
-    while (DWC_GRSTCTL & CSRST);
+    usb_dw_wait_for_soft_reset();
     usb_dw_wait_for_ahb_idle();
 
     /* Configure FIFOs */
+#if defined(CPU_XTENSA)
+    xtensa_breadcrumb("usbRst", DWC_GRSTCTL, DWC_GHWCFG3);
+#endif
     DWC_GRXFSIZ = c->rx_fifosz;
 #ifdef USB_DW_SHARED_FIFO
     DWC_GNPTXFSIZ = (c->nptx_fifosz << 16) | c->rx_fifosz;
@@ -1316,6 +1364,9 @@ static void usb_dw_init(void)
      * fifos are flushed before continuing.
      */
     usb_dw_flush_fifo(TXFFLSH|RXFFLSH, 0x10);
+#if defined(CPU_XTENSA)
+    xtensa_breadcrumb("usbFifo", DWC_GRXFSIZ, n_ptxfifos);
+#endif
 
     /* Configure the core */
     DWC_GUSBCFG = gusbcfg;
@@ -1372,6 +1423,9 @@ static void usb_dw_init(void)
     /* Soft reconnect */
     udelay(3000);
     DWC_DCTL &= ~SDIS;
+#if defined(CPU_XTENSA)
+    xtensa_breadcrumb("usbConn", DWC_DCTL, DWC_GINTSTS);
+#endif
 }
 
 static void usb_dw_exit(void)

@@ -129,6 +129,10 @@ void usb_dw_target_enable_clocks(void)
        (XT_SW_HW_USB_PHY_SEL | XT_SW_USB_PHY_SEL));
     wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) | XT_USB_PAD_ENABLE |
                         XT_USB_WRAP_CLK_EN);
+
+    /* The last thing that runs before the console disappears: from here on the
+     * breadcrumb trail is the only record, until the next boot prints it. */
+    xtensa_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
 }
 
 void usb_dw_target_disable_clocks(void)
@@ -157,6 +161,8 @@ void usb_dw_target_enable_irq(void)
     {
         esp_intr_enable(usb_intr);
     }
+
+    xtensa_breadcrumb("usbIrq", (unsigned long)(usb_intr != NULL), 0);
 }
 
 void usb_dw_target_disable_irq(void)
@@ -395,10 +401,13 @@ void usb_init_device(void)
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
+    xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
+
     if (on)
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
     else
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+    xtensa_breadcrumb("usbEnD", on ? 1 : 0, 0);
 #else
     (void)on;
 #endif
