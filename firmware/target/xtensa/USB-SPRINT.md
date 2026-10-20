@@ -540,3 +540,44 @@ inversion. The attach then runs `usb_core_init()`, the pads go to the wrap, and 
 seconds later the report halts with the register set drawn on the LCD *and* written
 to the trail, which the following boot prints on the console.
 
+## The detection question, settled
+
+Charging on this board is inevitable and outside firmware control: the AXP173 charges
+from VBUS whatever Rockbox does. That makes `USB_MODE_CHARGE` a misnomer here -- it is
+not a charging mode, it is a "no data transport" mode, and it is only honest because
+`HAVE_USB_CHARGING_ENABLE` is *not* defined, so the firmware never claims to limit the
+charge current.
+
+Detection has exactly one hardware source. The SoC has no VBUS input; GPIO19/20 are
+D+/D-. The PMU's REG 0x00 bit 5 is the only cable signal, read over the shared I2C bus
+at ~1.6 ms per transaction. The chip's VBUS IRQ bits are left off deliberately: the
+GPIO43 line goes low for any enabled event, and the PEK check depends on that line
+meaning "PEK happened".
+
+What was wrong about using it: Rockbox reads an insertion event as "enter USB mode"
+(`usb.c:499`), unconditionally. Reporting the cable therefore put the player on the
+USB screen for as long as it was plugged in -- most of the time -- while offering no
+transport. Verified fixed: with the cable in and charge mode selected the device stays
+on the root menu, and the trail records no insertion attempt.
+
+Two rules follow, both implemented in the target:
+
+1. **The poll posts insertion only when a data profile is wanted** -- the same
+   mode-XOR-button predicate that decides the pins -- and extraction when that stops
+   being true. The charging display is untouched: it reads `power_input_status()`,
+   the honest source for the cable.
+2. **`usb_detect()` answers the transport, not the cable.** `apps/playlist.c:1127`
+   uses it to suppress write-error reports on the theory that USB owns the disk; with
+   a cable-always answer, every genuine disk error while charging would be silently
+   ignored. The two diverge deliberately in charge mode, which is the point:
+   `usb_inserted()` reports the state for the status bar and USB screen, while
+   `usb_detect()` says there is nothing to wait for.
+
+`usb_init()` calling `usb_enable(false)` under `USB_FULL_INIT` (usb.c:769) is why a
+`usbOut` entry appears in the trail at every boot. That is Rockbox making sure the
+transceiver starts disabled, not a teardown of anything.
+
+The reference firmware points at the end state -- always-attached CDC composite, MSC as
+a `mediaPresent` toggle, an explicit Eject key, a 1 Hz transfer readout. Rockbox has
+the eject machinery already. Adopting that shape means giving up the USJ console and
+esptool for good, so it is a decision for after bring-up, not during.
