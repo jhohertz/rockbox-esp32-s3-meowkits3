@@ -397,3 +397,47 @@ and nothing in Rockbox's own vector handling is involved on this branch. Note th
 neither handler carries `ESP_INTR_FLAG_IRAM` -- the GDMA one deliberately does not,
 because it reaches code in the instruction-cache window -- so a higher level buys
 latency, not safety.
+
+## Measured configuration, resolved through the target preprocessor
+
+Reading `autoconf.h` is not enough: it contains no USB defines at all, because
+`tools/configure` puts the USB configuration in `firmware/export/config/meowkits3.h`
+and `config.h` selects that header on `-DMEOWKIT_ESP32S3`, which is a command-line
+define, not a macro in a generated file. The values below came from running the real
+target compiler over a probe that `#include`s `config.h` with that define and the
+harvested IDF include path.
+
+| Macro | Value | Where it comes from |
+|---|---|---|
+| `HAVE_USBSTACK` | yes | `meowkits3.h` |
+| `CONFIG_USBOTG` | 6401 = `USBOTG_DESIGNWARE` | `meowkits3.h` |
+| `USB_NUM_ENDPOINTS` | 7 | `meowkits3.h`, justified by GHWCFG2 |
+| `USB_ENABLE_SERIAL` | yes | `meowkits3.h` -- the only target in the tree that sets it |
+| `USB_ENABLE_STORAGE` | yes | derived: `USB_HAS_BULK`, which DESIGNWARE sets |
+| `USB_ENABLE_HID` | yes | derived: `USB_HAS_HID` |
+| `USB_ENABLE_AUDIO` | yes | derived: `USB_HAS_ISOCHRONOUS` |
+| `USB_ENABLE_CHARGING_ONLY` | no | not applicable to this stack |
+| `USB_STATUS_BY_EVENT` | yes | implied by DESIGNWARE -- the target must push `usb_status_event()` |
+| `HAVE_USB_POWER` | no | deliberately not yet: it pulls the charging display |
+| `HAVE_HOTSWAP` | no | the card is not removable on this board |
+| `USBMODE_DEFAULT` | defined, but unused | `meowkits3.h` sets charge mode; `usb.c` only reads it under `HAVE_USB_POWER` |
+
+All four class drivers are compiled into the image. That is not the same as all four
+being composed: composition is `usb_core_enable_driver()` at runtime, and the
+defaults today are HID on, serial on, audio off (`usb_audio = 0`), storage off (no
+mass-storage mode). So the configuration the core would present the moment
+`USB_ALLOW_ATTACH` is turned on is **CDC + HID alone -- three endpoints, two of them
+IN**, which is well inside the four dedicated transmit FIFOs.
+
+That is the staging to use at the board, and it is better than starting from a full
+profile:
+
+1. **CDC + HID** (already the default composition): proves clocks, pads, PHY,
+   enumeration, one control-transfer path and one interrupt-IN path. CDC also gives
+   the console replacement, so the trace comes back over USB before any other
+   feature does.
+2. **add MSC**: one more IN, one more OUT. The only new risk is the storage handoff,
+   which is traced above.
+3. **or add Audio instead**: one isochronous OUT plus one feedback IN. Mutually
+   exclusive with MSC, because both together need six IN endpoints and the core has
+   four.
