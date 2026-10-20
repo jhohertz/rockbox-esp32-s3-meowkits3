@@ -645,8 +645,22 @@ Four related facts, all measured rather than read:
   `SPIRAM_FETCH_INSTRUCTIONS` and `SPIRAM_RODATA` are all enabled. Verified from the
   symbol table: `gdma_irq` `0x420578fc`, `gdma_tx_isr` `0x42057ad0`, `arm`
   `0x42056864`, `fill` `0x42056aa0`, `start_tx` `0x42056cf4` -- every one in the PSRAM
-  instruction window. `.iram0.text` contains only IDF's code, and
-  `.iram0.text_end` at `0x40387017` leaves roughly 4 KB of internal IRAM free.
+  instruction window. `.iram0.text` contains only IDF's code, ending at
+  `0x40387017`. `iram0_0_seg` is `0x40374000 + 0x57700` (358 KB), so IRAM address
+  space is not scarce -- but only `0x40374000..0x40378000` is instruction-only, and
+  above `0x40378000` those addresses are the `0x6F0000` alias of `dram0_0_seg`.
+  `sections.ld` starts `.dram0.data` at
+  `ORIGIN(dram0_0_seg) + (_iram_end > _diram_i_start ? _iram_end - _diram_i_start : 0)`,
+  so **moving code into IRAM costs heap, not a separate budget.** With `.dram0.data`
+  `0x65c8` and `.dram0.bss` `0x3c688` in a 337 KB region, roughly 64 KB of heap
+  remains. The TX ISR call tree is immaterial against that (measured with `nm -S`):
+  `gdma_irq` 468 B, `fill` 327 B, `tx_recover` 160 B, `fill_silence` 78 B, `arm` 66 B,
+  `gdma_tx_isr` 8 B -- 1107 B total; `refill` is 123 B of its own and the mixer it
+  calls stays in PSRAM either way. Cache maintenance is not the PSRAM-fetch problem
+  either: `cache_hal_invalidate_addr` and `cache_hal_writeback_addr` are already
+  IRAM-resident at `0x40380208`/`0x40380230`, and `memcpy`/`memset` resolve to ROM at
+  `0x400011xx`. It is the handler's own body and its Rockbox callees that fetch from
+  PSRAM.
   This is also why the GDMA interrupt is allocated *without* `ESP_INTR_FLAG_IRAM`.
   Consequence beyond the err counter: any PSRAM-heavy operation can delay the
   completion handler, because the handler's own instruction fetches contend with the
