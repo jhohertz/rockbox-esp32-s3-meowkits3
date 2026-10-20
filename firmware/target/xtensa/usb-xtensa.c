@@ -44,11 +44,15 @@
 #include "usb_drv.h"
 #include "usb-designware.h"
 
-/* Device FIFO RAM is 256 words in total (OTG_DFIFO_DEPTH). Full speed means a 64
- * byte maximum packet, so an IN endpoint needs 64/4 = 16 words as its floor; 40
- * gives margin for the status plus a packet. NPTX serves EP0 only, whose packet is
- * 64 bytes. These are the numbers the earlier bring-up work used on this core. */
-#define XT_FIFO_RAMSZ   256
+/* Device FIFO RAM. IDF's usb_dwc_cfg.h says OTG_DFIFO_DEPTH 256, but the core
+ * itself says otherwise: GHWCFG3[31:16] reads 200 words on this silicon
+ * (hwcfg3=0x00c804b5, measured at boot). The register wins -- a split sized for
+ * 256 words would program DIEPTXF registers whose start addresses run past the
+ * end of the RAM, which shows up as IN transfers that never complete rather than
+ * as anything that names the cause. */
+#define XT_FIFO_RAMSZ   200
+
+/* EP0 IN. Full speed caps the packet at 64 bytes = 16 words. */
 #define NPTX_FIFOSZ     16
 /* Each dedicated IN FIFO has to hold at least max_packet/4 words. Full speed caps a
  * bulk or interrupt packet at 64 bytes, so 16 words is the floor; anything larger
@@ -65,10 +69,12 @@ _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1) + RX_FIFOSZ
                "device FIFO split exceeds the core's 256-word FIFO RAM");
 
 const struct usb_dw_config usb_dw_config = {
-    /* The internal FS PHY is an 8-bit UTMI interface. This is the value
-     * usb_dw_check_hw() writes into GUSBCFG and reads back -- the reason the
-     * bring-up is still gated. */
-    .phytype       = DWC_PHYTYPE_UTMI_8,
+    /* The internal full-speed PHY, selected by GUSBCFG.fsintf (bit 5). This
+     * core has no classic PHY-type encoding: UTMI/ULPI/PHYSEL do not exist, and
+     * fsphytype is what GHWCFG2 reports. usb_dw_check_hw() now checks that bit
+     * rather than comparing the whole register, whose reset value is not zero.
+     */
+    .phytype       = FSINTF,
     .rx_fifosz     = RX_FIFOSZ,
     .nptx_fifosz   = NPTX_FIFOSZ,
     .ptx_fifosz    = PTX_FIFOSZ,
@@ -104,18 +110,29 @@ static void usb_dwc_isr(void *arg)
 
 void usb_dw_target_enable_clocks(void)
 {
+    /* Two gates, and the second one is the easy one to miss: usb_clk_en (bit 23
+     * of PERIP_CLK_EN0) is the wrap and PHY domain, usb_device_clk_en (bit 10 of
+     * PERIP_CLK_EN1) is the DWC core. With only the first, every OTG register
+     * reads 0x00000000 and nothing faults -- which looks like a dead block rather
+     * than a missing clock. */
+    wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) | XT_USB_CLK_EN);
+    wr(XT_PERIP_CLK_EN1, rd(XT_PERIP_CLK_EN1) | XT_USB_DEVICE_CLK_EN);
+    wr(XT_PERIP_RST_EN0, rd(XT_PERIP_RST_EN0) & ~XT_USB_RST);
+    wr(XT_PERIP_RST_EN1, rd(XT_PERIP_RST_EN1) & ~XT_USB_DEVICE_RST);
+
     /* The mux needs both halves: the RTC bit that lets software override it, and
      * the wrap bit that routes the FSLS PHY to it. phy_sel selects an *external*
      * PHY, so XT_USB_PHY_SEL_EXT stays clear. */
     wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) |
        (XT_SW_HW_USB_PHY_SEL | XT_SW_USB_PHY_SEL));
-    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) | XT_USB_PAD_ENABLE);
-    wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) | XT_USB_CLK_EN);
+    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) | XT_USB_PAD_ENABLE |
+                        XT_USB_WRAP_CLK_EN);
 }
 
 void usb_dw_target_disable_clocks(void)
 {
     wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) & ~XT_USB_CLK_EN);
+    wr(XT_PERIP_CLK_EN1, rd(XT_PERIP_CLK_EN1) & ~XT_USB_DEVICE_CLK_EN);
 
     /* Give the pins back. USB-Serial-JTAG is the console and the flash port, so
      * leaving the mux pointed at the DWC would silence both after disconnect. */
@@ -151,6 +168,105 @@ void usb_dw_target_clear_irq(void)
     /* The core's own interrupt status is cleared by the driver. */
 }
 
+/* TEMPORARY: identity probe, deliberately pad-free.
+ *
+ * The endpoint budget for both USB profiles rests on what this core reports,
+ * not on the array sizes in IDF's usb_struct.h, so the numbers are read from the
+ * silicon and printed. Only the peripheral clock gate is touched: the pad mux
+ * (XT_USB_PAD_ENABLE and the RTC override) is *not* set, because GPIO19/20 are
+ * shared with USB-Serial-JTAG and taking them would silence the console and
+ * esptool. Offsets and field positions come from IDF's generated
+ * usb_dwc_struct.h: numdeveps at ghwcfg2[13:10], numhstchnl at [17:14],
+ * dfifodepth at ghwcfg3[31:16], numdevperioeps at ghwcfg4[3:0], ineps at
+ * ghwcfg4[29:26], dedfifomode at bit 25.
+ */
+#define USB_HW_PROBE 1
+#ifdef USB_HW_PROBE
+#define USB_WRAP_CLK_EN         (1u << 31)   /* OTG_CONF bit 31 */
+#define USB_WRAP_DFIFO_FORCE_PU (1u << 22)   /* force the FIFO power *up* */
+#define USB_WRAP_DFIFO_FORCE_PD (1u << 3)    /* force it *down* -- reads back 0 */
+#define USB_WRAP_PHY_CLK_FORCE  (1u << 20)
+#define USB_WRAP_AHB_CLK_FORCE  (1u << 19)
+#define USB_WRAP_PAD_ENABLE     (1u << 18)   /* NOT touched: pads belong to USJ */
+#define USB_WRAP_PHY_SEL        (1u << 2)    /* NOT touched: 1 = external PHY */
+
+static void usb_hw_probe(void)
+{
+    uint32_t clk0_saved = rd(XT_PERIP_CLK_EN0);
+    uint32_t clk1_saved = rd(XT_PERIP_CLK_EN1);
+    uint32_t rst0_saved = rd(XT_PERIP_RST_EN0);
+    uint32_t rst1_saved = rd(XT_PERIP_RST_EN1);
+    uint32_t wrap_saved = rd(XT_USB_OTG_CONF);
+    uint32_t id, c2, c3, c4;
+
+    printf("USB probe: clk0=%08x clk1=%08x rst0=%08x rst1=%08x otg_conf=%08x rtc=%08x\n",
+           (unsigned)clk0_saved, (unsigned)clk1_saved, (unsigned)rst0_saved,
+           (unsigned)rst1_saved, (unsigned)wrap_saved,
+           (unsigned)rd(XT_RTC_USB_CONF));
+
+    /* Both gates, both resets cleared. Reading with only the wrap gate enabled is
+     * what produced the first all-zero probe on this board. */
+    wr(XT_PERIP_CLK_EN0, clk0_saved | XT_USB_CLK_EN);
+    wr(XT_PERIP_CLK_EN1, clk1_saved | XT_USB_DEVICE_CLK_EN);
+    wr(XT_PERIP_RST_EN0, rst0_saved & ~XT_USB_RST);
+    wr(XT_PERIP_RST_EN1, rst1_saved & ~XT_USB_DEVICE_RST);
+
+    id = DWC_GSNPSID;
+    printf("USB probe: id with clocks as-found = %08x\n", (unsigned)id);
+
+    /* Force the OTG block's clocks and DFIFO power up. Deliberately does not
+     * touch USB_PAD_ENABLE or PHY_SEL: those decide who owns GPIO19/20, and the
+     * console and esptool are on USB-Serial-JTAG. DFIFO_FORCE_PD is cleared
+     * because a powered-down block reads back as all zeroes rather than
+     * faulting, which is what the first probe saw. */
+    wr(XT_USB_OTG_CONF,
+       (wrap_saved & ~(USB_WRAP_DFIFO_FORCE_PD | USB_WRAP_PHY_SEL |
+                       USB_WRAP_PAD_ENABLE)) |
+       USB_WRAP_CLK_EN | USB_WRAP_DFIFO_FORCE_PU |
+       USB_WRAP_PHY_CLK_FORCE | USB_WRAP_AHB_CLK_FORCE);
+
+    id = DWC_GSNPSID;
+    c2 = DWC_GHWCFG2;
+    c3 = DWC_GHWCFG3;
+    c4 = DWC_GHWCFG4;
+
+    printf("USB probe: otg_conf=%08x id=%08x rev=%d\n",
+           (unsigned)rd(XT_USB_OTG_CONF), (unsigned)id, (int)(id & 0xff));
+    printf("USB core: hwcfg2=%08x eps=%d hstchnl=%d fsphy=%d hsphy=%d\n",
+           (unsigned)c2, (int)(((c2 >> 10) & 0xf) + 1),
+           (int)(((c2 >> 14) & 0xf) + 1), (int)((c2 >> 8) & 3),
+           (int)((c2 >> 6) & 3));
+    printf("USB core: fifo_words=%u hwcfg3=%08x\n",
+           (unsigned)(c3 >> 16), (unsigned)c3);
+    printf("USB core: hwcfg4=%08x perio_eps=%d in_eps=%d ded_fifo=%d\n",
+           (unsigned)c4, (int)((c4 & 0xf) + 1), (int)((c4 >> 26) & 0xf),
+           (int)((c4 >> 25) & 1));
+    printf("USB core: hwcfg1=%08x gusbcfg=%08x dcfg=%08x gintsts=%08x\n",
+           (unsigned)DWC_GHWCFG1, (unsigned)DWC_GUSBCFG, (unsigned)DWC_DCFG,
+           (unsigned)DWC_GINTSTS);
+
+    /* The claim usb_dw_check_hw() now makes: fsintf (bit 5) selects the internal
+     * FS PHY and is writable. Verify it here rather than finding out during a
+     * bring-up that also needs the pads. */
+    {
+        uint32_t g = DWC_GUSBCFG;
+        DWC_GUSBCFG = g | FSINTF;
+        printf("USB probe: gusbcfg %08x -> %08x (fsintf %s)\n",
+               (unsigned)g, (unsigned)DWC_GUSBCFG,
+               (DWC_GUSBCFG & FSINTF) ? "writable" : "read-only");
+        DWC_GUSBCFG = g;
+    }
+
+    /* Leave the block exactly as it was found: the console and esptool are on
+     * USB-Serial-JTAG, and the pad mux was never touched. */
+    wr(XT_USB_OTG_CONF, wrap_saved);
+    wr(XT_PERIP_CLK_EN0, clk0_saved);
+    wr(XT_PERIP_CLK_EN1, clk1_saved);
+    wr(XT_PERIP_RST_EN0, rst0_saved);
+    wr(XT_PERIP_RST_EN1, rst1_saved);
+}
+#endif /* USB_HW_PROBE */
+
 /*
  * VBUS is not a GPIO and not a SoC input on this board: it is reported by the
  * AXP173 over I2C. That read takes ~1.6 ms on this command-list peripheral, far
@@ -172,9 +288,12 @@ static int vbus_sample(void)
 
 void usb_init_device(void)
 {
-    /* Nothing to start. The DWC core is armed by usb_enable() once
-     * usb_dw_check_hw() can pass on this PHY; until then creating a thread would
-     * only spend DRAM on a value nobody consumes. */
+#ifdef USB_HW_PROBE
+    usb_hw_probe();
+#endif
+    /* Nothing else to start. The DWC core is armed by usb_enable(); until the
+     * pads are handed over -- which silences the console -- nothing here may
+     * reach the core. */
 }
 
 /*

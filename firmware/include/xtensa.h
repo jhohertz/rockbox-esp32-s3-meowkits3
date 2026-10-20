@@ -56,16 +56,28 @@
 /*
  * USB.
  *
- * The SoC has a Synopsys DWC2 OTG core at 0x60080000: full speed only, internal
- * FS PHY, six endpoints (OTG_NUM_EPS), five IN (OTG_NUM_IN_EPS), 256 words of
- * FIFO RAM (OTG_DFIFO_DEPTH). Architecture 2 means the core has its own internal
- * DMA, so a transfer is programmed with an address rather than pushed through
- * the FIFOs by hand.
+ * The SoC has a Synopsys DWC2 OTG core at 0x60080000. Its configuration is not a
+ * guess: ESP-IDF ships it generated for this core in
+ * components/soc/esp32s3/include/soc/usb_dwc_cfg.h -- OTG_ARCHITECTURE 2 (the
+ * core has its own internal DMA, so a transfer is programmed with an address
+ * rather than pushed through the FIFOs by hand), OTG_FSPHY_INTERFACE 1,
+ * OTG_NUM_EPS 6, OTG_NUM_IN_EPS 5, OTG_DFIFO_DEPTH 256 words. Register offsets
+ * and field positions likewise come from IDF's generated usb_dwc_struct.h, and
+ * they agree with firmware/export/usb-designware.h exactly: GUSBCFG at 0x0c
+ * rather than the classic 0x28, DIEPDMA and DOEPDMA at +0x14 inside an endpoint's
+ * 0x20 stride, and the FS PHY selected by fsintf (bit 5) instead of the classic
+ * UTMI/ULPI/PHYSEL encoding.
  *
  * The DWC does not own the pins. A "USB wrap" muxes the internal FSLS PHY between
  * the DWC and the USB serial jtag block, and that mux only answers to software
- * when the RTC's usb_conf says so. Both have to be set before the DWC can talk
- * to a host.
+ * when the RTC's usb_conf says so. Both have to be set before the DWC can talk to
+ * a host.
+ *
+ * There are two clock gates, and enabling only one is the mistake that makes every
+ * OTG register read 0x00000000 without faulting: usb_clk_en (bit 23 of
+ * PERIP_CLK_EN0) belongs to the wrap and PHY domain, while usb_device_clk_en (bit
+ * 10 of PERIP_CLK_EN1) belongs to the DWC core itself. Each has a matching reset
+ * bit in PERIP_RST_EN0/EN1, where 0 means not in reset and both default to 0.
  */
 #define OTGBASE                 0x60080000     /* for usb-designware.h */
 #define XT_USB_DWC_BASE         OTGBASE
@@ -73,13 +85,24 @@
 #define XT_USB_OTG_CONF         (XT_USB_WRAP_BASE + 0x00)
 #define XT_USB_PHY_SEL_EXT      (1u << 2)      /* 1 = external PHY */
 #define XT_USB_PAD_ENABLE       (1u << 18)
+#define XT_USB_WRAP_CLK_EN      (1u << 31)     /* the wrap block's own gate */
+#define XT_USB_PHY_CLK_FORCE    (1u << 20)
+#define XT_USB_AHB_CLK_FORCE    (1u << 19)
+#define XT_USB_DFIFO_FORCE_PU   (1u << 22)
+#define XT_USB_DFIFO_FORCE_PD   (1u << 3)
 
 #define XT_RTC_USB_CONF         (XT_RTCCNTL_BASE + 0x120)
 #define XT_SW_HW_USB_PHY_SEL    (1u << 20)     /* software overrides the mux */
 #define XT_SW_USB_PHY_SEL       (1u << 19)     /* 1 = FSLS PHY to the USB wrap */
 
 #define XT_PERIP_CLK_EN0        (XT_SYSTEM_BASE + 0x18)
-#define XT_USB_CLK_EN           (1u << 23)
+#define XT_USB_CLK_EN           (1u << 23)     /* wrap / PHY domain */
+#define XT_PERIP_CLK_EN1        (XT_SYSTEM_BASE + 0x1c)
+#define XT_USB_DEVICE_CLK_EN    (1u << 10)     /* the DWC core itself */
+#define XT_PERIP_RST_EN0        (XT_SYSTEM_BASE + 0x20)
+#define XT_USB_RST              (1u << 23)
+#define XT_PERIP_RST_EN1        (XT_SYSTEM_BASE + 0x24)
+#define XT_USB_DEVICE_RST       (1u << 10)
 
 #define XT_SRC_USB              38             /* ETS_USB_INTR_SOURCE, +0x098 */
 

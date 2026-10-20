@@ -348,11 +348,25 @@
  */
 #define HAVE_USBSTACK
 #define CONFIG_USBOTG USBOTG_DESIGNWARE
-/* HWCONF on this core reports six endpoints, five of which can be IN. The register
- * arrays in IDF's usb_struct.h are sized seven, so the header is not the authority;
- * usb_dw_check_hw() compares USB_NUM_ENDPOINTS against what the core says and panics
- * with "USB_NUM_ENDPOINTS too big" if this is over-declared. */
-#define USB_NUM_ENDPOINTS 6
+/* Seven endpoints, read from the silicon: GHWCFG2 decodes numdeveps = 7
+ * (hwcfg2=0x224dd930, measured at boot), and IDF's own usb_struct.h declares
+ * in_ep_reg[7] and out_ep_reg[7], so the register file really has seven. IDF's
+ * usb_dwc_cfg.h says OTG_NUM_EPS 6, which is the odd one out and is contradicted
+ * by both of those. What the core does *not* have is seven IN FIFOs: GHWCFG4
+ * reports 4 dedicated transmit FIFOs (hwcfg4=0xd3f0a030), so usb_dw_check_hw()
+ * clamps n_ptxfifos to 4 regardless of how many endpoints exist.
+ *
+ * usb_dw_check_hw() compares this against the core's own count and panics with
+ * "USB_NUM_ENDPOINTS too big" if it is over-declared, so a wrong value fails
+ * loudly at bring-up rather than silently.
+ *
+ * The endpoint pool has to carry the whole profile. Serial uses three (OUT, IN,
+ * interrupt for the notification), storage two, HID one and audio two, so
+ * CDC+HID+MSC needs six and CDC+HID+Audio needs six, and both fit under seven
+ * with one spare. Adding MSC *and* audio would need eight, which the core cannot
+ * build -- hence the two profiles, and never a combination of them.
+ */
+#define USB_NUM_ENDPOINTS 7
 #define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
 #define USB_ENABLE_SERIAL
 #define USB_VENDOR_ID  0x303A       /* Espressif */
