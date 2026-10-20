@@ -3234,6 +3234,11 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- The packed ESP image embeds Rockbox's version string, which carries the git hash
+  and a dirty marker (`ae16366a58M-261020`). Two builds at different HEADs therefore
+  cannot have the same md5 even when the code is identical, so "the image is
+  byte-identical" is only a meaningful claim at a fixed HEAD. To compare builds
+  across commits, read section sizes and addresses from the ELF instead.
 
 ### Scheduler bring-up: three separate faults that each hid the next
 
