@@ -722,3 +722,44 @@ present.
 So the choice is: settle for a reduced profile on the peripheral that works, or keep
 pressing on the OTG interrupt with no IDF reference to compare against. It is a hardware
 and product question, not something to decide silently in code.
+
+## Delivery is dead below the allocator
+
+Re-run with the interrupt allocated and enabled (and `CONFIG_ESP_INT_WDT` off, which
+frees the CPU 0 slot the allocation needs so audio's GDMA allocation does not fail): 94
+`usbIRQ` samples across a full attach, all zero. `esp_intr_dump()` shows the source
+mapped, INTENABLE has the slot, and `rsr.interrupt` does not. Everything below the
+allocator is ruled out by measurement, not inference:
+
+| Ruled out | Evidence |
+|---|---|
+| Allocator / source number | alloc returns ESP_OK, no `usbIrqE`; `ETS_USB_INTR_SOURCE` is what IDF's `esp32s3/usb_dwc_periph.c` declares as `.irq`; dump shows slot 13 level 1 `Used: USB` on CPU 0 |
+| Core masks and enables | `GINTMSK = OEPINT|IEPINT|ENUMDNE|USBRST`, `GAHBCFG = GINT|DMAEN`, `PCGCCTL = 0`, `DCTL = 0` |
+| Core is asleep | `DSTS` frame number advances between samples, EmNum = full speed |
+| Pad mux points at USJ | IDF's own `usb_wrap_ll.h` says `sw_usb_phy_sel = 1` maps the internal FSLS PHY to the **Wrap** and `0` to the USJ; we set `sw_hw_usb_phy_sel = 1`, `sw_usb_phy_sel = 1`, `otg_conf.phy_sel = 0` -- measured `RTC = 0x00180000`, `OTG_CONF = 0x805c0001` |
+| USJ still owning the pads | the USJ only reappears after the judge's restart, which restores the RTC override; the boot hook clears it every boot |
+
+Calling the ROM was tried and refuted. `--wrap=usb_enable` means `__real_usb_enable`
+resolves to the ROM symbol at `0x4000297c`; calling it paniced immediately with
+`LoadProhibited` at `PC 0x400533d1` in a boot loop. The ROM's `usb_enable` belongs to a
+whole device stack in ROM (`usb_transfer`, `usb_set_config`, `usb_dc_ep_set_callback`,
+`g_usb_print` in `.data.interface`), not to a separable PHY-and-clock bring-up. The
+lower-level `chip_usb_dw_init` at `0x400026f4` is the piece worth trying next.
+
+A hint in the same ROM symbol list: it exports `usb_dc_check_poll_for_interrupts`. The
+ROM's own OTG device path (it can put a console over OTG UART) appears to poll rather
+than take an interrupt. That is not proof the S3's OTG interrupt is broken, but it is the
+kind of thing worth knowing before assuming the silicon is fine and our wiring is wrong.
+
+**Why polling cannot substitute.** The polled dispatch answers the first SETUPs -- which
+is what moved the host from `-110` to `-71` -- but the *state transitions* matter as much
+as the packets: a bus reset has to be serviced before the host's first SETUP, and at
+100 Hz that window is missed. The host retransmits a SETUP, so enumeration looks possible
+over polling, but a reset followed immediately by a SETUP is not a retransmission the
+device gets a second chance at. So delivery has to be fixed; the tick-task dispatch is a
+diagnostic, not a transport.
+
+**Still open after the EP0 fix.** The `-71` remains, and with the 7-bit EP0 mask in place
+the next suspect is exactly the ordering above rather than the size arithmetic:
+`DOEPTSIZ(0)` is programmed correctly (`0x20080040` = supcnt 1, pktcnt 1, 64 bytes) and
+`DIEPINT` shows bit 7 with `xfercompl` clear, i.e. no IN transfer ever completed.

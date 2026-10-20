@@ -490,7 +490,9 @@ static int vbus_sample(void)
  * "the interrupt never arrived" can be told apart on one run. */
 #define USB_BRINGUP_POLLED_IRQ 1
 /* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
-#define USB_BRINGUP_NO_IRQ 1
+/* Deliberately not defined for this run: delivery is the thing being tested, and
+ * without an allocated and enabled slot there is nothing to observe. */
+#undef USB_BRINGUP_NO_IRQ
 /* How long to let an attach run before judging it. */
 #define USB_ATTACH_COLLECT (90 * HZ)
 
@@ -891,6 +893,15 @@ void usb_init_device(void)
  * pins move on insertion, which is core behaviour; the recovery invariant is the
  * pad clear in usb_init_device(), not a refusal here.
  */
+/* Tried and refuted: the ROM's usb_enable() is not a bring-up helper you can borrow.
+ * --wrap=usb_enable means __real_usb_enable resolves to the ROM symbol at 0x4000297c,
+ * and calling it panicked immediately with LoadProhibited at PC 0x400533d1 in a boot
+ * loop. The ROM's usb_enable belongs to a complete device stack in ROM (usb_transfer,
+ * usb_set_config, usb_dc_ep_set_callback, g_usb_print in .data.interface), not to a
+ * separable PHY-and-clock setup, so it has to be entered the way the mask ROM enters it.
+ * The lower-level chip_usb_dw_init (0x400026f4) is the piece worth trying later; the
+ * bring-up here stays hand-rolled meanwhile. */
+
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
