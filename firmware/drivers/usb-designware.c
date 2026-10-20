@@ -1485,7 +1485,27 @@ static void usb_dw_exit(void)
 #endif
     udelay(10);
 
+#if defined(CPU_XTENSA)
+    /*
+     * The PHY clock is deliberately left running on esp32s3. Measured, gating it is where
+     * the extraction dies: the ring records dSdis (exit entered), dSdw (soft disconnect
+     * written, GRSTCTL showing AHB idle) and dSdl (the 10us delay returned), then the
+     * watchdog resets the board with dPcg never written -- so the very next core register
+     * access after PCGCCTL=1 stalls the bus. It is not a fair test of whether the write or
+     * the read wedges: either way the core is unreachable once the PHY clock is gone.
+     *
+     * DWC2 must not have its PHY clock gated while an endpoint is still active, and on this
+     * board one always is: the CDC OUT endpoint re-arms itself and re-delivers its stale
+     * byte indefinitely, which is a separate bug in this driver's OUT handling. So gating
+     * here is a bus hang waiting for an extraction.
+     *
+     * Leaving it clocked costs a little power while USB mode is down. Everything after this
+     * point -- usb_dw_target_clear_irq()'s writes to GINTSTS and GOTGINT, then the target's
+     * pad release -- works, and the pad release is what the host actually needs.
+     */
+#else
     DWC_PCGCCTL = 1; /* Stop Phy clock */
+#endif
 #if defined(CPU_XTENSA)
     xtensa_breadcrumb_rtc("dPcg", DWC_DCTL, DWC_PCGCCTL);
 #endif
