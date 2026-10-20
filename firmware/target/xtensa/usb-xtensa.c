@@ -133,10 +133,10 @@ static volatile uint32_t xt_usb_irqs;
 /* Counted separately from xt_usb_irqs, which is incremented only inside
  * usb_dwc_isr() and therefore means "the interrupt was delivered" and nothing else.
  * The polled stand-in calls the driver directly so it cannot inflate that claim. */
-static volatile uint32_t xt_usb_polled;
+
 /* How many times the post-init one-shot service fired, i.e. how much status the core
  * had already latched by the time the interrupt was enabled. */
-static volatile uint32_t xt_usb_oneshot;
+
 
 /* Which masked source is firing, and on which endpoint. Measured: 14,500 interrupts
  * per second while only ~23 CDC lines per second are being sent, and GINTSTS & GINTMSK
@@ -584,34 +584,10 @@ static int vbus_sample(void)
  * usb_drv_init() never run and the pads never move.
  */
 #define USB_ALLOW_ATTACH
-/* Bring-up only. Restart an attach that produced no interrupts, so the board keeps
- * returning to a readable console while the transport is dead, and stops restarting
- * once it isn't. Remove with USB_ALLOW_ATTACH once enumeration works. */
-#define USB_ATTACH_RESTART 1
-/* Bring-up only: dump IDF's interrupt routing at boot, while the console that
- * esp_intr_dump() needs has not been handed to the OTG core yet. */
-#define USB_BRINGUP_INTR_DUMP 1
-/* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
- * "the interrupt never arrived" can be told apart on one run. */
-/* Off for this test, now that the allocation matches the vendor's interrupt-driven
- * port: enabled at allocation, and the handler clears status when it fires before the
- * driver is armed. Previously the 10 Hz dispatch was the only thing that ever cleared
- * the latched bits, and with it off the attach failed outright (host -110 then -62,
- * device usbIRQ 0 with a pending mask of 0x00003000). If this build enumerates with the
- * dispatch disabled, delivery is fixed at its source and the task is deleted. */
-#define USB_BRINGUP_POLLED_IRQ 0
-/* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
-/* Deliberately not defined for this run: delivery is the thing being tested, and
- * without an allocated and enabled slot there is nothing to observe. */
-#undef USB_BRINGUP_NO_IRQ
-/* How long to let an attach run before judging it. */
-#define USB_ATTACH_COLLECT (90 * HZ)
 
-/* .noinit so the judgement survives esp_restart() -- a chip reset -- and a power-on
- * reset starts genuinely fresh. */
-uint32_t xt_attach_judged __attribute__((section(".noinit"), aligned(4)));
-/* When the attach being judged began. Plain static: it only matters while the core
- * is armed, and every attach rewrites it. */
+/* When the current attach began, in ticks. Kept because the trail's usbEnT entry
+ * records the gap between attach and teardown, which is the only way to tell a host
+ * that dropped the device from a teardown the target initiated. */
 static uint32_t xt_attach_tick;
 
 #ifdef USB_ALLOW_ATTACH
@@ -669,43 +645,6 @@ static void usb_vbus_poll(void)
      * A count stuck at 0 with DSTS unchanging means the interrupt never arrives;
      * a growing count means the core sees the bus and the driver is the problem.
      */
-#ifdef USB_ATTACH_RESTART
-    /* Bring-up watchdog, judged from the poll rather than a sleep, so the tick task
-     * thread keeps scanning buttons and running the backlight timeout.
-     *
-     * After USB_ATTACH_COLLECT of attach, judge it. If the core never interrupted
-     * us then nothing came from the host, and the board is stuck holding two pads
-     * it cannot use -- so restart. A chip reset keeps the breadcrumb trail, the
-     * boot hook puts the pads back on USB-Serial-JTAG, and the console is readable
-     * again for a fresh window. That repeats while the attach is dead, which is
-     * what brings the board back on its own during unattended testing.
-     *
-     * Once interrupts have been seen the transport is alive and we leave it alone:
-     * restarting a working device would break audio for no information.
-     */
-    /* xt_attach_tick != 0 matters: xt_armed is set in __wrap_usb_enable before
-     * usb_enable() records the tick, and the two run on different threads, so a
-     * poll landing in that gap would otherwise compare against tick 0 and judge
-     * the attach instantly. */
-    if (xt_armed && xt_attach_tick != 0 && !xt_attach_judged &&
-        current_tick - xt_attach_tick >= USB_ATTACH_COLLECT)
-    {
-        xt_attach_judged = 1;
-        /* Judged on delivered interrupts only, not on xt_usb_polled. The polled
-         * dispatch is a stand-in for a transport that cannot answer the host at
-         * 100 Hz anyway, so leaving it running forever means the pads stay with the
-         * OTG core and there is no console and no esptool until someone pulls the
-         * cable. Rockbox is not playing audio in USB mode, so a restart here costs
-         * nothing; once interrupts arrive this branch stops firing. */
-        if (xt_usb_irqs == 0)
-        {
-            xtensa_breadcrumb("usbDead", DWC_GINTSTS, DWC_DSTS);
-            esp_restart();
-        }
-        xtensa_breadcrumb("usbAlive", xt_usb_irqs, DWC_DSTS);
-    }
-#endif
-
     /* 10 s, in ticks: HZ is 100 (kernel/include/tick.h), so this block runs ten times
      * a second at most. It used to read "4 * USB_VBUS_POLL_TICKS / 4", which is just
      * USB_VBUS_POLL_TICKS -- 40 ms -- and turned the report into a 23 line/s flood on
@@ -742,12 +681,11 @@ static void usb_vbus_poll(void)
             static char cdc_line[192];
             int n = snprintf(cdc_line, sizeof(cdc_line),
                              "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
-                             "enum=%lu none=%lu dain=%04lx,%04lx polled=%lu "
-                             "one=%lu gintsts=%08lx dsts=%08lx\r\n",
+                             "enum=%lu none=%lu early=%lu dain=%04lx,%04lx "
+                             "gintsts=%08lx dsts=%08lx\r\n",
                              xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
-                             xt_irq_enum, xt_irq_none,
-                             xt_irq_daint_in, xt_irq_daint_out, xt_usb_polled,
-                             xt_usb_oneshot,
+                             xt_irq_enum, xt_irq_none, xt_irq_early,
+                             xt_irq_daint_in, xt_irq_daint_out,
                              DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
@@ -767,11 +705,6 @@ static void usb_vbus_poll(void)
              * never answers if something left it set. */
             xtensa_breadcrumb("usbWrap", rd(XT_USB_OTG_CONF), rd(XT_RTC_USB_CONF));
             xtensa_breadcrumb("usbDctl", DWC_DCTL, DWC_PCGCCTL);
-            /* The console is gone during an attach, so the polled count has to ride
-             * the trail like everything else: whether the tick task is seeing
-             * GINTSTS & GINTMSK is the difference between "the driver works when
-             * handed the event" and "the driver is broken too". */
-            xtensa_breadcrumb("usbPoll", xt_usb_polled, DWC_GINTSTS & DWC_GINTMSK);
             /* Failed PMU reads during the attach: this counter says whether the bus
              * is the problem or the core is. */
             xtensa_breadcrumb("usbVbus", xt_vbus_err, (unsigned long)xt_vbus_present);
@@ -849,165 +782,8 @@ int usb_detect(void)
 
 #endif /* USB_ALLOW_ATTACH */
 
-#if USB_BRINGUP_POLLED_IRQ
-/* Service the core from a tick task instead of from its interrupt.
- *
- * Everything on the core side has been measured good: GINTMSK masks USBRST and
- * ENUMDNE, GAHBCFG.GINT is set, PCGCCTL is 0, DCTL says connected, DSTS shows
- * EmNum=full-speed with a frame counter that advances between samples, and IDF
- * mapped ETS_USB (38) to CPU 0 slot 13 with INTENABLE bit 13 set. rsr.interrupt
- * never shows that slot pending, so the core's INT output is not reaching the
- * matrix -- and the one thing still unknown is whether the *driver* would work if
- * it were handed the event. This answers that without waiting for the routing to be
- * fixed: if polling the same condition makes the host enumerate, the driver and the
- * EP0 path are fine and only delivery is broken; if it does not, the driver is the
- * problem too and the interrupt question stops being the urgent one.
- *
- * A tick task runs at 100 Hz. The host retransmits a SETUP it got no answer to, so
- * a 10 ms service interval is fast enough to enumerate even though it is nowhere
- * near fast enough to stream audio.
- */
-static void xt_usb_polled_irq(void)
-{
-    /* 10 Hz, not 100. This is now a safety net behind the one-shot service in
-     * __wrap_usb_enable(): if that clears the latch, fresh events reach the handler on
-     * their own and this task should contribute almost nothing. Counting it separately
-     * from xt_usb_irqs is what makes that claim checkable rather than assumed. */
-    static uint32_t xt_poll_phase;
-    if (!xt_armed)
-        return;
-    if (++xt_poll_phase < 10)
-        return;
-    xt_poll_phase = 0;
-
-    if (DWC_GINTSTS & DWC_GINTMSK)
-    {
-        /* Sample the CPU's pending bitmap *before* the handler clears the core's
-         * status bits. Reading it later is what the poll's usbCpu entry does, and the
-         * polled dispatch removes the very condition that would assert the line -- so
-         * "no slot pending" there is partly an artifact of this instrumentation. If
-         * slot 13 is pending here, the source reaches the matrix and something is
-         * wrong in dispatch; if it is not, the core's INT output is silent. */
-        if (xt_usb_polled < 4)
-            xtensa_breadcrumb("usbLin", xt_read_interrupt(), xt_read_intenable());
-
-        xt_usb_polled++;
-        /* Call the driver, not the handler. usb_dwc_isr() counts entries as delivered
-         * interrupts, and going through it here made usbIRQ read 3 on a run where not
-         * one interrupt had been delivered -- which also disabled the attach judge,
-         * because "interrupts arrived" was then true by construction. */
-        INT_USB_FUNC();
-    }
-}
-
-static void xt_usb_polled_irq_start(void)
-{
-    tick_add_task(xt_usb_polled_irq);
-}
-#else
-static void xt_usb_polled_irq_start(void)
-{
-}
-#endif
-
-#ifdef USB_BRINGUP_INTR_DUMP
-/* Print the interrupt and core state from the tick task thread, every ~10 s.
- *
- * The one-shot dump in usb_init_device() lands about a second after boot, which is
- * before the host has enumerated USB-Serial-JTAG and created the serial node, so it
- * is uncatchable -- the same reason the breadcrumb trail needed a repeat. Register
- * state is a snapshot, so printing it on a timer costs nothing and means any
- * listener, at any time, sees it -- including during an attach, when the console is
- * the only thing that can say why nothing is answering.
- */
-static void xt_usb_reg_report(void)
-{
-    static unsigned ticks;
-
-    if (++ticks < 10 * HZ)
-        return;
-    ticks = 0;
-
-    printf("USBregs GINTMSK=%08lx GAHBCFG=%08lx GINTSTS=%08lx PCGCCTL=%08lx\n",
-           (unsigned long)DWC_GINTMSK, (unsigned long)DWC_GAHBCFG,
-           (unsigned long)DWC_GINTSTS, (unsigned long)DWC_PCGCCTL);
-    printf("USBregs DCTL=%08lx DCFG=%08lx DAINT=%08lx DAINTMSK=%08lx DOEP0=%08lx\n",
-           (unsigned long)DWC_DCTL, (unsigned long)DWC_DCFG,
-           (unsigned long)DWC_DAINT, (unsigned long)DWC_DAINTMSK,
-           (unsigned long)DWC_DOEPINT(0));
-    printf("USBregs OTGCONF=%08lx RTC=%08lx INTENABLE=%08lx INTERRUPT=%08lx irqs=%lu\n",
-           (unsigned long)rd(XT_USB_OTG_CONF), (unsigned long)rd(XT_RTC_USB_CONF),
-           (unsigned long)xt_read_intenable(), (unsigned long)xt_read_interrupt(),
-           (unsigned long)xt_usb_irqs);
-    printf("USBregs polled=%lu GINTSTS&GINTMSK=%08lx\n",
-           (unsigned long)xt_usb_polled,
-           (unsigned long)(DWC_GINTSTS & DWC_GINTMSK));
-    {
-        /* esp_intr_dump() writes thirty-odd lines, which the console reader delivers
-         * in several chunks and which then cannot be read as a table. Compressed to
-         * one line, the pool state is legible: how many slots are taken is what
-         * decides whether this core can be given one. */
-        char *buf = NULL;
-        size_t len = 0;
-        FILE *f = open_memstream(&buf, &len);
-
-        if (f != NULL)
-        {
-            esp_intr_dump(f);
-            fclose(f);
-            if (buf != NULL)
-            {
-                printf("USBintr %.160s\n", buf);
-                free(buf);
-            }
-        }
-    }
-}
-
-static void xt_usb_reg_report_start(void)
-{
-    tick_add_task(xt_usb_reg_report);
-}
-#else
-static void xt_usb_reg_report_start(void)
-{
-}
-#endif
-
 void usb_init_device(void)
 {
-#ifdef USB_BRINGUP_INTR_DUMP
-    /* Allocate the USB interrupt while the console still exists.
-     *
-     * The trail can tell us that GINTMSK masks USBRST and ENUMDNE and that
-     * GAHBCFG.GINT is set, and that no CPU slot shows the source pending -- but it
-     * cannot say which slot IDF gave us, on which CPU, at what level, or whether
-     * the source ever got mapped at all. esp_intr_dump() says all of that, and it
-     * needs a console, which only exists before the pads move.
-     *
-     * Nothing is allocated here. CPU 0 has 22 general-use interrupt slots and IDF
-     * holds most of them; taking one for the OTG core is what panics this build --
-     * audio allocates its GDMA TX interrupt lazily, so the attach eats the last free
-     * slot and the next thing that happens is "i2s: cannot allocate the GDMA TX
-     * interrupt", a panic, a reboot and the pads back on USB-Serial-JTAG, which reads
-     * as a transport that dropped two seconds after attaching. See
-     * usb_dw_target_enable_irq().
-     */
-    {
-        printf("USB intr table (source %d = ETS_USB), not allocated:\n",
-               ETS_USB_INTR_SOURCE);
-        esp_intr_dump(stdout);
-        printf("INTENABLE=%08lx INTERRUPT=%08lx GINTMSK=%08lx GAHBCFG=%08lx "
-               "GINTSTS=%08lx PCGCCTL=%08lx DCTL=%08lx\n",
-               (unsigned long)xt_read_intenable(), (unsigned long)xt_read_interrupt(),
-               (unsigned long)DWC_GINTMSK, (unsigned long)DWC_GAHBCFG,
-               (unsigned long)DWC_GINTSTS, (unsigned long)DWC_PCGCCTL,
-               (unsigned long)DWC_DCTL);
-    }
-#endif
-
-    xt_usb_reg_report_start();
-    xt_usb_polled_irq_start();
 
 #ifdef USB_ALLOW_ATTACH
     /* Put the pins back before anything else, and do it every boot.
@@ -1087,24 +863,7 @@ void __wrap_usb_enable(bool on)
         xt_armed = true;
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
 
-        /* Service whatever the core has latched by the time the driver is up. The
-         * driver's own order is clear_irq, enable_irq, 3 ms, soft reconnect, so the
-         * host's reset lands some time *after* the slot is enabled -- this is not an
-         * enable-time artifact. What is true is that the first event after connect does
-         * not draw the line, and only something that clears the pending bits makes a
-         * later event do so. Measured on the failed attach: usbIRQ 0 against a pending
-         * mask of 0x00003000, USBRST|ENUMDNE latched and never drawn.
-         *
-         * This is the cheap version of what the tick dispatch was doing at 100 Hz:
-         * clear the latch once, at the point where it forms, and let every later event
-         * produce a real interrupt. xt_usb_oneshot says whether it fired, and the tick
-         * dispatch (now at 10 Hz, as a safety net rather than the transport) says
-         * whether anything was left for it to do. */
-        if (DWC_GINTSTS & DWC_GINTMSK)
-        {
-            INT_USB_FUNC();
-            xt_usb_oneshot++;
-        }
+
     }
     else
     {
@@ -1150,13 +909,8 @@ void __wrap_usb_enable(bool on)
      * looping: a panic every 10 seconds is how the board ended up popping the amp
      * over and over.
      */
-#ifdef USB_ATTACH_RESTART
     if (on)
-    {
         xt_attach_tick = current_tick;
-        xt_attach_judged = 0;
-    }
-#endif
 #else
     (void)on;
 #endif
