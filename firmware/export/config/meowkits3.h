@@ -406,23 +406,25 @@
  * CDC+HID+Audio. Neither can be built at once: the core has four dedicated IN
  * FIFOs and both profiles need exactly four.
  *
- * This takes effect once HAVE_USB_POWER is defined: apps/settings_list.c builds
- * the "USB mode" choice only under HAVE_USB_POWER || HAVE_USB_ADB, and usb.c's
- * power-monitoring path is keyed on the same define. It is deliberately not
- * enabled in this commit -- HAVE_USB_POWER pulls the charging display into the
- * status bar, and that is a screen change this port can only be checked on the
- * board. See firmware/target/xtensa/USB-SPRINT.md.
- */
-#define USBMODE_DEFAULT USB_MODE_CHARGE
-
-/* The mode choice is only built when this is defined (apps/settings_list.c:2546),
- * and it is the reason USBMODE_DEFAULT above is inert without it. Charge mode as
- * the default is what makes a bring-up boot safe: Rockbox senses the cable, goes to
- * USB_POWERED, and never calls usb_hw_open(), so the pads stay on USB-Serial-JTAG
- * and the console and the flash port survive. Mass storage -- the CDC+HID+MSC
- * profile -- is then a deliberate choice under Settings -> General -> USB.
+ * Rockbox's own default is mass storage, and this restores it: insertion takes the
+ * player to USB_INSERTED, which is the state usb.c uses to enable the mass-storage
+ * driver (firmware/usb.c:244), so the profile is CDC+HID+MSC. Charge mode stays
+ * reachable two ways, as on every other HAVE_USB_POWER target -- the power button at
+ * insertion toggles usb_power_only (firmware/usb.c:492), and Settings -> General ->
+ * USB has the choice. With "USB DAC: while charge only" the charge profile is
+ * CDC+HID+Audio. Neither profile can be built at once: the core has four dedicated IN
+ * FIFOs and both need exactly four.
  *
- * It also brings the charging indication into the status bar, which is a screen
+ * Making this the default means the pads move to the OTG core as soon as a cable is
+ * sensed, so flashing no longer has a boot-time window on USJ. That is what
+ * `make usbflash` is for: one byte on the CDC OUT endpoint hands the port back and
+ * asks the ROM for download mode. See AGENTS.md.
+ */
+#define USBMODE_DEFAULT USB_MODE_MASS_STORAGE
+
+/* The mode choice is only built when this is defined (apps/settings_list.c:2546);
+ * without it USBMODE_DEFAULT is inert and usb.c's power-monitoring path does not
+ * exist. It also brings the charging indication into the status bar, which is a screen
  * change: look at it rather than assume it.
  */
 #define HAVE_USB_POWER
