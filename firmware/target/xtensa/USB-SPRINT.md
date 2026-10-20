@@ -349,9 +349,27 @@ this core does not fault -- it writes into reserved space or reads zero.
 2. **The pad handover is the irreversible step.** Taking GPIO19/20 removes the
    console *and* `esptool`; a hang inside USB mode costs a power cycle, and the
    only power control is the AXP173's PEK. Do it with someone at the board.
-3. **Storage handoff is unverified.** `usb.c` unmounts all volumes on entry and
-   re-inits on exit against an IDF `sdmmc_host` whose `sd_enable()` is a no-op and
-   whose card is declared non-removable.
+3. **Storage handoff is statically clean; the runtime is still unproven.**
+   `usb_slave_mode(true)` does `disk_unmount_all()`, `storage_soft_reset()`,
+   `storage_init()`, `storage_enable(false)`; the exit path does `usb_enable(false)`,
+   `storage_init()`, `disk_mount_all()` and panics if the remount finds no partition.
+   Every step was traced against this target:
+   - `storage_soft_reset()` expands to `(void)0` for an SD-only target.
+   - `storage_init()` for us is `sd_init()` plus `storage_thread_init()`. `sd_init()`
+     returns early once `sd_ready` is set, and `storage_thread_init()` returns early
+     once `storage_thread_id` is set, so re-init creates no second thread and costs
+     no second stack. `HAVE_SDMMC_HOST` is *not* defined here, so
+     `sdmmc_host_target_init()` -- which would re-initialise the host -- is not in
+     the path at all.
+   - `storage_enable(false)` reaches `sd_enable()`, which is a no-op. That is the
+     right answer for MSC: the host stays armed so the mass-storage driver can keep
+     serving sectors while Rockbox's filesystem is unmounted.
+   - `storage_read_sectors()` dispatches to `sd_read_sectors()`, whose only
+     precondition is `sd_ready`. There is no "volume must be online" gate, so
+     unmounting does not block MSC.
+   What remains unproven is the concurrent case: MSC serving sectors from the USB
+   thread while the tick thread polls the touchscreen over I2C, and whether a host
+   that resets the bulk endpoints mid-transfer leaves `sd_ready` consistent.
 4. **`usb_mode` needs `HAVE_USB_POWER` to exist as a setting**, and that also
    pulls the charging indicator into the status bar -- a screen change that can
    only be judged on the board.
