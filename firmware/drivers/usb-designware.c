@@ -78,6 +78,17 @@
 # define USB_DW_PHYSADDR(x)     x
 # define NO_UNCACHED_ADDR       /* TODO: maybe implement this */
 # define POST_DMA_FLUSH
+#elif defined(CPU_XTENSA)
+/* ESP32-S3. The DWC2 AHB sees the same addresses the CPU does, and this SoC has no
+ * non-cacheable alias for internal SRAM, so coherence has to be explicit. The driver
+ * already does both halves: COMMIT_DCACHE_RANGE() before an IN transfer (see
+ * usb_dw_epstart) and DISCARD_DCACHE_RANGE() after an OUT one under POST_DMA_FLUSH.
+ * POST_DMA_FLUSH is required rather than optional here -- the core speculates, so a
+ * line can be fetched before the DMA has written it. Same shape as STM32H743, for the
+ * same reason. */
+# define USB_DW_PHYSADDR(x)     x
+# define NO_UNCACHED_ADDR
+# define POST_DMA_FLUSH
 #elif !defined(USB_DW_ARCH_SLAVE)
 # error "Must define USB_DW_PHYSADDR / USB_DW_UNCACHEDADDR!"
 #endif

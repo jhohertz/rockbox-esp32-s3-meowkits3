@@ -119,8 +119,31 @@
  */
 #ifndef SIMULATOR
 #define PSRAM_BSS_ATTR      __attribute__ ((section(".ext_ram.bss")))
+
 #define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".ext_ram.bss")))
 #endif
+
+/* The sector cache is sized by fs_defines.h from MEMORYSIZE, which on this board
+ * is 16 -- the flash size. That is the wrong input here: cache_buffer[] is
+ * DMA-visible (the SDHOST IDMAC fills it directly), and DMA-visible memory is
+ * the one class of object this platform cannot move to PSRAM, because esp32s3
+ * declares no SOC_SDMMC_PSRAM_DMA_CAPABLE. Its budget is therefore the 337 KB
+ * internal DRAM region, which is full to 1,020 bytes.
+ *
+ * 64 entries is 32 KB of that region. Taking it to the small-memory figure
+ * (32 entries, one sector each = 16 KB) halves the number of distinct sectors
+ * held; directory traversal is already served by the 1 MB dircache in PSRAM, so
+ * this is a cache-depth decision rather than a correctness one.
+ *
+ * MAX_OPEN_FILES has to come down with it: the comment in fs_defines.h requires
+ * the cache to have enough buffers for every handle plus a few for the cache
+ * client and the filesystem code, and 32 entries against 31 handles leaves one
+ * spare. 11 handles is the value the tree already uses below MEMORYSIZE 8.
+ */
+#define DC_NUM_ENTRIES      32
+#define DC_MAP_NUM_ENTRIES  128
+#define MAX_OPEN_FILES      11
+#define MAX_OPEN_DIRS       12
 
 #define CONFIG_STORAGE STORAGE_SD
 
@@ -284,50 +307,66 @@
  */
 #define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
 
-/* The sector cache is sized by fs_defines.h from MEMORYSIZE, which on this board
- * is 16 -- the flash size. That is the wrong input here: cache_buffer[] is
- * DMA-visible (the SDHOST IDMAC fills it directly), and DMA-visible memory is
- * the one class of object this platform cannot move to PSRAM, because esp32s3
- * declares no SOC_SDMMC_PSRAM_DMA_CAPABLE. Its budget is therefore the 337 KB
- * internal DRAM region, which is full to 1,020 bytes.
- *
- * 64 entries is 32 KB of that region. Taking it to the small-memory figure
- * (32 entries, one sector each = 16 KB) halves the number of distinct sectors
- * held; directory traversal is already served by the 1 MB dircache in PSRAM, so
- * this is a cache-depth decision rather than a correctness one.
- *
- * MAX_OPEN_FILES has to come down with it: the comment in fs_defines.h requires
- * the cache to have enough buffers for every handle plus a few for the cache
- * client and the filesystem code, and 32 entries against 31 handles leaves one
- * spare. 11 handles is the value the tree already uses below MEMORYSIZE 8.
- */
-#define DC_NUM_ENTRIES      32
-#define DC_MAP_NUM_ENTRIES  128
-#define MAX_OPEN_FILES      11
-#define MAX_OPEN_DIRS       12
-
 /*
- * USB: not built.
+ * USB: the stack is compiled, the hardware bring-up is not.
  *
- * The board's usable USB is the USB-Serial-JTAG block, which is what the host
- * already uses to flash and to read the bring-up trace; it enumerates as CDC
- * with no firmware involvement. The SoC also has a DWC-derived OTG block, but
- * its GUSBCFG is not the classic DWC2 layout: phyif sits at bit 3, ulpiutmisel
- * at 4, fsintf at 5 and physel at 6, and ESP-IDF's own driver has to set
- * phyif = 1 for this core. Rockbox's usb-designware.c writes the whole register
- * with only the PHY field and then compares it back in full, so the bring-up
- * panics with "PHY type not supported" before anything else runs.
+ * CONFIG_USBOTG == USBOTG_DESIGNWARE selects firmware/drivers/usb-designware.c,
+ * whose endpoint register arithmetic matches this core exactly (DIEPCTL at
+ * OTGBASE+0x900+0x20*n, DOEPCTL at 0xb00+0x20*n, DIEPTXF at 0x104), and the driver
+ * checks USB_NUM_ENDPOINTS against the core's own HWCONF count at startup
+ * ("USB_NUM_ENDPOINTS too big"), so the 6 below is a claim the silicon will confirm
+ * rather than one asserted silently.
  *
- * Nothing on this target needs the OTG core: charging is monitored through the
- * AXP173 (CONFIG_CHARGING + HAVE_AXP173 report VBUS), and storage is the SD card.
- * Revisit only with a driver that matches this core's register layout.
+ * Enabling the stack removes a boot hazard rather than creating one. The "if USB is
+ * plugged in, enter USB mode before mounting" loop in apps/main.c is guarded by
+ * #ifndef HAVE_USBSTACK, and because the AXP173 reports VBUS present whenever the
+ * board is powered from the host, that loop is exactly why USB_NONE was needed.
+ * DESIGNWARE also sets USB_STATUS_BY_EVENT, so usb_start_monitoring() is the trivial
+ * variant that never polls usb_detect().
  *
- * USB_NONE is what makes this stick. Without it main() runs the
- * "if USB is plugged in, enter USB mode before mounting" loop, and because the
- * AXP173 reports VBUS present whenever the board is powered from the host, that
- * loop never terminates: boot stops there and nothing else is ever initialised.
+ * What is deliberately not live yet:
+ *
+ *  - usb_enable() is a no-op in both directions, so usb_core_init() and
+ *    usb_drv_init() never run. usb_dw_check_hw() writes GUSBCFG's PHY field and
+ *    compares the whole register back, which on this core panics with "PHY type not
+ *    supported": the PHY fields here are phyif (bit 3), ulpiutmisel (4), fsintf (5)
+ *    and physel (6), and ESP-IDF's own driver sets phyif = 1. That is the first
+ *    bring-up task; until it is done nothing may reach the core.
+ *  - The pads. GPIO19/20 are shared between USB-Serial-JTAG and the OTG core through
+ *    USB_WRAP, so routing them to OTG silences the console and esptool. They move
+ *    only while USB mode is active and return to USJ on reset.
+ *
+ * USB_ENABLE_SERIAL is set here, which no other target in the tree does: this port is
+ * the first to compile firmware/usbstack/usb_serial.c. Its built-in consumer is logf
+ * (firmware/logf.c flushes its ring to usb_serial_send), and apps/debug_menu.c
+ * carries a "USB Serial driver (logf)" toggle. Its RX side primes EP_OUT and then
+ * discards what arrives, so serial control needs a consumer hook in the driver.
+ *
+ * USB buffers are cached like everything else on this target, so the coherence
+ * question the audio DMA needed applies here too. That is a bring-up task, not a
+ * compile one, and it is unresolved.
  */
-#define USB_NONE
+#define HAVE_USBSTACK
+#define CONFIG_USBOTG USBOTG_DESIGNWARE
+/* HWCONF on this core reports six endpoints, five of which can be IN. The register
+ * arrays in IDF's usb_struct.h are sized seven, so the header is not the authority;
+ * usb_dw_check_hw() compares USB_NUM_ENDPOINTS against what the core says and panics
+ * with "USB_NUM_ENDPOINTS too big" if this is over-declared. */
+#define USB_NUM_ENDPOINTS 6
+#define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
+#define USB_ENABLE_SERIAL
+#define USB_VENDOR_ID  0x303A       /* Espressif */
+#define USB_PRODUCT_ID 0x4002       /* distinct from the USB-Serial-JTAG device */
+/* DMA buffers must start on a cache line: committing or invalidating a range would
+ * otherwise drag lines belonging to other objects along. */
+#define USB_DEVBSS_ATTR __attribute__((aligned(32)))
+/* ALLOCATE_BUFFER_SIZE is 2 * max(read, write), and it is static because the DWC's
+ * DMA is an AHB master on the internal bus and cannot reach the PSRAM window where
+ * Rockbox's arena lives. Full speed caps the useful size anyway: the default 64 KB
+ * per direction would need 128 KB of the 337 KB static region, which is what
+ * overflowed dram0_0_seg by 152,968 bytes. */
+#define USB_READ_BUFFER_SIZE  (4 * 1024)
+#define USB_WRITE_BUFFER_SIZE (4 * 1024)
 
 /* Audio: ES8311 codec on I2S1. Every rate Rockbox supports is reachable from the
  * 40 MHz XTAL; only 44100 and 88200 are off by ~7 Hz (0.000064 %). */
