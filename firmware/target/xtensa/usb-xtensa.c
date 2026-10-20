@@ -308,11 +308,6 @@ static void usb_hw_probe(void)
  * from the OTG interrupt (the core reports its own connection state) rather than
  * from a poll of the PMU; the PMU read stays here for the charging display.
  */
-/* Set only when the core is actually armed, i.e. between usb_core_init() and
- * usb_core_exit(). Charge mode refuses the attach, so this stays false while a
- * cable is present -- see usb_detect(). */
-static bool xt_attached;
-
 static int vbus_sample(void)
 {
     return (axp173_input_status() & POWER_INPUT_USB) ? USB_INSERTED
@@ -353,34 +348,26 @@ static int vbus_sample(void)
 #define USB_VBUS_POLL_TICKS 4
 
 /*
- * Hold the pads for the first 15 seconds after boot.
+ * A boot window in which the pins are not handed over. This is a bring-up
+ * affordance, not a behaviour difference: it exists so the host can always reach
+ * the board while the attach is still being debugged.
  *
- * This is not a debug hack, it is the recovery invariant for this board. Taking
- * GPIO19/20 away from USB-Serial-JTAG removes the console *and* esptool, so a
- * firmware that attaches immediately can leave no way to put a different firmware
- * back on -- an attach that fails to enumerate does that on purpose. With a window
- * at boot, `make flash` always wins: esptool resets the chip into download mode
- * before the app reaches this point, and the pins are still USJ when it asks.
+ * Taking GPIO19/20 away from USB-Serial-JTAG removes the console *and* esptool, so
+ * a firmware that attaches the moment it senses a cable can leave no way to put a
+ * different firmware back -- and an attach that does not enumerate does that on
+ * purpose. A flash attempt also races the attach: if the pins move while esptool is
+ * mid-handshake, the ROM's SLIP responses stop and esptool reports "the chip
+ * stopped responding", which is exactly what happened here. current_tick advances
+ * at HZ, so this is 120 seconds of guaranteed USJ at every boot.
  *
- * The window is also what makes flashing reliable. A flash attempt races the
- * attach: if the pins move to the OTG wrap while esptool is mid-handshake, the
- * ROM's SLIP responses stop and esptool reports "the chip stopped responding" --
- * which is exactly what happened here when a cable went in shortly before a flash.
- * 120 s is generous enough that the host always gets the port first.
+ * When the transport is proven, drop this window rather than keep it: Rockbox's
+ * behaviour is to enter USB mode on insertion, and delaying that is a deviation.
  */
 #define USB_ATTACH_DELAY (120 * HZ)
 
 static bool usb_attach_allowed(void)
 {
     return current_tick >= USB_ATTACH_DELAY;
-}
-
-static bool usb_transport_wanted(void)
-{
-    bool mass_storage = (usb_get_mode() == USB_MODE_MASS_STORAGE);
-    bool button_held = (button_status() & ~USBPOWER_BTN_IGNORE) != 0;
-
-    return mass_storage != button_held;   /* the inversion usb.c applies */
 }
 
 static void usb_vbus_poll(void)
@@ -396,21 +383,14 @@ static void usb_vbus_poll(void)
     if (!usb_attach_allowed())
         return;
 
-    /* Cable presence is not a request. usb.c treats any USB_INSERTED event as
-     * "enter USB mode": it sets usb_state = USB_INSERTED at line 499 whatever the
-     * mode is, and charge mode only changes which classes get composed. Reporting
-     * the cable would therefore park this player on the USB screen for as long as
-     * it is charging, which on this hardware is most of the time -- charging is
-     * done by the AXP173 and is not something Rockbox can decline.
-     *
-     * So the event is gated by the same rule that gates the pins: post insertion
-     * only when a data profile is actually wanted, which usb.c will then hand to
-     * __wrap_usb_enable(), which applies the same predicate and attaches. Post
-     * extraction when that is no longer true. The charging display is unaffected:
-     * it comes from power_input_status(), which is the honest source for the cable.
+    /* Cable state, posted whenever it changes. usb.c turns an insertion event into
+     * USB mode at line 499, and that is core behaviour this target does not
+     * override: what the usb_mode setting changes -- which classes get composed,
+     * whether the volumes get handed to the host -- is usb.c's business, not the
+     * target's. The consequence on this hardware is that a player plugged into a
+     * host is in USB mode, because charging here is not optional.
      */
-    status = (vbus_sample() == USB_INSERTED && usb_transport_wanted())
-             ? USB_INSERTED : USB_EXTRACTED;
+    status = vbus_sample();
 
     if (status != last)
     {
@@ -420,44 +400,24 @@ static void usb_vbus_poll(void)
 }
 
 /*
- * Reports the cable, which is what a target with real enumeration is supposed to
- * answer. Rockbox uses this for more than the transport: apps/playlist.c refuses
- * to save state while usb_detect() says USB_INSERTED, so a charging cable alone
- * will stop a playlist save. That is standard behaviour on targets that sense
- * VBUS, and it is the reason this stays behind the same gate as the attach.
- */
-/*
- * Reports the transport, not the cable.
- *
- * The two are different things on this board and Rockbox uses them for different
- * purposes. The cable drives the state machine -- usb_status_event() from the poll
- * below, which is what makes the charging display and the USB mode screen work.
- * usb_detect() is the *raw* value, and the apps use it to decide whether the
- * device is unavailable: apps/playlist.c:1127 suppresses a write-error report when
- * it says USB_INSERTED, treating the failure as "USB has the disk". On this board
- * VBUS is present whenever the unit is powered from a host, which is most of the
- * time, so reporting the cable would quietly swallow every real disk error and
- * claim the player owns nothing while it is merely charging.
- *
- * So: cable state goes to the state machine, transport state answers usb_detect().
- * They diverge deliberately in charge mode, where Rockbox's own usb_inserted()
- * reports the state and usb_detect() says there is no transport to wait for.
+ * Whether 5V is present -- the contract in usb.h:80, answered the way every other
+ * target answers it. This board's only cable sensor is the PMU: the SoC has no VBUS
+ * input and GPIO19/20 are D+/D- only, so this is an AXP173 read.
  */
 int usb_detect(void)
 {
-    return xt_attached ? USB_INSERTED : USB_EXTRACTED;
+    return vbus_sample();
 }
 
 #else /* !USB_ALLOW_ATTACH */
 
 /*
- * Hard gate, not a status read. VBUS is present whenever the board is powered
- * from the host, which is most of the time, and Rockbox treats an insertion as a
- * request to take over the disk. Until the core can actually enumerate,
- * reporting an insertion would put the device into USB slave mode with no host to
- * talk to: the card unmounted and nothing served. The PMU state stays available
- * in vbus_sample() for the charging display; this reports the transport, not the
- * cable.
+ * With USB_ALLOW_ATTACH undefined the transceiver is never armed, so the target
+ * reports no cable. This is deliberately a bring-up state rather than a behaviour:
+ * reporting an insertion while nothing can enumerate would put the player into USB
+ * mode with no transport behind it -- the USB screen with nowhere to go, and with
+ * mass storage selected, an unmounted card serving nobody. Drop this branch once
+ * the core enumerates and the target becomes ordinary.
  */
 int usb_detect(void)
 {
@@ -508,52 +468,23 @@ void usb_init_device(void)
  * idf-app/CMakeLists.txt adds -Wl,--wrap=usb_enable, which is what makes this the
  * function that actually runs. Do not rename it back.
  *
- * usb.h maps usb_hw_open()/usb_hw_close() onto this, and usb.c calls those when it
- * enters or leaves USB mode; charge-only mode never opens the transport, so the
- * pad handover only happens for a data profile.
+ * usb.h maps usb_hw_open()/usb_hw_close() onto this, and usb.c calls them when it
+ * enters and leaves USB mode. Note that usb.c calls usb_enable(true) on insertion
+ * whatever the usb_mode setting says -- it does so at line 483, before it computes
+ * power-only state at line 492 -- so on a software stack the mode chooses the class
+ * composition, not whether the transceiver is opened. On this board that means the
+ * pins move on insertion, which is core behaviour; the recovery invariant is the
+ * pad clear in usb_init_device(), not a refusal here.
  */
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
-    /* Whether this board should hand its pins over at all.
-     *
-     * Rockbox's documented gesture for this is holding a button while plugging in
-     * (usb.h: "By default any button will prevent the USB mode from kicking-in"),
-     * and usb.c implements it by inverting the usb_mode setting. The catch is that
-     * usb.c does that at usb.c:492, several lines after usb_stack_enable(true) has
-     * already called this function at line 483 -- so on a software stack the
-     * gesture only decides which classes get composed, never whether the
-     * transceiver is opened. That is fine on targets whose USB connector is its own
-     * pins. Here GPIO19/20 are what USB-Serial-JTAG uses for the console and the
-     * flash port, and the mux override lives in the RTC domain, so taking them is
-     * not something to do on an assumption.
-     *
-     * So the target recomputes the same rule at the moment it matters:
-     * transport wanted = (mode is mass storage) XOR (a button is held). With the
-     * factory default of charge mode, plugging in leaves the pins alone and the
-     * console stays alive; picking Settings -> General -> USB mode: Mass storage
-     * makes insertion attach, and holding a button at insertion suppresses it
-     * again. That is the precedent's semantics, just evaluated where it can bind.
-     */
-    if (on && !usb_transport_wanted())
-    {
-        xtensa_breadcrumb("usbSkip", (unsigned long)usb_get_mode(),
-                          button_status());
-        return;
-    }
-
     xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
 
     if (on)
-    {
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
-        xt_attached = true;
-    }
     else
-    {
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
-        xt_attached = false;
-    }
 
     /* Both halves of the register state, recorded before anything can change it.
      * The trail survives the reset, and app_main() replays it inside the boot

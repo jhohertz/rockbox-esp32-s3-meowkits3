@@ -86,19 +86,6 @@ static int usb_mmc_countdown = 0;
 static bool usb_power_only = false;
 #endif
 static int usb_mode = USBMODE_DEFAULT;
-#ifdef HAVE_USB_POWER
-/* The configured mode, for a target that has to decide before usb.c does.
- * usb.c computes its own power-only state at usb.c:492, which is after
- * usb_stack_enable(true) has already opened the transceiver at line 483 -- harmless
- * where the connector is its own pins, but not where the transport shares them with
- * a debug console or a flash port. Such a target can only honour the setting if it
- * can read it at the moment it is asked to enable. */
-int usb_get_mode(void)
-{
-    return usb_mode;
-}
-#endif
-
 void usb_set_mode(int mode)
 {
     usb_mode = mode;
