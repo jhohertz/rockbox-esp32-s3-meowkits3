@@ -62,7 +62,11 @@ static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
  * it survives precisely the failure that destroys the register dump.
  * ------------------------------------------------------------------ */
 
-#define BC_SLOTS 16
+/* 40 slots. At 16 the periodic attach samples push out the sequence that starts the
+ * attach -- usbEn(1), usbIn, usbFifo, usbConn, usbPost -- which is precisely the part
+ * that says whether the transport was brought up and then dropped, or never came up.
+ * Each slot is 16 bytes, so this costs 384 bytes of .noinit. */
+#define BC_SLOTS 40
 #define BC_MAGIC 0x43415242u   /* "BRAC" -- validates the counters, which
                                 * .noinit does not zero */
 
@@ -187,11 +191,22 @@ void xtensa_paniclog_dump(void)
         }
     }
 
-    /* Consume both. A stale record replayed on every boot looks like a fault
-     * that keeps happening, which is precisely the kind of lead that costs a
-     * day -- and with it a stale trail, which would be worse because the
-     * breadcrumbs read as a sequence and a stale one points at the wrong file. */
+    /* Consume the record, so a stale one is not replayed forever: a fault that looks
+     * like it keeps happening is the kind of lead that costs a day.
+     *
+     * Except while the trail is being repeated. A panic during a USB attach has no
+     * console to print to -- the pads are with the OTG core -- so it reboots quietly,
+     * and the next boot prints this record about a second after starting, which is
+     * before the host has enumerated USB-Serial-JTAG and created the serial node. The
+     * print happens, nobody can read it, and consuming the record destroys the only
+     * copy of the reason. Keeping it here means the repeating dump shows it on a
+     * console that exists. Remove along with XT_BRINGUP_TRAIL_REPEAT.
+     */
+#ifdef XT_BRINGUP_TRAIL_REPEAT
+    /* keep the record for the repeating dump */
+#else
     rec.magic = 0;
+#endif
 
     /* Do NOT clear bc_next. The trail is ring-buffered and written by name, so
      * leaving it in place means the next crash overwrites the oldest entries

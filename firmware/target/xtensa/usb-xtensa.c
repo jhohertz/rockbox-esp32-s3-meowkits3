@@ -39,6 +39,7 @@
 #include <soc/interrupts.h>
 #include <esp_rom_gpio.h>
 #include <esp_system.h>
+#include <stdlib.h>
 #include <soc/gpio_sig_map.h>
 #include <soc/gpio_pins.h>
 
@@ -114,8 +115,9 @@ static intr_handle_t usb_intr = NULL;
  * this counter separates the two, and the poll below carries it to the breadcrumb
  * trail because the console is gone by then. */
 static volatile uint32_t xt_usb_irqs;
-/* Counted separately from xt_usb_irqs: that one may only ever be incremented from
- * interrupt context, or "the interrupt arrived" stops meaning anything. */
+/* Counted separately from xt_usb_irqs, which is incremented only inside
+ * usb_dwc_isr() and therefore means "the interrupt was delivered" and nothing else.
+ * The polled stand-in calls the driver directly so it cannot inflate that claim. */
 static volatile uint32_t xt_usb_polled;
 
 /* INTENABLE and INTERRUPT are readable on this core config (rsr.intlevel is not,
@@ -260,9 +262,21 @@ void usb_dw_target_enable_irq(void)
     esp_err_t err = ESP_OK;
 
     err = ESP_OK;
+
+#ifdef USB_BRINGUP_NO_IRQ
+    /* Bring-up only: take no CPU interrupt slot. The slot is not useful while the
+     * core's INT output is silent -- usbLin sampled rsr.interrupt at the moment
+     * GINTSTS & GINTMSK was non-zero and the mapped slot was not pending -- and taking
+     * one starves the audio path. The tick-task dispatch drives the driver instead.
+     */
+    xtensa_breadcrumb("usbNoIrq", 1, 0);
+    return;
+#endif
+
     if (usb_intr == NULL)
     {
-        err = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LEVEL1,
+        err = esp_intr_alloc(ETS_USB_INTR_SOURCE,
+                             ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_INTRDISABLED,
                              usb_dwc_isr, NULL, &usb_intr);
         if (err != ESP_OK)
         {
@@ -406,10 +420,49 @@ static void usb_hw_probe(void)
  * from the OTG interrupt (the core reports its own connection state) rather than
  * from a poll of the PMU; the PMU read stays here for the charging display.
  */
+/* VBUS presence, error-tolerant and debounced.
+ *
+ * axp173_input_status() returns POWER_INPUT_NONE when the read itself fails, which is
+ * indistinguishable from an unplugged cable -- and the poll used to act on it. The
+ * first I2C failure after an attach therefore released the pads about two seconds
+ * later, on every run, which is why the polled dispatch only ever recorded two or
+ * three services and the host never got past its first descriptor read. The PMU and
+ * the touchscreen share this bus, and the attach makes the bus busier.
+ *
+ * A failed read now keeps the last known state, and a removal needs four consecutive
+ * absent readings before it is reported -- the same shape as Rockbox's own 200 ms USB
+ * debounce, scaled to this poll's period.
+ */
+static int xt_vbus_present = -1;   /* -1 unknown, 0 absent, 1 present */
+static int xt_vbus_miss;
+static unsigned long xt_vbus_err;
+
 static int vbus_sample(void)
 {
-    return (axp173_input_status() & POWER_INPUT_USB) ? USB_INSERTED
-                                                     : USB_EXTRACTED;
+    int last = xt_vbus_present < 0 ? USB_EXTRACTED
+                                   : (xt_vbus_present ? USB_INSERTED : USB_EXTRACTED);
+    int r = axp173_read_reg(AXP_REG_POWERSTATUS);
+
+    if (r < 0)
+    {
+        /* Nothing is known about the cable from a failed transaction. */
+        xt_vbus_err++;
+        return last;
+    }
+
+    if (r & AXP_VBUS_PRESENT)
+    {
+        xt_vbus_present = 1;
+        xt_vbus_miss = 0;
+        return USB_INSERTED;
+    }
+
+    if (++xt_vbus_miss < 4)
+        return last;
+
+    xt_vbus_present = 0;
+    xt_vbus_miss = 0;
+    return USB_EXTRACTED;
 }
 
 /*
@@ -436,6 +489,8 @@ static int vbus_sample(void)
 /* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
  * "the interrupt never arrived" can be told apart on one run. */
 #define USB_BRINGUP_POLLED_IRQ 1
+/* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
+#define USB_BRINGUP_NO_IRQ 1
 /* How long to let an attach run before judging it. */
 #define USB_ATTACH_COLLECT (90 * HZ)
 
@@ -523,10 +578,13 @@ static void usb_vbus_poll(void)
         current_tick - xt_attach_tick >= USB_ATTACH_COLLECT)
     {
         xt_attach_judged = 1;
-        /* Counted either way: the tick-task dispatch is a stand-in for the missing
-         * interrupt, and an attach that is making progress through it must not be
-         * torn down and restarted. */
-        if (xt_usb_irqs == 0 && xt_usb_polled == 0)
+        /* Judged on delivered interrupts only, not on xt_usb_polled. The polled
+         * dispatch is a stand-in for a transport that cannot answer the host at
+         * 100 Hz anyway, so leaving it running forever means the pads stay with the
+         * OTG core and there is no console and no esptool until someone pulls the
+         * cable. Rockbox is not playing audio in USB mode, so a restart here costs
+         * nothing; once interrupts arrive this branch stops firing. */
+        if (xt_usb_irqs == 0)
         {
             xtensa_breadcrumb("usbDead", DWC_GINTSTS, DWC_DSTS);
             esp_restart();
@@ -559,6 +617,9 @@ static void usb_vbus_poll(void)
              * GINTSTS & GINTMSK is the difference between "the driver works when
              * handed the event" and "the driver is broken too". */
             xtensa_breadcrumb("usbPoll", xt_usb_polled, DWC_GINTSTS & DWC_GINTMSK);
+            /* Failed PMU reads during the attach: this counter says whether the bus
+             * is the problem or the core is. */
+            xtensa_breadcrumb("usbVbus", xt_vbus_err, (unsigned long)xt_vbus_present);
             /* EP0 in detail. DOEPINT bit 13 is setup-packet-complete (STUP) and bit
              * 0 is transfer-complete (XFRC); the EPTSIZ low 7 bits of a completed
              * OUT stage say how many bytes actually arrived. A host that gets a
@@ -655,8 +716,21 @@ static void xt_usb_polled_irq(void)
 
     if (DWC_GINTSTS & DWC_GINTMSK)
     {
+        /* Sample the CPU's pending bitmap *before* the handler clears the core's
+         * status bits. Reading it later is what the poll's usbCpu entry does, and the
+         * polled dispatch removes the very condition that would assert the line -- so
+         * "no slot pending" there is partly an artifact of this instrumentation. If
+         * slot 13 is pending here, the source reaches the matrix and something is
+         * wrong in dispatch; if it is not, the core's INT output is silent. */
+        if (xt_usb_polled < 4)
+            xtensa_breadcrumb("usbLin", xt_read_interrupt(), xt_read_intenable());
+
         xt_usb_polled++;
-        usb_dwc_isr(NULL);
+        /* Call the driver, not the handler. usb_dwc_isr() counts entries as delivered
+         * interrupts, and going through it here made usbIRQ read 3 on a run where not
+         * one interrupt had been delivered -- which also disabled the attach judge,
+         * because "interrupts arrived" was then true by construction. */
+        INT_USB_FUNC();
     }
 }
 
@@ -702,6 +776,26 @@ static void xt_usb_reg_report(void)
     printf("USBregs polled=%lu GINTSTS&GINTMSK=%08lx\n",
            (unsigned long)xt_usb_polled,
            (unsigned long)(DWC_GINTSTS & DWC_GINTMSK));
+    {
+        /* esp_intr_dump() writes thirty-odd lines, which the console reader delivers
+         * in several chunks and which then cannot be read as a table. Compressed to
+         * one line, the pool state is legible: how many slots are taken is what
+         * decides whether this core can be given one. */
+        char *buf = NULL;
+        size_t len = 0;
+        FILE *f = open_memstream(&buf, &len);
+
+        if (f != NULL)
+        {
+            esp_intr_dump(f);
+            fclose(f);
+            if (buf != NULL)
+            {
+                printf("USBintr %.160s\n", buf);
+                free(buf);
+            }
+        }
+    }
 }
 
 static void xt_usb_reg_report_start(void)
@@ -723,21 +817,19 @@ void usb_init_device(void)
      * GAHBCFG.GINT is set, and that no CPU slot shows the source pending -- but it
      * cannot say which slot IDF gave us, on which CPU, at what level, or whether
      * the source ever got mapped at all. esp_intr_dump() says all of that, and it
-     * needs a console, which only exists before the pads move. So allocate here, in
-     * the pad-free phase, and immediately mask it again: the core's status bits are
-     * already set from the previous boot, and this interrupt is level-sensitive, so
-     * an enabled handler before usb_dw_init() would storm the CPU.
+     * needs a console, which only exists before the pads move.
      *
-     * usb_dw_target_enable_irq() then finds the handle present and just enables it,
-     * which is the path a re-attach takes anyway.
+     * Nothing is allocated here. CPU 0 has 22 general-use interrupt slots and IDF
+     * holds most of them; taking one for the OTG core is what panics this build --
+     * audio allocates its GDMA TX interrupt lazily, so the attach eats the last free
+     * slot and the next thing that happens is "i2s: cannot allocate the GDMA TX
+     * interrupt", a panic, a reboot and the pads back on USB-Serial-JTAG, which reads
+     * as a transport that dropped two seconds after attaching. See
+     * usb_dw_target_enable_irq().
      */
-    if (usb_intr == NULL)
     {
-        esp_err_t e = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LEVEL1,
-                                     usb_dwc_isr, NULL, &usb_intr);
-        xtensa_breadcrumb("usbPre", (unsigned long)e, (usb_intr != NULL) ? 1 : 0);
-        printf("USB intr table (source %d = ETS_USB), alloc err=%d:\n",
-               ETS_USB_INTR_SOURCE, (int)e);
+        printf("USB intr table (source %d = ETS_USB), not allocated:\n",
+               ETS_USB_INTR_SOURCE);
         esp_intr_dump(stdout);
         printf("INTENABLE=%08lx INTERRUPT=%08lx GINTMSK=%08lx GAHBCFG=%08lx "
                "GINTSTS=%08lx PCGCCTL=%08lx DCTL=%08lx\n",
@@ -745,16 +837,6 @@ void usb_init_device(void)
                (unsigned long)DWC_GINTMSK, (unsigned long)DWC_GAHBCFG,
                (unsigned long)DWC_GINTSTS, (unsigned long)DWC_PCGCCTL,
                (unsigned long)DWC_DCTL);
-
-        /* Hand the slot straight back. CPU 0's allocable pool is already tight on
-         * this build -- holding a slot through boot is what made IDF's allocator
-         * fail DMA_OUT_CH0 and panic in i2s with "No free interrupt inputs". The
-         * attach allocates it again, which is the only time it is wanted. */
-        if (e == ESP_OK)
-        {
-            esp_intr_free(usb_intr);
-            usb_intr = NULL;
-        }
     }
 #endif
 
@@ -812,7 +894,17 @@ void usb_init_device(void)
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
-    xtensa_breadcrumb("usbEn", on ? 1 : 0, 0);
+    xtensa_breadcrumb("usbEn", on ? 1 : 0, current_tick);
+
+    if (!on && xt_attach_tick != 0)
+    {
+        /* When a teardown happens relative to the attach, in ticks. The kernel shows
+         * the pads coming back a couple of seconds after an attach on some runs and
+         * the full 90 seconds on others, and the trail cannot say which without a
+         * clock: 200 ticks is Rockbox releasing the transport on its own, 9000 is the
+         * bring-up judge. */
+        xtensa_breadcrumb("usbEnT", current_tick - xt_attach_tick, xt_attach_tick);
+    }
 
     if (on)
     {

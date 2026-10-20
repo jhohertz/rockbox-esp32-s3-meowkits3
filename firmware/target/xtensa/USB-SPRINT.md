@@ -583,6 +583,62 @@ the eject machinery already. Adopting that shape means giving up the USJ console
 esptool for good, so it is a decision for after bring-up, not during.
 
 ## Step 2 state: connected, silent
+## Step 2 measured: the interrupt never arrives
+
+A full attach cycle, read from a 40-slot trail:
+
+| Register | Value | Meaning |
+|---|---|---|
+| `GINTSTS` | `0x54808c28` / `0x5480bc38` | SRQINT, CIDSCHG, PTXFE, EOPF, **ENUMDNE**, **USBRST**, USBSUSP, ESUSP, NPTXFE, RXFLVL |
+| `GINTMSK` | `0x000c3000` | OEPINT, IEPINT, ENUMDNE, USBRST -- masked correctly |
+| `GAHBCFG` | `0x00000021` | GINT and DMAEN set |
+| `PCGCCTL` | `0` | core not clock-gated |
+| `DCTL` | `0` | connected, not soft-disconnected |
+| `DSTS` | `0x00400003`..`0x0040ee02` | EmNum = full speed, frame number advancing between samples |
+| `OTG_CONF` | `0x805c0001` | pad_enable, clk_en, ahb/phy force, dfifo_force_pu, sesend override |
+| `INTENABLE` | `0x1106332e` | the allocated slot enabled |
+| `rsr.interrupt` | `0x00018040` | **that slot not pending**, sampled at the instant `GINTSTS & GINTMSK` was non-zero (`usbLin`) |
+| `esp_intr_dump` | slot 13 level 1 `Used: USB` on CPU 0 | source 38 mapped correctly; `ETS_USB_INTR_SOURCE` is what IDF's own `esp32s3/usb_dwc_periph.c` declares |
+
+So the core has reset, enumerated and is receiving frames, and its INT output does not
+reach the interrupt matrix. GDMA and I2C interrupts on the same source mechanism work,
+so IDF's dispatch is fine -- this is specific to the OTG core's line.
+
+**A bug found underneath it.** `usb-designware.c` reads the remaining transfer count
+with a 19-bit mask. This core's EP0 registers are not 19 bits: IDF's own SVD
+(`soc/esp32s3/include/soc/usb_dwc_struct.h`) declares `dieptsiz0`/`doeptsiz0` as
+`xfersize:7` with `pktcnt` at bit 19, while the generic per-endpoint registers are
+`xfersize:19` and `pktcnt:10`. `DOEPTSIZ(0)` is programmed as
+`STUPCNT(1)|PKTCNT(1)|64 = 0x20080040`, and `0x20080040 & 0x7ffff` is 524352, not 64 --
+so every control stage computes a nonsense byte count. That is what turns the host's
+failure from a timeout into `error -71`: the device answers, with a malformed
+transaction. The fix is `EPTSIZ_XFERSZ(epnum)` in the driver, 7-bit for EP0 on
+`CPU_XTENSA`, unchanged everywhere else.
+
+**A trap the instrumentation itself created.** Allocating the USB interrupt at boot took
+a slot from CPU 0's 22-slot general-use pool. Audio allocates its GDMA TX interrupt
+lazily, so the attach consumed the last free slot and the next thing seen was
+`intr_alloc: No free interrupt inputs for DMA_OUT_CH0` then
+`i2s: cannot allocate the GDMA TX interrupt` -- a panic, a reboot, pads back on
+USB-Serial-JTAG, and a transport that appeared to drop two seconds after attaching. The
+bring-up build now takes no slot at all (`USB_BRINGUP_NO_IRQ`) and drives the driver
+from a tick task (`USB_BRINGUP_POLLED_IRQ`, 100 Hz: far too slow to stream, adequate to
+enumerate, because the host retransmits a SETUP it got no answer to). `xt_usb_polled`
+counts those separately from `xt_usb_irqs`, which is incremented only in the handler --
+an earlier version incremented it in the shared path and made "the interrupt arrived"
+true by construction, which also silently disabled the attach judge.
+
+**Why the panic reason was invisible.** A panic during an attach has no console (the
+pads are gone), so it reboots silently; the next boot prints the stored record about a
+second after starting, before the serial node exists, and that print *consumed* the
+record. While `XT_BRINGUP_TRAIL_REPEAT` is set the record is kept and re-printed every
+10 s, so a reason is actually readable.
+
+**Open.** Why the pads return roughly two seconds after an attach on some runs while the
+trail shows the attach lasting the full 90 seconds on others. `usbEnT` now records the
+teardown relative to the attach in ticks, and the wider ring keeps `usbEn(1)`, `usbIn`,
+`usbFifo`, `usbConn` and `usbPost`, which the 16-slot ring used to evict.
+
 
 D+ is asserted and the host sees a full-speed connection. It then gets nothing:
 `device descriptor read/64, error -110` twice, then `device not accepting address,
