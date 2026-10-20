@@ -406,12 +406,16 @@ void usb_serial_send(const unsigned char *data,int length)
 static void usb_serial_transfer_complete(int ep,int dir, int status, int length)
 {
     (void)ep;
-    (void)length;
 
     switch (dir) {
         case USB_DIR_OUT:
             logf("serial: %s", receive_buffer);
             /* Data received. TODO : Do something with it ? */
+            /* The weak hook below is the answer for a target that wants one. The
+             * endpoint was primed with RECV_BUFFER_SIZE, so the received count cannot
+             * exceed it; clamping anyway keeps a driver that reported more from
+             * overrunning what is handed to the target. */
+            usb_serial_target_rx(receive_buffer, MIN(length, RECV_BUFFER_SIZE));
 
             /* Get the next bit */
             usb_drv_recv_nonblocking(EP_OUT, receive_buffer, RECV_BUFFER_SIZE);
@@ -431,6 +435,15 @@ static void usb_serial_transfer_complete(int ep,int dir, int status, int length)
                 sendout();
             break;
     }
+}
+
+/* Default for the target hook: no target receives commands unless it says so, and
+ * every existing target keeps exactly the behaviour it had before this existed. */
+void __attribute__((weak)) usb_serial_target_rx(const unsigned char *data,
+                                                int length)
+{
+    (void)data;
+    (void)length;
 }
 
 struct usb_class_driver usb_cdrv_serial = {

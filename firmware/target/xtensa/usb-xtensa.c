@@ -41,6 +41,8 @@
 
 #include <esp_intr_alloc.h>
 #include <soc/interrupts.h>
+#include <soc/soc.h>          /* REG_WRITE */
+#include <soc/rtc_cntl_reg.h>  /* RTC_CNTL_OPTION1_REG, FORCE_DOWNLOAD_BOOT */
 #include <esp_rom_gpio.h>
 #include <esp_system.h>
 #include <stdlib.h>
@@ -605,28 +607,54 @@ static uint32_t xt_attach_tick;
  */
 #define USB_VBUS_POLL_TICKS 4
 
+#ifdef USB_ENABLE_SERIAL
 /*
- * A boot window in which the pins are not handed over. This is a bring-up
- * affordance, not a behaviour difference: it exists so the host can always reach
- * the board while the attach is still being debugged.
+ * Flash handover, requested by the host over our own CDC.
  *
- * Taking GPIO19/20 away from USB-Serial-JTAG removes the console *and* esptool, so
- * a firmware that attaches the moment it senses a cable can leave no way to put a
- * different firmware back -- and an attach that does not enumerate does that on
- * purpose. A flash attempt also races the attach: if the pins move while esptool is
- * mid-handshake, the ROM's SLIP responses stop and esptool reports "the chip
- * stopped responding", which is exactly what happened here. current_tick advances
- * at HZ, so this is 120 seconds of guaranteed USJ at every boot.
- *
- * When the transport is proven, drop this window rather than keep it: Rockbox's
- * behaviour is to enter USB mode on insertion, and delaying that is a deviation.
+ * The request is recorded as a flag rather than acted on where it arrives:
+ * usb_serial_target_rx() runs in interrupt context, and the sequence below disconnects
+ * the device, writes the RTC block and resets the chip. None of that belongs in a
+ * handler, so the tick task picks it up.
  */
-#define USB_ATTACH_DELAY (120 * HZ)
+static volatile bool xt_flash_request;
 
-static bool usb_attach_allowed(void)
+void usb_serial_target_rx(const unsigned char *data, int length)
 {
-    return current_tick >= USB_ATTACH_DELAY;
+    int i;
+
+    for (i = 0; i < length; i++)
+    {
+        if (data[i] == 'f')
+        {
+            xt_flash_request = true;
+            xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
+        }
+    }
 }
+
+/* Hand the port back, then ask the ROM to come up in download mode.
+ *
+ * The trigger arrives over our CDC, but the ESP32-S3 ROM's USB download mode is the
+ * USB-Serial-JTAG device, so this has to give the pads back rather than persist the
+ * OTG core. The mux override lives in the RTC block and survives esp_restart(), so
+ * without an explicit release the ROM would find D+/D- still routed to a core it does
+ * not speak to in download mode. usb_dw_target_disable_clocks() is the same release a
+ * detach performs: it clears the wrap's pad_enable and the RTC override together.
+ *
+ * Persist flags are deliberately not set. chip_usb_set_persist_flags(USBDC_PERSIST_ENA)
+ * is the ESP32-S2 shape of this, where the ROM's download mode does run on the OTG
+ * core; on the S3 it would leave the pads claimed by something the ROM ignores.
+ */
+static void xt_usb_enter_download_mode(void)
+{
+    xtensa_breadcrumb("usbFlsh", DWC_DCTL, rd(XT_USB_OTG_CONF));
+
+    DWC_DCTL = SDIS;                /* stop answering the host before the pads move */
+    usb_dw_target_disable_clocks(); /* back to USB-Serial-JTAG, which the ROM uses */
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+}
+#endif /* USB_ENABLE_SERIAL */
 
 static void usb_vbus_poll(void)
 {
@@ -724,19 +752,25 @@ static void usb_vbus_poll(void)
         }
     }
 
+#ifdef USB_ENABLE_SERIAL
+    /* Picked up here rather than in the hook: this runs on the tick task thread. */
+    if (xt_flash_request)
+    {
+        xt_flash_request = false;
+        xt_usb_enter_download_mode();
+    }
+#endif
+
     if (++ticks < USB_VBUS_POLL_TICKS)
         return;
     ticks = 0;
 
-    if (!usb_attach_allowed())
-        return;
-
     /* Cable state, posted whenever it changes. usb.c turns an insertion event into
-     * USB mode at line 499, and that is core behaviour this target does not
-     * override: what the usb_mode setting changes -- which classes get composed,
-     * whether the volumes get handed to the host -- is usb.c's business, not the
-     * target's. The consequence on this hardware is that a player plugged into a
-     * host is in USB mode, because charging here is not optional.
+     * USB mode, and that is core behaviour this target does not override: what the
+     * usb_mode setting changes -- which classes get composed, whether the volumes get
+     * handed to the host -- is usb.c's business, not the target's. The consequence on
+     * this hardware is that a player plugged into a host is in USB mode, because
+     * charging here is not optional.
      */
     status = vbus_sample();
 
@@ -754,14 +788,11 @@ static void usb_vbus_poll(void)
  */
 int usb_detect(void)
 {
-    /* The boot window applies here too, and it has to: usb_start_monitoring() posts
-     * whatever usb_detect() returns at startup, so a cable-accurate answer here is
-     * what put the board into a 10-second reboot cycle -- insertion fired ~2 s after
-     * boot, the pins went to the OTG core, the attach report panicked 8 s later, and
-     * PRINT_REBOOT turned that into a loop. Gating only the poll left that hole open.
+    /* The cable, answered as soon as the boot hook has put the pads back. This used
+     * to be gated behind a 120-second window so that a flash attempt could not race
+     * the attach; the window is gone because the host can now ask for the handover
+     * over USB instead, which is both faster and something the player does on its own.
      */
-    if (!usb_attach_allowed())
-        return USB_EXTRACTED;
     return vbus_sample();
 }
 
