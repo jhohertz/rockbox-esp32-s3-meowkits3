@@ -8,6 +8,16 @@
 # then comes up in download mode on the DWC core -- measured, with USJ CONF0
 # usb_pad_enable clear and OPTION1 consumed -- so the host keeps the same
 # /dev/ttyACM node it already had, and esptool talks to the ROM with
+# NOTE, corrected against the mask ROM (esp32s3_rev0_rom.elf): the boot-mode decision is
+# detect_uart_usb_spi_boot_mode at 0x4004391c, which calls UartConnCheck(0), (1), (3), (4)
+# for UART0, UART1, USB-Serial-JTAG and USB-OTG. UartConnCheck at 0x40047b00 is the ROM's
+# "wait 0x3e8 ms for esptool's sync magic" loop (movi a10, 0x3e8; then RcvMsg). The OPTION1
+# register (RTC_CNTL_FORCE_DOWNLOAD_BOOT) is referenced exactly once in the whole ROM, inside
+# usb_uart_otg_rx_one_char_block, and never by the boot decision -- so on esp32s3 an app
+# cannot force download mode by writing a register. The host has to send sync while the ROM
+# is still probing, or drive the reset the ROM enables for the USJ path
+# (uart_usb_otg_enable_reset_on_rts). That is what --before default_reset does below, and why
+# the handover is deterministic now rather than a race against a one-second window.
 # --before no_reset. esptool's default --after hard_reset then puts Rockbox
 # back, which is what makes the loop close: no button, no unplug.
 #
@@ -84,19 +94,16 @@ def app_streaming(port, seconds=16):
     return False
 
 
-def in_download_mode(argv, port, chip):
-    """Ask the ROM for the MAC: only answers while the bootloader is running."""
-    cmd = argv + ["--chip", chip, "-p", port, "-b", "115200",
-                  "--before", "no_reset", "--after", "no_reset", "read_mac"]
-    return subprocess.call(cmd, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL) == 0
+def find_rockbox_ports():
+    """Every ACM node currently bound to the Rockbox device.
 
-
-def find_rockbox_port():
-    for dev, product in tty_nodes().items():
-        if PRODUCT in product:
-            return dev
-    return None
+    There is usually one, but the host can hold a stale node for the same physical
+    device while it re-enumerates: after a crash reboot the CDC port moved from
+    ttyACM0 to ttyACM1, the trigger was written to ttyACM0, and the device never
+    received it -- which looked like a broken handover, not a wrong address. Write
+    to everything that matches and re-resolve between attempts.
+    """
+    return [dev for dev, product in tty_nodes().items() if PRODUCT in product]
 
 
 def send_trigger(port):
@@ -140,40 +147,76 @@ def main():
                     help="assume the chip is already in download mode")
     args = ap.parse_args()
 
-    port = args.port or find_rockbox_port()
-    if port is None and not args.no_trigger:
-        print("no %s device on any /dev/ttyACM; use --port, or put the board "
-              "in download mode and pass --no-trigger" % PRODUCT)
-        return 2
+    port = args.port
+    answered = None
 
     if not args.no_trigger:
-        print("asking %s for download mode ('%s' over CDC)"
-              % (port, TRIGGER.decode()))
-        send_trigger(port)
-        time.sleep(WAIT_FOR_DOWNLOAD)
-        # The tick task acts on the trigger, so the reset can land a tick or two later.
-        # A fixed sleep was the other half of the unreliability: esptool then talked to
-        # an app that had not reset yet and the failure looks like a broken port.
-        for attempt in range(4):
-            if in_download_mode(esptool_cmd(args), port, args.chip):
-                break
-            print("  not in download mode yet (attempt %d), waiting"
-                  % (attempt + 1))
-            time.sleep(WAIT_FOR_DOWNLOAD)
+        if port:
+            ports = [port]
         else:
+            ports = find_rockbox_ports()
+        if not ports:
+            print("no %s device on any /dev/ttyACM; use --port, or put the board "
+                  "in download mode and pass --no-trigger" % PRODUCT)
+            return 2
+
+        print("asking %s for download mode ('%s' over CDC)"
+              % (", ".join(ports), TRIGGER.decode()))
+        for dev in ports:
+            try:
+                send_trigger(dev)
+            except OSError as exc:
+                print("  %s: %s" % (dev, exc))
+        time.sleep(WAIT_FOR_DOWNLOAD)
+        # Whatever node carried the trigger is gone by then: releasing the pads takes the
+        # Rockbox device off the bus, and the USJ node that replaces it can arrive under a
+        # different ttyACM index. Polling the trigger's own port therefore found nothing,
+        # which is what made a working handover look broken.
+        #
+        # Each attempt probes with read_mac, which is itself the sync magic the ROM is
+        # listening for (see the note at the top), and asks for default_reset so the ROM is
+        # handed a reset it can act on. Every ttyACM node is a candidate.
+        for attempt in range(5):
+            ports = [args.port] if args.port else list(tty_nodes())
+            if not ports:
+                print("  no ttyACM node at all (attempt %d)" % (attempt + 1))
+                time.sleep(1.0)
+                continue
+            for dev in ports:
+                probe = esptool_cmd(args) + ["--chip", args.chip, "-p", dev,
+                                             "-b", "115200",
+                                             "--before", "default_reset",
+                                             "--after", "no_reset", "read_mac"]
+                try:
+                    out = subprocess.run(probe, cwd=args.build, timeout=25,
+                                         stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT)
+                except subprocess.TimeoutExpired:
+                    continue
+                if b"MAC" in out.stdout:
+                    answered = dev
+                    break
+            if answered:
+                break
+            print("  ROM not answering (attempt %d), ports: %s"
+                  % (attempt + 1, ", ".join(ports)))
+            time.sleep(1.0)
+        if not answered:
             print("the chip never answered the ROM, so the trigger did not take. If the "
                   "board is wedged with the pads on the OTG core, hold BOOT and use "
                   "make flash.")
             return 1
+        port = answered
 
     cmd = esptool_cmd(args) + [
         "--chip", args.chip,
         "-p", port,
         "-b", args.baud,
-        # The OTG core has no DTR/RTS wiring; esptool must not try.
-        "--before", "no_reset",
-        # Default, stated because it is what ends the loop: the ROM reboots
-        # into the app, OPTION1 having been consumed, and Rockbox re-attaches.
+        # default_reset, not no_reset: the ROM decides by listening for sync after a reset
+        # it was given, and does not read OPTION1. Over USJ this drives exactly the reset the
+        # ROM enables for that interface, so the flash lands deterministically.
+        "--before", "default_reset",
+        # Ends the loop: the ROM reboots into the app and Rockbox re-attaches.
         "--after", "hard_reset",
         "write_flash",
     ] + read_flash_args(args.build)

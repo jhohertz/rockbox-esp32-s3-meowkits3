@@ -3274,6 +3274,24 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   console, lock, stack or working panic handler to survive a crash-reboot.
 - `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
   63, and the GPSPI signals are 101-103.
+- **The ESP32-S3 mask ROM cannot be told to enter download mode by a register write.**
+  Disassembling `esp32s3_rev0_rom.elf`: the boot-mode decision is
+  `detect_uart_usb_spi_boot_mode` (`0x4004391c`), which calls `UartConnCheck(0)`, `(1)`,
+  `(3)`, `(4)` for UART0, UART1, USB-Serial-JTAG and USB-OTG. `UartConnCheck` (`0x40047b00`)
+  is the ROM's wait-for-esptool-sync loop (`movi a10, 0x3e8` = 1000 ms, then `RcvMsg`).
+  `RTC_CNTL_OPTION1` / `FORCE_DOWNLOAD_BOOT` is referenced exactly once in the entire ROM,
+  inside `usb_uart_otg_rx_one_char_block`, and never by that decision — the ESP32/S2 idiom of
+  writing OPTION1 then `esp_restart()` does nothing on S3. What makes the ROM come up in
+  download mode is a *host-driven* reset plus sync bytes, i.e. esptool's `--before
+  default_reset` over the USJ node. An application handover therefore has to release the pads
+  to USJ, reset, and let the host reset it again; polling the port that carried the trigger
+  finds nothing because that node is gone and the replacement may have a different ttyACM
+  index.
+- **`.noinit` in internal SRAM does survive a chip reset, `.noinit`-style DRAM is not the
+  problem — IDF's panic path is.** Measured: after a task-watchdog reset the breadcrumb ring
+  still held the previous boot's entries. What does *not* survive is the boot console:
+  USB-Serial-JTAG drops output when nothing is reading it, so a post-mortem printed only at
+  boot is half-captured. Deliver it over the transport instead.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
   constant is treated as an absolute section address, and the region usage is then
   computed from that address instead of the section size — a spurious overflow of
