@@ -64,3 +64,29 @@ foreach(_idf_component IN LISTS _idf_components)
     endif()
 endforeach()
 target_link_libraries(rockbox.elf PRIVATE "-Wl,--end-group")
+
+# ---- ROM symbol collisions ----
+#
+# IDF links with esp32s3.rom.ld, which assigns about 2100 absolute symbols naming
+# the mask ROM's functions. An absolute assignment in a linker script takes
+# precedence over a definition in an object file, and ld does not warn: a Rockbox
+# function whose name appears in that list is silently replaced by the ROM routine,
+# which has a different signature and lives in a different memory domain.
+#
+# Fifteen names collide in this tree. Most are libc -- memcpy, memset, atoi,
+# strtol, strtoul, strstr, strcasecmp, strcasestr, strncasecmp, strcat, strlcpy,
+# strtok_r, rand, srand -- where the ROM version is a correct C implementation and
+# the substitution is harmless. That is the reason Rockbox's own memcpy does not
+# appear in the image, and why measured symbol lookups land at 0x400011xx.
+#
+# usb_enable is not harmless. It is Rockbox's target hook (firmware/export/usb.h),
+# called by usb_init() with a bool; the ROM's usb_enable is part of the USB
+# download/console path. The first boot with HAVE_USBSTACK enabled died with
+# LoadProhibited / EXCVADDR 0x0c, and the disassembly of usb_init() showed
+#   l32r a8, (4000297c <usb_enable>) ; callx8 a8
+# i.e. the call went to the ROM, not to usb-xtensa.c.
+#
+# --wrap redirects every reference to usb_enable to __wrap_usb_enable, which is the
+# real implementation in firmware/target/xtensa/usb-xtensa.c. __real_usb_enable is
+# the ROM address and is deliberately never called.
+target_link_options(rockbox.elf PRIVATE "-Wl,--wrap=usb_enable")
