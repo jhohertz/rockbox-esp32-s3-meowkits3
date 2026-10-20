@@ -1478,14 +1478,26 @@ static void usb_dw_init(void)
 
 static void usb_dw_exit(void)
 {
+#if defined(CPU_XTENSA)
+    /* Steps of the driver teardown, each noted before it runs. usb_dw_target_disable_clocks()
+     * writes usbRel at its end, so the last note here that appears says which register write
+     * the extraction got to before the watchdog. */
+    xtensa_breadcrumb_rtc("dSdis", DWC_DCTL, DWC_GINTMSK);
+#endif
     /* Soft disconnect */
     DWC_DCTL = SDIS;
     udelay(10);
 
     DWC_PCGCCTL = 1; /* Stop Phy clock */
+#if defined(CPU_XTENSA)
+    xtensa_breadcrumb_rtc("dPcg", DWC_DCTL, DWC_PCGCCTL);
+#endif
 
     /* Disable IRQs */
     usb_dw_target_disable_irq();
+#if defined(CPU_XTENSA)
+    xtensa_breadcrumb_rtc("dIrq", DWC_GINTSTS, DWC_DCTL);
+#endif
 
     /* Disable clocks */
     usb_dw_target_disable_clocks();
