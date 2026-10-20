@@ -176,6 +176,21 @@ struct rtc_store
     struct rtc_slot slot[XT_RTC_SLOTS];
 };
 
+/* The panic record, also in RTC slow. The SRAM copy is cleared by the watchdog reset that
+ * follows a hung panic path, which is exactly when its text is wanted: "no panic record" in
+ * a post-mortem therefore proves nothing about whether panicf() ran. Written a word at a
+ * time, like the ring above, because byte stores to this bank do not land. */
+#define XT_PANIC_RTC_BASE  0x50001200u
+#define XT_PANIC_RTC_MAGIC 0x43505254u   /* "CRPT" */
+
+struct panic_rtc
+{
+    uint32_t magic;
+    uint32_t seq;
+    uint32_t len;
+    uint32_t word[24];   /* 96 characters, four per word */
+};
+
 static volatile struct rtc_store *rtc_store =
     (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
 
@@ -229,15 +244,47 @@ int xtensa_paniclog_head(char *buf, int bufsize)
      * lost. One number here says whether the surviving ring was ever written. */
     uint32_t rtc = rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0xFFFFFFFFu;
 
-    if (rec.magic != PANICLOG_MAGIC)
+    {
+        volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+
+        if (pr->magic == XT_PANIC_RTC_MAGIC)
+        {
+            char msg[100];
+            uint32_t n = pr->len;
+            uint32_t i;
+
+            if (n > 96)
+                n = 96;
+            for (i = 0; i < 24; i++)
+            {
+                uint32_t w = pr->word[i];
+                int j;
+
+                for (j = 0; j < 4; j++)
+                {
+                    uint32_t k = i * 4 + (uint32_t)j;
+
+                    msg[k] = k < n ? (char)((w >> (8 * j)) & 0xff) : '\0';
+                }
+            }
+            msg[96] = '\0';
+
+            return snprintf(buf, bufsize,
+                            "reset-reason %lu, rtc %lu, panic #%lu: %s\r\n",
+                            (unsigned long)xt_reset_reason, (unsigned long)rtc,
+                            (unsigned long)pr->seq, msg);
+        }
+    }
+
+    if (rec.magic == PANICLOG_MAGIC)
         return snprintf(buf, bufsize,
-                        "reset-reason %lu, rtc %lu, no panic record\r\n",
-                        (unsigned long)xt_reset_reason, (unsigned long)rtc);
+                        "reset-reason %lu, rtc %lu, prev panic #%lu: %s\r\n",
+                        (unsigned long)xt_reset_reason, (unsigned long)rtc,
+                        (unsigned long)rec.seq, rec.msg);
 
     return snprintf(buf, bufsize,
-                    "reset-reason %lu, rtc %lu, prev panic #%lu: %s\r\n",
-                    (unsigned long)xt_reset_reason, (unsigned long)rtc,
-                    (unsigned long)rec.seq, rec.msg);
+                    "reset-reason %lu, rtc %lu, no panic record\r\n",
+                    (unsigned long)xt_reset_reason, (unsigned long)rtc);
 }
 
 int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
@@ -278,6 +325,31 @@ void xtensa_panic_log(const char *msg)
     rec.seq++;
     memcpy(rec.msg, msg, sizeof rec.msg - 1);
     rec.msg[sizeof rec.msg - 1] = '\0';
+
+    /* Copy it to RTC slow as words: 96 characters, four per word, zero padded. This is
+     * the only record that outlives the reset this panic is about to cause. */
+    {
+        volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+        int i;
+
+        pr->magic = XT_PANIC_RTC_MAGIC;
+        pr->seq   = rec.seq;
+        pr->len   = (uint32_t)strlen(rec.msg);
+        for (i = 0; i < 24; i++)
+        {
+            uint32_t w = 0;
+            int j;
+
+            for (j = 0; j < 4; j++)
+            {
+                char c = rec.msg[i * 4 + j];
+
+                if (c)
+                    w |= (uint32_t)(unsigned char)c << (8 * j);
+            }
+            pr->word[i] = w;
+        }
+    }
 
     /* Lock-free, and safe with interrupts masked. */
     esp_rom_printf("\r\n*PANIC* %s\r\n", rec.msg);
