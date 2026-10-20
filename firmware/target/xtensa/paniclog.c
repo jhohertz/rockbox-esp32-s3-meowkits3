@@ -41,21 +41,10 @@ struct panic_record
     char     msg[96];
 };
 
-/* RTC fast memory, not .noinit. Measured on the board: after a crash-and-reboot the
- * .noinit ring came back holding only the *new* boot's entries, so internal DRAM is
- * cleared by whatever reset IDF's panic path performs. esp_restart is a chip reset, but
- * not one that leaves DRAM powered, so a .noinit record cannot survive the exact failure
- * it exists to record.
- *
- * RTC fast memory is on the RTC power domain and survives every reset short of removing
- * power -- the same property that made the USB pad mux override persist across reboots.
- * It is 8 KB at 0x600FE000, uncached, and unclaimed here: sdkconfig sets
- * CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP (a dependency check only, not
- * ..._USE_RTC_FAST_MEM_AS_HEAP) and this port never enters deep sleep, so neither the
- * heap nor the wake stub wants it. Everything still sits at the top end.
- */
-#define XT_RTC_FAST_BASE   0x600FE000u
-#define XT_RTC_FAST_SIZE   8192u
+/* .noinit: not in the image, not cleared at startup, and placed in internal
+ * SRAM by IDF's sections.ld -- which is what survives the reset a panic causes.
+ * Same mechanism scan_trace.c uses, for the same reason. */
+static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
 
 /* ------------------------------------------------------------------ *
  * Breadcrumbs
@@ -68,18 +57,18 @@ struct panic_record
  * therefore cannot be relied on.
  *
  * Breadcrumbs invert that: they are written while everything is healthy, at
- * each step that could be the last one, and read on the next boot. The store needs no
- * working console, no lock, no stack and no panic handler, and it lives in memory that
- * outlives the failure that destroys the register dump.
+ * each step that could be the last one, and read on the next boot. A .noinit
+ * store needs no working console, no lock, no stack and no panic handler, so
+ * it survives precisely the failure that destroys the register dump.
  * ------------------------------------------------------------------ */
 
 /* 40 slots. At 16 the periodic attach samples push out the sequence that starts the
  * attach -- usbEn(1), usbIn, usbFifo, usbConn, usbPost -- which is precisely the part
  * that says whether the transport was brought up and then dropped, or never came up.
- * Each slot is 16 bytes. */
+ * Each slot is 16 bytes, so this costs 384 bytes of .noinit. */
 #define BC_SLOTS 40
 #define BC_MAGIC 0x43415242u   /* "BRAC" -- validates the counters, which
-                                * RTC fast memory does not zero */
+                                * .noinit does not zero */
 
 struct breadcrumb
 {
@@ -88,48 +77,30 @@ struct breadcrumb
     char     tag[24];
 };
 
-/* Header plus ring in one block at the top of RTC fast memory: 8 bytes of header and
- * 640 of ring is 648, the panic record is 104, so this claims 752 of the 8192 available
- * and leaves the low end -- where IDF's own bookkeeping would live -- untouched. */
-struct bc_store
-{
-    uint32_t magic;
-    uint32_t next;
-    struct breadcrumb slots[BC_SLOTS];
-};
-
-#define XT_RTC_STORE \
-    ((volatile struct bc_store *)(XT_RTC_FAST_BASE + XT_RTC_FAST_SIZE - 1024u))
-#define XT_RTC_PANIC \
-    ((volatile struct panic_record *)(XT_RTC_FAST_BASE + XT_RTC_FAST_SIZE - 512u))
+static struct breadcrumb bc[BC_SLOTS] __attribute__((section(".noinit"), aligned(4)));
+static uint32_t bc_magic __attribute__((section(".noinit")));
+static uint32_t bc_next  __attribute__((section(".noinit")));
 
 void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
 {
-    volatile struct bc_store *s = XT_RTC_STORE;
-    volatile struct breadcrumb *e;
+    struct breadcrumb *e;
 
-    /* The region holds whatever the last boot left, including garbage on the first ever
-     * power-on, so the ring index is only trusted once the magic has been written. */
-    if (s->magic != BC_MAGIC)
+    /* .noinit is uninitialised at first ever boot, so the ring index is only
+     * trustworthy once something has written it once. */
+    if (bc_magic != BC_MAGIC)
     {
-        s->magic = BC_MAGIC;
-        s->next  = 0;
-        for (int i = 0; i < BC_SLOTS; i++)
-        {
-            s->slots[i].a = 0;
-            s->slots[i].b = 0;
-            s->slots[i].tag[0] = '\0';
-        }
+        bc_magic = BC_MAGIC;
+        bc_next  = 0;
+        memset(bc, 0, sizeof bc);
     }
 
-    e = &s->slots[s->next % BC_SLOTS];
+    e = &bc[bc_next % BC_SLOTS];
     e->a = (uint32_t)a;
     e->b = (uint32_t)b;
-    for (int i = 0; i < (int)sizeof e->tag - 1 && tag[i]; i++)
-        e->tag[i] = tag[i];
+    memcpy(e->tag, tag, sizeof e->tag - 1);
     e->tag[sizeof e->tag - 1] = '\0';
 
-    s->next++;
+    bc_next++;
 }
 
 /* Stamped at every boot. If it shows up in the next boot's trail, .noinit
@@ -141,19 +112,17 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
     xtensa_breadcrumb("boot", seq, 0);
 }
 
-/* The ring is circular and the counter only ever increases, so slot j holds the entry
- * whose absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore
- * yields chronological order whether or not the ring has wrapped. */
+/* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
+ * absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore yields
+ * chronological order whether or not the ring has wrapped. */
 int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
 {
-    volatile struct bc_store *s = XT_RTC_STORE;
     int n, i, len = 0;
-    char tag[sizeof s->slots[0].tag + 1];
 
-    if (buf == NULL || bufsize <= 0 || s->magic != BC_MAGIC)
+    if (buf == NULL || bufsize <= 0 || bc_magic != BC_MAGIC)
         return 0;
 
-    n = (s->next < BC_SLOTS) ? (int)s->next : BC_SLOTS;
+    n = (bc_next < BC_SLOTS) ? (int)bc_next : BC_SLOTS;
     if (start >= n)
         return 0;
     if (start + count > n)
@@ -161,21 +130,10 @@ int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
 
     for (i = start; i < start + count; i++)
     {
-        volatile struct breadcrumb *e = &s->slots[i % BC_SLOTS];
-
-        /* The tag lives in volatile memory, so copy it out before snprintf wants a
-         * plain char*. */
-        for (int k = 0; k < (int)sizeof tag - 1; k++)
-        {
-            tag[k] = e->tag[k];
-            if (!tag[k])
-                break;
-        }
-        tag[sizeof tag - 1] = '\0';
-
+        const struct breadcrumb *e = &bc[i % BC_SLOTS];
         int used = snprintf(buf + len, bufsize - len,
                             "%s %08lx %08lx\r\n",
-                            tag, (unsigned long)e->a, (unsigned long)e->b);
+                            e->tag, (unsigned long)e->a, (unsigned long)e->b);
 
         if (used <= 0 || used >= bufsize - len)
             break; /* truncated rather than overflowing the caller */
@@ -186,21 +144,18 @@ int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
 
 void xtensa_panic_log(const char *msg)
 {
-    volatile struct panic_record *rec = XT_RTC_PANIC;
-
-    if (rec->magic != PANICLOG_MAGIC)
+    if (rec.magic != PANICLOG_MAGIC)
     {
-        rec->magic = PANICLOG_MAGIC;
-        rec->seq   = 0;
+        rec.magic = PANICLOG_MAGIC;
+        rec.seq   = 0;
     }
 
-    rec->seq++;
-    for (int i = 0; i < (int)sizeof rec->msg - 1 && msg[i]; i++)
-        rec->msg[i] = msg[i];
-    rec->msg[sizeof rec->msg - 1] = '\0';
+    rec.seq++;
+    memcpy(rec.msg, msg, sizeof rec.msg - 1);
+    rec.msg[sizeof rec.msg - 1] = '\0';
 
     /* Lock-free, and safe with interrupts masked. */
-    esp_rom_printf("\r\n*PANIC* %s\r\n", rec->msg);
+    esp_rom_printf("\r\n*PANIC* %s\r\n", rec.msg);
 }
 
 /* Called early in the next boot, before anything can panic of its own accord. */
@@ -245,34 +200,21 @@ void xtensa_paniclog_dump(void)
      * xtensa_panic_log() -- which is what panicked twice before printing
      * anything. Returning early on an absent record therefore hid the one thing
      * that could survive such a crash. */
-    volatile struct panic_record *pr = XT_RTC_PANIC;
-
-    if (pr->magic == PANICLOG_MAGIC)
-        printf("prev panic #%lu: %s\n", (unsigned long)pr->seq, pr->msg);
+    if (rec.magic == PANICLOG_MAGIC)
+        printf("prev panic #%lu: %s\n", (unsigned long)rec.seq, rec.msg);
 
     /* The trail that led to it. Printed oldest first so the last line is the
      * last thing that happened before the reboot. */
-    volatile struct bc_store *s = XT_RTC_STORE;
-
-    if (s->magic == BC_MAGIC && s->next != 0)
+    if (bc_magic == BC_MAGIC && bc_next != 0)
     {
-        uint32_t n = s->next < BC_SLOTS ? s->next : BC_SLOTS;
-        uint32_t start = s->next - n;
+        uint32_t n = bc_next < BC_SLOTS ? bc_next : BC_SLOTS;
+        uint32_t start = bc_next - n;
         uint32_t i;
 
         printf("panic breadcrumbs (%lu):\n", (unsigned long)n);
         for (i = 0; i < n; i++)
         {
-            volatile struct breadcrumb *e = &s->slots[(start + i) % BC_SLOTS];
-            char tag[sizeof e->tag + 1];
-
-            for (int k = 0; k < (int)sizeof tag - 1; k++)
-            {
-                tag[k] = e->tag[k];
-                if (!tag[k])
-                    break;
-            }
-            tag[sizeof tag - 1] = '\0';
+            struct breadcrumb *e = &bc[(start + i) % BC_SLOTS];
 
             printf("  %s a=%08lx b=%08lx\n", e->tag,
                    (unsigned long)e->a, (unsigned long)e->b);
@@ -293,13 +235,13 @@ void xtensa_paniclog_dump(void)
 #ifdef XT_BRINGUP_TRAIL_REPEAT
     /* keep the record for the repeating dump */
 #else
-    pr->magic = 0;
+    rec.magic = 0;
 #endif
 
-    /* Do NOT clear the ring counter. The trail is ring-buffered and written by name, so
-     * leaving it in place means the next crash overwrites the oldest entries rather than
-     * starting from a blank slate -- and clearing it would also erase the boot stamp that
-     * proves the trail survived the reset at all. */
+    /* Do NOT clear bc_next. The trail is ring-buffered and written by name, so
+     * leaving it in place means the next crash overwrites the oldest entries
+     * rather than starting from a blank slate -- and clearing it here would also
+     * erase the boot stamp that proves the trail survived the reset at all. */
 
 #ifdef XT_BRINGUP_TRAIL_REPEAT
     if (!xt_repeat_started)
