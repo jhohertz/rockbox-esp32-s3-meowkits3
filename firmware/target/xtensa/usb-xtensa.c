@@ -134,6 +134,9 @@ static volatile uint32_t xt_usb_irqs;
  * usb_dwc_isr() and therefore means "the interrupt was delivered" and nothing else.
  * The polled stand-in calls the driver directly so it cannot inflate that claim. */
 static volatile uint32_t xt_usb_polled;
+/* How many times the post-init one-shot service fired, i.e. how much status the core
+ * had already latched by the time the interrupt was enabled. */
+static volatile uint32_t xt_usb_oneshot;
 
 /* Which masked source is firing, and on which endpoint. Measured: 14,500 interrupts
  * per second while only ~23 CDC lines per second are being sent, and GINTSTS & GINTMSK
@@ -571,14 +574,16 @@ static int vbus_sample(void)
 #define USB_BRINGUP_INTR_DUMP 1
 /* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
  * "the interrupt never arrived" can be told apart on one run. */
-/* Off, and this re-test is only meaningful because the report cadence bug is fixed.
- * The earlier "polling is load-bearing" conclusion was drawn from a build that streamed
- * 23 lines per second at the CDC endpoint; with that flood gone the handler delivers
- * 2.7 interrupts/s on its own and xt_usb_polled sits at 3 for the whole attach, i.e. the
- * tick dispatch services essentially nothing. If this build enumerates with the dispatch
- * disabled, the stand-in comes out for good and the console keeps working during an
- * attach instead of being surrendered to the OTG core. */
-#define USB_BRINGUP_POLLED_IRQ 0
+/* On, as a 10 Hz safety net. The re-test with it fully off was unambiguous: no
+ * enumeration at all, host error -110 on every descriptor read then -62, and on the
+ * device side usbIRQ 0 with a pending mask of 0x00003000 -- so the earlier conclusion
+ * stands, and the cadence bug was not what made interrupts work.
+ *
+ * What the off build proved is the mechanism: status that is already latched when the
+ * CPU interrupt is enabled never draws the line. That is a one-shot problem, not a
+ * 100 Hz one, so the dispatch is now a net behind the one-shot in __wrap_usb_enable().
+ * If one comes out of this attach having done nothing, this task is deleted. */
+#define USB_BRINGUP_POLLED_IRQ 1
 /* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
 /* Deliberately not defined for this run: delivery is the thing being tested, and
  * without an allocated and enabled slot there is nothing to observe. */
@@ -722,10 +727,11 @@ static void usb_vbus_poll(void)
             int n = snprintf(cdc_line, sizeof(cdc_line),
                              "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
                              "enum=%lu none=%lu dain=%04lx,%04lx polled=%lu "
-                             "gintsts=%08lx dsts=%08lx\r\n",
+                             "one=%lu gintsts=%08lx dsts=%08lx\r\n",
                              xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
                              xt_irq_enum, xt_irq_none,
                              xt_irq_daint_in, xt_irq_daint_out, xt_usb_polled,
+                             xt_usb_oneshot,
                              DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
@@ -847,8 +853,16 @@ int usb_detect(void)
  */
 static void xt_usb_polled_irq(void)
 {
+    /* 10 Hz, not 100. This is now a safety net behind the one-shot service in
+     * __wrap_usb_enable(): if that clears the latch, fresh events reach the handler on
+     * their own and this task should contribute almost nothing. Counting it separately
+     * from xt_usb_irqs is what makes that claim checkable rather than assumed. */
+    static uint32_t xt_poll_phase;
     if (!xt_armed)
         return;
+    if (++xt_poll_phase < 10)
+        return;
+    xt_poll_phase = 0;
 
     if (DWC_GINTSTS & DWC_GINTMSK)
     {
@@ -1056,6 +1070,24 @@ void __wrap_usb_enable(bool on)
         xt_usb_irqs = 0;
         xt_armed = true;
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
+
+        /* Service whatever the core latched during usb_core_init(), before anything
+         * else runs. usb_core_init() connects the device, so the host's first reset
+         * and enum-done land while the CPU interrupt is only just being enabled, and
+         * this core does not re-assert its INT output for status that is already
+         * pending -- that is what the failed attach shows: usbIRQ 0 against a pending
+         * mask of 0x00003000, i.e. USBRST|ENUMDNE latched and never drawn.
+         *
+         * This is the cheap version of what the tick dispatch was doing at 100 Hz:
+         * clear the latch once, at the point where it forms, and let every later event
+         * produce a real interrupt. xt_usb_oneshot says whether it fired, and the tick
+         * dispatch (now at 10 Hz, as a safety net rather than the transport) says
+         * whether anything was left for it to do. */
+        if (DWC_GINTSTS & DWC_GINTMSK)
+        {
+            INT_USB_FUNC();
+            xt_usb_oneshot++;
+        }
     }
     else
     {
