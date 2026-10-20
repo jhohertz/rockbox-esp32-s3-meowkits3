@@ -704,6 +704,16 @@ static void xt_usb_enter_download_mode(void)
     REG_WRITE(USB_SERIAL_JTAG_CONF0_REG,
               REG_READ(USB_SERIAL_JTAG_CONF0_REG) | XT_USJ_CONF0_PAD_ENABLE);
     REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+
+    /* Read the request back before the reset, because after it nothing can be read.
+     * Measured: an ordinary boot honours FORCE_DOWNLOAD_BOOT and the ROM comes up in
+     * USB download mode; a boot that follows a panic reboot resets the chip but the ROM
+     * boots the app normally. Whether the bit is actually set at this point, and what
+     * the pad state looks like, is the only way to tell "the write did not take" from
+     * "the ROM ignored it". */
+    xtensa_breadcrumb("usbDl",
+                      REG_READ(RTC_CNTL_OPTION1_REG),
+                      REG_READ(USB_SERIAL_JTAG_CONF0_REG));
     esp_restart();
 }
 #endif /* USB_ENABLE_SERIAL */
