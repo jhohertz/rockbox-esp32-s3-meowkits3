@@ -1486,6 +1486,15 @@ static void usb_dw_exit(void)
 #endif
     /* Soft disconnect */
     DWC_DCTL = SDIS;
+#if defined(CPU_XTENSA)
+    /* Splitting the gap between dSdis and dPcg: the only two statements there are the
+     * soft-disconnect write and a 10us delay. If this note appears, the write completed
+     * and the delay is what never returns; if it does not, the write itself stalls the
+     * bus, which is what a gated or wedged core does. */
+    xtensa_breadcrumb_rtc("dSdw", DWC_DCTL, DWC_GRSTCTL);
+    udelay(10);
+    xtensa_breadcrumb_rtc("dSdl", DWC_DCTL, DWC_DSTS);
+#endif
     udelay(10);
 
     DWC_PCGCCTL = 1; /* Stop Phy clock */

@@ -871,7 +871,10 @@ static void usb_vbus_poll(void)
      * the head line arrived and the body did not. The RTC section is a few hundred bytes, so
      * sending it every five seconds means whoever opens the port gets the surviving trail
      * whenever they open it. The full internal-SRAM ring stays behind 't'. */
-    if (xt_armed && current_tick - xt_boot_report >= 5 * HZ)
+    /* One tick after the report cadence rather than on it: both fire on the same tick
+     * otherwise, and two senders writing the CDC ring buffer in the same tick interleave
+     * mid-line, which is how "dSdi a=usbIRQ 0000072f" ended up in a read. */
+    if (xt_armed && current_tick - xt_boot_report >= 5 * HZ + 1)
     {
         xt_boot_report = current_tick;
         xt_send_rtc_trail();
