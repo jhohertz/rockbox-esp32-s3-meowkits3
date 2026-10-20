@@ -130,3 +130,11 @@ CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
  */
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT is not set
+
+# The OTG interrupt experiment needs a CPU interrupt slot, and CPU 0's general-use pool
+# (22 slots) is already nearly full: allocating the OTG source without freeing something
+# makes IDF fail DMA_OUT_CH0 and panic in i2s. The interrupt watchdog is the one thing
+# here that can be spared during bring-up, because the attach judge restarts the chip on
+# its own. Drop this along with USB_ALLOW_ATTACH once the transport works.
+# CONFIG_ESP_INT_WDT is not set
+# CONFIG_INT_WDT is not set
