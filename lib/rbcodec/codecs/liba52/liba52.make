@@ -14,4 +14,4 @@ OTHER_SRC += $(A52LIB_SRC)
 
 $(A52LIB): $(A52LIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)

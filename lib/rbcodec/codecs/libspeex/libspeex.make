@@ -34,8 +34,7 @@ SPEEXLIB_OBJ := $(call c2obj, $(SPEEXLIB_SRC))
 OTHER_SRC += $(SPEEXLIB_SRC)
 
 $(SPEEXLIB): $(SPEEXLIB_OBJ)
-	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
 
 # libspeex-voice
 VOICESPEEXLIB := $(CODECDIR)/libspeex-voice.a
@@ -43,7 +42,7 @@ VOICESPEEXLIB_SRC := $(call preprocess, $(RBCODECLIB_DIR)/codecs/libspeex/SOURCE
 VOICESPEEXLIB_OBJ := $(addsuffix .o,$(basename $(subst $(RBCODECLIB_DIR)/codecs/libspeex,$(RBCODEC_BLD)/codecs/libspeex-voice,$(VOICESPEEXLIB_SRC))))
 
 $(VOICESPEEXLIB): $(VOICESPEEXLIB_OBJ)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
 
 # pattern rules
 

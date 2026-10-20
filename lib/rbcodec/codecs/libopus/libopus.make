@@ -21,4 +21,4 @@ $(OPUSLIB) : CODECFLAGS := -DHAVE_CONFIG_H \
 
 $(OPUSLIB): $(OPUSLIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)

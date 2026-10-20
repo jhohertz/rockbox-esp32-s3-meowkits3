@@ -78,6 +78,14 @@ ifeq (xtensa,$(CPU))
 $(BUILDDIR)/firmware/target/xtensa/sd-idf.o: CFLAGS := $(IDF_FIRST_CFLAGS)
 $(BUILDDIR)/firmware/target/xtensa/spi-xtensa.o: CFLAGS := $(IDF_FIRST_CFLAGS)
 $(BUILDDIR)/firmware/target/xtensa/paniclog.o: CFLAGS := $(IDF_FIRST_CFLAGS)
+
+# These are compiled against IDF's flags, so they have to be rebuilt when the
+# harvest changes. Making idf.make a prerequisite is what does that: without it a
+# sdkconfig change recompiles IDF and leaves Rockbox's view of it frozen, which
+# surfaces as a header found but a CONFIG_ define missing.
+$(BUILDDIR)/firmware/target/xtensa/sd-idf.o \
+$(BUILDDIR)/firmware/target/xtensa/spi-xtensa.o \
+$(BUILDDIR)/firmware/target/xtensa/paniclog.o: $(BUILDDIR)/idf.make
 endif
 
 ifeq ($(SYSFONT),)
@@ -95,8 +103,7 @@ else
 endif
 
 $(FIRMLIB): $(FIRMLIB_OBJ)
-	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
 
 $(BUILDDIR)/sysfont.h: $(SYSFONTX) $(TOOLS) $(BUILDDIR)/firmware/common/config.o
 	$(call PRINTS,CONVBDF $(subst $(ROOTDIR)/,,$<))$(TOOLSDIR)/convbdf -l $(MAXCHAR) -h -o $@ $<

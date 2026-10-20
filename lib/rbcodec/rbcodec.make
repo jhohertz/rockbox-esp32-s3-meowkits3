@@ -20,7 +20,7 @@ OTHER_SRC += $(RBCODECLIB_SRC)
 CORE_LIBS := $(RBCODECLIB) $(CORE_LIBS)
 
 $(RBCODECLIB): $(RBCODECLIB_OBJ)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
 
 # Force use of -O2 for DSP code
 ifneq ($(MEMORYSIZE),2)

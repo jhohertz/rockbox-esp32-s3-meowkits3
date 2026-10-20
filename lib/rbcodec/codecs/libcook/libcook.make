@@ -14,4 +14,4 @@ OTHER_SRC += $(COOKLIB_SRC)
 
 $(COOKLIB): $(COOKLIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
