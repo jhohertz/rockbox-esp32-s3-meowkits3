@@ -26,6 +26,10 @@
  ****************************************************************************/
 #include "config.h"
 #include "system.h"
+#ifdef USB_ENABLE_SERIAL
+#include <stdio.h>          /* snprintf */
+#include "usbstack/usb_serial.h"
+#endif
 #include "kernel.h"
 #include "thread.h"
 #include "panic.h"
@@ -655,6 +659,30 @@ static void usb_vbus_poll(void)
         report = 0;
         xtensa_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
         xtensa_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
+
+#ifdef USB_ENABLE_SERIAL
+        /* Same numbers out of the CDC IN endpoint. The breadcrumb ring only reaches
+         * the console at the *next* boot, and during an attach the USJ console is gone
+         * because the OTG core owns the pads, so a live attach is otherwise invisible.
+         *
+         * logf would be the natural route and does push to usb_serial_send, but that
+         * push is gated on HAVE_SERIAL && LOGF_SERIAL (firmware/logf.c:244), which are
+         * iPod-only defines; HAVE_SERIAL would also pull drivers/serial.c into the
+         * build, which expects target serial hardware we do not have. So this writes
+         * the class directly. usb_serial_send() returns without effect when the class
+         * is not active, so this is harmless before enumeration. Tick-task context, as
+         * everything here is: the send path takes an endpoint, not a lock. */
+        {
+            static char cdc_line[96];
+            int n = snprintf(cdc_line, sizeof(cdc_line),
+                             "rockbox: irq=%lu polled=%lu gintsts=%08lx "
+                             "dsts=%08lx\r\n",
+                             xt_usb_irqs, xt_usb_polled,
+                             DWC_GINTSTS, DWC_DSTS);
+            if (n > 0)
+                usb_serial_send((unsigned char *)cdc_line, n);
+        }
+#endif
 
         /* Slower cadence on purpose: the ring is 16 deep, and usbIRQ/usbDsts are
          * the entries whose *history* matters. These two are a snapshot. */
