@@ -28,12 +28,22 @@
 # esp_cache_msync() calls are compiled out behind SOC_CACHE_INTERNAL_MEM_VIA_-
 # L1CACHE, which this part does not define. So anything that can be the
 # destination of a storage or audio transfer stays in DRAM too: that rules out
-# disk_cache.o and dir.o, which are read destinations, and pcm-xtensa.o and
-# i2s-xtensa.o, which hold the GDMA descriptors and the ping-pong pairs.
+# disk_cache.o, which is an SDHOST read destination, and pcm-xtensa.o,
+# usb.o and usb_storage.o, whose thread stacks and DWC buffers are on a master
+# that cannot reach the PSRAM window.
+#
+# i2s-xtensa.o is the exception that proves the rule rather than breaks it: it is
+# pinned to rb_dram, yet its dma_buf carries PSRAM_BSS_ATTR of its own, because
+# GDMA can reach PSRAM for *buffers* (the 20-bit window is only the descriptor
+# address register) while its desc[] must stay internal. Per-symbol attributes
+# therefore beat the object-level scheme for anything DMA-related -- and that is
+# exactly why counting an object's .bss is not the same as counting DRAM: the
+# framebuffer is in PSRAM through IRAM_LCDFRAMEBUFFER while lcd-16bit.o still
+# looks 150 KB in a per-object census.
 #
 # What is moved is the large, CPU-only data: language and unicode tables,
-# bidi, the rbcodec buffering. These are read and written by the core and never
-# handed to a DMA engine.
+# bidi, the rbcodec buffering, lang_core's markup and resample's history buffers.
+# These are read and written by the core and never handed to a DMA engine.
 #
 # scroll_engine.o and playlist.o were on this list and came off it. Both look
 # like pure data by size (26 KB and 7.6 KB) but each also holds a thread stack:
