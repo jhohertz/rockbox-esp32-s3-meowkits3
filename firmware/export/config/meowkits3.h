@@ -384,6 +384,14 @@
  * what the ROM's USB-Serial-JTAG reports, so a kernel log could not tell the console
  * from this device -- and both appear on the same port within seconds of each other
  * during bring-up. */
+/* High/speed interpacket timeout calibration, 7 (the maximum). TinyUSB's
+ * dwc2_core_init() sets this on every DWC2 including the esp32s2/esp32s3 internal PHY,
+ * with the databook note that it exists to absorb the delay a PHY introduces when it
+ * drives the line state -- which varies per PHY. Rockbox's driver defaults it to 0.
+ * The driver writes GUSBCFG wholesale, so the field has to arrive pre-shifted
+ * (bits 30:26). */
+#define USB_DW_TOUTCAL            (7u << 26)
+
 #define USB_VENDOR_ID  0x1234       /* Rockbox */
 #define USB_PRODUCT_ID 0x4002       /* distinct from the USB-Serial-JTAG device */
 /* DMA buffers must start on a cache line: committing or invalidating a range would

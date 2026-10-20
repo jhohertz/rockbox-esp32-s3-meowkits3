@@ -78,10 +78,21 @@ _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1) + RX_FIFOSZ
                "device FIFO split exceeds the core's 256-word FIFO RAM");
 
 const struct usb_dw_config usb_dw_config = {
-    /* The internal full-speed PHY, selected by GUSBCFG.fsintf (bit 5). This
-     * core has no classic PHY-type encoding: UTMI/ULPI/PHYSEL do not exist, and
-     * fsphytype is what GHWCFG2 reports. usb_dw_check_hw() now checks that bit
-     * rather than comparing the whole register, whose reset value is not zero.
+    /* The internal full-speed PHY. Two bits, and we were only setting one:
+     *
+     *   fsintf (bit 5) -- the full-speed *interface*
+     *   physel (bit 6) -- selects the embedded FS/LS PHY over the embedded HS PHY
+     *
+     * PHYSEL (bit 6) is not something this core can be talked out of: GHWCFG2 reports
+     * no high-speed PHY, so there is nothing for the bit to choose between, and it
+     * reads back set no matter what the driver assigns. Measured: with phytype left at
+     * FSINTF -- i.e. the driver's GUSBCFG write not asking for PHYSEL at all -- the
+     * register still reads 0x40001460, bit 6 included. Adding PHYSEL to phytype
+     * therefore changed nothing in that register, and the run in which the connection
+     * disappeared was the one that also turned on the wrap's pad_pull_override; that,
+     * not PHYSEL, is what took the connection away (see usb_dw_target_enable_clocks).
+     *
+     * The register is recorded in the attach trail (usbGusb) so this stays checkable.
      */
     .phytype       = FSINTF,
     .rx_fifosz     = RX_FIFOSZ,
@@ -176,6 +187,18 @@ void usb_dw_target_enable_clocks(void)
      * PHY, so XT_USB_PHY_SEL_EXT stays clear. */
     wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) |
        (XT_SW_HW_USB_PHY_SEL | XT_SW_USB_PHY_SEL));
+    /* No pull override here, deliberately. IDF 4.4's usb_phy_ll_int_load_conf() did
+     * set pad_pull_override with D+ pull-up and D- pull-down for device mode, and
+     * adding it measured worse: with the override on, the host stopped seeing a
+     * connection during an attach entirely (no descriptor attempts at all, where
+     * before it had at least attempted some), and GINTSTS lost its usbrst bit. IDF's
+     * current path -- usb_new_phy(), which is what the TinyUSB device examples use --
+     * only calls usb_wrap_ll_phy_enable_pull_override() in the *host* branch, so on
+     * 5.5 a device leaves the override alone and the core drives the pull-up through
+     * its own connect. That is what this does too, and the measured difference agrees:
+     * with the override on, GINTSTS lost usbrst and the host made no enumeration
+     * attempt at all; with it off, the host reads the descriptors, binds cdc_acm and
+     * creates a tty. */
     wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) | XT_USB_PAD_ENABLE |
                         XT_USB_WRAP_CLK_EN);
 
@@ -253,7 +276,10 @@ void usb_dw_target_disable_clocks(void)
 
     /* Give the pins back. USB-Serial-JTAG is the console and the flash port, so
      * leaving the mux pointed at the DWC would silence both after disconnect. */
-    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~XT_USB_PAD_ENABLE);
+    /* Release the PHY loads as well as the pads, so the USB-Serial-JTAG console is
+     * not left fighting a D+ pull-up and a D- pull-down it does not own. */
+    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~(XT_USB_PAD_ENABLE |
+       XT_USB_PAD_PULL_OVERRIDE | XT_USB_DP_PULLUP | XT_USB_DM_PULLDOWN));
     wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
 }
 
@@ -275,8 +301,11 @@ void usb_dw_target_enable_irq(void)
 
     if (usb_intr == NULL)
     {
+        /* LOWMED, not LEVEL1: that is what TinyUSB passes for this controller, and it
+         * lets the allocator pick any of levels 1-3 instead of demanding a level-1
+         * slot from a pool that is short of them on this build. */
         err = esp_intr_alloc(ETS_USB_INTR_SOURCE,
-                             ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_INTRDISABLED,
+                             ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_INTRDISABLED,
                              usb_dwc_isr, NULL, &usb_intr);
         if (err != ESP_OK)
         {
@@ -305,7 +334,20 @@ void usb_dw_target_disable_irq(void)
 
 void usb_dw_target_clear_irq(void)
 {
-    /* The core's own interrupt status is cleared by the driver. */
+    /* Clear every pending status bit before the masks are enabled.
+     *
+     * This hook exists for exactly that, and leaving it empty was the difference
+     * between our bring-up and the one that works on this chip. TinyUSB's
+     * dwc2_core_init() -- what IDF's usb/device examples run on esp32s2 and esp32s3 --
+     * writes 0xFFFFFFFF to gintsts and gotgint before enabling any mask. Status bits
+     * that were already set when GINTMSK was programmed never produce a fresh
+     * assertion, and that is precisely what we measured: GINTSTS carrying usbrst and
+     * enumdone, GINTMSK masking both, GAHBCFG.GINT set, the CPU slot enabled, and
+     * rsr.interrupt never showing that slot -- sampled at the instant the masked
+     * status was non-zero.
+     */
+    DWC_GINTSTS = 0xFFFFFFFF;
+    DWC_GOTGINT = 0xFFFFFFFF;
 }
 
 /* TEMPORARY: identity probe, deliberately pad-free.
@@ -488,7 +530,10 @@ static int vbus_sample(void)
 #define USB_BRINGUP_INTR_DUMP 1
 /* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
  * "the interrupt never arrived" can be told apart on one run. */
-#define USB_BRINGUP_POLLED_IRQ 1
+/* Off for this run: usb_dw_target_clear_irq() now mirrors what the working vendor
+ * bring-up does, and if that delivers interrupts the polled stand-in would double-service
+ * the driver. Re-enable only if delivery turns out to be broken after all. */
+#define USB_BRINGUP_POLLED_IRQ 0
 /* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
 /* Deliberately not defined for this run: delivery is the thing being tested, and
  * without an allocated and enabled slot there is nothing to observe. */
@@ -622,6 +667,9 @@ static void usb_vbus_poll(void)
             /* Failed PMU reads during the attach: this counter says whether the bus
              * is the problem or the core is. */
             xtensa_breadcrumb("usbVbus", xt_vbus_err, (unsigned long)xt_vbus_present);
+            /* Which transceiver the core was told to use. The whole story of the
+             * last two runs hinges on bit 6 here. */
+            xtensa_breadcrumb("usbGusb", DWC_GUSBCFG, DWC_DCFG);
             /* EP0 in detail. DOEPINT bit 13 is setup-packet-complete (STUP) and bit
              * 0 is transfer-complete (XFRC); the EPTSIZ low 7 bits of a completed
              * OUT stage say how many bytes actually arrived. A host that gets a
@@ -693,7 +741,7 @@ int usb_detect(void)
 
 #endif /* USB_ALLOW_ATTACH */
 
-#ifdef USB_BRINGUP_POLLED_IRQ
+#if USB_BRINGUP_POLLED_IRQ
 /* Service the core from a tick task instead of from its interrupt.
  *
  * Everything on the core side has been measured good: GINTMSK masks USBRST and
