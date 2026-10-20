@@ -1158,12 +1158,36 @@ static void usb_dw_check_hw(void)
     }
     /* HWCFG registers are not checked to detect the PHY, if an option
        is not supported then the related bits should be Read-Only. */
+#if defined(CPU_XTENSA)
+    /* This core is full-speed only and has no classic PHY-type field. Its
+     * GUSBCFG carries toutcal(2:0), phyif(3), ulpiutmisel(4), fsintf(5) and
+     * physel(6) -- verified against IDF's generated usb_dwc_struct.h, whose
+     * field order puts these at exactly those positions -- so the PHY is
+     * selected with fsintf, not with the UTMI/ULPI encodings the other targets
+     * write. The reset value of GUSBCFG is also not zero (srpcap, hnpcap and
+     * usbtrdtim are preset), which is why writing a phytype constant and
+     * comparing the whole register back reports "PHY type not supported" on a
+     * PHY that is present. Check the capability the core states, then the one
+     * bit that selects it. */
+    if (((ghwcfg2 >> 8) & 3) == 0)   /* ghwcfg2.fsphytype, bits 9:8 */
+    {
+        err = "no FS PHY interface";
+        goto panic;
+    }
+    DWC_GUSBCFG |= FSINTF;
+    if (!(DWC_GUSBCFG & FSINTF))
+    {
+        err = "internal FS PHY not selectable";
+        goto panic;
+    }
+#else
     DWC_GUSBCFG = c->phytype;
     if (DWC_GUSBCFG != c->phytype)
     {
         err = "PHY type not supported";
         goto panic;
     }
+#endif
 #ifndef USB_DW_ARCH_SLAVE
     if (((ghwcfg2 >> 3) & 3) != 2)
     {
