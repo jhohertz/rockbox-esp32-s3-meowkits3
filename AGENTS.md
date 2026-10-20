@@ -467,7 +467,7 @@ From the stock firmware (`/tmp/meowkit`, `src/bsp/config.h`):
 | RTC | PCF8563, I²C 0x51. |
 | IMU | BMI270 6-axis + BMM150 magnetometer, I²C 0x68. |
 | Misc | WS2812B single LED (GPIO 38), IR TX 7 / RX 5 at 38 kHz. |
-| USB | Native USB-OTG, fixed pins DP 20 / DN 19. Used as CDC and MSC in stock firmware. |
+| USB | Native USB-OTG, fixed pins DP 20 / DN 19. Stock firmware runs MSC and HID on it (`src/system/usb_msc.cpp`, `usb_hid.cpp`) with CDC on boot; `platformio.ini` selects the block with `ARDUINO_USB_MODE=1` (OTG) or `=0` (USB-Serial-JTAG). |
 
 Two things that are not obvious from a pin list: **half the control signals live on
 an I²C IO expander** (PCA9557 at 0x19), so a Rockbox target cannot treat the display
@@ -501,7 +501,7 @@ Mapping the board against what Rockbox already has:
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done in `target/xtensa/psram-xtensa.c`, run from `crt0.S` before `mmu_init()`; neither the ROM nor ESP-IDF's bootloader does it |
-| USB-OTG | `usbstack` | open: the chip has a Synopsys DWC-OTG block (`soc/usb_reg.h`, registers at `SOC_DPORT_USB_BASE`, device side at +0xb00), but there is no `usb_hw` layer for this core. `usb-xtensa.c` is a stub. Not needed for charging (AXP173 reports VBUS) or storage (SD) |
+| USB-OTG | `usbstack` | open, planned: DWC2 OTG block (`soc/usb_reg.h`, `SOC_DPORT_USB_BASE`, device side at +0xb00) with **7 IN and 7 OUT endpoint blocks** and a 16 KB device EP FIFO, full-speed only. Rockbox's `usb-designware.c` already implements the `usb_drv.h` contract and its endpoint offsets match this core (`DIEPCTL 0x900+0x20n`, `DOEPCTL 0xb00+0x20n`, `DIEPTXF 0x104`). IDF 5.5 has no device stack (its `components/usb` is host-only). `usb-xtensa.c` is a stub; its AXP173 VBUS monitor is worth keeping. Budget, blockers and the USJ pad conflict: `firmware/target/xtensa/USB-SPRINT.md` |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
 
 ### Display power states
