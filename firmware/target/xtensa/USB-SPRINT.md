@@ -176,3 +176,86 @@ that a hang *inside* USB mode needs a power cycle (or the AXP173 long-press).
 `usb-xtensa.c` currently says "nothing on this target needs the OTG core" and
 defines the whole file out under `USB_NONE`. That was true while the port could not
 boot; it is the thing being replaced. The VBUS monitor inside it is worth keeping.
+
+## The CDC/serial state, in detail
+
+This is the part that changes how the sprint is run, because it is both the conflict
+and the remedy.
+
+**Rockbox has its own CDC ACM driver.** `firmware/usbstack/usb_serial.c`, 449 lines,
+© 2007 Christian Gmeiner and **updated in 2021 by Tomasz Moń** -- so it is not the
+ancient code the rest of this port inherited. It implements the CDC header / ACM /
+union / call-management descriptors, `SET_LINE_CODING`, `GET_LINE_CODING`,
+`SET_CONTROL_LINE_STATE` and the `SERIAL_STATE` notification on the interrupt
+endpoint, plus a TX ring buffer and `usb_serial_send(data, length)`.
+
+**Its designed consumer is `logf` -- Rockbox's own trace channel.** `firmware/logf.c`
+flushes the log ring to the host:
+
+```c
+#ifdef USB_ENABLE_SERIAL
+    ...
+    usb_serial_send(logfbuffer + old_logfindex, logfindex - old_logfindex - 1);
+    usb_serial_send("\r\n", 2);
+#endif
+```
+
+and `apps/debug_menu.c` has a live entry, **"USB Serial driver (logf)"**
+(`toggle_usb_serial()` → `usb.c:928` → `usb_core_enable_driver(USB_DRIVER_SERIAL, ...)`)
+which toggles the driver at runtime. So "the console is a CDC stream" is an existing
+Rockbox concept with existing UI, not something to invent.
+
+**RX is primed but unconsumed.** `usb_serial_init_connection()` calls
+`usb_drv_recv_nonblocking(EP_OUT, receive_buffer, RECV_BUFFER_SIZE)` and re-primes on
+every completion -- and then drops the bytes. Nothing reads `receive_buffer`, and there
+is no queue or callback exposed. So *serial-controlled Rockbox* needs one new seam: a
+consumer hook in `usb_serial_transfer_complete()`'s OUT branch. It is small, and it
+belongs in the driver rather than the target, because the driver is what owns the
+buffer. Note Rockbox also has a UART notion (`firmware/export/serial.h`,
+`serial_tx()`/`serial_tx_raw()`, used by `logf` under `HAVE_SERIAL` + `LOGF_SERIAL`),
+which is a different thing and is not available on this board -- GPIO1/2 are the I2C
+bus, and the USB-C connector carries no UART.
+
+**Nothing builds `usb_serial.c` today.** `USB_ENABLE_SERIAL` is commented out in every
+target config in the tree, and `firmware/SOURCES` gates the file on it. It is therefore
+not compiled in any build farm target, which means its current state is unknown. Step 0
+of the plan is exactly this: define the flag and compile it.
+
+**The conflict is the pads, not the protocol.** Our console and our flashing are IDF's
+USB-Serial-JTAG console (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`,
+`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y`), and USJ shares GPIO19/20 with the OTG
+core through `USB_WRAP`. Routing the pads to OTG silences the IDF console. Rockbox's
+CDC driver is the replacement for exactly that, and it costs 3 of the 6 usable
+endpoints -- which is why CDC-on constrains the rest of the profile.
+
+**IDF's own CDC console is not a route.** `CONFIG_ESP_CONSOLE_USB_CDC` exists in
+`esp_system/Kconfig:283`, but that implementation needs the TinyUSB gadget component,
+which is not in IDF 5.5 and not present locally. `ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`
+is a secondary-output option, not a way to reach the OTG core.
+
+### The console plan for the sprint
+
+1. Keep IDF's USJ console as the default, and switch pads to OTG **only** while USB
+   mode is active. On reset the pads return to USJ, so `esptool`'s auto-reset keeps
+   working without pressing BOOT -- the invariant worth protecting.
+2. While in USB mode, route diagnostics through `logf` (which already flows to CDC)
+   rather than adding a second printf path. That means enabling `LOGF_ENABLE` for this
+   target, which is currently off; the trace then appears on the host's serial port.
+3. Accept and document that a hang *inside* USB mode costs a reset or a power cycle,
+   because there is no spare UART. Worth deciding whether Rockbox's CDC should also
+   carry the bring-up trace from boot, which would trade console availability for
+   always-on observability -- probably not, since flashing depends on USJ.
+4. If serial control is wanted, add the OUT-side consumer hook in `usb_serial.c` and
+   give it a small, honest contract: a byte stream, delivered to whatever the target
+   registers. Do not invent a protocol in the driver.
+
+### Already built, worth reusing
+
+`firmware/target/xtensa/debug-xtensa.c` has an `INFO_USB` debug-menu row that reads
+`XT_PERIP_CLK_EN0 & XT_USB_CLK_EN` (bit 23) to say whether the DWC core is clock-gated,
+and otherwise reads the Synopsys signature at `OTGBASE + 0x40` (`GSNPSID`), noting that
+`0x31304040` is the DWC2 family. `XT_USB_DWC_BASE` is defined as `OTGBASE` in
+`firmware/include/xtensa.h`. That is step 1 of this plan already written -- it reports
+on the display rather than the console, so the value should also reach `logf` when the
+USB work starts, and the `hw_numeps` read from `HWCONF` is the number the endpoint
+budget depends on.
