@@ -581,3 +581,69 @@ The reference firmware points at the end state -- always-attached CDC composite,
 a `mediaPresent` toggle, an explicit Eject key, a 1 Hz transfer readout. Rockbox has
 the eject machinery already. Adopting that shape means giving up the USJ console and
 esptool for good, so it is a decision for after bring-up, not during.
+
+## Step 2 state: connected, silent
+
+D+ is asserted and the host sees a full-speed connection. It then gets nothing:
+`device descriptor read/64, error -110` twice, then `device not accepting address,
+error -62`. That is "the pull-up is there, no SETUP response".
+
+**What fixed the connection.** The OTG core's `iddig`, `bvalid`, `vbusvalid` and
+`avalid` are GPIO-matrix *inputs*, not pins. IDF ties them in
+`components/esp_hw_support/port/esp32s3/usb_phy.c` (device mode: iddig/bvalid/
+vbusvalid to `GPIO_MATRIX_CONST_ONE_INPUT` 0x38, avalid to
+`GPIO_MATRIX_CONST_ZERO_INPUT` 0x3C). Rockbox never did that, so the core sat in
+IDLE/`fetsusp` and never drove D+. Signals: IDDIG 58, AVALID 59, BVALID 60,
+VBUSVALID 61. Doing it from C via `esp_rom_gpio_connect_in_signal()` is one line
+per signal and needs no IDF-only symbols.
+
+**What that also refutes.** `DSTS bit 22 fetsusp` was never evidence of missing
+VBUS: bit 22 is set in `usbDsts a=00400000`, which came from a probe where the OTG
+core was not armed at all. It is the reset default. VBUS genuinely has no chip pin
+on this SoC; the AXP173 is the only source, which is what the poll reads.
+
+**Hypotheses, and what discriminates them.** The instrumented poll records
+`usbIRQ <count> <GINTSTS>` and `usbDsts <DSTS> <DAINT>` every 4 s while armed, and
+`usbIrqE <err>` if `esp_intr_alloc` failed.
+
+| Reading | Meaning | Next action |
+|---|---|---|
+| `usbIrqE <err>` present | allocation failed | check source 38 routing, level |
+| `usbIRQ a=0`, `GINTSTS` has `usbrst`/`enumdone` | status set, mask not delivered | `GINTMSK`, `GAHBCFG.GINT`, `PCGCCTL` |
+| `usbIRQ` growing, `DSTS enum speed` 0 | we interrupt but the core never enumerates | PHY clock: `usbClk2`/`usbClk3`, `USB_PLL`, force bits |
+| `usbIRQ` growing, enum speed = full, `DAINT` ep0 | core enumerated, driver dropped EP0 | `usb_dw_ep0_recv`, `DOEPDMA` offset, setup decode |
+
+Cache coherence is *not* a candidate: the `CPU_XTENSA` branch of
+`usb-designware.c` defines `NO_UNCACHED_ADDR` and `POST_DMA_FLUSH`, and
+`cache-xtensa.h` implements `commit_dcache_range` / `discard_dcache_range` through
+`cache_hal_writeback_addr` / `cache_hal_invalidate_addr`, so EP0 and the transfer
+buffers are maintained in both directions. There is no non-cacheable alias for
+internal SRAM on this SoC, which is why it has to be explicit.
+
+**How the data reaches a console.** With the pads handed to the OTG core there is
+no console and no esptool. `app_main()` prints the trail about a second after boot,
+which is before the host finishes enumerating USB-Serial-JTAG and creates the node,
+so a single print is uncatchable -- and the trail is never consumed, because
+`xtensa_paniclog_dump()` deliberately leaves `bc_next` alone. Two bring-up affordances
+close that gap:
+
+- `paniclog.c` re-prints the trail from the tick task thread every 10 s
+  (`XT_BRINGUP_TRAIL_REPEAT`).
+- `usb-xtensa.c` judges an attach after 90 s: if `xt_usb_irqs == 0` it records
+  `usbDead` and calls `esp_restart()`. A chip reset keeps `.noinit`, and the boot hook
+  restores the USJ pads, so the board returns to a readable console and repeats while
+  the transport is dead. If interrupts were seen it records `usbAlive` and leaves the
+  device running -- restarting a working transport would break audio for nothing. The
+  judgement runs from the poll, not from a `sleep()`, because a sleep in the tick task
+  thread stops button scanning and the backlight timeout for its duration.
+
+Reaching the board without touching the hardware: unplug the cable. The poll posts
+extraction, `usb_core_exit()` runs, `disable_clocks()` releases pads 19/20 and
+USB-Serial-JTAG returns.
+
+**Tooling facts, learned the hard way.** Opening the node with pyserial asserts
+DTR/RTS and the ROM prints `rst:0x15 (USB_UART_CHIP_RESET)`; read it with a raw
+`os.open` instead. Holding the node open makes esptool fail with "device reports
+readiness to read but returned no data" *and* makes the kernel hand the next
+enumeration a new name (`ttyACM0` -> `ttyACM1`), so both tools must discover the
+node dynamically and the capture must close before the flash starts.
