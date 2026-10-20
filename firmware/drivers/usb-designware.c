@@ -1484,6 +1484,32 @@ static void usb_dw_exit(void)
      * the extraction got to before the watchdog. */
     xtensa_breadcrumb_rtc("dSdis", DWC_DCTL, DWC_GINTMSK);
 #endif
+
+#if defined(CPU_XTENSA)
+    /*
+     * Abort every armed endpoint before asking the core to disconnect.
+     *
+     * usb_drv_cancel_all_transfers() exists in this driver, but nothing on the generic
+     * teardown path calls it -- only three ARM drivers invoke it from their own code. On
+     * esp32s3 that is fatal: the CDC OUT endpoint re-arms itself indefinitely, so at
+     * extraction at least one endpoint is always active, the soft disconnect never
+     * completes, and the core then stops answering register reads. Measured: the ring
+     * records dSdis, dSdw, dSdl, dPcg and dIrq (GINTSTS still readable at that point) and
+     * then the board resets with usbRel absent -- the core went unreachable during the pad
+     * release, which is the behaviour of a core stuck in disconnect-in-progress.
+     *
+     * Guarded so no other target's teardown changes.
+     */
+    for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
+        for (int dir = 0; dir < USB_DW_NUM_DIRS; dir++)
+            if (usb_endpoints & (1 << (ep + USB_DW_DIR_OFF(dir))))
+                if (usb_dw_get_ep(ep, dir)->active)
+                {
+                    usb_dw_abort_endpoint(ep, dir);
+                    DWC_EPCTL(ep, dir) |= SETD0PIDEF;
+                }
+    xtensa_breadcrumb_rtc("dAbrt", usb_endpoints, DWC_DAINT);
+#endif
     /* Soft disconnect */
     DWC_DCTL = SDIS;
 #if defined(CPU_XTENSA)
@@ -1511,9 +1537,8 @@ static void usb_dw_exit(void)
      * byte indefinitely, which is a separate bug in this driver's OUT handling. So gating
      * here is a bus hang waiting for an extraction.
      *
-     * Leaving it clocked costs a little power while USB mode is down. Everything after this
-     * point -- usb_dw_target_clear_irq()'s writes to GINTSTS and GOTGINT, then the target's
-     * pad release -- works, and the pad release is what the host actually needs.
+     * Leaving it clocked costs a little power while USB mode is down. The pad release that
+     * follows reads core registers, so the core has to stay reachable.
      */
 #else
     DWC_PCGCCTL = 1; /* Stop Phy clock */
