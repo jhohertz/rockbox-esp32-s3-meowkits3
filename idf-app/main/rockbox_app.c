@@ -33,6 +33,7 @@ extern void scan_trace_early_dump(void);
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
+extern void xtensa_paniclog_set_reset(unsigned reason);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -224,6 +225,7 @@ void app_main(void)
                : why == ESP_RST_USB ? "usb peripheral"
                : why == ESP_RST_UNKNOWN ? "unknown" : "other");
         xtensa_breadcrumb("rstR", (unsigned long)why, 0);
+        xtensa_paniclog_set_reset((unsigned)why);
     }
     /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing
