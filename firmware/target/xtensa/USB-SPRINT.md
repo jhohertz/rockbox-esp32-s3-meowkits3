@@ -34,8 +34,19 @@ remappable: `HAL_PIN_USB_DP 20`, `HAL_PIN_USB_DN 19`.
 
 ## Endpoint budget — both requested profiles fit, exactly
 
-`usb_struct.h` gives **7 IN and 7 OUT** endpoint blocks, i.e. EP0 plus six usable.
-Device EP FIFO is `fifo[16][0x400]` = 16 KB total. The core is full-speed only.
+Measured from the core itself at boot, not from headers:
+
+| What | IDF's cfg header | The silicon says |
+|---|---|---|
+| device endpoints | `OTG_NUM_EPS 6` | **7** (`hwcfg2=0x224dd930` → numdeveps 7; `usb_struct.h` also declares `in_ep_reg[7]`/`out_ep_reg[7]`) |
+| dedicated TX FIFOs | `OTG_NUM_IN_EPS 5` | **4** (`hwcfg4=0xd3f0a030` → GHWCFG4[29:26] = 4) |
+| FIFO RAM | `OTG_DFIFO_DEPTH 256` | **200 words** (`hwcfg3=0x00c804b5` → GHWCFG3[31:16] = 200) |
+| FS PHY interface | `OTG_FSPHY_INTERFACE 1` | **1** ✓ agrees |
+| HS | — | **0** ✓ full-speed only |
+
+The TX-FIFO count is the real ceiling: `usb_dw_check_hw()` clamps `n_ptxfifos` to
+4 whatever the endpoint count is, and EP0's IN FIFO is the non-periodic one, so
+**four IN endpoints beyond EP0** is the limit, not seven.
 
 Rockbox class demand, read from each driver's `ep_allocs`:
 
@@ -46,12 +57,14 @@ Rockbox class demand, read from each driver's `ep_allocs`:
 | hid | 1 — interrupt IN |
 | audio | 2 — isochronous OUT, isochronous feedback IN |
 
-- `CDC + HID + MSC` = 3 + 1 + 2 = **6** ✓ fills the core exactly
-- `CDC + HID + Audio` = 3 + 1 + 2 = **6** ✓ fills the core exactly
-- `CDC + HID + MSC + Audio` = 8 ✗ — does not fit
+- `CDC + HID + MSC` = 3 + 1 + 2 = **6** endpoints, of which **4 are IN** ✓ fits
+  both the 7-endpoint pool and the 4 dedicated TX FIFOs, exactly
+- `CDC + HID + Audio` = 3 + 1 + 2 = **6** endpoints, of which **4 are IN** ✓ same
+- `CDC + HID + MSC + Audio` = 8 ✗ — does not fit on either count
 
 So the two profiles must be mutually exclusive, and there is no room for a fourth
-class. `usb_core.c` handles overflow by marking the driver `error` and dropping it
+class. The IN-endpoint ceiling means a profile cannot be built by trading OUT
+endpoints for IN ones either. `usb_core.c` handles overflow by marking the driver `error` and dropping it
 from the descriptor rather than failing the build, so an over-subscribed profile
 degrades silently — the settings must not offer it (see the caveat below).
 
@@ -102,29 +115,44 @@ profile the hardware cannot build.
 
 ## The seams the target has to bridge
 
-1. **Clock, base and pads.** `SOC_DPORT_USB_BASE` with the device block at +0xb00,
-   the USB OTG bit in the peripheral clock enable, and `USB_WRAP`
-   (`usb_wrap_reg.h`/`usb_wrap_struct.h` exist for esp32s3) to route GPIO19/20 to the
-   OTG internal PHY instead of USB-Serial-JTAG. `usb_wrap_struct.h` has the
-   internal/external PHY select bit and a "force PHY clock always on" bit — both
-   likely needed.
-2. **PHY bring-up — the known blocker.** The current stub records that this core's
-   `GUSBCFG` fields are `phyif` (bit 3), `ulpiutmisel` (4), `fsintf` (5), `physel`
-   (6), and that ESP-IDF's own driver sets `phyif = 1`. Rockbox's
-   `usb_dw_check_hw()` writes `DWC_GUSBCFG = c->phytype` and then compares the
-   **whole register** back, so it panics "PHY type not supported" before anything
-   runs. The fix is a masked comparison or a target-specific override. This is the
-   first thing to get past.
+1. **Clock, base and pads — done, and the header it was written against is wrong
+   for this chip.** `SOC_DPORT_USB_BASE` is *referenced* by IDF's esp32s3
+   `usb_reg.h` but never defined there; that file is legacy. The base is
+   `0x60080000` and it is mapped (reads do not fault). What was missing is that
+   **there are two clock gates**: `usb_clk_en` (PERIP_CLK_EN0 bit 23) is the wrap
+   and PHY domain, `usb_device_clk_en` (PERIP_CLK_EN1 bit 10) is the DWC core
+   itself — and at boot **both blocks are also held in reset**
+   (`PERIP_RST_EN0=0x9eff1f3c`, `PERIP_RST_EN1=0x000003ce`). Enable both gates and
+   clear both resets, or every OTG register reads `0x00000000` and nothing says
+   why. `usb_wrap` carries `CLK_EN` (31), `PHY_CLK_FORCE_ON` (20),
+   `AHB_CLK_FORCE_ON` (19), `DFIFO_FORCE_PU` (22) and `DFIFO_FORCE_PD` (3): the
+   force bits are pad-safe, the two mux bits (`USB_PAD_ENABLE` 18, `PHY_SEL` 2)
+   are not.
+2. **PHY bring-up — resolved, and the premise was wrong.** This core has no
+   classic PHY-type field: `GUSBCFG` carries `toutcal`(2:0), `phyif`(3),
+   `ulpiutmisel`(4), `fsintf`(5), `physel`(6), confirmed against IDF's generated
+   `usb_dwc_struct.h`. The FS PHY is selected by **`fsintf`**, and the core reports
+   it in `GHWCFG2.fsphytype` (measured 1). `usb_dw_check_hw()` compared the whole
+   register against a classic phytype constant, and `GUSBCFG`'s reset value is not
+   zero (measured `0x1440`: `physel` and `usbtrdtim` are preset), so that comparison
+   could only ever fail — it reported "PHY type not supported" on a PHY that is
+   present and selectable. The xtensa branch now checks the capability and the one
+   bit, and the probe verified the bit is writable (`gusbcfg 0x1440 → 0x1460`,
+   restored afterwards). Nothing else in the driver needed touching: its offsets and
+   its `TRDT`/`FDMOD`/`FSINTF` bit positions already agree with IDF's layout exactly.
 3. **Interrupt.** Rockbox expects `usb_drv_int()` called from the controller's
    handler. Wire `esp_intr_alloc` at LEVEL1 to it. Two lessons from the audio path
    apply unchanged: nothing may print in that handler, and the handler must be
    IRAM-resident or it stalls behind PSRAM traffic. IRAM has room (the TX ISR
    experiment measured 1107 B against a 358 KB region) but IRAM text **costs heap**,
    of which roughly 64 KB remains.
-4. **`usb_detect()`.** Keep the existing AXP173 VBUS monitor from the stub — it is
-   correct: a PMU read is ~1.6 ms on this I2C peripheral, too slow for the tick, so
-   it caches the result and refreshes it in a thread. Discard the comments claiming
-   the OTG core is not needed.
+4. **`usb_detect()`.** The VBUS monitor thread is gone — it cost
+   `DEFAULT_STACK_SIZE` of internal DRAM (4 KB) to maintain a value nothing polls
+   while `USB_STATUS_BY_EVENT` is set. `vbus_sample()` reads the AXP173 on demand
+   for the charging display, and `usb_detect()` stays a hard gate returning
+   `USB_EXTRACTED` until the core can enumerate, because an insertion is Rockbox's
+   request to unmount the card. Once the core is armed, presence should come from
+   the OTG interrupt rather than from polling the PMU.
 5. **`cpu_idle_mode()`.** `usb_slave_mode()` calls it on entry. Check what xtensa
    does today and decide whether `waiti` is acceptable with the tick still armed.
 6. **Storage handoff — the riskiest non-USB piece.** `firmware/usb.c` does
@@ -152,14 +180,23 @@ that a hang *inside* USB mode needs a power cycle (or the AXP173 long-press).
 
 ## Order of work — each step verifiable without the next
 
-0. **Compile only.** Add the config flags, enable `usb_serial.c`, see what breaks.
-   No hardware, and it answers the bit-rot question cheaply.
-1. **Probe only.** Enable OTG clock and pads, read `GSNPSID`, `hw_numeps`, and the
-   `GUSBCFG` reset value; print them. Do not attach. This answers whether the core is
-   present and how many endpoints it really reports — the number the whole profile
-   plan rests on.
+0. **Compile only — done.** `usb_serial.c` compiles for the first time in the tree
+   and the stack links inert. What broke was not bit-rot in the driver but a name
+   collision: ESP-IDF's `esp32s3.rom.ld` assigns the absolute symbol `usb_enable` to
+   a mask ROM routine, which silently beats Rockbox's target hook, so `usb_init()`
+   called the ROM's download/console function and died with `LoadProhibited`.
+   `-Wl,--wrap=usb_enable` is the fix; the collision list is in `AGENTS.md`.
+1. **Probe only — done, without the pads.** Enabling the wrap gate alone made every
+   register read zero; both gates and both resets are required. The core is present
+   (`id=0x4f54400a`, rev 10) and reports **7 device endpoints, 4 dedicated IN FIFOs,
+   200 words of FIFO RAM, FS PHY available and writable**. The probe never touches
+   `USB_PAD_ENABLE` or `PHY_SEL`, so the console survives and the run repeats; it
+   restores everything it read or forced.
 2. **Enumerate one simple class** (HID alone). First host-visible device; validates
-   PHY, attach, and EP0 traffic.
+   PHY, attach and EP0 traffic. **This is the first step that needs the pads**, and
+   therefore needs someone at the board: routing GPIO19/20 to the OTG core silences
+   the console *and* `esptool`, and a hang inside USB mode costs a reset or a power
+   cycle. Not an unattended step.
 3. **CDC alone.** Host sees a serial port; move the trace onto it and confirm the
    pad handover round-trips back to USJ on exit.
 4. **MSC.** This is where the storage handoff risk surfaces. Validate against the
