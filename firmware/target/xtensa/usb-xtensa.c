@@ -530,10 +530,20 @@ static int vbus_sample(void)
 #define USB_BRINGUP_INTR_DUMP 1
 /* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
  * "the interrupt never arrived" can be told apart on one run. */
-/* Off for this run: usb_dw_target_clear_irq() now mirrors what the working vendor
- * bring-up does, and if that delivers interrupts the polled stand-in would double-service
- * the driver. Re-enable only if delivery turns out to be broken after all. */
-#define USB_BRINGUP_POLLED_IRQ 0
+/* On, deliberately, and measured rather than assumed. Turning it off was the
+ * experiment: with the tick dispatch gone, the attach produced no interrupts at all
+ * (usbIRQ 0), masked status sat permanently at 0x00003000 -- usbrst and enumdone set and
+ * masked, nothing clearing them -- and the host got error -110 where the build with the
+ * dispatch enabled enumerated, bound cdc_acm and counted 24 delivered interrupts.
+ *
+ * So this is not merely a diagnostic: it is what keeps the core's status bits from
+ * staying latched. The driver clears them from the ISR, and the ISR is not running on
+ * its own, so without this task the status never returns to zero and no further event is
+ * ever produced. Whether the interrupt line is supposed to assert on a set-edge while
+ * masked, and why it does not here, is still an open question -- the vendor's TinyUSB
+ * path takes the same source and needs no polling -- but a transport that works is worth
+ * having before that is answered. */
+#define USB_BRINGUP_POLLED_IRQ 1
 /* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
 /* Deliberately not defined for this run: delivery is the thing being tested, and
  * without an allocated and enabled slot there is nothing to observe. */
