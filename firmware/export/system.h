@@ -361,6 +361,9 @@ void xtensa_paniclog_dump(void);
  * xtensa_paniclog_dump() on the next boot; see paniclog.c for why this exists
  * rather than a panic-time hook. */
 void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+/* Same idea, but the ring lives in RTC slow memory and therefore survives the reset a
+ * watchdog or a panic performs. Use it for the steps that can end in a hang. */
+void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
 void xtensa_paniclog_stamp_boot(unsigned long seq);
 /* Read the retained trail back, oldest first, formatted as "tag aaaa bbbb" lines.
  * xtensa_paniclog_dump() prints it on the boot console, but that console is
