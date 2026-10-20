@@ -13,4 +13,4 @@ OTHER_SRC += $(CRSID_SRC)
 
 $(CRSID): $(CRSID_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)

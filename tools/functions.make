@@ -101,3 +101,23 @@ endif
 # example: $(call full_path_subst,$(ROOTDIR)/%.bmp,$(BUILDDIR)/%.o,$(BMP))
 NO_MATCH=this_string_will_never_match_anything
 full_path_subst=$(patsubst $(NO_MATCH)/%,%, $(patsubst $(NO_MATCH)/$(1), $(2), $(addprefix $(NO_MATCH)/, $(3))))
+
+# Build an archive out of its prerequisites.
+#
+# Two things this does that a bare `$(AR) rcs` does not, and both have bitten
+# this tree:
+#
+#  - It removes the archive first. `ar` only replaces the members it is handed,
+#    so an object that a configuration change stopped building stays in the
+#    archive and keeps getting linked. That is how a build with the USB stack
+#    switched off still pulled usb.o out of libfirmware.a and then failed on
+#    `undefined reference to usb_detect` -- the archive said USB was enabled even
+#    though nothing in the source set did.
+#  - It creates the archive's own directory. `clean` deletes lib/ and firmware/
+#    wholesale, and an archive's objects live in *other* directories, so nothing
+#    else in the tree ever re-creates the directory the archive is written to.
+define make_archive
+$(SILENT)mkdir -p $(dir $@)
+$(SILENT)rm -f $@
+$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+endef

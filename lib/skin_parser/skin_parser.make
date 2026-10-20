@@ -17,4 +17,4 @@ CORE_LIBS += $(SKINPARSLIB)
 
 $(SKINPARSLIB): $(SKINPARSLIB_OBJ)
 	$(SILENT)$(shell rm -f $@)
-	$(call PRINTS,AR $(@F))$(AR) rcs $@ $^ >/dev/null
+	$(call make_archive)
