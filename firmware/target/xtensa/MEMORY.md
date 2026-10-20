@@ -64,17 +64,21 @@ Measured from the linked image.
 
 | Region | Budget | Used | Free | Owner of the budget |
 |---|---|---|---|---|
-| `dram0_0_seg` (internal data) | 341,760 (`0x53700`) | **339,200** | **2,560** | IDF `memory.ld` |
-| `iram0_0_seg` (internal code) | — | ~78,000 | — | IDF |
-| `.flash.text` (IROM window) | — | 549,430 | — | flash |
-| PSRAM window | 8,388,608 | 8,362,292 | **26,316** | see §3 |
+| `dram0_0_seg` (internal data) | 341,760 (`0x53700`) | **339,296** | **2,464** | IDF `memory.ld` |
+| `iram0_0_seg` (internal code) | — | 76,819 | — | IDF |
+| `.flash.text` (IROM window) | — | 572,438 | — | flash |
+| PSRAM window | 8,388,608 | 8,361,972 | **26,636** | see §3 |
 
-Measured from the linked image with the USB stack compiled in: `.dram0.data`
-26,840 B at `0x3fc97100`, `.dram0.bss` 248,320 B at `0x3fc9e300`, high water
-`0x3fcdad00`, region end `0x3fcdb700`. IDF's internal heap starts at that high
-water, so every byte of Rockbox DRAM static is a byte taken from the heap: the
-boot reports `heap_init: At 3FCDAD00 len 0000EA10 (58 KiB)`, against 87 KiB
-before the USB stack was enabled.
+Measured from the linked image with the USB stack compiled in and the attach path
+compiled out: `.dram0.data` 26,840 B at `0x3fc97100`, `.noinit` 2,332 B at
+`0x3fc9d9d8`, `.dram0.bss` 248,416 B at `0x3fc9e300`, high water `0x3fcdad60`,
+link region end `0x3fcdb700`. The device agrees: boot reports
+`heap_init: At 3FCDAD60 len 0000E9B0 (58 KiB): RAM`, so the high water and the heap
+start are the same number -- which is the check to run after changing anything in
+DRAM, because it proves the linker script and IDF see the same edge. IDF continues
+the heap past the link region (`At 3FCE9710 len 00005724 (21 KiB)`) to `0x3FCF0000`,
+the end of the data-bus view; the link region ending at `0x3fcdb700` caps *statics*,
+not the heap.
 
 **Internal SRAM is the constraint and the margin is single-digit KB.** It is not
 enlargeable: `DRAM0_0_SEG_LEN` is capped at `I_D_SRAM_SIZE`, which this build
@@ -85,8 +89,9 @@ DWC and SDHOST masters cannot reach the PSRAM window).
 **There is no spare PSRAM.** An earlier revision of this file claimed ~1 MiB of
 PSRAM was idle, and decisions were made against that claim. It was wrong: it
 added up `.ext_ram.bss`, `codecbuf` and `pluginbuf` and missed the two `_text`
-reservations below `codecbuf`. The real idle figure is 25,284 bytes, and §3 shows
-every byte of where the rest went.
+reservations below `codecbuf`. The real idle figure at that point was 25,284 bytes;
+the current build measures **26,636**, and §3 shows every byte of where the rest
+went.
 
 ### DRAM is now close enough to the edge to need a guard
 
@@ -110,12 +115,12 @@ codec.
 0x3C000020  +--------------------------+  entry 0
             | IDF .flash_rodata_dummy  |  sized SIZEOF(.flash.text)
             | IDF .ext_ram.dummy       |  1,179,616 B (same span, other view)
-0x3C090120  | .flash.rodata            |  548,576 B
-0x3C120000  | .ext_ram.bss             |  4,561,204 B  entry 18
-0x3C15D2C0  |   audiobuffer            |    4,194,304 B (the buflib arena) entry 21
-0x3C55D2C0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
-0x3C579934  +--------------------------+  end of .ext_ram.bss, entry 85
-            |     26,316 B free        |  <- the only idle bytes in the window
+0x3C090120  | .flash.rodata            |  568,704 B
+0x3C120000  | .ext_ram.bss             |  4,560,884 B  entry 18
+0x3C15D2E0  |   audiobuffer            |    4,194,304 B (the buflib arena) entry 21
+0x3C55D2E0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
+0x3C5797F4  +--------------------------+  end of .ext_ram.bss, entry 85
+            |     26,636 B free        |  <- the only idle bytes in the window
 0x3C580000  | plugin_text              |  524,288 B  entry 88
 0x3C600000  | codec_text               |  524,288 B  entry 96
 0x3C680000  | codecbuf                 |  1 MiB      entry 104
