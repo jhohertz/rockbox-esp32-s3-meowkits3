@@ -27,9 +27,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"   /* esp_reset_reason */
 
 extern void scan_trace_early_dump(void);
 extern void xtensa_paniclog_dump(void);
+extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -194,6 +196,31 @@ void app_main(void)
      * one has a chance to overwrite the ring. */
     scan_trace_early_dump();
     xtensa_paniclog_dump();
+    /* The reset reason lives in the RTC domain, so it survives the reset that clears
+     * internal DRAM -- which the breadcrumb trail does not. After a crash on this board
+     * the trail came back holding only the new boot's entries, so the trail cannot say
+     * what killed the previous boot; the reset reason can. It also goes into the trail,
+     * so it is readable over the CDC transport once the device has re-enumerated,
+     * without needing the boot console.
+     *
+     * Telling ESP_RST_PANIC from ESP_RST_TASK_WDT or ESP_RST_BROWNOUT is the first
+     * question about the unplug crash: a hang that ends in a watchdog reset is a
+     * different bug from one that ends in a panic, and they point at different code. */
+    {
+        esp_reset_reason_t why = esp_reset_reason();
+
+        printf("reset reason: %d (%s)\n", (int)why,
+               why == ESP_RST_POWERON ? "power-on"
+               : why == ESP_RST_SW ? "software esp_restart"
+               : why == ESP_RST_PANIC ? "panic"
+               : why == ESP_RST_INT_WDT ? "interrupt watchdog"
+               : why == ESP_RST_TASK_WDT ? "task watchdog"
+               : why == ESP_RST_WDT ? "watchdog"
+               : why == ESP_RST_BROWNOUT ? "brownout"
+               : why == ESP_RST_USB ? "usb peripheral"
+               : why == ESP_RST_UNKNOWN ? "unknown" : "other");
+        xtensa_breadcrumb("rstR", (unsigned long)why, 0);
+    }
     /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing
      * Rockbox is guaranteed to have is its own task: if the heap is exhausted
