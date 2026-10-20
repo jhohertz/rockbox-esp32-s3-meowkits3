@@ -149,6 +149,10 @@ static volatile uint32_t xt_irq_enum;
 static volatile uint32_t xt_irq_iep;
 static volatile uint32_t xt_irq_oep;
 static volatile uint32_t xt_irq_none;
+/* Handler runs that happened before the driver was armed, i.e. while the core was still
+ * being configured. Kept separate from xt_irq_none, which means "the line was drawn with
+ * no masked source set" -- conflating the two would hide a real delivery fault. */
+static volatile uint32_t xt_irq_early;
 static volatile uint32_t xt_irq_daint_in;
 static volatile uint32_t xt_irq_daint_out;
 
@@ -185,9 +189,18 @@ static void usb_dwc_isr(void *arg)
      * from interrupt context. See the note on gdma_tx_isr(). */
     xt_usb_irqs++;
     if (!xt_armed)
-        return; /* allocated at boot for the routing dump, masked, and the driver is
-                 * not configured yet -- returning without clearing GINTSTS here
-                 * would leave a level-sensitive source asserted forever */
+    {
+        /* The interrupt is live from allocation, so this can run while the core is
+         * still being configured, before the driver has masks anyone cares about.
+         * Clear the status rather than return: on a level source a bit left set keeps
+         * the line drawn and re-enters the handler with nothing to do -- and clearing
+         * pending bits is the only thing that has ever made this core assert again for
+         * a later event. */
+        DWC_GINTSTS = 0xFFFFFFFF;
+        DWC_GOTGINT = 0xFFFFFFFF;
+        xt_irq_early++;
+        return;
+    }
     {
         uint32_t pend = DWC_GINTSTS & DWC_GINTMSK;
         uint32_t daint = DWC_DAINT;
@@ -345,11 +358,17 @@ void usb_dw_target_enable_irq(void)
 
     if (usb_intr == NULL)
     {
-        /* LOWMED, not LEVEL1: that is what TinyUSB passes for this controller, and it
-         * lets the allocator pick any of levels 1-3 instead of demanding a level-1
-         * slot from a pool that is short of them on this build. */
-        err = esp_intr_alloc(ETS_USB_INTR_SOURCE,
-                             ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_INTRDISABLED,
+        /* LOWMED, and enabled straight away. CherryUSB's dwc2 port for this same
+         * controller (port/dwc2/usb_glue_esp.c:163) is the interrupt-driven reference
+         * that enumerates on this silicon, and it passes ESP_INTR_FLAG_LOWMED alone --
+         * no INTRDISABLED, no later esp_intr_enable(). Rockbox's driver sequence here is
+         * clear_irq, enable_irq, 3 ms, soft reconnect, so the slot is enabled either way
+         * before the host's first reset arrives; what differs is that the vendor's
+         * handler has been live since before the core was configured and has therefore
+         * already run once against status raised during configuration. With INTRDISABLED
+         * the very first pending event is the one that never draws the line, which is
+         * the failure measured on the board. */
+        err = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LOWMED,
                              usb_dwc_isr, NULL, &usb_intr);
         if (err != ESP_OK)
         {
@@ -574,16 +593,13 @@ static int vbus_sample(void)
 #define USB_BRINGUP_INTR_DUMP 1
 /* Bring-up only: drive usb_dw_irq() from a tick task, so "the driver never ran" and
  * "the interrupt never arrived" can be told apart on one run. */
-/* On, as a 10 Hz safety net. The re-test with it fully off was unambiguous: no
- * enumeration at all, host error -110 on every descriptor read then -62, and on the
- * device side usbIRQ 0 with a pending mask of 0x00003000 -- so the earlier conclusion
- * stands, and the cadence bug was not what made interrupts work.
- *
- * What the off build proved is the mechanism: status that is already latched when the
- * CPU interrupt is enabled never draws the line. That is a one-shot problem, not a
- * 100 Hz one, so the dispatch is now a net behind the one-shot in __wrap_usb_enable().
- * If one comes out of this attach having done nothing, this task is deleted. */
-#define USB_BRINGUP_POLLED_IRQ 1
+/* Off for this test, now that the allocation matches the vendor's interrupt-driven
+ * port: enabled at allocation, and the handler clears status when it fires before the
+ * driver is armed. Previously the 10 Hz dispatch was the only thing that ever cleared
+ * the latched bits, and with it off the attach failed outright (host -110 then -62,
+ * device usbIRQ 0 with a pending mask of 0x00003000). If this build enumerates with the
+ * dispatch disabled, delivery is fixed at its source and the task is deleted. */
+#define USB_BRINGUP_POLLED_IRQ 0
 /* Bring-up only: do not take a CPU interrupt slot for the OTG core. */
 /* Deliberately not defined for this run: delivery is the thing being tested, and
  * without an allocated and enabled slot there is nothing to observe. */
@@ -1071,12 +1087,13 @@ void __wrap_usb_enable(bool on)
         xt_armed = true;
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
 
-        /* Service whatever the core latched during usb_core_init(), before anything
-         * else runs. usb_core_init() connects the device, so the host's first reset
-         * and enum-done land while the CPU interrupt is only just being enabled, and
-         * this core does not re-assert its INT output for status that is already
-         * pending -- that is what the failed attach shows: usbIRQ 0 against a pending
-         * mask of 0x00003000, i.e. USBRST|ENUMDNE latched and never drawn.
+        /* Service whatever the core has latched by the time the driver is up. The
+         * driver's own order is clear_irq, enable_irq, 3 ms, soft reconnect, so the
+         * host's reset lands some time *after* the slot is enabled -- this is not an
+         * enable-time artifact. What is true is that the first event after connect does
+         * not draw the line, and only something that clears the pending bits makes a
+         * later event do so. Measured on the failed attach: usbIRQ 0 against a pending
+         * mask of 0x00003000, USBRST|ENUMDNE latched and never drawn.
          *
          * This is the cheap version of what the tick dispatch was doing at 100 Hz:
          * clear the latch once, at the point where it forms, and let every later event
