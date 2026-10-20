@@ -296,3 +296,62 @@ and otherwise reads the Synopsys signature at `OTGBASE + 0x40` (`GSNPSID`), noti
 on the display rather than the console, so the value should also reach `logf` when the
 USB work starts, and the `hw_numeps` read from `HWCONF` is the number the endpoint
 budget depends on.
+
+## Static audit done against IDF's generated core layout (no board needed)
+
+The register arithmetic was checked rather than assumed, because a wrong offset on
+this core does not fault -- it writes into reserved space or reads zero.
+
+- **Offsets.** All 48 fixed-offset `DWC_*` macros were matched against
+  `usb_dwc_struct.h`'s generated layout. Eight of them name registers this core
+  config does not implement (`GI2CCTL` 0x30, `GCCFG` 0x38, `CID` 0x3c, `GLPMCFG`
+  0x54, `DTKNQR1/2` 0x820/0x824, `DEACHINT`/`DEACHINTMSK` 0x838/0x83c -- IDF
+  marks those offsets reserved). The driver touches none of them except
+  `DTKNQR1`, and that read lives inside `usb_dw_get_epmis()`, which is
+  `#ifdef USB_DW_SHARED_FIFO` and compiled out here.
+- **Bit positions.** 83 bit macros across 48 registers were checked against the
+  field positions IDF's bitfield structs imply. Every one lands on a field the
+  core has, except the two dead registers above. `TRDT` → bits 13:10, `FDMOD` →
+  bit 30, `FSINTF` → bit 5, `PHYIF16` → bit 3 all agree.
+- **Endpoint arithmetic.** `DIEPCTL` 0x900 / `DIEPINT` 0x908 / `DIEPTSIZ` 0x910 /
+  `DIEPDMA` 0x914 / `DTXFSTS` 0x918 and `DOEPCTL` 0xb00 / `DOEPINT` 0xb08 /
+  `DOEPTSIZ` 0xb10 / `DOEPDMA` 0xb14, stride 0x20 -- matches IDF exactly. Note
+  `DOEPDMA` at `+0x14`, not the classic `+0x18`.
+- **Paths that are compiled out, verified at object level.** `usb_dw_handle_rxfifo`,
+  `usb_dw_try_push` and `usb_dw_get_epmis` are absent from
+  `usb-designware.o`: all DFIFO access is under `USB_DW_ARCH_SLAVE`, and this core
+  is architecture 2 (internal DMA, measured `(ghwcfg2>>3)&3 == 2`), so the FIFO
+  window and its stride never matter. `DWC_DFIFO(x)`'s `0x1000` stride would be
+  wrong on a 200-word FIFO RAM, but it is dead code here.
+- **The TX-FIFO ceiling fails cleanly.** Allocation walks `fnum = 1..n_ptxfifos`
+  and returns `false` when all four are taken, so a fifth IN endpoint gets no FIFO
+  rather than silently sharing one. `usb_serial.c`'s notification IN is marked
+  `.optional = true`, so CDC survives without line-state notifications if it is the
+  one that cannot be allocated.
+- **The endpoint pool excludes EP0.** `usb_core.c` assigns from `epnum = 1`, so
+  `USB_NUM_ENDPOINTS 7` means six class endpoints -- exactly what both profiles
+  need: CDC 2 IN + 1 OUT, HID 1 IN, MSC 1 IN + 1 OUT (6 endpoints, 4 IN) or
+  CDC 2 IN + 1 OUT, HID 1 IN, audio 1 IN + 1 OUT (6 endpoints, 4 IN). Zero slack.
+- **Enabling the serial driver cannot stall the console.** `usb_serial_send()`
+  returns early while the class is inactive, so `logf`'s flush does not block on a
+  target with no host attached.
+- **The Audio profile links.** `dsp_configure` and the `usb_audio` entry points are
+  in the image; the driver owns its own DSP pipeline and allocates its buffers from
+  the core arena (PSRAM), so it needs nothing from the target's `audiohw` path.
+
+## Risks still open before the first attach
+
+1. **The DWC ISR runs from PSRAM.** `ICODE_ATTR` maps to nothing on this target
+   (no `.icode` in the script), so the handler fetches through the instruction
+   cache window while the mixer and codec traffic are hammering the same MSPI bus.
+   Same class of problem as the audio ISR; the fix, if it shows up in measurement,
+   is routing the ISR call tree into IRAM -- which costs heap, not free space.
+2. **The pad handover is the irreversible step.** Taking GPIO19/20 removes the
+   console *and* `esptool`; a hang inside USB mode costs a power cycle, and the
+   only power control is the AXP173's PEK. Do it with someone at the board.
+3. **Storage handoff is unverified.** `usb.c` unmounts all volumes on entry and
+   re-inits on exit against an IDF `sdmmc_host` whose `sd_enable()` is a no-op and
+   whose card is declared non-removable.
+4. **`usb_mode` needs `HAVE_USB_POWER` to exist as a setting**, and that also
+   pulls the charging indicator into the status bar -- a screen change that can
+   only be judged on the board.
