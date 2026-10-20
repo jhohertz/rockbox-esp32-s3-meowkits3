@@ -478,6 +478,14 @@ Measured end to end in ~13 s. Facts that are not obvious from the register names
   `esptool --before no_reset --after hard_reset flash_id`.
 - `flash_args` contains **relative** paths (`bootloader/bootloader.bin`, …), so esptool
   must run with the IDF build directory as its cwd.
+- **The trigger is acted on by the tick task, so download mode arrives a tick or two
+  after the byte.** A fixed sleep made the tool race the reset and fail in a way that
+  looks like a broken port; it now polls the ROM (`read_mac` with `--before no_reset`)
+  until the chip answers. Measured: the first poll failed, the second succeeded.
+- **A stale sysfs product string is not evidence the app is running.** Linux keeps the
+  device entry when the chip stops answering, so a board parked in download mode reads
+  as "Rockbox media player". The tool decides by reading the CDC trace bytes instead, and
+  retries through the ROM if the app did not come back.
 - The RX hook that carries the trigger is `usb_serial_target_rx()`, weak in
   `usb_serial.c` with an empty body, so every target that does not define one behaves
   exactly as before. It runs in interrupt context; the target records the byte and acts
