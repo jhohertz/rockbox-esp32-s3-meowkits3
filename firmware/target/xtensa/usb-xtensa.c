@@ -624,6 +624,10 @@ static uint32_t xt_attach_tick;
  * handler, so the tick task picks it up.
  */
 static volatile bool xt_flash_request;
+/* Asked for the retained breadcrumb trail over CDC. The boot console is USJ and the pads
+ * are the OTG core's while USB mode is up, so after an unplug that ended in a reboot the
+ * trail is only reachable through the transport that survived it. */
+static volatile bool xt_trail_request;
 
 void usb_serial_target_rx(const unsigned char *data, int length)
 {
@@ -635,6 +639,10 @@ void usb_serial_target_rx(const unsigned char *data, int length)
         {
             xt_flash_request = true;
             xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
+        }
+        else if (data[i] == 't')
+        {
+            xt_trail_request = true;
         }
     }
 }
@@ -779,6 +787,21 @@ static void usb_vbus_poll(void)
 
 #ifdef USB_ENABLE_SERIAL
     /* Picked up here rather than in the hook: this runs on the tick task thread. */
+    if (xt_trail_request)
+    {
+        /* 16 of the 40 retained slots. Each line is a tag plus two words, so this is
+         * ~550 bytes of static buffer -- the static region has very little left, and
+         * the interesting part of a crash trail is its tail. */
+        static char trail[640];
+        int n;
+
+        xt_trail_request = false;
+        n = xtensa_breadcrumb_tail(trail, sizeof trail, 16);
+        if (n > 0)
+            usb_serial_send((unsigned char *)trail, n);
+        usb_serial_send((unsigned char *)"trail end\r\n", 10);
+    }
+
     if (xt_flash_request)
     {
         xt_flash_request = false;
