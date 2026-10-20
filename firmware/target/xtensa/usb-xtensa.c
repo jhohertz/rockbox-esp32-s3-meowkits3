@@ -156,6 +156,10 @@ static volatile uint32_t xt_irq_none;
  * being configured. Kept separate from xt_irq_none, which means "the line was drawn with
  * no masked source set" -- conflating the two would hide a real delivery fault. */
 static volatile uint32_t xt_irq_early;
+/* enable/disable churn from the driver, counted rather than trailed: see the note in
+ * usb_dw_target_enable_irq(). */
+static volatile uint32_t xt_irq_enable_n;
+static volatile uint32_t xt_irq_disable_n;
 static volatile uint32_t xt_irq_daint_in;
 static volatile uint32_t xt_irq_daint_out;
 
@@ -347,6 +351,11 @@ void usb_dw_target_disable_clocks(void)
     wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~(XT_USB_PAD_ENABLE |
        XT_USB_PAD_PULL_OVERRIDE | XT_USB_DP_PULLUP | XT_USB_DM_PULLDOWN));
     wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
+
+    /* The last thing the transport does before the core is torn down. If a crash
+     * follows an unplug and this entry is absent, the fault is upstream of the pad
+     * release rather than in it. */
+    xtensa_breadcrumb("usbRel", DWC_DAINT, DWC_GINTSTS);
 }
 
 void usb_dw_target_enable_irq(void)
@@ -393,15 +402,25 @@ void usb_dw_target_enable_irq(void)
     else
     {
         esp_intr_enable(usb_intr);
+        xt_irq_enable_n++;
     }
 
-    xtensa_breadcrumb("usbIrq", (unsigned long)(usb_intr != NULL), 0);
+    if (usb_intr != NULL && xt_irq_enable_n == 0)
+    {
+        /* Once, at allocation. The driver calls usb_dw_target_enable_irq() on every
+         * endpoint operation -- dozens of times during enumeration, thousands during
+         * mass storage -- and as a ring entry that pushed everything else out, so the
+         * trail read as sixteen identical usbIrq lines. The churn is a counter in the
+         * CDC trace now, which is where a count belongs. */
+        xtensa_breadcrumb("usbIrq", (unsigned long)(usb_intr != NULL), 0);
+    }
 }
 
 void usb_dw_target_disable_irq(void)
 {
     if (usb_intr != NULL)
         esp_intr_disable(usb_intr);
+    xt_irq_disable_n++;
 }
 
 void usb_dw_target_clear_irq(void)
@@ -742,10 +761,11 @@ static void usb_vbus_poll(void)
             static char cdc_line[192];
             int n = snprintf(cdc_line, sizeof(cdc_line),
                              "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
-                             "enum=%lu none=%lu early=%lu dain=%04lx,%04lx "
-                             "gintsts=%08lx dsts=%08lx\r\n",
+                             "enum=%lu none=%lu early=%lu en=%lu/%lu "
+                             "dain=%04lx,%04lx gintsts=%08lx dsts=%08lx\r\n",
                              xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
                              xt_irq_enum, xt_irq_none, xt_irq_early,
+                             xt_irq_enable_n, xt_irq_disable_n,
                              xt_irq_daint_in, xt_irq_daint_out,
                              DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
@@ -789,16 +809,21 @@ static void usb_vbus_poll(void)
     /* Picked up here rather than in the hook: this runs on the tick task thread. */
     if (xt_trail_request)
     {
-        /* 16 of the 40 retained slots. Each line is a tag plus two words, so this is
-         * ~550 bytes of static buffer -- the static region has very little left, and
-         * the interesting part of a crash trail is its tail. */
-        static char trail[640];
-        int n;
+        /* All 40 retained slots, in chunks. Reading the trail over CDC exists to see
+         * the sequence that led to a crash, and 16 slots turned out to be all noise and
+         * none of the story. A small buffer reused per chunk, because the static region
+         * cannot hold forty formatted lines. */
+        static char trail[352];
+        int start;
 
         xt_trail_request = false;
-        n = xtensa_breadcrumb_tail(trail, sizeof trail, 16);
-        if (n > 0)
+        for (start = 0; start < 40; start += 10)
+        {
+            int n = xtensa_breadcrumb_window(trail, sizeof trail, start, 10);
+            if (n <= 0)
+                break;
             usb_serial_send((unsigned char *)trail, n);
+        }
         usb_serial_send((unsigned char *)"trail end\r\n", 10);
     }
 
@@ -824,7 +849,11 @@ static void usb_vbus_poll(void)
 
     if (status != last)
     {
+        /* The unplug goes through here and the crash happens just after it, so the
+         * transition belongs in the trail: whether the cable event was seen at all,
+         * and when, is half of the question. */
         last = status;
+        xtensa_breadcrumb("usbEv", (unsigned long)status, current_tick);
         usb_status_event(status);
     }
 }

@@ -115,7 +115,7 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
 /* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
  * absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore yields
  * chronological order whether or not the ring has wrapped. */
-int xtensa_breadcrumb_tail(char *buf, int bufsize, int slots)
+int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
 {
     int n, i, len = 0;
 
@@ -123,10 +123,12 @@ int xtensa_breadcrumb_tail(char *buf, int bufsize, int slots)
         return 0;
 
     n = (bc_next < BC_SLOTS) ? (int)bc_next : BC_SLOTS;
-    if (slots > n)
-        slots = n;
+    if (start >= n)
+        return 0;
+    if (start + count > n)
+        count = n - start;
 
-    for (i = n - slots; i < n; i++)
+    for (i = start; i < start + count; i++)
     {
         const struct breadcrumb *e = &bc[i % BC_SLOTS];
         int used = snprintf(buf + len, bufsize - len,

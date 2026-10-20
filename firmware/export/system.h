@@ -367,7 +367,7 @@ void xtensa_paniclog_stamp_boot(unsigned long seq);
  * USB-Serial-JTAG and the pads may be owned by the OTG core at exactly the moment the
  * trail matters -- so a target with a USB path can fetch it instead. Returns the number
  * of bytes written, and writes at most `slots` of the most recent entries. */
-int xtensa_breadcrumb_tail(char *buf, int bufsize, int slots);
+int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
 #endif
 
 #endif /* __SYSTEM_H__ */
