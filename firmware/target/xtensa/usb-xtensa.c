@@ -163,25 +163,6 @@ static volatile uint32_t xt_irq_disable_n;
 static volatile uint32_t xt_irq_daint_in;
 static volatile uint32_t xt_irq_daint_out;
 
-/* INTENABLE and INTERRUPT are readable on this core config (rsr.intlevel is not,
- * the level lives in PS). Together with GINTMSK and GAHBCFG these say which half
- * of the path is broken: a set bit in GINTSTS whose source is unmasked is a core
- * problem, a masked source with the CPU slot enabled is a routing problem, and
- * neither is an allocator problem. */
-static uint32_t xt_read_intenable(void)
-{
-    uint32_t v;
-    __asm__ __volatile__("rsr.intenable %0" : "=r"(v));
-    return v;
-}
-
-static uint32_t xt_read_interrupt(void)
-{
-    uint32_t v;
-    __asm__ __volatile__("rsr.interrupt %0" : "=r"(v));
-    return v;
-}
-
 /* Set between usb_enable(true) and usb_enable(false), purely so the poll can report
  * what the armed core is doing. Deliberately not used by usb_detect(), which answers
  * the cable as usb.h:80 requires. Declared here because the handler below needs it:
@@ -647,6 +628,48 @@ static volatile bool xt_flash_request;
  * are the OTG core's while USB mode is up, so after an unplug that ended in a reboot the
  * trail is only reachable through the transport that survived it. */
 static volatile bool xt_trail_request;
+static bool xt_boot_trail_sent;
+/* How long to ignore further command bytes, in ticks.
+ *
+ * Reading the trail over CDC produced 3177 breadcrumb lines for one 't': the OUT endpoint
+ * hands the same byte to the rx hook again and again -- 79 trail dumps in 90 seconds --
+ * which is the transport re-delivering a packet the driver already consumed, not the host
+ * sending it. Harmless for 'f' (download mode is idempotent), fatal for 't', because each
+ * dump is another few KB over the endpoint and the ring it prints is the thing we are
+ * trying to preserve: the flood overwrote the crash tail before I could read it.
+ *
+ * A cooldown rather than a driver fix, because the commands are human-triggered and
+ * seconds apart. The re-delivery itself is a bug in usb-designware.c's OUT handling and
+ * is worth a look once the transport is no longer the only way to see the device. */
+static int xt_trail_hold;
+static int xt_flash_hold;
+
+#define XT_CMD_HOLD_TICKS (5 * HZ)
+
+/* Panic record line plus the whole retained ring, chunked. Same buffer reused per chunk
+ * because the static region cannot hold forty formatted lines. */
+static void xt_send_trail(void)
+{
+    static char trail[352];
+    int start;
+    extern int xtensa_paniclog_head(char *buf, int bufsize);
+
+    {
+        char head[128];
+        int n = xtensa_paniclog_head(head, sizeof head);
+        if (n > 0)
+            usb_serial_send((unsigned char *)head, n);
+    }
+
+    for (start = 0; start < 40; start += 10)
+    {
+        int n = xtensa_breadcrumb_window(trail, sizeof trail, start, 10);
+        if (n <= 0)
+            break;
+        usb_serial_send((unsigned char *)trail, n);
+    }
+    usb_serial_send((unsigned char *)"trail end\r\n", 10);
+}
 
 void usb_serial_target_rx(const unsigned char *data, int length)
 {
@@ -722,7 +745,6 @@ static void usb_vbus_poll(void)
 {
     static unsigned ticks;
     static unsigned report;
-    static unsigned slow;
     static int last = USB_EXTRACTED;
     int status;
 
@@ -783,63 +805,48 @@ static void usb_vbus_poll(void)
         }
 #endif
 
-        /* Slower cadence on purpose: the ring is 16 deep, and usbIRQ/usbDsts are
-         * the entries whose *history* matters. These two are a snapshot. */
-        if (++slow >= 3)
-        {
-            slow = 0;
-            xtensa_breadcrumb("usbMask", DWC_GINTMSK, DWC_GAHBCFG);
-            xtensa_breadcrumb("usbCpu", xt_read_intenable(), xt_read_interrupt());
-            /* Who owns the pads, and whether the core is connected at all.
-             * OTG_CONF bit 18 is pad_enable and bit 2 is phy_sel; DCTL bit 0 is
-             * soft-disconnect, which would explain a device that holds D+ high and
-             * never answers if something left it set. */
-            xtensa_breadcrumb("usbWrap", rd(XT_USB_OTG_CONF), rd(XT_RTC_USB_CONF));
-            xtensa_breadcrumb("usbDctl", DWC_DCTL, DWC_PCGCCTL);
-            /* Failed PMU reads during the attach: this counter says whether the bus
-             * is the problem or the core is. */
-            xtensa_breadcrumb("usbVbus", xt_vbus_err, (unsigned long)xt_vbus_present);
-            /* Which transceiver the core was told to use. The whole story of the
-             * last two runs hinges on bit 6 here. */
-            xtensa_breadcrumb("usbGusb", DWC_GUSBCFG, DWC_DCFG);
-            /* EP0 in detail. DOEPINT bit 13 is setup-packet-complete (STUP) and bit
-             * 0 is transfer-complete (XFRC); the EPTSIZ low 7 bits of a completed
-             * OUT stage say how many bytes actually arrived. A host that gets a
-             * protocol error (-71) rather than a timeout is being answered, and
-             * these say whether the answer was the wrong size or the wrong thing. */
-            xtensa_breadcrumb("usbEp0", DWC_DOEPINT(0), DWC_DIEPINT(0));
-            /* DWC_EPTSIZ's direction argument is usb-designware.c's private enum
-             * (IN = 0 -> DIEPTSIZ at 0x910, OUT = 1 -> DOEPTSIZ at 0xB10), which the
-             * target cannot name, so the values are spelled out here. */
-            xtensa_breadcrumb("usbSz", DWC_EPTSIZ(0, 1), DWC_EPTSIZ(0, 0));
-        }
+          /* The pad/ownership and EP0 snapshot that used to follow these entries is
+           * gone: scaffolding for the -71 enumeration stage (GUSBCFG, DCTL, DOEPINT,
+           * EPTSIZ, GINTMSK, INTENABLE), now closed. It took eight of the ring's forty
+           * slots per burst -- most of the history the ring exists to keep -- and the
+           * same numbers are on the CDC trace line (gintsts, dsts, dain) or in the
+           * attach transition dump (usbWrap, usbVbus, usbGusb). */
     }
 
 #ifdef USB_ENABLE_SERIAL
-    /* Picked up here rather than in the hook: this runs on the tick task thread. */
-    if (xt_trail_request)
-    {
-        /* All 40 retained slots, in chunks. Reading the trail over CDC exists to see
-         * the sequence that led to a crash, and 16 slots turned out to be all noise and
-         * none of the story. A small buffer reused per chunk, because the static region
-         * cannot hold forty formatted lines. */
-        static char trail[352];
-        int start;
+    /* One command per cooldown window each, so a re-delivered byte cannot repeat a dump
+     * without blocking the other command: pressing the trail right after a flash request
+     * has to still work. */
+    if (xt_trail_hold > 0)
+        xt_trail_hold--;
+    if (xt_flash_hold > 0)
+        xt_flash_hold--;
 
+    /* Picked up here rather than in the hook: this runs on the tick task thread. */
+    if (xt_trail_request && xt_trail_hold == 0)
+    {
         xt_trail_request = false;
-        for (start = 0; start < 40; start += 10)
-        {
-            int n = xtensa_breadcrumb_window(trail, sizeof trail, start, 10);
-            if (n <= 0)
-                break;
-            usb_serial_send((unsigned char *)trail, n);
-        }
-        usb_serial_send((unsigned char *)"trail end\r\n", 10);
+        xt_trail_hold = XT_CMD_HOLD_TICKS;
+        xt_send_trail();
     }
 
-    if (xt_flash_request)
+    /* Push the retained trail without being asked. Reading it on demand needs a host that
+     * is fast: the boot console is USJ and only ours for the four seconds before the OTG
+     * core takes the pads, and IDF drops console output when nothing is reading, so the
+     * dump of the boot that died was consistently half-captured. Three seconds after the
+     * attach, the previous boot's entries are still in the ring (this boot writes about
+     * sixteen), and the transport is up, so a device that crashed on unplug delivers its
+     * own post-mortem to whoever plugs it in. */
+    if (!xt_boot_trail_sent && xt_armed && current_tick - xt_attach_tick >= 3 * HZ)
+    {
+        xt_boot_trail_sent = true;
+        xt_send_trail();
+    }
+
+    if (xt_flash_request && xt_flash_hold == 0)
     {
         xt_flash_request = false;
+        xt_flash_hold = XT_CMD_HOLD_TICKS;
         xt_usb_enter_download_mode();
     }
 #endif
