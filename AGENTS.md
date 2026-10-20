@@ -3234,6 +3234,34 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- **USB insertion detection on this board can only come from the PMU.** The SoC has
+  no VBUS sense input — GPIO19/20 are D+/D- only — so `axp173_input_status()`
+  (REG 0x00, `AXP_VBUS_PRESENT` = bit 5, the same bit the reference firmware calls
+  `isVBUSExist()`) is the only cable sensor, and it has to be polled: the chip's VBUS
+  IRQ bits are deliberately left disabled in `axp173_init()` because the IRQ pin on
+  GPIO43 goes low for *any* enabled event, and the cheap GPIO check that gates the
+  PEK I2C read depends on PEK being the only thing enabled.
+- **Cable presence is not a request, and Rockbox reads it as one.** `usb.c:499` sets
+  `usb_state = USB_INSERTED` for any insertion event regardless of the `usb_mode`
+  setting — charge mode only decides which class drivers get composed. Charging here
+  is done by the AXP173 and is not something Rockbox can decline, so a target that
+  reports the cable parks the player on the USB screen for as long as it is powered
+  from a host. The target therefore posts insertion events only when a data profile
+  is actually wanted, and `usb_detect()` reports the *transport* rather than the
+  cable: `apps/playlist.c:1127` uses `usb_detect()` to suppress write-error reports
+  on the theory that USB owns the disk, which would swallow every real disk error if
+  it answered with the cable.
+- **The reference firmware's model (`/tmp/meowkit`) is the end state to copy in
+  spirit.** TinyUSB runs with `ARDUINO_USB_CDC_ON_BOOT=1`, so a CDC+MSC composite
+  device is always present; the MSC LUN starts with `mediaPresent=false,
+  block_count=0`; `usb_msc_enable()` unmounts FATFS, re-inits SDMMC raw and sets
+  `mediaPresent(true)` — the drive appears to the host like a card insertion, with no
+  re-enumeration — and `usb_msc_disable()` reverses it and remounts. MSC is entered
+  from Settings and has a physical Eject key on its own screen, which polls at 1 Hz
+  and shows "ready — eject before removing" / "connected" / "active N KB". Rockbox
+  has the matching eject machinery in `usb_storage.c` (`ejected[]`, `SYS_USB_LUN_*`),
+  so the UX is expressible. But always-attached CDC costs the USJ console and esptool
+  permanently: a production decision, not a bring-up one.
 - **The USB pad mux is in the RTC domain and survives a chip reset.** `RTCCNTL.usb_conf`
   (`sw_usb_phy_sel`, `sw_hw_usb_phy_sel`) and `USB_WRAP.otg_conf.pad_enable` are not
   cleared by `esp_restart`, a panic or an abort -- only by a power-on reset. So a
