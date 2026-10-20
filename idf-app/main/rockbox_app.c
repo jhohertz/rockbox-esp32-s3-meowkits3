@@ -32,6 +32,7 @@
 extern void scan_trace_early_dump(void);
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -196,6 +197,9 @@ void app_main(void)
      * one has a chance to overwrite the ring. */
     scan_trace_early_dump();
     xtensa_paniclog_dump();
+    /* No ring dump here: xtensa_paniclog_dump() above already prints the retained
+     * breadcrumbs ("panic breadcrumbs (40):") as the first thing app_main does, and did so
+     * before this was added. A second dump doubled the output on the console. */
     /* The reset reason lives in the RTC domain, so it survives the reset that clears
      * internal DRAM -- which the breadcrumb trail does not. After a crash on this board
      * the trail came back holding only the new boot's entries, so the trail cannot say
