@@ -439,7 +439,36 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
     usb_dw_wait_for_ahb_idle();
 #endif
     DWC_GRSTCTL = TXFNUM(fnum) | fflsh;
+#if defined(CPU_XTENSA)
+    /*
+     * The flush request bit is self-clearing, and this wait was unconditional: on a
+     * core that cannot complete a flush -- PHY clock stopped, or an endpoint holding
+     * FIFO data for a host that has gone away -- it spins forever in the caller's
+     * context, which starves the idle task and ends in a task-watchdog reset rather
+     * than anything the driver could report. Measured on the esp32s3 unplug crash:
+     * reset reason 6 (task watchdog) with no panic record, i.e. a silent spin.
+     *
+     * Bounded, and on timeout it records and returns rather than panicking: a failed
+     * flush on a device that is being torn down or has lost its host is not worth
+     * killing the player for, and panicf() here would only be visible on a console
+     * nobody is reading. The note goes to RTC slow memory so the next boot can say
+     * whether this is what was hanging.
+     */
+    {
+        uint32_t n = XT_USB_SPIN_LIMIT;
+
+        while (DWC_GRSTCTL & fflsh)
+        {
+            if (--n == 0)
+            {
+                xtensa_breadcrumb_rtc("flshTO", fflsh, DWC_GRSTCTL);
+                return;
+            }
+        }
+    }
+#else
     while (DWC_GRSTCTL & fflsh);
+#endif
     udelay(1);  /* Wait 3 PHY cycles */
 }
 
