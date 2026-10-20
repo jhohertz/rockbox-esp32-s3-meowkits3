@@ -135,6 +135,20 @@ static volatile uint32_t xt_usb_irqs;
  * The polled stand-in calls the driver directly so it cannot inflate that claim. */
 static volatile uint32_t xt_usb_polled;
 
+/* Which masked source is firing, and on which endpoint. Measured: 14,500 interrupts
+ * per second while only ~23 CDC lines per second are being sent, and GINTSTS & GINTMSK
+ * reads as 0 at report time -- the conditions are set and cleared between reports, so
+ * the attribution has to happen inside the handler. DAINT is read before the driver
+ * runs because the driver is what clears it, and the masks are sticky so a slow report
+ * cadence still shows which endpoints were involved at all. */
+static volatile uint32_t xt_irq_rst;
+static volatile uint32_t xt_irq_enum;
+static volatile uint32_t xt_irq_iep;
+static volatile uint32_t xt_irq_oep;
+static volatile uint32_t xt_irq_none;
+static volatile uint32_t xt_irq_daint_in;
+static volatile uint32_t xt_irq_daint_out;
+
 /* INTENABLE and INTERRUPT are readable on this core config (rsr.intlevel is not,
  * the level lives in PS). Together with GINTMSK and GAHBCFG these say which half
  * of the path is broken: a set bit in GINTSTS whose source is unmasked is a core
@@ -171,6 +185,29 @@ static void usb_dwc_isr(void *arg)
         return; /* allocated at boot for the routing dump, masked, and the driver is
                  * not configured yet -- returning without clearing GINTSTS here
                  * would leave a level-sensitive source asserted forever */
+    {
+        uint32_t pend = DWC_GINTSTS & DWC_GINTMSK;
+        uint32_t daint = DWC_DAINT;
+
+        if (pend & USBRST)
+            xt_irq_rst++;
+        if (pend & ENUMDNE)
+            xt_irq_enum++;
+        if (pend & IEPINT)
+        {
+            xt_irq_iep++;
+            xt_irq_daint_in |= daint & 0xffff;
+        }
+        if (pend & OEPINT)
+        {
+            xt_irq_oep++;
+            xt_irq_daint_out |= (daint >> 16) & 0xffff;
+        }
+        /* An interrupt with no masked source set is its own answer: the line was
+         * drawn by something the driver will not look at. */
+        if (!pend)
+            xt_irq_none++;
+    }
     INT_USB_FUNC();
 }
 
@@ -654,11 +691,20 @@ static void usb_vbus_poll(void)
     }
 #endif
 
-    if (xt_armed && ++report >= 4 * USB_VBUS_POLL_TICKS / 4)
+    /* 10 s, in ticks: HZ is 100 (kernel/include/tick.h), so this block runs ten times
+     * a second at most. It used to read "4 * USB_VBUS_POLL_TICKS / 4", which is just
+     * USB_VBUS_POLL_TICKS -- 40 ms -- and turned the report into a 23 line/s flood on
+     * the CDC endpoint. */
+    if (xt_armed && ++report >= 10 * HZ)
     {
         report = 0;
         xtensa_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
         xtensa_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
+        /* Source attribution from the handler, not from this snapshot. */
+        xtensa_breadcrumb("usbSrc", xt_irq_iep, xt_irq_oep);
+        xtensa_breadcrumb("usbRstE", xt_irq_rst, xt_irq_enum);
+        xtensa_breadcrumb("usbDain", xt_irq_daint_in, xt_irq_daint_out);
+        xtensa_breadcrumb("usbNone", xt_irq_none, 0);
 
 #ifdef USB_ENABLE_SERIAL
         /* Same numbers out of the CDC IN endpoint. The breadcrumb ring only reaches
@@ -673,12 +719,12 @@ static void usb_vbus_poll(void)
          * is not active, so this is harmless before enumeration. Tick-task context, as
          * everything here is: the send path takes an endpoint, not a lock. */
         {
-            static char cdc_line[96];
+            static char cdc_line[160];
             int n = snprintf(cdc_line, sizeof(cdc_line),
-                             "rockbox: irq=%lu polled=%lu gintsts=%08lx "
-                             "dsts=%08lx\r\n",
-                             xt_usb_irqs, xt_usb_polled,
-                             DWC_GINTSTS, DWC_DSTS);
+                             "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
+                             "enum=%lu none=%lu gintsts=%08lx dsts=%08lx\r\n",
+                             xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
+                             xt_irq_enum, xt_irq_none, DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
         }
