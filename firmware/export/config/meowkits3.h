@@ -380,7 +380,11 @@
 
 #define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
 #define USB_ENABLE_SERIAL
-#define USB_VENDOR_ID  0x303A       /* Espressif */
+/* Rockbox's own vendor id, deliberately not Espressif's 0x303A/0x1001: that pair is
+ * what the ROM's USB-Serial-JTAG reports, so a kernel log could not tell the console
+ * from this device -- and both appear on the same port within seconds of each other
+ * during bring-up. */
+#define USB_VENDOR_ID  0x1234       /* Rockbox */
 #define USB_PRODUCT_ID 0x4002       /* distinct from the USB-Serial-JTAG device */
 /* DMA buffers must start on a cache line: committing or invalidating a range would
  * otherwise drag lines belonging to other objects along. */
