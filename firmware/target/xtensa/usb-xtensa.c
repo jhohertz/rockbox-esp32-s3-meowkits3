@@ -309,34 +309,47 @@ void usb_dw_target_enable_clocks(void)
 
 void usb_dw_target_disable_clocks(void)
 {
-    /* Only the wrap/PHY gate is ours to drop. XT_USB_DEVICE_CLK_EN (bit 10 of
-     * PERIP_CLK_EN1) is shared: usb_serial_jtag_ll.h:326 gates USB-Serial-JTAG with the
-     * same bit, SYSTEM.perip_clk_en1.usb_device_clk_en. Clearing it on release clocks
-     * the console and the flash port out along with the DWC core -- measured, after a
-     * release the USJ pad write landed in an unclocked block, D+ never got its pull-up,
-     * and the host saw no device at all. Leaving the core clocked while idle costs a
-     * little power and buys both paths back. */
-    wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) & ~XT_USB_CLK_EN);
+    /*
+     * Order matters here, and the previous order is what the crash markers exposed.
+     * Every access has to happen while the block it targets is still clocked:
+     *
+     *   1. core registers, while the OTG clock is on;
+     *   2. the pad mux and PHY loads, while the USB wrap clock is on;
+     *   3. only then the forced-clock bits and the wrap gate.
+     *
+     * The old sequence dropped the wrap gate first, then wrote the pad registers, which is
+     * the measured "the pad write landed in an unclocked block, D+ never got its pull-up and
+     * the host saw no device" failure -- and it read DWC_DAINT/GINTSTS last, on a block that
+     * had already been ungated, which is a bus stall of the same family as the PCGCCTL hang.
+     *
+     * The final marker reads RTCCNTL and the SoC clock-enable register only: both are always
+     * clocked, so they are safe to take after the wrap gate has gone.
+     */
+    xtensa_breadcrumb_rtc("usbRel", DWC_DAINT, DWC_GINTSTS);
 
-    /* Release the forced clocks so the FIFO power follows the gate again and a
-     * second attach starts from the state this one found. */
+    /* Give the pins back, and release the PHY loads, while the wrap clock still reaches
+     * the pad mux. USB-Serial-JTAG is the console and the flash port, so leaving the mux
+     * pointed at the DWC would silence both after disconnect, and leaving D+ pulled up
+     * would fight the USJ peripheral for the bus. */
+    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~(XT_USB_PAD_ENABLE |
+       XT_USB_PAD_PULL_OVERRIDE | XT_USB_DP_PULLUP | XT_USB_DM_PULLDOWN));
+    wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
+
+    /* Release the forced clocks so the FIFO power follows the gate again and a second
+     * attach starts from the state this one found. */
     wr(XT_USB_OTG_CONF,
        rd(XT_USB_OTG_CONF) & ~(XT_USB_DFIFO_FORCE_PU | XT_USB_PHY_CLK_FORCE |
                               XT_USB_AHB_CLK_FORCE | XT_USB_WRAP_CLK_EN |
                               XT_USB_SESSEND_OVERRIDE));
 
-    /* Give the pins back. USB-Serial-JTAG is the console and the flash port, so
-     * leaving the mux pointed at the DWC would silence both after disconnect. */
-    /* Release the PHY loads as well as the pads, so the USB-Serial-JTAG console is
-     * not left fighting a D+ pull-up and a D- pull-down it does not own. */
-    wr(XT_USB_OTG_CONF, rd(XT_USB_OTG_CONF) & ~(XT_USB_PAD_ENABLE |
-       XT_USB_PAD_PULL_OVERRIDE | XT_USB_DP_PULLUP | XT_USB_DM_PULLDOWN));
-    wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
+    /* Last: the wrap/PHY gate. XT_USB_DEVICE_CLK_EN (bit 10 of PERIP_CLK_EN1) stays set
+     * on purpose -- usb_serial_jtag_ll.h:326 gates USB-Serial-JTAG with that same bit, so
+     * clearing it clocks out the console and the flash port along with the core. */
+    wr(XT_PERIP_CLK_EN0, rd(XT_PERIP_CLK_EN0) & ~XT_USB_CLK_EN);
 
-    /* The last thing the transport does before the core is torn down. If a crash
-     * follows an unplug and this entry is absent, the fault is upstream of the pad
-     * release rather than in it. */
-    xtensa_breadcrumb_rtc("usbRel", DWC_DAINT, DWC_GINTSTS);
+    /* Only RTCCNTL and the SoC clock-enable register are readable here: the wrap block has
+     * just been ungated, and reading it would stall the bus the way PCGCCTL did. */
+    xtensa_breadcrumb_rtc("usbEnd", rd(XT_RTC_USB_CONF), rd(XT_PERIP_CLK_EN0));
 }
 
 void usb_dw_target_enable_irq(void)
