@@ -513,3 +513,30 @@ message.
 
 Interfaces: CDC claims 2, HID 1, MSC 1 -- four for the storage profile; audio's AC
 plus AS (two alt-settings on one interface) makes five for the DAC profile.
+
+## Step 2 result: attach is now a deliberate act, and the board is safe by default
+
+What the first attach attempts actually established, from the breadcrumb trail on a
+live console rather than from inference:
+
+- `usb_enable(true)` fires on the first insertion event once the boot window
+  expires, and Rockbox's charge-mode default does **not** prevent it -- see the
+  ordering note above. So the pins moved, the console vanished, and the report
+  panicked into a reset that could not be reached at all. Only a power cycle
+  recovered it, because the mux is in the RTC domain.
+- Fixing that took two things: clearing the override at every boot (so the console
+  is unconditional), and deciding *in the target* whether the transport is worth
+  opening, using the same rule usb.c applies but evaluated before the pins move.
+- Verified state now: `usbSkip a=00000001 b=00000000` -- mode 1 is
+  `USB_MODE_CHARGE`, no button held, transport refused -- and `usbOut` with
+  `clk0=6100e0c3 rst0=9eff1f3c`, the as-found gate and reset words. Pins stayed on
+  USB-Serial-JTAG the whole time; SD mounted, `root_menu` reached, a codec loaded
+  (`seg`/`placed`).
+
+To attempt enumeration, either pick Settings -> General -> USB mode: Mass storage
+and replug (a mode change alone does nothing -- `usb_set_mode()` only stores the
+value), or hold any button while plugging in, which is Rockbox's documented
+inversion. The attach then runs `usb_core_init()`, the pads go to the wrap, and 8
+seconds later the report halts with the register set drawn on the LCD *and* written
+to the trail, which the following boot prints on the console.
+

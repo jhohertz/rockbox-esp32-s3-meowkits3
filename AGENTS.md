@@ -3234,6 +3234,34 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- **The USB pad mux is in the RTC domain and survives a chip reset.** `RTCCNTL.usb_conf`
+  (`sw_usb_phy_sel`, `sw_hw_usb_phy_sel`) and `USB_WRAP.otg_conf.pad_enable` are not
+  cleared by `esp_restart`, a panic or an abort -- only by a power-on reset. So a
+  firmware that hands GPIO19/20 to the OTG wrap and then dies leaves the board with
+  no console *and* no flash port, and `esptool` cannot connect at all. Rockbox's
+  `usb_init_device()` clears both at every boot for exactly that reason.
+- On a **software-stack** target, `usb_enable(true)` runs at insertion
+  (`usb.c:483`, via `usb_stack_enable`), *before* usb.c computes its charge-only
+  state at line 492. The documented "hold a button while plugging in" gesture
+  (usb.h:54-58, inverted at usb.c:492-496) therefore changes only which class
+  drivers get composed -- it does not stop the transceiver, and on this board it
+  would not stop the pins from moving. `USB_DETECT_BY_REQUEST` does not help either:
+  it defers interface assignment until the host addresses us, still after the
+  enable. On hardware-stack targets the inversion does protect the hardware,
+  because there `usb_enable()` is only reached from `usb_slave_mode()`.
+- **One holder per USJ port.** A console capture left running makes esptool fail
+  with `Write timeout` during `Connecting...`, which looks like a bad cable. Stop
+  the capture before flashing. Also: esptool 4.12 has no `--after=none` (use
+  `no_reset`), and a flash can fail with `MD5 of file does not match data in flash`
+  after a partial write -- retry, and judge success by esptool's own exit status
+  plus three `Hash of data verified` lines, never by the exit status of a pipeline
+  that ends in `tail`.
+- Console reset polarity, refined: `dtr=False` then pulse `rts` (low->high) yields
+  `boot:0xb SPI_FAST_FLASH_BOOT`, i.e. it starts the app. Opening the port at all
+  toggles EN, which shows up in the log as `rst:0x15 (USB_UART_CHIP_RESET)` -- two
+  boot banners in a capture are usually the capture resetting the chip, not a crash.
+  Check for `Guru|abort|Backtrace` before concluding a boot failed.
+
 - The packed ESP image embeds Rockbox's version string, which carries the git hash
   and a dirty marker (`ae16366a58M-261020`). Two builds at different HEADs therefore
   cannot have the same md5 even when the code is identical, so "the image is
