@@ -16,7 +16,16 @@ SPEEXFLAGS = $(filter-out -fstrict-aliasing, $(CODECFLAGS)) \
 		-fno-strict-aliasing -DHAVE_CONFIG_H -DSPEEX_DISABLE_ENCODER \
 		-I$(RBCODECLIB_DIR)/codecs/libspeex
 
-VOICESPEEXFLAGS = $(filter-out -ffunction-sections, $(filter-out -DCODEC,$(SPEEXFLAGS))) -DROCKBOX_VOICE_CODEC
+# The voice library is linked into the firmware image, not into a codec image.
+# codecs.make appends -mno-longcalls for xtensa because a codec is filled through
+# the data cache window and executed through the instruction one, so an absolute
+# call literal would name the wrong bus. That reasoning does not hold here: this
+# archive runs in .text alongside the rest of the firmware, and its memset/memcpy
+# calls resolve to the ROM at 0x400011xx -- more than 1 MB from the code -- so a
+# plain call8 fails the link with "dangerous relocation: call8: call target out of
+# range". Drop the codec-image flag and let the firmware's -mlongcalls apply.
+VOICESPEEXFLAGS = $(filter-out -ffunction-sections -mno-longcalls, \
+				  $(filter-out -DCODEC,$(SPEEXFLAGS))) -DROCKBOX_VOICE_CODEC
 
 # libspeex
 SPEEXLIB := $(CODECDIR)/libspeex.a
