@@ -3287,11 +3287,13 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   to USJ, reset, and let the host reset it again; polling the port that carried the trigger
   finds nothing because that node is gone and the replacement may have a different ttyACM
   index.
-- **`.noinit` in internal SRAM does survive a chip reset, `.noinit`-style DRAM is not the
-  problem — IDF's panic path is.** Measured: after a task-watchdog reset the breadcrumb ring
-  still held the previous boot's entries. What does *not* survive is the boot console:
-  USB-Serial-JTAG drops output when nothing is reading it, so a post-mortem printed only at
-  boot is half-captured. Deliver it over the transport instead.
+- **Retained `.noinit` state survives a watchdog reset; the boot console does not.** The
+  breadcrumb ring came back holding the previous boot's entries after a task-watchdog reset.
+  Whether it also survives IDF's panic reboot is unproven — the single read that suggested it
+  did not may simply have been a fresh boot — so do not build a scheme on that assumption.
+  What is definitely lost is console output: USB-Serial-JTAG drops whatever nobody is reading,
+  and the pads belong to the OTG core as soon as the app attaches, so a post-mortem printed
+  only at boot arrives in fragments. Send it over the transport instead.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
   constant is treated as an absolute section address, and the region usage is then
   computed from that address instead of the section size — a spurious overflow of
