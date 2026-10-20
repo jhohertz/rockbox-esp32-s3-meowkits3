@@ -636,6 +636,19 @@ Four related facts, all measured rather than read:
   257 errors where four measured 19, with no audible difference and the FIFO never
   once seen empty in either. Judging a geometry change by `err` alone will
   therefore rank a *better* ring as worse. Judge by FIFO state and listening.
+- **The remaining `err` is codec reload, not the transport.** After the teardown was
+  quiesced (see `stop_tx()`), a 26-sample window over 15,138 frames showed
+  `err` moving in exactly one sample: the one containing **nine codec loads in 2.5
+  seconds** while switching flac/mpa/mpa/flac. The eighteen samples with no loads,
+  and the six with one or two, moved nothing; two session starts moved nothing;
+  `startup` never moved; no sample showed an empty FIFO. Twenty errors is about
+  five wraps of a four-slot ring, i.e. roughly 115 ms in which the completion ISR
+  could not rearm a slot -- which is precisely the runway the ring has. The
+  unverified step is *why* the ISR was unavailable: each load writes segments into
+  `codecbuf` and clears a ~700 KB heap through the Ext_RAM window, so long
+  cache-maintenance in that path is the candidate. Do not chase it with ring depth;
+  `err/sess` is not the metric, loads-per-window is. Same-format switching produces
+  zero.
 - **`OUT_DSCR_STATE` (`OUT_STATE` bits 19:18) is undocumented.** `gdma_struct.h`
   declares the field `/*reserved*/` and `grep -rn last_dscr` across IDF returns
   nothing. Do not interpret its value.
