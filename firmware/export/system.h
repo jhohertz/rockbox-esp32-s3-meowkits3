@@ -362,6 +362,12 @@ void xtensa_paniclog_dump(void);
  * rather than a panic-time hook. */
 void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 void xtensa_paniclog_stamp_boot(unsigned long seq);
+/* Read the retained trail back, oldest first, formatted as "tag aaaa bbbb" lines.
+ * xtensa_paniclog_dump() prints it on the boot console, but that console is
+ * USB-Serial-JTAG and the pads may be owned by the OTG core at exactly the moment the
+ * trail matters -- so a target with a USB path can fetch it instead. Returns the number
+ * of bytes written, and writes at most `slots` of the most recent entries. */
+int xtensa_breadcrumb_tail(char *buf, int bufsize, int slots);
 #endif
 
 #endif /* __SYSTEM_H__ */
