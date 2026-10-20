@@ -840,3 +840,33 @@ OTG core rather than the USJ, are in `AGENTS.md`.
 Remaining for the driver: the two profiles (`CDC+HID+MSC` and `CDC+HID+Audio`), and
 suspend/resume -- the host runtime-suspends an idle composite device today and the
 driver's mask covers only `USBRST|ENUMDNE|IEPINT|OEPINT`.
+
+## CDC+HID+MSC verified on the board
+
+Restoring `USBMODE_DEFAULT` to `USB_MODE_MASS_STORAGE` is what composes the profile,
+because `usb.c` enables the mass-storage driver only in the `USB_INSERTED` state
+(firmware/usb.c:244) and explicitly disables it in `USB_POWERED` (line 219). Measured
+after a reboot, with no settings touched:
+
+```
+3-1.1:1.0  class=08 proto=50  usb-storage
+3-1.1:1.1  class=02 proto=00  cdc_acm
+3-1.1:1.2  class=0a proto=00  cdc_acm
+3-1.1:1.3  class=03 proto=01  usbhid
+sda: vendor=Rockbox model=Internal Storage 122265600 sectors (62.6 GB)
+/dev/sda1 mounted vfat rw, card contents visible (.rockbox, music packs, sorted/)
+```
+
+A 1.36 MB WAV read through the mount at **990 KB/s**, sha256 computed cleanly -- near the
+practical full-speed bulk ceiling, which says the DMA and FIFO path is sound. During that
+read the device reported `iep` climbing by ~39k over 14 s with `none=0`, i.e. endpoint
+interrupts doing real transfer work and nothing spurious.
+
+Endpoint accounting matches the hardware exactly: serial requests three (bulk IN, bulk
+OUT, and an *optional* notification IN), storage two, HID one -- six of seven, and with
+the optional EP unallocated the IN side is EP0 plus three, which is the four dedicated TX
+FIFOs GHWCFG4 reports.
+
+Open items: the unplug path (Rockbox must remount and keep playing -- `usb_storage`
+declares `needs_exclusive_storage`), writes through MSC, the `CDC+HID+Audio` profile, and
+suspend/resume, which the driver's mask does not cover.

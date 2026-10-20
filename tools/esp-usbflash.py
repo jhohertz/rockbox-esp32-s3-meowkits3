@@ -34,6 +34,7 @@
 import argparse
 import glob
 import os
+import select
 import subprocess
 import sys
 import time
@@ -55,6 +56,40 @@ def tty_nodes():
         except OSError:
             continue
     return found
+
+
+def app_streaming(port, seconds=16):
+    """True only when the device sends its trace line.
+
+    A sysfs product string is not evidence of a live app: it survives on a device that
+    stopped answering, which is exactly how a board parked in download mode reads as a
+    working Rockbox. That false positive is why success is decided by bytes arriving from
+    the device rather than by what the host still has bound.
+    """
+    fd = os.open(port, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    buf = b""
+    try:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], 1.0)
+            if r:
+                try:
+                    buf += os.read(fd, 4096)
+                except BlockingIOError:
+                    pass
+            if b"rockbox:" in buf:
+                return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def in_download_mode(argv, port, chip):
+    """Ask the ROM for the MAC: only answers while the bootloader is running."""
+    cmd = argv + ["--chip", chip, "-p", port, "-b", "115200",
+                  "--before", "no_reset", "--after", "no_reset", "read_mac"]
+    return subprocess.call(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL) == 0
 
 
 def find_rockbox_port():
@@ -116,6 +151,20 @@ def main():
               % (port, TRIGGER.decode()))
         send_trigger(port)
         time.sleep(WAIT_FOR_DOWNLOAD)
+        # The tick task acts on the trigger, so the reset can land a tick or two later.
+        # A fixed sleep was the other half of the unreliability: esptool then talked to
+        # an app that had not reset yet and the failure looks like a broken port.
+        for attempt in range(4):
+            if in_download_mode(esptool_cmd(args), port, args.chip):
+                break
+            print("  not in download mode yet (attempt %d), waiting"
+                  % (attempt + 1))
+            time.sleep(WAIT_FOR_DOWNLOAD)
+        else:
+            print("the chip never answered the ROM, so the trigger did not take. If the "
+                  "board is wedged with the pads on the OTG core, hold BOOT and use "
+                  "make flash.")
+            return 1
 
     cmd = esptool_cmd(args) + [
         "--chip", args.chip,
@@ -137,13 +186,22 @@ def main():
         print("esptool returned %d" % rc)
         return rc
 
-    deadline = time.time() + WAIT_FOR_REATTACH
-    while time.time() < deadline:
-        if find_rockbox_port():
-            print("Rockbox is back on the bus")
-            return 0
-        time.sleep(2)
-    print("Rockbox did not re-attach within %.0f s" % WAIT_FOR_REATTACH)
+    if app_streaming(port, seconds=WAIT_FOR_REATTACH):
+        print("Rockbox is running and streaming over CDC")
+        return 0
+
+    # esptool's --after hard_reset does not always stick: the chip can still be sitting
+    # in the ROM waiting for a host. Asking the ROM to reset is the cheap second try,
+    # and it only works while download mode is up -- which is the state we are in.
+    print("the app did not come back; asking the ROM to reset again")
+    cmd = esptool_cmd(args) + ["--chip", args.chip, "-p", port, "-b", "115200",
+                               "--before", "no_reset", "--after", "hard_reset",
+                               "read_mac"]
+    subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if app_streaming(port, seconds=WAIT_FOR_REATTACH):
+        print("Rockbox is running and streaming over CDC")
+        return 0
+    print("Rockbox did not come back; power-cycle the board")
     return 1
 
 
