@@ -703,3 +703,22 @@ DTR/RTS and the ROM prints `rst:0x15 (USB_UART_CHIP_RESET)`; read it with a raw
 readiness to read but returned no data" *and* makes the kernel hand the next
 enumeration a new name (`ttyACM0` -> `ttyACM1`), so both tools must discover the
 node dynamically and the capture must close before the flash starts.
+
+## Decision point: the OTG core versus USB-Serial-JTAG
+
+The stock MeowKit firmware's USB CDC runs on the **USB-Serial-JTAG** peripheral, not on
+the DWC OTG core -- that is what `303a:1001 "USB JTAG/serial debug unit"` on the host has
+been all along, and it is why the console works with no firmware of ours involved. ESP-IDF
+deprecated USB-OTG device mode on esp32s2/esp32s3, and nothing on this board exercises the
+OTG core except our bring-up.
+
+That matters for the sprint target. USJ gives a proven device-side path with a hard
+endpoint ceiling: EP0 plus two more, so CDC+HID or CDC+MSC, never CDC+HID+MSC and never
+Audio. The OTG core gives the two full profiles the target asks for but needs the
+interrupt line to work, which it currently does not: the core asserts nothing on the
+matrix even with GINTSTS pending, GINTMSK masked, GAHBCFG.GINT set and IDF's mapping
+present.
+
+So the choice is: settle for a reduced profile on the peripheral that works, or keep
+pressing on the OTG interrupt with no IDF reference to compare against. It is a hardware
+and product question, not something to decide silently in code.
