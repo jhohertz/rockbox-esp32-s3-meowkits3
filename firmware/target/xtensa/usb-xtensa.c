@@ -660,6 +660,12 @@ static int xt_trail_hold;
 static int xt_flash_hold;
 
 #define XT_CMD_HOLD_TICKS (5 * HZ)
+/* Whether the target puts unsolicited traffic on the CDC endpoint: the periodic register
+ * trace line and the repeated post-mortem. Both are my instrumentation and both are a load
+ * on a transport whose host may not be reading. Off while the detach crash is being tested;
+ * 't' still answers on demand and the RTC ring survives a reset, so a crash remains readable
+ * with no unsolicited traffic at all. Set to 1 to restore the live view in bring-up. */
+#define XT_USB_CDC_UNSOLICITED 1
 
 /* Panic record line plus the whole retained ring, chunked. Same buffer reused per chunk
  * because the static region cannot hold forty formatted lines. */
@@ -827,6 +833,7 @@ static void usb_vbus_poll(void)
              * profile should be receiving that much: knowing whether it is EP0 or the
              * CDC OUT endpoint is the difference between a chattering host and a driver
              * that re-primes an endpoint it should not. */
+#if XT_USB_CDC_UNSOLICITED
             static char cdc_line[192];
             int n = snprintf(cdc_line, sizeof(cdc_line),
                              "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
@@ -839,6 +846,7 @@ static void usb_vbus_poll(void)
                              DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
+#endif
         }
 #endif
 
@@ -887,11 +895,13 @@ static void usb_vbus_poll(void)
     /* One tick after the report cadence rather than on it: both fire on the same tick
      * otherwise, and two senders writing the CDC ring buffer in the same tick interleave
      * mid-line, which is how "dSdi a=usbIRQ 0000072f" ended up in a read. */
+#if XT_USB_CDC_UNSOLICITED
     if (xt_armed && current_tick - xt_boot_report >= 5 * HZ + 1)
     {
         xt_boot_report = current_tick;
         xt_send_rtc_trail();
     }
+#endif
 
     if (xt_flash_request && xt_flash_hold == 0)
     {
@@ -1054,6 +1064,13 @@ void __wrap_usb_enable(bool on)
     xtensa_breadcrumb(on ? "usbIn" : "usbOut",
                       DWC_GSNPSID, rd(XT_USB_OTG_CONF));
     xtensa_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+    /* The same two steps in the ring that survives a reset. They are the only markers
+     * between usb_core_exit()'s dRet and whatever runs next, and while they lived only in
+     * the .noinit ring a watchdog reset erased them -- which is why every detach trace so
+     * far appeared to stop exactly at dRet with no explanation. These are register reads on
+     * SoC blocks plus GSNPSID, taken while the OTG block is still clocked. */
+    xtensa_breadcrumb_rtc(on ? "uIn" : "uOut", DWC_GSNPSID, rd(XT_USB_OTG_CONF));
+    xtensa_breadcrumb_rtc("uClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
 
     /* The register state after the attach, recorded rather than panicked. The
      * earlier version of this slept 8 s and called panicf() so the values would
@@ -1089,6 +1106,12 @@ void __wrap_usb_enable(bool on)
 #else
     (void)on;
 #endif
+
+    /* Last marker in the target's USB enable wrapper. If this appears in the surviving
+     * ring and nothing after it does, the boot died in code that runs once the transport
+     * is down: charging bookkeeping, the threads the detach broadcast woke, or whatever
+     * the player does on its way back to its loop. */
+    xtensa_breadcrumb_rtc("wRet", on ? 1 : 0, current_tick);
 }
 
 #endif /* HAVE_USBSTACK */
