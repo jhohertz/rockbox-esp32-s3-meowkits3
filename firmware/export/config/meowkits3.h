@@ -380,6 +380,24 @@
 
 #define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
 #define USB_ENABLE_SERIAL
+
+/* TEMPORARY -- bisection for the USB-DAC lock-up, not a shipping setting.
+ * USB_AUDIO_DRY_RUN: receive frames but never hand them to the mixer (excludes the
+ * pcm/sink/GDMA chain). USB_AUDIO_NO_IRQ_MASK: do not run the completion handler
+ * with the core's interrupts masked. The lock-up was reproduced with the dry run in
+ * place, which excludes the mixer; that makes the mask the remaining thing on the
+ * path that can wait for something no longer able to fire. A masked region can never
+ * be recovered by the watchdog either, which is why the board shows no reset.
+ * Delete both, and the #ifndefs in usb_audio.c, once the fault is named. */
+#define USB_AUDIO_NO_IRQ_MASK
+
+/* The isochronous packet size this core can actually buffer. The device FIFO RAM
+ * measures 200 words and the split leaves 88 words (352 bytes) for RX, so the class
+ * default of 1023 bytes -- 256 words -- cannot be armed: the endpoint gets sized
+ * beyond its FIFO. 320 bytes covers 48 kHz stereo (192 bytes a frame) with room for
+ * 64 kHz; 96 kHz (384 bytes) is out of reach at full speed on this silicon.
+ */
+#define USB_AUDIO_BUFFER_SIZE 320
 /* Rockbox's own vendor id, deliberately not Espressif's 0x303A/0x1001: that pair is
  * what the ROM's USB-Serial-JTAG reports, so a kernel log could not tell the console
  * from this device -- and both appear on the same port within seconds of each other
