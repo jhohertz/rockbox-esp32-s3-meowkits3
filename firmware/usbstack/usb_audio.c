@@ -43,7 +43,17 @@
 #include "pcm_mixer.h"
 #include "dsp_core.h"
 
-#define LOGF_ENABLE
+/* Logging is deliberately off here, and the reason is worth keeping: with
+ * ROCKBOX_HAS_LOGF and USB_ENABLE_SERIAL, _logf() not only formats the line but also
+ * pushes it out over CDC (usb_serial_send at the end of logf.c). The isochronous OUT
+ * completion runs this from interrupt context once per frame -- a thousand times a
+ * second -- so the handler spends the whole core formatting and transmitting to an
+ * endpoint the host never reads. That starves every thread and IDF's timer task, fills
+ * the CDC IN FIFO so the console goes dead, and leaves only whatever was already in the
+ * audio FIFO to play, which sounds like static. The sibling usbstack classes keep this
+ * commented out for the same reason.
+ */
+/* #define LOGF_ENABLE */
 #include "logf.h"
 
 // is there a "best practices" for converting between floats and fixed point?

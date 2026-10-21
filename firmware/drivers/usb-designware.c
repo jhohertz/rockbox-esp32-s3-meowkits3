@@ -848,8 +848,21 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
          * only transferred on *even* frames; SETD1PIDOF is not used.
          * This also breaks for USB 1.0 endpoints with bInterval > 1 for
          * the same reason.
+         *
+         * At full speed, however, an isochronous endpoint carries exactly one
+         * packet per frame and that packet is always Data0 (USB 2.0 spec, 5.6.4:
+         * "Isochronous transfers ... always use the DATA0 PID" at full speed).
+         * Choosing the expected PID from the frame parity instead arms Data1 on
+         * every even frame, the host's Data0 packet is then rejected as out of
+         * sync, DOEPINT reports the error rather than XFRC, and because a rejected
+         * packet never completes, the endpoint's expectation never advances -- it
+         * stays wrong for the rest of the session. Measured on ESP32-S3: DOEPTSIZ
+         * armed for one 320-byte packet, DOEPINT = 0x2000 (error, not XFRC), and
+         * samples received never left zero.
          */
-        if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
+        if (!usb_drv_port_speed())
+            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
+        else if (usb_drv_get_frame_number() & 1)
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
         else
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD1PIDOF;
