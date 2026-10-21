@@ -993,3 +993,74 @@ endpoint state at stream start: `DOEPCTL(2)` (EPENA, EPACT, MPSIZ), `DOEPTSIZ(2)
 (PKTCNT/XCNT/XFERSZ), `DOEPDMA(2)` against the buffer address, and `DOEPINT(2)` after a frame,
 to separate "the endpoint is not armed" from "the core received the packet and does not
 signal it".
+
+## The DAC probe answered: the core is suspended and drops the isochronous packets
+
+The endpoint report (`usb-xtensa.c`, committed as `3f50201653`) settled the question that
+`rxframe=0` could not. Measured while PipeWire streamed for 25 s into the sink:
+
+```
+rockbox: usb-audio active=1 playing=1 allocfail=0 rxframe=0 prebuf=0
+         rxbuf=0x3fcd3600 oep=592 ep=2 ctl=80048140 sz=00080140 xfer=320
+         int=00002000 daint=00000000 dma=0x3fcd3600
+```
+
+Read field by field:
+
+- `ctl=80048140` - EPENA (bit 31) set, EPTYP = 1 isochronous (bits 18-20), USBAEP (bit 15)
+  set, MPSIZ = 320. The endpoint is enabled and correctly typed.
+- `sz=00080140` - PKTCNT = 1, XFERSIZE = 320, as armed.
+- `xfer=320` at idle and still `320` after 25 s of streaming. XFERCNT counts down as the
+  core consumes packets; it never moved, so no packet was ever consumed.
+- `daint=00000000` - bit 2 never appears in the core's active-endpoint register.
+- `dma=0x3fcd3600` - internal DRAM, which the DMA master can reach.
+- `int=00002000` - no XFERC.
+
+The host really was sending: the kernel logged `Unable to submit urb #0: -19 at
+snd_usb_queue_pending_output_urbs` when the device vanished, which is the ISO output queue
+being active, and `oep` rose 433 -> 592 during the stream. The `cannot get freq at ep 0x2`
+message from an earlier boot is gone since the audio class stopped logging.
+
+Decoding `gintsts=04a0cc28` against `usb-designware.h`'s own bit list gives the reason:
+
+| bit | name | meaning |
+|---|---|---|
+| 3 | SOF | frame traffic is arriving |
+| 10 | ESUSP | the core says the device is suspended |
+| 11 | USBSUSP | suspend status |
+| 14 | ISOODPR | an isochronous OUT packet reached the core and was dropped |
+| 15 | EOPF | end of periodic frame |
+
+A suspended device does not accept periodic transfers. That is the whole DAC fault: the
+endpoint is armed correctly, the host transmits, and the core drops the packets because it
+believes the bus is suspended while the frame counter keeps advancing.
+
+It is also the same defect behind the console going quiet some minutes after an attach: a
+suspended core completes no IN transfers, so `usb_serial_send()` queues data that never
+reaches the host and every debug command appears as silence. Nothing was crashing; there is
+no panic record and `reset-reason 1` is a plain power-on.
+
+`usb-designware.c` defines `USBSUSP` and `ESUSP` and never masks or handles either, and
+`firmware/usb.c` has no suspend/resume path at all. The next piece of work is that handling:
+mask the two bits, record the suspend, and on resume re-arm the periodic endpoints that were
+pending. It is not audio-specific, and any long-running session on this core needs it.
+
+## Operational note: this branch does not flash at address 0
+
+`tools/espflash.make` is explicit: IDF's bootloader occupies `0x0`, the partition table sits
+at `0x8000`, and the app image lives at `0x10000`. Hand-running
+`esptool write_flash 0 rockbox.esp32s3` overwrites the bootloader with an app image whose
+header the mask ROM then misparses, and the board boot-loops with
+`IllegalInstruction` at a flash-window address and a memory dump of zeros - which looks like
+corrupt code or a broken instruction mapping and is neither. Use `make usbflash` (triggers
+download mode over CDC, then `idf.py flash`) or `make flash`. To recover a board from that
+state: power off, hold BOOT, power on while holding, release - the AXP173 keeps the chip
+powered when the cable is unplugged, so unplugging is not a reset. Verify the ROM answers
+(`Chip is ESP32-S3`) before writing anything.
+
+## Console capture needs the port open before the boot happens
+
+Linux discards USB-Serial-JTAG console output while nothing has the port open, and the board
+attaches about a second and a half after power-on, so a reader started afterwards sees
+nothing at all and silence proves nothing. Start the reader first, then reset. Holding the
+port does block esptool, so kill it before flashing.
