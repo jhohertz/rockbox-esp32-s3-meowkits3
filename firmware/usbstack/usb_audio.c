@@ -884,6 +884,14 @@ int usb_audio_get_alt_intf(void)
     return usb_as_playback_intf_alt;
 }
 
+/* TEMPORARY: request counters for the xtensa status line. */
+uint32_t usb_audio_dbg_req_counts;
+uint32_t usb_audio_dbg_req_last;
+uint32_t usb_audio_dbg_ep_reqs;
+uint32_t usb_audio_dbg_ep_badval;
+uint32_t usb_audio_dbg_ep_badlen;
+uint32_t usb_audio_dbg_ep_ok;
+
 int32_t usb_audio_get_samplesperframe(void)
 {
     return samples_fb;
@@ -897,6 +905,19 @@ int32_t usb_audio_get_samples_rx_perframe(void)
 static bool usb_audio_as_ctrldata_endpoint_request(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
 {
     (void)reqdata_size; /* should check this? */
+
+    /* TEMPORARY: count what this handler actually did, so the status line can say whether
+     * the sampling-frequency request was answered or refused. The requests are known to
+     * arrive (the counter on the status line says so) and Linux still reports
+     * "cannot get freq at ep 0x2", so the question is what we reply with.
+     */
+    usb_audio_dbg_ep_reqs++;
+    if (req->wValue != (USB_AS_EP_CS_SAMPLING_FREQ_CTL << 8))
+        usb_audio_dbg_ep_badval++;
+    else if (req->wLength != 3)
+        usb_audio_dbg_ep_badlen++;
+    else
+        usb_audio_dbg_ep_ok++;
 
     /* only support sampling frequency */
     if(req->wValue != (USB_AS_EP_CS_SAMPLING_FREQ_CTL << 8))
@@ -943,7 +964,16 @@ static bool usb_audio_as_ctrldata_endpoint_request(struct usb_ctrlrequest* req, 
 
 static bool usb_audio_endpoint_request(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
 {
-    int ep = req->wIndex & 0xff;
+    /* Which byte carries the endpoint number. The USB spec puts the interface in the low
+     * byte of wIndex and the endpoint in the high byte for endpoint-targeted requests, and
+     * UAC1 addresses the streaming endpoint's sampling-frequency control with the
+     * interface recipient and the same split. Try the high byte first, then the low byte,
+     * so either convention reaches us; the count above says which one the host used.
+     */
+    int ep = (req->wIndex >> 8) & 0xff;
+
+    if (ep != EP_ISO_OUT)
+        ep = req->wIndex & 0xff;
 
     if(ep == EP_ISO_OUT)
         return usb_audio_as_ctrldata_endpoint_request(req, reqdata, reqdata_size);
@@ -1199,6 +1229,17 @@ static bool usb_audio_interface_request(struct usb_ctrlrequest* req, uint8_t* re
                 return false;
         }
     }
+    else if(intf == (usb_interface + 1))
+    {
+        /* The audio streaming interface. Its endpoint-unit control -- the sampling
+         * frequency control the host reads and writes to set the rate -- is addressed with
+         * the interface recipient and the endpoint number in the high byte of wIndex, so
+         * this is the path Linux takes. Falling through here stalled the request, which
+         * snd-usb-audio reports as "cannot get freq at ep 0x2" and then never starts the
+         * isochronous stream: the endpoint stays armed and XFERCNT never moves.
+         */
+        return usb_audio_endpoint_request(req, reqdata, reqdata_size);
+    }
     else
     {
         logf("usbaudio: unhandled intf req (intf=%d)", intf);
@@ -1214,6 +1255,25 @@ static bool usb_audio_interface_request(struct usb_ctrlrequest* req, uint8_t* re
  */
 static bool usb_audio_control_request(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
 {
+    /* TEMPORARY instrumentation. Linux says "cannot get freq at ep 0x2" but the host cannot
+     * tell us which recipient and which index it actually used -- every class request is
+     * EBUSY for us because snd-usb-audio owns those interfaces -- and the debug console
+     * goes quiet within about twenty seconds of an attach, which is roughly when the host
+     * opens the stream. Counting the requests and latching the last one's fields on the
+     * status line says whether the request arrives at all, and how it is addressed.
+     */
+    static uint32_t req_if, req_ep;
+    static uint32_t req_last;
+
+    if ((req->bRequestType & USB_RECIP_MASK) == USB_RECIP_ENDPOINT)
+        req_ep++;
+    else
+        req_if++;
+    req_last = (req->bRequestType << 24) | (req->bRequest << 16) |
+               ((req->wIndex >> 8) << 8) | (req->wIndex & 0xff);
+    usb_audio_dbg_req_counts = ((req_if << 16) | req_ep);
+    usb_audio_dbg_req_last = req_last;
+
     switch(req->bRequestType & USB_RECIP_MASK)
     {
         case USB_RECIP_ENDPOINT:
