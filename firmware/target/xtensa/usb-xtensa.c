@@ -62,6 +62,7 @@
 #include "usb_drv.h"
 #include "usb_core.h"
 #include "usb-designware.h"
+#include "cache-xtensa.h"
 
 /* Device FIFO RAM. IDF's usb_dwc_cfg.h says OTG_DFIFO_DEPTH 256, but the core
  * itself says otherwise: GHWCFG3[31:16] reads 200 words on this silicon
@@ -73,16 +74,29 @@
 
 /* EP0 IN. Full speed caps the packet at 64 bytes = 16 words. */
 #define NPTX_FIFOSZ     16
-/* Each dedicated IN FIFO has to hold at least max_packet/4 words. Full speed caps a
- * bulk or interrupt packet at 64 bytes, so 16 words is the floor; anything larger
- * steals from the RX side, which has to hold two packets plus status. */
-#define PTX_FIFOSZ      16
+/* Each dedicated IN FIFO must hold the largest packet that endpoint actually sends.
+ * The driver reserves one FIFO per endpoint, but this profile uses only three of them:
+ * the CDC notification endpoint (payload <= 16 bytes), HID (8 bytes) and the audio
+ * feedback endpoint (4 bytes). 8 words covers all three, and the 48 words that used to
+ * be wasted on the three unused FIFOs go to the RX side instead.
+ *
+ * That waste was the audio bug: with 16 words per FIFO the RX FIFO came out at 88 words
+ * = 352 bytes, and an isochronous OUT packet of 320 bytes plus EP0's and the CDC OUT
+ * endpoint's 64-byte packets needs about 448. The core had nowhere to put the ISO packet,
+ * so it discarded it: ISOODPR set, DAINT never showing bit 2, DOEPTSIZ XFERSIZE frozen at
+ * 320, and the RTC ring recording audR frames=0 while the sink reported active and
+ * playing -- the host streamed audio and the device never saw a single frame.
+ *
+ * Note the declared max_packet_size of the notification endpoint is still 64; the FIFO is
+ * sized for what is actually transmitted, not for the descriptor's ceiling.
+ */
+#define PTX_FIFOSZ      8
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
                          PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1))
 
-_Static_assert(PTX_FIFOSZ >= 64 / 4, "a dedicated IN FIFO cannot hold one packet");
-_Static_assert(RX_FIFOSZ >= 14 + 2 * (64 / 4 + 1) + 2 * USB_NUM_ENDPOINTS,
-               "RX FIFO is too small for two packets plus status");
+_Static_assert(PTX_FIFOSZ >= 16 / 4, "a dedicated IN FIFO cannot hold our largest periodic packet");
+_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4 + 1) + 2 * USB_NUM_ENDPOINTS,
+               "RX FIFO cannot hold an isochronous packet plus the two control packets");
 _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1) + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
                "device FIFO split exceeds the core's 256-word FIFO RAM");
@@ -235,6 +249,19 @@ static void usb_dwc_isr(void *arg)
                               (unsigned long)usb_audio_get_samples_rx_perframe());
         xtensa_breadcrumb_rtc("audA", (unsigned long)usb_audio_get_active(),
                               (unsigned long)usb_audio_get_playing());
+        /* Starvation and sizing, in the ring that survives the reset. Reading them live
+         * needs a console write, and a console write is what wedges the device.
+         *   audU a = mixer underflows, b = usb rx overflows
+         *   audD a = last received packet length, b = last length handed to the mixer
+         * A high audU with audD's two values far apart means the mixer is being fed
+         * short, irregular chunks -- audible as pulsing.
+         */
+        extern uint32_t usb_audio_dbg_underflows, usb_audio_dbg_rx_overflows;
+        extern uint32_t usb_audio_dbg_last_len, usb_audio_dbg_last_dsp;
+        xtensa_breadcrumb_rtc("audU", usb_audio_dbg_underflows,
+                              usb_audio_dbg_rx_overflows);
+        xtensa_breadcrumb_rtc("audD", usb_audio_dbg_last_len,
+                              usb_audio_dbg_last_dsp);
     }
 #endif
 
@@ -744,16 +771,37 @@ void usb_serial_target_rx(const unsigned char *data, int length)
 {
     int i;
 
+    /* The OUT endpoint re-arms and re-delivers the same bytes many times over, so a
+     * single keystroke arrives here dozens of times. Each delivery used to re-arm the
+     * trail request, and the unsolicited console printer runs every tick: one 't' became
+     * a sustained stream of 1 KB IN bursts, which fills the transmit FIFOs and starves
+     * EP0's status phase. That is why the console goes quiet seconds after typing and why
+     * Linux reports "cannot get freq at ep 0x2" even though the audio class answered every
+     * request. Treat a command as level-triggered one-shot: act on a byte only when it
+     * differs from the last one handled, so a re-delivery storm is a no-op.
+     */
+    static unsigned char last_handled;
+    static bool have_last;
+
     for (i = 0; i < length; i++)
     {
         if (data[i] == 'f')
         {
+            /* Always honoured: this is the self-flash path and must not be swallowed by
+             * the debounce below. */
             xt_flash_request = true;
             xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
         }
         else if (data[i] == 't')
         {
+            if (have_last && data[i] == last_handled)
+                continue;
             xt_trail_request = true;
+        }
+        if (data[i] != 'f')
+        {
+            have_last = true;
+            last_handled = data[i];
         }
     }
 }
@@ -852,6 +900,17 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
 }
 #endif /* USB_ENABLE_AUDIO */
 
+/* Strong implementation of the driver's weak DMA hook. The esp32s3 D-cache covers
+ * internal SRAM -- where every DMA buffer has to live -- and the DWC core writes those
+ * bytes without going through it, so a receiver that reads the cached address sees
+ * whatever was there before the transfer. cache_hal_invalidate_addr() takes no lock and
+ * is safe from the interrupt context this is called in.
+ */
+void usb_dw_target_dma_discard(void *buf, unsigned int len)
+{
+    discard_dcache_range(buf, len);
+}
+
 static void usb_vbus_poll(void)
 {
     static unsigned ticks;
@@ -882,6 +941,25 @@ static void usb_vbus_poll(void)
         xtensa_breadcrumb("usbRstE", xt_irq_rst, xt_irq_enum);
         xtensa_breadcrumb("usbDain", xt_irq_daint_in, xt_irq_daint_out);
         xtensa_breadcrumb("usbNone", xt_irq_none, 0);
+
+#ifdef USB_ENABLE_AUDIO
+        /* Isochronous arrival, into the RTC ring rather than only the CDC line. Probing
+         * the console is what wedges the device, so the counters have to survive a boot
+         * that never received a command: play to the DAC, power-cycle, and the next boot's
+         * USJ console reports what the previous boot saw.
+         *   usbAud a = isochronous frames received, b = DOEPTSIZ XFERSIZE still armed
+         *   usbAud2 a = sink active, b = playing
+         * If usbAud's frame count stays 0 while the host is streaming, packets never reach
+         * the endpoint; if it moves and audio is still silent, the fault is downstream in
+         * the sink or the mixer.
+         */
+        xtensa_breadcrumb("usbAud",
+                          (unsigned long)usb_audio_get_samples_rx_perframe(),
+                          (unsigned long)(DWC_DOEPTSIZ(2) & 0x7ffff));
+        xtensa_breadcrumb("usbAud2",
+                          (unsigned long)usb_audio_get_active(),
+                          (unsigned long)usb_audio_get_playing());
+#endif
 
 #ifdef USB_ENABLE_SERIAL
         /* Same numbers out of the CDC IN endpoint. The breadcrumb ring only reaches
@@ -995,7 +1073,32 @@ static void usb_vbus_poll(void)
                                  (uint32_t)((usb_audio_dbg_ep_reqs << 24) |
                                             (usb_audio_dbg_ep_badval << 16) |
                                             (usb_audio_dbg_ep_badlen << 8) |
+                                            usb_audio_dbg_ep_ok); }),
+                              ({ extern uint32_t usb_audio_dbg_ep_reqs,
+                                           usb_audio_dbg_ep_badval,
+                                           usb_audio_dbg_ep_badlen,
+                                           usb_audio_dbg_ep_ok;
+                                 (uint32_t)((usb_audio_dbg_ep_reqs << 24) |
+                                            (usb_audio_dbg_ep_badval << 16) |
+                                            (usb_audio_dbg_ep_badlen << 8) |
                                             usb_audio_dbg_ep_ok); }));
+        /* Its own short line: the long status line gets fragmented by the interleaved
+         * trace output, and these are the fields that matter most.
+         *   total/stalled -- driver-level requests seen vs. those refused because no
+         *     active driver matched
+         *   lst -- last stalled request: bRequestType, bRequest, wIndex high (endpoint)
+         *     and low (interface)
+         *   lval -- its wValue and wLength
+         */
+        printf("rockbox: usb-disp total=%lu stalled=%lu lst=%08lx lval=%08lx\r\n",
+                  ({ extern uint32_t usb_core_dbg_req_total;
+                     usb_core_dbg_req_total; }),
+                  ({ extern uint32_t usb_core_dbg_req_stalled;
+                     usb_core_dbg_req_stalled; }),
+                  ({ extern uint32_t usb_core_dbg_req_laststall;
+                     usb_core_dbg_req_laststall; }),
+                  ({ extern uint32_t usb_core_dbg_req_laststall_val;
+                     usb_core_dbg_req_laststall_val; }));
             if (an > 0)
                 usb_serial_send((unsigned char *)aud_line, an);
 #endif

@@ -921,6 +921,14 @@ static void usb_dw_abort_endpoint(int epnum, enum usb_dw_epdir epdir)
     }
 }
 
+/* Target-side cache maintenance for DMA-written receive buffers. Empty by default:
+ * architectures without a D-cache (or whose DMA bypasses it) need nothing. */
+__attribute__((weak)) void usb_dw_target_dma_discard(void *buf, unsigned int len)
+{
+    (void)buf;
+    (void)len;
+}
+
 static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
 {
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
@@ -991,6 +999,21 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
          * so do not discard the cache in this case. */
         if(!is_ep0out)
             DISCARD_DCACHE_RANGE(dw_ep->req_addr, dw_ep->req_size);
+#endif
+#if defined(CPU_XTENSA)
+        /* The esp32s3 D-cache covers internal SRAM, which is where every DMA buffer
+         * lives, and the core writes those bytes without going through it. Without
+         * this the consumer reads cache lines that predate the transfer -- for the
+         * isochronous OUT endpoint that is audible as noise on the DAC. dw_ep->addr is
+         * the destination of this packet (it is advanced for the next one only after
+         * this point), so the range is one packet, not the whole request buffer.
+         *
+         * A weak hook rather than DISCARD_DCACHE_RANGE: that macro is not defined for
+         * this arch, and its users also require NO_UNCACHED_ADDR, which esp32s3 has no
+         * equivalent of -- there is no uncached alias for DRAM0.
+         */
+        if (!is_ep0out && epdir == USB_DW_EPDIR_OUT)
+            usb_dw_target_dma_discard(dw_ep->addr, transferred);
 #endif
     }
 
