@@ -994,6 +994,33 @@ endpoint state at stream start: `DOEPCTL(2)` (EPENA, EPACT, MPSIZ), `DOEPTSIZ(2)
 to separate "the endpoint is not armed" from "the core received the packet and does not
 signal it".
 
+## CORRECTION: the suspend conclusion below was wrong, and the real fault is control routing
+
+Written after the register dump above, this section's conclusion was a misreading.
+On the ESP32-S3 the authoritative layout is `soc/usb_dwc_struct.h`: `DSTS` has **no
+DevActive field** at all. Bit 0 is `suspsts`, bits 2:1 are `enumspd`, bit 3 is
+`errticerr`, bits 17:4 are `soffn`, bits 19:18 are `devlnsts`. So the `active=0` read
+below was actually "not suspended", and the frame number was decoded from the wrong
+field. Later measurements with correct decoding show `suspsts=0` throughout: the device
+is not suspended, and `ESUSP` (bit 10) is EarlySuspend, not "device suspended".
+
+A resume handler written against the wrong assumption was tried and reverted: it called
+`resume()` roughly a hundred times a second and broke control transfers, so the host
+timed out reading the device descriptor. Nothing in the driver needs suspend handling
+for this fault.
+
+The actual fault, found by counting the class requests that arrive rather than by
+reading registers, is in `usb_audio.c`'s handling of the endpoint's sampling-frequency
+control: the interface number is `wIndex & 0xff` and the endpoint is `wIndex >> 8`, and
+the class had it backwards, while the interface handler accepted only the audio control
+interface and stalled the audio streaming interface. Linux reports that stall as
+"cannot get freq at ep 0x2" and never starts the isochronous stream, which is why
+`rxframe` stayed 0 and `XFERCNT` sat at 320 however correctly the endpoint was armed.
+Fixed in `27705fe6b2`; the counters on the status line show 22 endpoint-control
+requests reaching the handler and all 22 answered. The stream is still not flowing, so
+the remaining failure is upstream of that handler. The register dump below is still
+useful as the endpoint state, but read `DSTS` with the correct field layout.
+
 ## The DAC probe answered: the core is suspended and drops the isochronous packets
 
 The endpoint report (`usb-xtensa.c`, committed as `3f50201653`) settled the question that
