@@ -3316,6 +3316,15 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
 - A breadcrumb in an SRAM `.noinit` ring is useless for exactly the faults that reset the chip.
   Post-mortem markers need RTC slow (`0x50001000` here, 32-bit accesses only; byte stores
   silently do nothing).
+- On this board, a host process holding `/dev/ttyACM*` breaks `make usbflash` in a confusing
+  way: the trigger byte goes out over CDC, the board enters the mask ROM downloader, esptool
+  cannot open the port, and the board then sits in the loader with the pads on USB-Serial-JTAG.
+  From outside that is indistinguishable from "firmware is running but the attach failed". Stop
+  readers before flashing; `boot:0x3 (DOWNLOAD)` and `waiting for download` on the console
+  confirm it.
+- Rockbox's file browser filters by playable type, so files written over MSC (`.bin` and
+  friends) are not visible on the player even when the directory entry is correct. Verify MSC
+  writes host-side with a checksum.
 - **USB insertion detection on this board can only come from the PMU.** The SoC has
   no VBUS sense input — GPIO19/20 are D+/D- only — so `axp173_input_status()`
   (REG 0x00, `AXP_VBUS_PRESENT` = bit 5, the same bit the reference firmware calls

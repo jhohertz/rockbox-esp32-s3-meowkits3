@@ -918,3 +918,29 @@ traces appeared to stop at the last RTC marker): `usbEv`, `cSet`, `rExs`, `dMnt`
   cooldown hides the effect; the descriptor re-arm in `usb-designware.c` is the real bug.
 - `CDC+HID+Audio` profile, suspend/resume (the mask does not cover `USBSUSP`/`ESUSP`),
   writes through MSC, and the charging display.
+
+## MSC writes verified
+
+2 MiB of random data written to `/dev/sda1` through the MSC bridge, `sync`ed, SHA-256 verified
+on re-read, then left in place across a detach and re-enumeration. The hash was still identical
+after the card came back (`97ed34b1..e7600`), so the FAT entry and the data both survive the
+remount, and a host-side `umount` while the device is attached does not disturb the transport.
+
+Gotcha when testing this by eye: Rockbox's browser filters by playable file types, so a `.bin`
+test file is invisible in the browser even when the directory entry is correct. Verify writes
+host-side by checksum, not by looking for the file on the player.
+
+## There was no re-attach bug -- the flash tool invented one
+
+The earlier "board runs but never enumerates, pads stay on USJ, no crash, no panic record"
+state was not firmware. The console log shows `rst:0x15 (USB_UART_CHIP_RESET)`,
+`boot:0x3 (DOWNLOAD(USB/UART0))`, `waiting for download`: the board was parked in the mask ROM
+downloader because `make usbflash` had already sent the trigger byte over CDC and then esptool
+could not open the port -- a console watcher was holding it. From outside that looks exactly
+like a failed attach, and a power cycle "fixes" it.
+
+Rule for anyone driving this board from a host: **stop any reader on the ACM port before
+flashing.** A holder makes the handover leave the board in the loader with no way to notice.
+
+Current record, single boot: 7 detach sequences in the surviving ring, 5 host-visible
+detach/re-attach cycles, no watchdog reset, no panic.
