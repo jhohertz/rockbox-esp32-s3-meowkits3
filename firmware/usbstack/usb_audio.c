@@ -515,20 +515,41 @@ static void usb_audio_init(void)
     }
 }
 
+/* The isochronous receive buffer is a DMA destination. On some SoCs the DWC
+ * internal DMA cannot reach external RAM -- ESP-IDF gates that capability on
+ * ESP32-P4 alone (Kconfig USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM) -- and the core
+ * allocator's pool may live exactly there. A target that can offer an
+ * internal-SRAM buffer returns it from this hook; the default NULL keeps the
+ * core_alloc() path every other target uses. */
+__attribute__((weak)) unsigned char *usb_audio_target_rx_buffer(size_t size)
+{
+    (void)size;
+    return NULL;
+}
+
 int usb_audio_request_buf(void)
 {
     // stop playback first thing
     audio_stop();
 
     // attempt to allocate the receive buffers
-    rx_buffer_handle = core_alloc(REAL_BUF_SIZE);
-    if (rx_buffer_handle < 0)
+    rx_buffer = usb_audio_target_rx_buffer(REAL_BUF_SIZE);
+    if (rx_buffer)
     {
-        alloc_failed = true;
-        return -1;
+        /* Supplied by the target: nothing to pin and nothing to release. -1
+         * records that the handle is not a core_alloc() one. */
+        rx_buffer_handle = -1;
+        alloc_failed = false;
     }
     else
     {
+        rx_buffer_handle = core_alloc(REAL_BUF_SIZE);
+        if (rx_buffer_handle < 0)
+        {
+            alloc_failed = true;
+            return -1;
+        }
+
         alloc_failed = false;
 
         // "pin" the allocation so that the core does not move it in memory
@@ -542,7 +563,8 @@ int usb_audio_request_buf(void)
     if (dsp_buf_handle < 0)
     {
         alloc_failed = true;
-        rx_buffer_handle = core_free(rx_buffer_handle);
+        if (rx_buffer_handle >= 0)
+            rx_buffer_handle = core_free(rx_buffer_handle);
         rx_buffer = NULL;
         return -1;
     }
@@ -561,7 +583,8 @@ int usb_audio_request_buf(void)
 void usb_audio_free_buf(void)
 {
     // logf("usbaudio: free buffer");
-    rx_buffer_handle = core_free(rx_buffer_handle);
+    if (rx_buffer_handle >= 0)
+        rx_buffer_handle = core_free(rx_buffer_handle);
     rx_buffer = NULL;
 
     dsp_buf_handle = core_free(dsp_buf_handle);
