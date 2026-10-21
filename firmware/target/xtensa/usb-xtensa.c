@@ -245,23 +245,36 @@ static void usb_dwc_isr(void *arg)
     if (++xt_audio_trace >= 256)
     {
         xt_audio_trace = 0;
+#ifdef HAVE_RECORDING
+        /* Written first on purpose: the trail push is a bounded buffer and the last
+         * entries get clipped, which is how audD arrived twice as "audD a=". This is the
+         * entry that matters now -- audC a = the sample rate the mixer is set to, b = the
+         * rate the I2S bus was last programmed to. Steady arrival (audF climbing, one
+         * packet per millisecond) together with steady mixer underflow (audU climbing)
+         * is what a mismatch between these two looks like.
+         */
+        extern unsigned int mixer_get_frequency(void);
+        extern unsigned long i2s_tx_sample_rate(void);
+        xtensa_breadcrumb_rtc("audC", (unsigned long)mixer_get_frequency(),
+                              i2s_tx_sample_rate());
+        /* audQ a = buffers queued for the mixer right now, b = the feedback value in
+         * 16.16 fixed point (divide by 65536 for samples per frame). A queue below six
+         * buffers is below the mixer's 256-frame appetite, which is what gets padded with
+         * silence; a feedback value pinned at nominal means nothing is correcting it.
+         */
+        xtensa_breadcrumb_rtc("audQ", (unsigned long)usb_audio_get_prebuffering(),
+                              (unsigned long)usb_audio_get_samplesperframe());
+#endif
         xtensa_breadcrumb_rtc("audR", xt_irq_oep,
                               (unsigned long)usb_audio_get_samples_rx_perframe());
         xtensa_breadcrumb_rtc("audA", (unsigned long)usb_audio_get_active(),
                               (unsigned long)usb_audio_get_playing());
-        /* Starvation and sizing, in the ring that survives the reset. Reading them live
-         * needs a console write, and a console write is what wedges the device.
-         *   audU a = mixer underflows, b = usb rx overflows
-         *   audD a = last received packet length, b = last length handed to the mixer
-         * A high audU with audD's two values far apart means the mixer is being fed
-         * short, irregular chunks -- audible as pulsing.
-         */
-        extern uint32_t usb_audio_dbg_underflows, usb_audio_dbg_rx_overflows;
-        extern uint32_t usb_audio_dbg_last_len, usb_audio_dbg_last_dsp;
-        xtensa_breadcrumb_rtc("audU", usb_audio_dbg_underflows,
-                              usb_audio_dbg_rx_overflows);
-        xtensa_breadcrumb_rtc("audD", usb_audio_dbg_last_len,
-                              usb_audio_dbg_last_dsp);
+        /* Starvation is visible as queue depth (audQ above); the OUT-event storm and the
+         * per-frame sample count go here. */
+        xtensa_breadcrumb_rtc("audR", xt_irq_oep,
+                              (unsigned long)usb_audio_get_samples_rx_perframe());
+        xtensa_breadcrumb_rtc("audA", (unsigned long)usb_audio_get_active(),
+                              (unsigned long)usb_audio_get_playing());
     }
 #endif
 
@@ -731,6 +744,14 @@ static void xt_send_rtc_trail(void)
     extern int xtensa_paniclog_head(char *buf, int bufsize);
     extern int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count);
 
+    /* Two senders writing the CDC ring buffer in the same tick interleave mid-line --
+     * that is how audD arrived as "audD a=" followed by the next report's head, which is
+     * the field that answers the question. Serialising the whole sequence costs no DRAM;
+     * an aggregation buffer did not fit (dram0 has ~2.4 KiB free). Every send here is a
+     * short queue onto the endpoint, so the mask window is bounded.
+     */
+    int oldlevel = disable_irq_save();
+
     {
         char head[128];
         int n = xtensa_paniclog_head(head, sizeof head);
@@ -747,6 +768,8 @@ static void xt_send_rtc_trail(void)
         usb_serial_send((unsigned char *)trail, n);
     }
     usb_serial_send((unsigned char *)"rtc end\r\n", 8);
+
+    restore_irq(oldlevel);
 }
 
 /* Everything, including the internal-SRAM ring that a watchdog reset clears. Asked for
@@ -787,10 +810,18 @@ void usb_serial_target_rx(const unsigned char *data, int length)
     {
         if (data[i] == 'f')
         {
-            /* Always honoured: this is the self-flash path and must not be swallowed by
-             * the debounce below. */
-            xt_flash_request = true;
-            xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
+            /* Honour it, but only once per cooldown window. The CDC OUT endpoint
+             * re-arms and re-delivers the bytes it already received, so a stale 'f'
+             * from a much earlier session can arrive again on its own -- measured: the
+             * chip reset into download mode during a DAC session in which nothing was
+             * ever typed (rst:0xc RTC_SW_CPU_RST, boot:0x3 DOWNLOAD). A pending request
+             * or an active hold means this delivery is a replay, not a keypress.
+             */
+            if (!xt_flash_request && xt_flash_hold == 0)
+            {
+                xt_flash_request = true;
+                xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
+            }
         }
         else if (data[i] == 't')
         {
@@ -910,6 +941,84 @@ void usb_dw_target_dma_discard(void *buf, unsigned int len)
 {
     discard_dcache_range(buf, len);
 }
+
+/* The esp32s3 core packs DSTS as suspsts at bit 0, enumspd at bits 2:1 and SOFFN at bits
+ * 17:4 (soc/usb_dwc_struct.h). The driver's generic shift of 8 therefore reads a frame
+ * number that advances once every sixteen real frames, which is what made the audio
+ * feedback cadence miss entirely. */
+int usb_dw_target_frame_number(uint32_t dsts)
+{
+    return (int)((dsts >> 4) & 0x3fff);
+}
+
+#ifdef USB_ENABLE_AUDIO
+/* These mirror usb_audio.c's own constants: FEEDBACK_UPDATE_RATE_FRAMES is 1 << (10 - 5)
+ * and a full-speed frame counter wraps at 1024. */
+#define XT_FB_PERIOD      32
+#define XT_FB_FRAME_MAX   1023
+#define XT_FB_FIXED(v)    ((int32_t)(v) << 16)
+
+/* The mixer consumes MIX_FRAME_SAMPLES (256) frames per pass; a full-speed packet carries
+ * 48. Handing over one slot at a time meant the mixer was fed a fifth of what it wanted on
+ * every pull, and pcm_mixer.c pads the remainder with silence -- measured as 390 underflows
+ * against 11088 packets totalling exactly 11.1 s of audio. The slots are one contiguous
+ * allocation, so a run of them is a single buffer. */
+/* Disabled after measurement: aggregating a run of slots assumes the queued audio is
+ * contiguous, and it is not. Each slot is REAL_DSP_BUF_SIZE (DSP_BUF_SIZE aligned to 32)
+ * = 1280 bytes, while a full-speed packet writes only about 192 of it. Returning a run as
+ * one buffer hands the mixer 192 bytes of audio followed by roughly 1088 bytes of whatever
+ * occupies the rest of the slot -- stale audio or uninitialized memory -- which is audible
+ * as noise rather than pulsed audio, and confirmed by the board's behaviour: after the host
+ * stopped, the ring kept playing out that noise for seconds. Correct audio came back only
+ * when the hand-off went back to one slot at a time.
+ *
+ * The mixer's appetite is still a real problem -- MIX_FRAME_SAMPLES is 256 frames and a
+ * packet carries 48 -- but solving it needs the ring packed tightly (writing each packet at
+ * a running offset rather than at a slot index) or a copy into a compact buffer, not a wider
+ * stride. Left as a hook so the packed-ring change can land without touching core again.
+ */
+int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
+                              const int *slot_sizes, const int16_t *buf, size_t slot_stride,
+                              const void **start, size_t *size)
+{
+    (void)play_idx; (void)filled; (void)nr_buffers; (void)slot_sizes;
+    (void)buf; (void)slot_stride; (void)start; (void)size;
+    return 0;
+}
+
+/* A completion lands on whichever frame the host's burst happened to fill, so the generic
+ * "frame + 1 is a multiple of 32" test is rarely true; measured 1663 opportunities with
+ * zero feedback values queued. Take the boundary itself instead. */
+bool usb_audio_target_fb_due(int frame, bool send_fb)
+{
+    return send_fb && (frame % XT_FB_PERIOD) == 0;
+}
+
+/* The generic latch waits for one exact frame number, which a burst-paced completion
+ * stream can miss entirely. Any elapsed 64 frames will do. */
+bool usb_audio_target_fb_latch(int frame, int startframe)
+{
+    return ((frame - startframe) & XT_FB_FRAME_MAX) >= XT_FB_PERIOD * 2;
+}
+
+/* The generic term averages an accumulator that is only fed by completions from endpoints
+ * other than the isochronous OUT one -- which do not occur while a DAC stream runs -- so it
+ * stayed 0 and the feedback was a constant nominal value. Queue depth is the thing that
+ * needs controlling, and it is available directly. */
+int32_t usb_audio_target_fb_buffers_filled(int queued_buffers, int minimum_buffers)
+{
+    return XT_FB_FIXED(queued_buffers - minimum_buffers);
+}
+
+/* +/- 1 sample per frame is a 2% correction band. The queue measured 13, 8, 1 and 4 buffers
+ * while the feedback sat at exactly nominal, so the shortfall is larger than that band can
+ * cover; 8 samples per frame (about 16%) is enough to hold the queue up.
+ */
+int usb_audio_target_fb_limit_samples(void)
+{
+    return 8;
+}
+#endif /* USB_ENABLE_AUDIO */
 
 static void usb_vbus_poll(void)
 {
@@ -1082,23 +1191,6 @@ static void usb_vbus_poll(void)
                                             (usb_audio_dbg_ep_badval << 16) |
                                             (usb_audio_dbg_ep_badlen << 8) |
                                             usb_audio_dbg_ep_ok); }));
-        /* Its own short line: the long status line gets fragmented by the interleaved
-         * trace output, and these are the fields that matter most.
-         *   total/stalled -- driver-level requests seen vs. those refused because no
-         *     active driver matched
-         *   lst -- last stalled request: bRequestType, bRequest, wIndex high (endpoint)
-         *     and low (interface)
-         *   lval -- its wValue and wLength
-         */
-        printf("rockbox: usb-disp total=%lu stalled=%lu lst=%08lx lval=%08lx\r\n",
-                  ({ extern uint32_t usb_core_dbg_req_total;
-                     usb_core_dbg_req_total; }),
-                  ({ extern uint32_t usb_core_dbg_req_stalled;
-                     usb_core_dbg_req_stalled; }),
-                  ({ extern uint32_t usb_core_dbg_req_laststall;
-                     usb_core_dbg_req_laststall; }),
-                  ({ extern uint32_t usb_core_dbg_req_laststall_val;
-                     usb_core_dbg_req_laststall_val; }));
             if (an > 0)
                 usb_serial_send((unsigned char *)aud_line, an);
 #endif

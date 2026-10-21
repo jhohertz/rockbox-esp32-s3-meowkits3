@@ -569,6 +569,53 @@ __attribute__((weak)) unsigned char *usb_audio_target_rx_buffer(size_t size)
     return NULL;
 }
 
+/* Target overrides for the two places where the isochronous transport's policy is
+ * hardware-dependent. Each defaults to the behaviour every other target has always had,
+ * so a target that says nothing gets the generic path. They exist because on esp32s3 a
+ * full-speed packet is 48 frames while the mixer consumes 256 per pass, and the queue the
+ * host is paced against cannot be held up by the generic feedback rules -- both were
+ * measured on the board rather than reasoned about. */
+
+/* Hand over a run of queued slots instead of one. Returns the number of slots taken, or 0
+ * to use the generic single-buffer hand-off. The slots are one contiguous allocation, so
+ * a run can be returned as a single buffer. */
+__attribute__((weak)) int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
+                                                   const int *slot_sizes,
+                                                   const int16_t *buf, size_t slot_stride,
+                                                   const void **start, size_t *size)
+{
+    (void)play_idx; (void)filled; (void)nr_buffers; (void)slot_sizes; (void)buf;
+    (void)slot_stride; (void)start; (void)size;
+    return 0;
+}
+
+/* Is a feedback value due on this frame? */
+__attribute__((weak)) bool usb_audio_target_fb_due(int frame, bool send_fb)
+{
+    return (frame + 1) % FEEDBACK_UPDATE_RATE_FRAMES == 0 && send_fb;
+}
+
+/* Should feedback start being sent yet? The generic answer waits for one exact frame. */
+__attribute__((weak)) bool usb_audio_target_fb_latch(int frame, int startframe)
+{
+    return frame == (startframe + FEEDBACK_UPDATE_RATE_FRAMES * 2) % (USB_FRAME_MAX + 1);
+}
+
+/* How full the queue is, in fixed point, for the feedback term. Negative means "use the
+ * generic accumulator", which is only fed by completions from other endpoints. */
+__attribute__((weak)) int32_t usb_audio_target_fb_buffers_filled(int queued_buffers,
+                                                                 int minimum_buffers)
+{
+    (void)queued_buffers; (void)minimum_buffers;
+    return -1;
+}
+
+/* How far the feedback value may deviate from nominal, in samples per frame. */
+__attribute__((weak)) int usb_audio_target_fb_limit_samples(void)
+{
+    return 1;
+}
+
 int usb_audio_request_buf(void)
 {
     // stop playback first thing
@@ -728,23 +775,12 @@ static int usb_audio_get_config_descriptor(unsigned char *dest, int max_packet_s
     return dest - orig_dest;
 }
 
-/* TEMPORARY: starvation and sizing counters, recorded into the RTC-slow ring by the
- * target's periodic trace. "Rapid pulses of the same block" is either the mixer running
- * out of buffers (underflow) or the receive path running out of slots (rx overflow); the
- * last received and produced lengths say whether the sizes are even sane.
- */
-uint32_t usb_audio_dbg_underflows;
-uint32_t usb_audio_dbg_rx_overflows;
-uint32_t usb_audio_dbg_last_len;
-uint32_t usb_audio_dbg_last_dsp;
-
 static void playback_audio_get_more(const void **start, size_t *size)
 {
     /* if there are no more filled buffers, playback has just underflowed */
     if(rx_play_idx == rx_usb_idx)
     {
         logf("usbaudio: playback underflow");
-        usb_audio_dbg_underflows++;
         playback_audio_underflow = true;
         *start = NULL;
         *size = 0;
@@ -753,9 +789,20 @@ static void playback_audio_get_more(const void **start, size_t *size)
 
     /* give buffer and advance */
     logf("usbaudio: buf adv");
-    *start = dsp_buf + (rx_play_idx * REAL_DSP_BUF_SIZE/sizeof(*dsp_buf));
-    *size = dsp_buf_size[rx_play_idx];
-    rx_play_idx = (rx_play_idx + 1) % NR_BUFFERS;
+    int used = usb_audio_target_get_more(rx_play_idx,
+                                        (rx_usb_idx - rx_play_idx + NR_BUFFERS) % NR_BUFFERS,
+                                        NR_BUFFERS, dsp_buf_size, dsp_buf,
+                                        REAL_DSP_BUF_SIZE, start, size);
+    if (used > 0)
+    {
+        rx_play_idx = (rx_play_idx + used) % NR_BUFFERS;
+    }
+    else
+    {
+        *start = dsp_buf + (rx_play_idx * REAL_DSP_BUF_SIZE/sizeof(*dsp_buf));
+        *size = dsp_buf_size[rx_play_idx];
+        rx_play_idx = (rx_play_idx + 1) % NR_BUFFERS;
+    }
 
     /* if usb RX buffers had overflowed, we can start to receive again
      * guard against IRQ to avoid race with completion usb completion (although
@@ -1462,7 +1509,6 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
         /* store length, queue buffer */
         rx_buf_size[rx_usb_idx] = length;
-        usb_audio_dbg_last_len = length;
 
         // debug screen counter
         samples_received = samples_received + length;
@@ -1480,7 +1526,6 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
         dsp_process(dsp, &src, &dst, false);
         dsp_buf_size[rx_usb_idx] = dst.remcount * 2 * sizeof(*dsp_buf); // need value in bytes
-        usb_audio_dbg_last_dsp = dsp_buf_size[rx_usb_idx];
 
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
@@ -1497,7 +1542,6 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         else
         {
             logf("usbaudio: rx overflow");
-            usb_audio_dbg_rx_overflows++;
             usb_rx_overflow = true;
         }
         /* if audio underflowed and prebuffering is done, restart audio */
@@ -1541,7 +1585,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
     // send feedback value every N frames!
     // NOTE: important that we need to queue this up _the frame before_ it's needed - on MacOS especially!
-    if ((usb_drv_get_frame_number()+1) % FEEDBACK_UPDATE_RATE_FRAMES == 0 && send_fb)
+    if (usb_audio_target_fb_due(usb_drv_get_frame_number(), send_fb))
     {
         if (!sent_fb_this_frame)
         {
@@ -1553,15 +1597,25 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
              */
             int32_t samples_base = TO_16DOT16_FIXEDPT(hw_freq_sampr[as_playback_freq_idx]/10)/100;
             int32_t buffers_filled = 0;
+            int32_t target_filled = usb_audio_target_fb_buffers_filled(
+                                        usb_audio_get_prebuffering(), MINIMUM_BUFFERS_QUEUED);
 
-            if (buffers_filled_avgcount != 0)
+            if (target_filled >= 0)
+            {
+                /* The target measured the queue directly. */
+                buffers_filled = target_filled;
+            }
+            else if (buffers_filled_avgcount != 0)
             {
                 buffers_filled = TO_16DOT16_FIXEDPT((int32_t)buffers_filled_accumulator) / buffers_filled_avgcount;
             }
-            buffers_filled_accumulator = buffers_filled_accumulator - buffers_filled_accumulator_old;
-            buffers_filled_avgcount = buffers_filled_avgcount - buffers_filled_avgcount_old;
-            buffers_filled_accumulator_old = buffers_filled_accumulator;
-            buffers_filled_avgcount_old = buffers_filled_avgcount;
+            if (target_filled < 0)
+            {
+                buffers_filled_accumulator = buffers_filled_accumulator - buffers_filled_accumulator_old;
+                buffers_filled_avgcount = buffers_filled_avgcount - buffers_filled_avgcount_old;
+                buffers_filled_accumulator_old = buffers_filled_accumulator;
+                buffers_filled_avgcount_old = buffers_filled_avgcount;
+            }
 
             // someone who has implemented actual PID before might be able to do this correctly,
             // but this seems to work good enough?
@@ -1569,9 +1623,10 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             samples_fb = samples_base - (buffers_filled/4) + ((buffers_filled_old - buffers_filled)/40);
             buffers_filled_old = buffers_filled;
 
-            // must limit to +/- 1 sample from nominal
-            samples_fb = samples_fb > (samples_base + TO_16DOT16_FIXEDPT(1)) ? samples_base + TO_16DOT16_FIXEDPT(1) : samples_fb;
-            samples_fb = samples_fb < (samples_base - TO_16DOT16_FIXEDPT(1)) ? samples_base - TO_16DOT16_FIXEDPT(1) : samples_fb;
+            // must limit to +/- 1 sample from nominal (a target may widen the band)
+            int fb_limit = usb_audio_target_fb_limit_samples();
+            samples_fb = samples_fb > (samples_base + TO_16DOT16_FIXEDPT(fb_limit)) ? samples_base + TO_16DOT16_FIXEDPT(fb_limit) : samples_fb;
+            samples_fb = samples_fb < (samples_base - TO_16DOT16_FIXEDPT(fb_limit)) ? samples_base - TO_16DOT16_FIXEDPT(fb_limit) : samples_fb;
 
             encodeFBfixedpt(sendFf, samples_fb, usb_drv_port_speed());
             logf("usbaudio: frame %d fbval 0x%02X%02X%02X%02X", usb_drv_get_frame_number(), sendFf[3], sendFf[2], sendFf[1], sendFf[0]);
@@ -1599,7 +1654,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         if (!send_fb)
         {
             // arbitrary wait during startup
-            if (usb_drv_get_frame_number() == (fb_startframe + (FEEDBACK_UPDATE_RATE_FRAMES*2))%(USB_FRAME_MAX+1))
+            if (usb_audio_target_fb_latch(usb_drv_get_frame_number(), fb_startframe))
             {
                 send_fb = true;
             }

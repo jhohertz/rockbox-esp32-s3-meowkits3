@@ -865,6 +865,15 @@ unsigned long i2s_rx_sample_rate(void)
     return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
+/* The rate the transmitter was last programmed to. rx_rate is written by
+ * i2s_set_frequency(), which programs both ports from one call, so this is the
+ * playback bus rate as much as the recording one -- what matters when comparing
+ * against the mixer's idea of the sample rate. */
+unsigned long i2s_tx_sample_rate(void)
+{
+    return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+}
+
 /* Hand the three shared clock pads to whichever port is master right now.
  * esp_rom_gpio_connect_out_signal() just rewrites the pad's OUT_SEL, so this is
  * cheap and can be done on every mode switch. See the note in i2s_set_frequency()
