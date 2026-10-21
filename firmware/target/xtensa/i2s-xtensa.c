@@ -1293,13 +1293,20 @@ static void sink_unlock(void)
            region by construction. If "SINK: first play" prints and this never
            does, the play lock is never released: GDMA_INT_DONE stays masked for
            the rest of the session and the codec blocks waiting for pcmbuf to
-           drain while the mixer blocks waiting for the codec. */
+           drain while the mixer blocks waiting for the codec.
+
+           Gated for the same reason as the first-play dump: usb_audio.c reaches
+           this pcm_play_unlock() with interrupts disabled, and the printf would
+           stop the core instead of reporting. The register write below is the
+           functional part and stays unconditional. */
+#ifdef SINK_FIRST_PLAY_PROBE
         static bool unlocked_once = false;
         if (!unlocked_once)
         {
             unlocked_once = true;
             printf("SINK: play lock released (first unlock to zero)\n");
         }
+#endif
         wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
     }
 }
@@ -1319,11 +1326,17 @@ static void sink_play(const void *addr, size_t size)
     xt_sink_last_size = size;
 
 
-    /* TEMPORARY: the first frame of a playback. The chain dump is taken after
-       start_tx() below, not here: the pcm core holds the play lock across the
-       whole start sequence, so at this point GDMA_INT_DONE is legitimately
-       masked and the transmitter legitimately not started. An early dump cannot
-       tell a muted consumer from a normal snapshot. */
+    /* The first-frame dump used to be unconditional here. It is now gated for a
+       concrete reason: usb_audio.c calls mixer_channel_play_data() inside
+       disable_irq_save() (usb_audio.c:1380-1396), and a USB-DAC session is exactly
+       a first frame. printf() takes the newlib stdout lock and needs the console to
+       drain; with interrupts off on this core it never can. Every Rockbox thread is
+       pinned to the same core (thread-idf.c), so the whole player stops -- no tick
+       task, no buttons, no backlight, no USB -- and the task watchdog never fires
+       because it is itself an interrupt. That is the USB-DAC lock-up.
+       Define SINK_FIRST_PLAY_PROBE to bring the dump back for ordinary playback,
+       where interrupts are enabled and it is merely verbose. */
+#ifdef SINK_FIRST_PLAY_PROBE
     if (xt_sink_play_n == 1)
     {
         printf("SINK: first play addr=%p size=%lu\n", addr,
@@ -1335,6 +1348,7 @@ static void sink_play(const void *addr, size_t size)
            already failed. */
         xt_arena_dump("at playback start");
     }
+#endif
 
     /* The sample-width probe lives in fill(), not here. sink_play() is
      * ops.play(), which the pcm core calls once per playback to arm the initial

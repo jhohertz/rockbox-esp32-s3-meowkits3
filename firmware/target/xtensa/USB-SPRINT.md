@@ -944,3 +944,52 @@ flashing.** A holder makes the handover leave the board in the loader with no wa
 
 Current record, single boot: 7 detach sequences in the surviving ring, 5 host-visible
 detach/re-attach cycles, no watchdog reset, no panic.
+
+## USB DAC profile: it enumerates, it starts, no data arrives
+
+With `usb mode: charge` and `usb-dac: while charge_only` (both now persisted in
+`.rockbox/config.cfg`, so no button trick is needed) the board enumerates as
+**CDC + HID + Audio**: card 2 with an ISO OUT and an ISO feedback IN, no storage. PipeWire
+lists it as the default sink and the substream opens.
+
+What the counters say, in one line the target now sends every 10 s
+(`usb-audio active/playing/allocfail/rxframe/prebuf/rxbuf`):
+
+    rockbox: usb-audio active=1 playing=1 allocfail=0 rxframe=0 prebuf=0 rxbuf=0x3fcd35c0
+
+`active=1 playing=1` means the control path works: `SET_INTERFACE(alt=1)` arrives,
+`usb_audio_start_playback()` runs, the mixer channel is started. `rxframe=0` and
+`prebuf=0` mean **no isochronous frame ever completes**. `dain=0003,0003` agrees: the OUT
+side only ever shows EP0 and EP1 (EP1 is the CDC OUT); EP2, the audio OUT endpoint, never
+fires. The user hears the faintest fragment and then silence, which is the mixer's first
+frame going out through the sink and nothing after it.
+
+Three things were fixed on the way, all worth keeping:
+
+1. **The ISO receive buffer was in memory the DMA cannot reach.** `usb_audio_request_buf()`
+   used `core_alloc()`, whose pool here is the PSRAM audiobuffer. ESP-IDF states the limit
+   outright: `USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` `depends on IDF_TARGET_ESP32P4`. The
+   buffer now comes from a weak `usb_audio_target_rx_buffer()` that this target answers with
+   the mass-storage transfer buffer -- already internal SRAM, already DMA-reachable, and idle
+   because the MSC and Audio profiles are mutually exclusive. No new internal SRAM: `rxbuf`
+   reads `0x3fcd35c0`, inside the DRAM data view.
+2. **The first sink frame printed to the console.** `sink_play()` had an unconditional
+   `printf` plus `xt_arena_dump()` on frame 1, and `usb_audio` calls into the mixer. Both are
+   now behind `SINK_FIRST_PLAY_PROBE`, alongside the probes that were already gated. This was
+   a real hazard -- printf takes the newlib lock -- but it was not the fault.
+3. **Isochronous endpoints were sized beyond their FIFOs.** The class passes `mps = -1`, so
+   `usb_drv_ep_init()` gave both ISO endpoints the full-speed maximum of 1023 bytes: a 4-byte
+   feedback endpoint attached to a 16-word (64-byte) dedicated TX FIFO, and an OUT endpoint
+   needing 256 words when the whole core measures 200. `USB_AUDIO_BUFFER_SIZE` now drives the
+   descriptor, the endpoint allocation and the receive buffer from one number; at 320 bytes the
+   declared sizes are `ep 0x02 ISO mps=320` and `ep 0x84 ISO mps=4`. Targets that do not
+   override it keep the old behaviour. 96 kHz at full speed is out of reach on this core.
+
+Still open, and two temporary defines remain in the tree to find it: `rxframe` never leaves
+zero. The board also locks hard -- UI, buttons, backlight and CDC all stop, with no watchdog
+reset. `USB_AUDIO_NO_IRQ_MASK` changed that from immediate to roughly twenty seconds, which
+says the masked region is a hazard but not the reason frames fail. The next probe is the
+endpoint state at stream start: `DOEPCTL(2)` (EPENA, EPACT, MPSIZ), `DOEPTSIZ(2)`
+(PKTCNT/XCNT/XFERSZ), `DOEPDMA(2)` against the buffer address, and `DOEPINT(2)` after a frame,
+to separate "the endpoint is not armed" from "the core received the packet and does not
+signal it".
