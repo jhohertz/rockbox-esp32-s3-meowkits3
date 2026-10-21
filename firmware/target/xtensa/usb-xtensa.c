@@ -919,19 +919,43 @@ static void usb_vbus_poll(void)
              * arriving" is a different question from "are endpoint interrupts
              * firing": rx_perframe is what the core reported over the last two
              * feedback cycles, and the rx buffer address says whether we are still
-             * pointing at the PSRAM window the DMA master cannot reach. */
+             * pointing at the PSRAM window the DMA master cannot reach.
+             *
+             * The ep fields are that endpoint's own hardware state, because rxframe=0
+             * cannot say why. ctl is DOEPCTL: bit 31 EPENA, bits 18-20 EPTYP (1 = isoch),
+             * bit 15 USBAEP, bits 0-9 the packet size. sz is DOEPTSIZ as programmed
+             * (PKTCNT above bit 19, XFERSIZE below it) and xfer is that XFERSIZE field
+             * read live: it counts down as the core consumes packets, so if it moves
+             * while the host streams, packets are reaching the endpoint and the fault is
+             * in the completion path; if it never moves, nothing arrives and the fault is
+             * upstream -- the alternate setting, the endpoint address, or the FIFO. int is
+             * DOEPINT (bit 0 XFERC) and daint is the core's active-endpoint register,
+             * which has never shown bit 2. dma is the address the core writes to.
+             */
 #ifdef USB_ENABLE_AUDIO
-            static char aud_line[160];
+            static char aud_line[220];
+            /* The isochronous OUT endpoint, index 2 in this profile's descriptors. */
+            const int aep = 2;
+            uint32_t asz = DWC_DOEPTSIZ(aep);
             int an = snprintf(aud_line, sizeof(aud_line),
                               "rockbox: usb-audio active=%d playing=%d allocfail=%d "
-                              "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu\r\n",
+                              "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu "
+                              "ep=%d ctl=%08x sz=%08x xfer=%d int=%08x daint=%08x "
+                              "dma=%p\r\n",
                               (int)usb_audio_get_active(),
                               (int)usb_audio_get_playing(),
                               (int)usb_audio_get_alloc_failed(),
                               (long)usb_audio_get_samples_rx_perframe(),
                               usb_audio_get_prebuffering(),
                               xt_audio_rx_addr,
-                              (unsigned long)xt_irq_oep);
+                              (unsigned long)xt_irq_oep,
+                              aep,
+                              (unsigned)DWC_DOEPCTL(aep),
+                              (unsigned)asz,
+                              (int)(asz & 0x7ffff),
+                              (unsigned)DWC_DOEPINT(aep),
+                              (unsigned)DWC_DAINT,
+                              (void *)DWC_DOEPDMA(aep));
             if (an > 0)
                 usb_serial_send((unsigned char *)aud_line, an);
 #endif
