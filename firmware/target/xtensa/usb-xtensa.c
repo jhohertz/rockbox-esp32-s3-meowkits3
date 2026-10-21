@@ -1032,6 +1032,16 @@ void __wrap_usb_enable(bool on)
 #ifdef USB_ALLOW_ATTACH
     xtensa_breadcrumb("usbEn", on ? 1 : 0, current_tick);
 
+    /* Sample the register state BEFORE the teardown. usb_core_exit() ends with
+     * usb_dw_target_disable_clocks(), which clears the USB-wrap gate, and reading
+     * XT_USB_OTG_CONF afterwards stalls the bus. That read is what has been hanging the
+     * detach ever since this breadcrumb existed: the surviving trail stops at dRet and
+     * uOut/uClk/wRet never appear because the read that would record them never returns.
+     * The same trap is why the pad release now runs before the gate is dropped.
+     */
+    uint32_t pre_gsnpsid = DWC_GSNPSID;
+    uint32_t pre_otgconf = rd(XT_USB_OTG_CONF);
+
     if (!on && xt_attach_tick != 0)
     {
         /* When a teardown happens relative to the attach, in ticks. The kernel shows
@@ -1061,15 +1071,14 @@ void __wrap_usb_enable(bool on)
      * window, so one power cycle tells us what the previous boot did -- including
      * whether this function was called with false, which is the other explanation
      * for a report that reads all zeroes. */
-    xtensa_breadcrumb(on ? "usbIn" : "usbOut",
-                      DWC_GSNPSID, rd(XT_USB_OTG_CONF));
+    xtensa_breadcrumb(on ? "usbIn" : "usbOut", pre_gsnpsid, pre_otgconf);
     xtensa_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
     /* The same two steps in the ring that survives a reset. They are the only markers
      * between usb_core_exit()'s dRet and whatever runs next, and while they lived only in
      * the .noinit ring a watchdog reset erased them -- which is why every detach trace so
      * far appeared to stop exactly at dRet with no explanation. These are register reads on
      * SoC blocks plus GSNPSID, taken while the OTG block is still clocked. */
-    xtensa_breadcrumb_rtc(on ? "uIn" : "uOut", DWC_GSNPSID, rd(XT_USB_OTG_CONF));
+    xtensa_breadcrumb_rtc(on ? "uIn" : "uOut", pre_gsnpsid, pre_otgconf);
     xtensa_breadcrumb_rtc("uClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
 
     /* The register state after the attach, recorded rather than panicked. The
