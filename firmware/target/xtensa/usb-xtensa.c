@@ -29,6 +29,7 @@
 #ifdef USB_ENABLE_SERIAL
 #include <stdio.h>          /* snprintf */
 #include "usbstack/usb_serial.h"
+#include "usb.h"               /* usb_drv_stall(), to recover the control endpoint */
 #endif
 #ifdef USB_ENABLE_AUDIO
 #include "usbstack/usb_audio.h"   /* state getters, for the trace line */
@@ -190,6 +191,10 @@ static bool xt_armed;
 #ifdef USB_ENABLE_AUDIO
 /* Sampling rate for the interrupt-side audio breadcrumb, in endpoint events. */
 static volatile uint32_t xt_audio_trace;
+/* The buffer the isochronous OUT endpoint DMAs into, and the address the trace reports.
+ * Declared here because the interrupt's trace reads it; it is assigned by
+ * usb_audio_target_rx_buffer() further down. */
+static void *xt_audio_rx_addr;
 #endif
 
 static void usb_dwc_isr(void *arg)
@@ -275,6 +280,37 @@ static void usb_dwc_isr(void *arg)
                               (unsigned long)usb_audio_get_samples_rx_perframe());
         xtensa_breadcrumb_rtc("audA", (unsigned long)usb_audio_get_active(),
                               (unsigned long)usb_audio_get_playing());
+        /* Content check: the first two 32-bit words of the isochronous receive buffer,
+         * which is the bytes the core DMA'd. Each word is one stereo frame (L and R, 16-bit
+         * little-endian). A tone's samples wander smoothly through small values, so if these
+         * are plausible and changing the transport and the cache are fine and the corruption
+         * is downstream in the dsp/mixer hand-off; if they are pinned, all-zero, or look like
+         * unrelated memory, the DMA destination or the cache invalidation is the fault.
+         */
+        if (xt_audio_rx_addr)
+        {
+            const uint32_t *w = (const uint32_t *)xt_audio_rx_addr;
+            xtensa_breadcrumb_rtc("audD", (unsigned long)w[0], (unsigned long)w[1]);
+        }
+        /* Device-in state. Every remaining symptom is a device-in transfer: the CDC IN
+         * endpoint stops replying, EP0's status/data-in phase fails (Linux then reports
+         * "cannot get freq at ep 0x2"), and the isochronous feedback endpoint never reaches
+         * the host. Only isochronous OUT still works, which is why audio arrives at all.
+         *   audE a = EP0 IN DIEPCTL, b = EP0 IN DIEPINT
+         *   audF a = CDC IN (EP3) DIEPCTL with live XFERCNT in the low 10 bits,
+         *          b = CDC IN DIEPINT
+         * EPENA is bit 31, XFERCNT bits 9:0, CNAK bit 27, NAKSTS bit 28, STALL bit 15.
+         * DIEPINT bit 0 is XFERC -- set means the core finished a transfer.
+         */
+        xtensa_breadcrumb_rtc("audE", (unsigned long)DWC_DIEPCTL(0),
+                              (unsigned long)DWC_DIEPINT(0));
+        xtensa_breadcrumb_rtc("audF", (unsigned long)DWC_DIEPCTL(3),
+                              (unsigned long)DWC_DIEPINT(3));
+        /* CDC IN lives on endpoint 1 on this composite: the epEv events showed its arms
+         * succeeding, so its steady state matters as much as the two stalled ones.
+         */
+        xtensa_breadcrumb_rtc("audG", (unsigned long)DWC_DIEPCTL(1),
+                              (unsigned long)DWC_DIEPINT(1));
     }
 #endif
 
@@ -915,7 +951,7 @@ _Static_assert(XT_STORAGE_XFER_SIZE >= 1024,
 
 extern void *usb_storage_transfer_buffer_get(void);
 
-static void *xt_audio_rx_addr;   /* reported on the trace line */
+/* xt_audio_rx_addr is declared above, next to the trace that reports it. */
 
 unsigned char *usb_audio_target_rx_buffer(size_t size)
 {
@@ -940,6 +976,23 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
 void usb_dw_target_dma_discard(void *buf, unsigned int len)
 {
     discard_dcache_range(buf, len);
+
+    /* Sample what actually landed. The trace that runs later reads the same buffer after
+     * usb_audio has already copied it into the dsp ring and after further packets have
+     * overwritten it, so it cannot answer whether the arriving bytes are the host's
+     * samples. This is the one place that sees the packet as the core delivered it. Every
+     * 512th call to keep the ring readable: at one packet per frame that is about every
+     * 5 ms of streaming.
+     *   dmaW a = first 32-bit word (one stereo frame: L then R, 16-bit little endian)
+     *   dmaW b = second word
+     */
+    static unsigned sample;
+    if (buf == xt_audio_rx_addr && ++sample >= 512)
+    {
+        sample = 0;
+        const uint32_t *w = (const uint32_t *)buf;
+        xtensa_breadcrumb_rtc("dmaW", (unsigned long)w[0], (unsigned long)w[1]);
+    }
 }
 
 /* The esp32s3 core packs DSTS as suspsts at bit 0, enumspd at bits 2:1 and SOFFN at bits
@@ -951,6 +1004,93 @@ int usb_dw_target_frame_number(uint32_t dsts)
     return (int)((dsts >> 4) & 0x3fff);
 }
 
+/* Which path touches an IN endpoint's enable bit. The post-mortem ring showed the CDC IN
+ * endpoint armed with 64 bytes and EPENA clear, and endpoint 0's in direction stalled and
+ * disabled: transfers were queued but the endpoints could not shift them out, which is
+ * every device-in symptom at once (silent console, dead 'f', Linux reporting
+ * "cannot get freq at ep 0x2" for the control read). This records the arm, the two
+ * disable paths and stall changes so the culprit is attributed rather than assumed.
+ *   epEv a = (event << 8) | endpoint   events: 1 arm, 2 unqueue, 3 flush-disable, 4 stall
+ *   epEv b = DIEPCTL after the event   EPENA bit 31, EPDIS 30, SDIS 29, NAKSTS 28,
+ *                                      CNAK 27, STALL 15, XFERCNT bits 9:0
+ */
+/* The most recent class or vendor request, kept so that the first stall of an IN
+ * endpoint can be attributed to the request that caused it.
+ */
+static unsigned long xt_last_rq_a;
+static unsigned long xt_last_rq_b;
+static int xt_stall_notes;
+
+void usb_dw_target_ep_event(int what, int epnum, unsigned int diepctl)
+{
+    /* Endpoint 0 arms a status phase on every control transfer, so recording those
+     * floods the 24-slot ring and pushes out the transition we actually want to see.
+     * Record arms for the other endpoints, and every disable, unqueue and stall.
+     */
+    if (epnum > 3)
+        return;
+    if (what == USB_DW_EP_EV_ARM && epnum == 0)
+        return;
+    if (what == USB_DW_EP_EV_STALL && xt_stall_notes < 4)
+    {
+        xt_stall_notes++;
+        xtensa_breadcrumb_rtc("fstE", xt_last_rq_a, xt_last_rq_b);
+        xtensa_breadcrumb_rtc("fstC", (unsigned long)((epnum << 8) | what),
+                              (unsigned long)diepctl);
+    }
+
+    /* The measured failure: an IN endpoint is armed for a transfer with the stall bit
+     * still set, so the core holds the data back and the host times out. Endpoints 0
+     * (control), 1 (CDC) and 3 (audio feedback) were all observed in that state -- armed,
+     * XFERCNT loaded, stalled. Clear it at the moment of arming, which is the only point
+     * where the endpoint is known to be about to send, and record the before/after
+     * register so the write can be verified rather than assumed.
+     */
+    if (what == USB_DW_EP_EV_ARM && (diepctl & (1u << 15)))
+    {
+        DWC_DIEPCTL(epnum) = diepctl & ~(1u << 15);
+        if (epnum == 0 || xt_stall_notes < 6)
+            xtensa_breadcrumb_rtc("ep0f", (unsigned long)diepctl,
+                                  (unsigned long)DWC_DIEPCTL(epnum));
+    }
+
+    xtensa_breadcrumb_rtc("epEv", (unsigned long)((what << 8) | epnum),
+                          (unsigned long)diepctl);
+}
+
+/* Which request preceded the EP0 stall. Class and vendor requests only -- standard ones
+ * are common at enumeration and would crowd the ring out -- since the audio class is
+ * where a refused request stalls the control endpoint.
+ *   rqst a = bmRequestType << 24 | bRequest << 16 | wLength
+ *   rqst b = wValue << 16 | wIndex
+ */
+void usb_dw_target_setup_received(uint8_t bmRequestType, uint8_t bRequest,
+                                  uint16_t wValue, uint16_t wIndex, uint16_t wLength)
+{
+    if ((bmRequestType & 0x60) != 0)   /* class or vendor: the ones that can stall */
+        xtensa_breadcrumb_rtc("rqst",
+                              (unsigned long)((uint32_t)bmRequestType << 24 |
+                                              (uint32_t)bRequest << 16 | wLength),
+                              (unsigned long)((uint32_t)wValue << 16 | wIndex));
+    xt_last_rq_a = (unsigned long)((uint32_t)bmRequestType << 24 |
+                                   (uint32_t)bRequest << 16 | wLength);
+    xt_last_rq_b = (unsigned long)((uint32_t)wValue << 16 | wIndex);
+
+    /* Recover the control endpoint. A gadget stalls endpoint 0 when it refuses a request,
+     * and nothing on a bus clears that stall: the host would have to send
+     * SET_CLEAR_FEATURE(HALT), which it does not do for endpoint 0. So one unhandled class
+     * request -- measured here as a HID GET_REPORT for a feature report, bm=0xa1
+     * bRequest=0x01 wValue=0x0303 -- leaves the control endpoint stalled for the rest of the
+     * session, and every later transfer then fails: no CDC reply, no sampling-frequency
+     * control (Linux reports "cannot get freq at ep 0x2"), no feedback endpoint. Clearing
+     * the stall when a new SETUP arrives is what real gadget functions do: a new request
+     * means the host has moved on. Applies to both directions of endpoint 0 only, so a
+     * stalled bulk or isochronous endpoint is still reported to the host.
+     */
+    usb_drv_stall(0, false, true);
+    usb_drv_stall(0, false, false);
+}
+
 #ifdef USB_ENABLE_AUDIO
 /* These mirror usb_audio.c's own constants: FEEDBACK_UPDATE_RATE_FRAMES is 1 << (10 - 5)
  * and a full-speed frame counter wraps at 1024. */
@@ -958,24 +1098,17 @@ int usb_dw_target_frame_number(uint32_t dsts)
 #define XT_FB_FRAME_MAX   1023
 #define XT_FB_FIXED(v)    ((int32_t)(v) << 16)
 
-/* The mixer consumes MIX_FRAME_SAMPLES (256) frames per pass; a full-speed packet carries
- * 48. Handing over one slot at a time meant the mixer was fed a fifth of what it wanted on
- * every pull, and pcm_mixer.c pads the remainder with silence -- measured as 390 underflows
- * against 11088 packets totalling exactly 11.1 s of audio. The slots are one contiguous
- * allocation, so a run of them is a single buffer. */
-/* Disabled after measurement: aggregating a run of slots assumes the queued audio is
- * contiguous, and it is not. Each slot is REAL_DSP_BUF_SIZE (DSP_BUF_SIZE aligned to 32)
- * = 1280 bytes, while a full-speed packet writes only about 192 of it. Returning a run as
- * one buffer hands the mixer 192 bytes of audio followed by roughly 1088 bytes of whatever
- * occupies the rest of the slot -- stale audio or uninitialized memory -- which is audible
- * as noise rather than pulsed audio, and confirmed by the board's behaviour: after the host
- * stopped, the ring kept playing out that noise for seconds. Correct audio came back only
- * when the hand-off went back to one slot at a time.
+/* Nothing for the target to do here.
  *
- * The mixer's appetite is still a real problem -- MIX_FRAME_SAMPLES is 256 frames and a
- * packet carries 48 -- but solving it needs the ring packed tightly (writing each packet at
- * a running offset rather than at a slot index) or a copy into a compact buffer, not a wider
- * stride. Left as a hook so the packed-ring change can land without touching core again.
+ * The mixer fills a frame from several get_more calls -- pcm_mixer.c consumes what a
+ * channel offers, then "goto fill_frame" and asks again -- so one packet-sized slot per
+ * call is exactly what it expects, and MIX_FRAME_SAMPLES (256) against a full-speed
+ * packet of 48 frames is not a shortfall. An earlier version of this hook returned a run
+ * of slots as one block, which was wrong for a different reason: slots are 1280 bytes
+ * apart while a packet writes about 192, so the mixer read the gap between them as audio.
+ * That is what turned pulsed music into plain noise, and what made the noise keep playing
+ * out of the ring after the host stopped. Measured, not reasoned: the character changed at
+ * exactly that commit and reverted at this one.
  */
 int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
                               const int *slot_sizes, const int16_t *buf, size_t slot_stride,
@@ -1050,6 +1183,15 @@ static void usb_vbus_poll(void)
         xtensa_breadcrumb("usbRstE", xt_irq_rst, xt_irq_enum);
         xtensa_breadcrumb("usbDain", xt_irq_daint_in, xt_irq_daint_out);
         xtensa_breadcrumb("usbNone", xt_irq_none, 0);
+        /* Also recorded from the periodic report, so the device-in state is visible even
+         * when no audio is streaming and the interrupt-driven trace is not advancing.
+         */
+        xtensa_breadcrumb_rtc("audE", (unsigned long)DWC_DIEPCTL(0),
+                              (unsigned long)DWC_DIEPINT(0));
+        xtensa_breadcrumb_rtc("audF", (unsigned long)DWC_DIEPCTL(3),
+                              (unsigned long)DWC_DIEPINT(3));
+        xtensa_breadcrumb_rtc("audG", (unsigned long)DWC_DIEPCTL(1),
+                              (unsigned long)DWC_DIEPINT(1));
 
 #ifdef USB_ENABLE_AUDIO
         /* Isochronous arrival, into the RTC ring rather than only the CDC line. Probing
