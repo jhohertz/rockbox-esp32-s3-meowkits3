@@ -870,3 +870,51 @@ FIFOs GHWCFG4 reports.
 Open items: the unplug path (Rockbox must remount and keep playing -- `usb_storage`
 declares `needs_exclusive_storage`), writes through MSC, the `CDC+HID+Audio` profile, and
 suspend/resume, which the driver's mask does not cover.
+
+## Detach and re-attach now survive (three cycles, no reset)
+
+An unplug used to end in a task-watchdog reset. It now runs end to end and the player keeps
+working: the host sees `sda` drop, Rockbox remounts the card, and replugging brings MSC and
+CDC back. Three detach/re-attach cycles in a row produced no reset at all.
+
+Four separate causes, all found with the RTC-slow trail rather than by reasoning:
+
+1. `usb_drv_cancel_all_transfers()` is never called on the generic exit path, so endpoints
+   stayed armed and `DCTL.SDIS` could never complete. Aborting every endpoint and disabling
+   it before the soft disconnect fixes that, and this matches what the ARM targets do in
+   their own `usb_drv_exit()`.
+2. Gating the PHY clock (`PCGCCTL=1`) while an endpoint is armed wedges the core, so the
+   subsequent soft disconnect stops answering reads. Skipped on xtensa; other arches
+   unchanged.
+3. The pad release was being written after the USB-wrap gate had been dropped, so the writes
+   landed in an unclocked block. Register accesses now run in clock-domain order: core
+   registers, then pad mux, then the gate, and the last marker touches only RTCCNTL.
+4. The diagnostic itself was the fault. The post-exit breadcrumb read `XT_USB_OTG_CONF`
+   after `usb_dw_target_disable_clocks()` had cleared the wrap gate; the read stalled the
+   bus, so the marker that would have recorded the step was the step that never returned,
+   and the trail looked like it ended at `dRet`. Moving the sample fixed the detach and
+   immediately hung the re-attach instead -- same trap, opposite direction, because on a
+   re-attach the gate is still off until `usb_core_init()` raises it. The sample is now
+   direction-dependent.
+
+**The rule this peripheral imposes**: every access to the USB wrap block or its pads must
+happen while that block is clocked, and on a detach that window closes at
+`usb_dw_target_disable_clocks()`. Ordering mistakes here do not fault; they stall the bus
+until the watchdog resets the chip, which is why the symptom was a silent reboot with no
+panic record.
+
+Trail now recorded in RTC slow (survives reset; the SRAM ring does not, which is why earlier
+traces appeared to stop at the last RTC marker): `usbEv`, `cSet`, `rExs`, `dMnt`, `dMnD`,
+`bCst`, `bCnD`, `cCls`, `dSdi`, `dAbr`, `dSdw`, `dSdl`, `dPcg`, `dIrq`, `usbRel`, `usbEnd`,
+`dRet`, `uOut`, `uClk`, `wRet`.
+
+### Still open
+
+- **Re-attach does not always pull up.** After a few cycles the board runs but leaves the
+  pads on USJ and never enumerates, with no crash and no panic. That is a distinct fault
+  from the detach, and it is the one left.
+- **OUT endpoint re-delivery.** A single received byte is handed to
+  `usb_serial_target_rx()` repeatedly (one `t` produced ~79 command executions). The command
+  cooldown hides the effect; the descriptor re-arm in `usb-designware.c` is the real bug.
+- `CDC+HID+Audio` profile, suspend/resume (the mask does not cover `USBSUSP`/`ESUSP`),
+  writes through MSC, and the charging display.

@@ -3300,6 +3300,22 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- On ESP32-S3, **any access to the USB wrap block or its pads must happen while that block is
+  clocked**. `usb_dw_target_disable_clocks()` clears the wrap gate at the end of the detach; a
+  read or write of `USB_WRAP_*` afterwards does not fault, it stalls the bus until the
+  watchdog resets the chip. This produced three separate silent-reboot bugs: pad writes after
+  the gate, an endpoint-abort/PHY-clock ordering mistake, and a diagnostic breadcrumb that read
+  `XT_USB_OTG_CONF` post-teardown. Symptom to recognise: a reboot with `reset-reason 6`
+  (task watchdog) and no panic record.
+- The generic USB exit path never calls `usb_drv_cancel_all_transfers()`; only the ARM drivers
+  do it from their own `usb_drv_exit()`. A DWC2 target must abort and disable armed endpoints
+  before `DCTL.SDIS`, or soft disconnect never completes and the core stops answering reads.
+- `DCTL.SDIS` must be cleared and then re-polled: reading the bit back in the same operation
+  that clears it returns the pre-clear value, so a `while (x & SDIS)` loop exits on a stale
+  read.
+- A breadcrumb in an SRAM `.noinit` ring is useless for exactly the faults that reset the chip.
+  Post-mortem markers need RTC slow (`0x50001000` here, 32-bit accesses only; byte stores
+  silently do nothing).
 - **USB insertion detection on this board can only come from the PMU.** The SoC has
   no VBUS sense input — GPIO19/20 are D+/D- only — so `axp173_input_status()`
   (REG 0x00, `AXP_VBUS_PRESENT` = bit 5, the same bit the reference firmware calls
