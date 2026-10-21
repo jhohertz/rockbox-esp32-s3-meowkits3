@@ -296,11 +296,43 @@ static int usb_as_playback_intf_alt; /* playback streaming interface alternate s
 
 static int as_playback_freq_idx; /* audio playback streaming frequency index (in hw_freq_sampr) */
 
+/* size of each buffer: must be smaller than 1023 (max isochronous packet size).
+ *
+ * Target-overridable, because the isochronous packet size is a FIFO budget
+ * commitment rather than a preference: the DWC2 core needs an RX FIFO of at least
+ * mps/4 words for any OUT endpoint, and a small full-speed core cannot host a
+ * 1023-byte isochronous packet at all -- ESP32-S3 has 200 words of device FIFO RAM
+ * in total, and 1023 bytes alone needs 256. Overriding this define also sets the
+ * descriptor's wMaxPacketSize and the hardware endpoint's maximum packet size, so
+ * the three stay consistent. It bounds the sample rates a target can offer: frames
+ * larger than the declared packet size are dropped.
+ *
+ * Declared above the endpoint allocation table because that table uses it.
+ */
+#ifdef USB_AUDIO_BUFFER_SIZE
+#define BUFFER_SIZE     USB_AUDIO_BUFFER_SIZE
+#else
+#define BUFFER_SIZE     1023
+#endif
+
+/* The endpoint allocation has to ask for the size the descriptor declares: the
+ * driver's default for an isochronous endpoint is the USB maximum (1023 or 1024),
+ * which is exactly what a tight FIFO budget cannot pay for. Targets that did not
+ * override the buffer size keep the driver's default. */
+#ifdef USB_AUDIO_BUFFER_SIZE
+#define USB_AUDIO_EP_MPS_OUT  BUFFER_SIZE
+#else
+#define USB_AUDIO_EP_MPS_OUT  -1
+#endif
+
 static struct usb_class_driver_ep_allocation ep_allocs[2] = {
     /* output isochronous endpoint */
-    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_OUT, .optional = false, .mps = -1},
-    /* input feedback isochronous endpoint */
-    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = -1},
+    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_OUT, .optional = false,
+     .mps = USB_AUDIO_EP_MPS_OUT},
+    /* input feedback isochronous endpoint: the descriptor declares 4 bytes, and the
+     * driver would otherwise program the hardware at the isochronous maximum -- an
+     * endpoint sized for 1023 bytes attached to a 64-byte dedicated FIFO. */
+    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = 4},
 };
 
 #define EP_ISO_OUT (ep_allocs[0].ep)
@@ -342,8 +374,8 @@ static struct usb_class_driver_ep_allocation ep_allocs[2] = {
  */
 #define NR_BUFFERS      32
 #define MINIMUM_BUFFERS_QUEUED 16
-/* size of each buffer: must be smaller than 1023 (max isochronous packet size) */
-#define BUFFER_SIZE     1023
+/* The isochronous packet size and the endpoint's hardware maximum are defined
+ * above the endpoint allocation table, which uses them: see USB_AUDIO_BUFFER_SIZE. */
 /* make sure each buffer size is actually a multiple of 32 bytes to avoid any
  * issue with strange alignements */
 #define REAL_BUF_SIZE   ALIGN_UP(BUFFER_SIZE, 32)
@@ -654,7 +686,7 @@ static int usb_audio_get_config_descriptor(unsigned char *dest, int max_packet_s
     as_interface_alt_playback.bInterfaceNumber = usb_interface + 1;
 
     /* endpoints */
-    as_iso_audio_out_ep.wMaxPacketSize = 1023;
+    as_iso_audio_out_ep.wMaxPacketSize = BUFFER_SIZE;
     as_iso_audio_out_ep.bEndpointAddress = EP_ISO_OUT;
     as_iso_audio_out_ep.bSynchAddress = EP_ISO_FEEDBACK_IN;
     as_iso_synch_in_ep.bEndpointAddress = EP_ISO_FEEDBACK_IN;
@@ -1370,7 +1402,9 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
         /* guard against IRQ to avoid race with completion audio completion */
+#ifndef USB_AUDIO_NO_IRQ_MASK
         int oldlevel = disable_irq_save();
+#endif
         /* setup a new transaction except if we ran out of buffers */
         if(rx_usb_idx != rx_play_idx)
         {
@@ -1391,9 +1425,29 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             static const struct mixer_play_cbs cbs = {
                 .get_more = playback_audio_get_more,
             };
+            /* TEMPORARY BISECTION for the xtensa port, enabled by defining
+             * USB_AUDIO_DRY_RUN in the target config: hand the received frames to
+             * the mixer or not. The whole point is that this call runs inside
+             * disable_irq_save(), so whatever it reaches (pcm start, sink play, GDMA
+             * arm) happens with the core's interrupts masked and cannot be observed
+             * afterwards -- no watchdog can fire, and a power cycle clears the RTC
+             * ring. Skipping it says whether the lock-up lives in the mixer/sink
+             * chain or in the isochronous receive path itself. Remove once the fault
+             * is named: audio without a mixer does nothing. */
+            /* The class declares 1023-byte isochronous packets (usb_audio.c:657) and
+             * usb_drv_ep_init() therefore configures the hardware endpoint at mps 1023
+             * too. On this core that needs ~256 words of RX FIFO and the whole device
+             * FIFO RAM measures 200 words, so the declared packet size is larger than
+             * the FIFO can ever hold -- worth knowing, but at 48 kHz the host only sends
+             * 192 bytes a frame, so it is a spec violation rather than an obvious cause.
+             */
+#ifndef USB_AUDIO_DRY_RUN
             mixer_channel_play_data(PCM_MIXER_CHAN_USBAUDIO, &cbs, NULL, 0);
+#endif
         }
+#ifndef USB_AUDIO_NO_IRQ_MASK
         restore_irq(oldlevel);
+#endif
         retval =  true;
     }
     else
