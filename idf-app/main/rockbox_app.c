@@ -194,10 +194,44 @@ static void rb_late_probe(void *arg)
 
 void app_main(void)
 {
+    /* IDF's console is USB-Serial-JTAG and the pads move to the OTG core about 865 ms
+     * after boot -- right where app_main starts. newlib printf buffers, so anything
+     * printed here was flushed after the transport was gone and never reached the host
+     * (measured: the capture ends at the esp_psram line, 865 ms, and none of app_main's
+     * own output arrives). Unbuffered stdout makes the early dumps land.
+     */
+    setvbuf(stdout, NULL, _IONBF, 0);
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
     scan_trace_early_dump();
     xtensa_paniclog_dump();
+    /* The RTC-slow ring survives the reset that clears internal DRAM, and it is where the
+     * audio counters are recorded (usbAud: isochronous frames received and the endpoint's
+     * remaining transfer count; audR/audA: OUT-event storm and sink state). Console output
+     * over USB-Serial-JTAG stops the moment the app hands the pads to the OTG core, so this
+     * has to be printed here, first, rather than over the CDC transport later -- and reading
+     * it over CDC requires writing to the console, which is what wedges the device.
+     */
+    {
+        extern int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count);
+        char rtc[256];
+        int start;
+        int any = 0;
+        for (start = 0; start < 32; start += 8)
+        {
+            int n = xtensa_breadcrumb_rtc_window(rtc, sizeof rtc, start, 8);
+            if (n <= 0)
+                break;
+            if (!any)
+            {
+                printf("rtc breadcrumbs:\n");
+                any = 1;
+            }
+            printf("%s\n", rtc);
+        }
+        if (!any)
+            printf("rtc breadcrumbs: none\n");
+    }
     /* No ring dump here: xtensa_paniclog_dump() above already prints the retained
      * breadcrumbs ("panic breadcrumbs (40):") as the first thing app_main does, and did so
      * before this was added. A second dump doubled the output on the console. */

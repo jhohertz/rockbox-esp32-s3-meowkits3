@@ -736,8 +736,20 @@ retry:
     }
 }
 
+/* TEMPORARY dispatch counters, defined here and reported on the xtensa debug line. */
+uint32_t usb_core_dbg_req_total;
+uint32_t usb_core_dbg_req_stalled;
+uint32_t usb_core_dbg_req_laststall;
+uint32_t usb_core_dbg_req_laststall_val;
+
 static void control_request_handler_drivers(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
 {
+    /* TEMPORARY: total driver-level requests seen, read together with the stall counter
+     * below so "nothing matched" can be told apart from "a driver refused it".
+     */
+    extern uint32_t usb_core_dbg_req_total;
+    usb_core_dbg_req_total++;
+
     int i, interface = req->wIndex & 0xff;
     bool handled = false;
 
@@ -777,6 +789,25 @@ static void control_request_handler_drivers(struct usb_ctrlrequest* req, uint8_t
         break; /* no other driver can handle it because it's interface specific */
     }
     if(!handled) {
+        /* TEMPORARY instrumentation for the USB-DAC investigation. The audio endpoint's
+         * rate control is known to reach its handler (usb_audio.c counts those), yet
+         * Linux still reports "cannot get freq at ep 0x2" on some opens -- which means a
+         * request is being refused somewhere it never reaches the class. Counting every
+         * class request here, and latching the last one that found no driver and was
+         * stalled, shows whether that is a dispatch miss and with what fields it arrived.
+         */
+        extern uint32_t usb_core_dbg_req_total;
+        extern uint32_t usb_core_dbg_req_stalled;
+        extern uint32_t usb_core_dbg_req_laststall;
+        extern uint32_t usb_core_dbg_req_laststall_val;
+
+        usb_core_dbg_req_stalled++;
+        usb_core_dbg_req_laststall = ((uint32_t)req->bRequestType << 24) |
+                                     ((uint32_t)req->bRequest << 16) |
+                                     (((req->wIndex >> 8) & 0xff) << 8) |
+                                     (req->wIndex & 0xff);
+        usb_core_dbg_req_laststall_val = ((uint32_t)req->wValue << 16) | req->wLength;
+
         /* nope. flag error */
         logf("bad req 0x%x:0x%x:0x%x:0x%x:0x%x", req->bRequestType,req->bRequest,
             req->wValue, req->wIndex, req->wLength);

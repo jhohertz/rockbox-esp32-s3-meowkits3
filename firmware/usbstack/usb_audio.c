@@ -728,12 +728,23 @@ static int usb_audio_get_config_descriptor(unsigned char *dest, int max_packet_s
     return dest - orig_dest;
 }
 
+/* TEMPORARY: starvation and sizing counters, recorded into the RTC-slow ring by the
+ * target's periodic trace. "Rapid pulses of the same block" is either the mixer running
+ * out of buffers (underflow) or the receive path running out of slots (rx overflow); the
+ * last received and produced lengths say whether the sizes are even sane.
+ */
+uint32_t usb_audio_dbg_underflows;
+uint32_t usb_audio_dbg_rx_overflows;
+uint32_t usb_audio_dbg_last_len;
+uint32_t usb_audio_dbg_last_dsp;
+
 static void playback_audio_get_more(const void **start, size_t *size)
 {
     /* if there are no more filled buffers, playback has just underflowed */
     if(rx_play_idx == rx_usb_idx)
     {
         logf("usbaudio: playback underflow");
+        usb_audio_dbg_underflows++;
         playback_audio_underflow = true;
         *start = NULL;
         *size = 0;
@@ -1451,6 +1462,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
         /* store length, queue buffer */
         rx_buf_size[rx_usb_idx] = length;
+        usb_audio_dbg_last_len = length;
 
         // debug screen counter
         samples_received = samples_received + length;
@@ -1468,6 +1480,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
         dsp_process(dsp, &src, &dst, false);
         dsp_buf_size[rx_usb_idx] = dst.remcount * 2 * sizeof(*dsp_buf); // need value in bytes
+        usb_audio_dbg_last_dsp = dsp_buf_size[rx_usb_idx];
 
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
@@ -1484,6 +1497,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         else
         {
             logf("usbaudio: rx overflow");
+            usb_audio_dbg_rx_overflows++;
             usb_rx_overflow = true;
         }
         /* if audio underflowed and prebuffering is done, restart audio */
