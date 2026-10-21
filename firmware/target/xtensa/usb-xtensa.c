@@ -906,12 +906,30 @@ static void usb_vbus_poll(void)
             int n = snprintf(cdc_line, sizeof(cdc_line),
                              "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
                              "enum=%lu none=%lu early=%lu en=%lu/%lu "
-                             "dain=%04lx,%04lx gintsts=%08lx dsts=%08lx\r\n",
+                             "dain=%04lx,%04lx gintsts=%08lx dsts=%08lx pcgc=%08lx dctl=%08lx rxf=%08lx tx0=%08lx\r\n",
                              xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
                              xt_irq_enum, xt_irq_none, xt_irq_early,
                              xt_irq_enable_n, xt_irq_disable_n,
                              xt_irq_daint_in, xt_irq_daint_out,
-                             DWC_GINTSTS, DWC_DSTS);
+                             DWC_GINTSTS, DWC_DSTS,
+                             /* PCGCCTL is the core's own low-power control: bit 0 StopPclk
+                              * and bit 6 PhysSleep park the PHY clock, bit 3 ResetPwdwnModule
+                              * holds the core in reset after suspend. ESP-IDF clears StopPclk
+                              * in its DWC2 init for ESP32-P4 only, with the comment that the
+                              * peripheral bring-up forces the PHY into suspend before gating
+                              * its clock to stop leakage current. Nothing does that here, so
+                              * if the bit is set the core legitimately reports a suspended
+                              * device -- which is what ESUSP says and what drops every
+                              * isochronous OUT packet (ISOODPR). DCTL is read alongside it to
+                              * see whether the soft disconnect or the global NAK bits are
+                              * latched. */
+                             DWC_PCGCCTL, DWC_DCTL,
+                             /* ISOODPR says the core threw away an isochronous OUT packet.
+                              * The RX FIFO has to hold the whole packet plus its status
+                              * word, so the programmed sizes are worth reading next to the
+                              * endpoint's 320-byte packet: rxf is GRXFSIZ in words and tx0
+                              * is the non-periodic TX FIFO (start and depth packed). */
+                             DWC_GRXFSIZ, DWC_TX0FSIZ);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
 
@@ -941,7 +959,7 @@ static void usb_vbus_poll(void)
                               "rockbox: usb-audio active=%d playing=%d allocfail=%d "
                               "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu "
                               "ep=%d ctl=%08x sz=%08x xfer=%d int=%08x daint=%08x "
-                              "dma=%p\r\n",
+                              "dma=%p req=%08lx last=%08lx epdbg=%08lx\r\n",
                               (int)usb_audio_get_active(),
                               (int)usb_audio_get_playing(),
                               (int)usb_audio_get_alloc_failed(),
@@ -955,7 +973,29 @@ static void usb_vbus_poll(void)
                               (int)(asz & 0x7ffff),
                               (unsigned)DWC_DOEPINT(aep),
                               (unsigned)DWC_DAINT,
-                              (void *)DWC_DOEPDMA(aep));
+                              (void *)DWC_DOEPDMA(aep),
+                              /* req: interface-recipient count in the high half,
+                               * endpoint-recipient count in the low half. last: the most
+                               * recent class request as bRequestType:bRequest:wIndex,
+                               * which shows exactly how Linux addressed the sampling
+                               * frequency control. */
+                              ({ extern uint32_t usb_audio_dbg_req_counts;
+                                 usb_audio_dbg_req_counts; }),
+                              ({ extern uint32_t usb_audio_dbg_req_last;
+                                 usb_audio_dbg_req_last; }),
+                              /* epdbg: requests that reached the streaming endpoint's
+                               * control handler in the top byte, then refused for a wrong
+                               * control selector, then a wrong wLength, then answered -- so
+                               * "arrived but refused" and "arrived and answered" are
+                               * distinguishable. */
+                              ({ extern uint32_t usb_audio_dbg_ep_reqs,
+                                           usb_audio_dbg_ep_badval,
+                                           usb_audio_dbg_ep_badlen,
+                                           usb_audio_dbg_ep_ok;
+                                 (uint32_t)((usb_audio_dbg_ep_reqs << 24) |
+                                            (usb_audio_dbg_ep_badval << 16) |
+                                            (usb_audio_dbg_ep_badlen << 8) |
+                                            usb_audio_dbg_ep_ok); }));
             if (an > 0)
                 usb_serial_send((unsigned char *)aud_line, an);
 #endif
