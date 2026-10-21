@@ -932,10 +932,30 @@ static void usb_vbus_poll(void)
      * Gated on the anomaly (cable present while unarmed) or on I2C failures, so a player
      * sitting on a desk with no cable stays quiet.
      */
-    if (!xt_armed && (xt_vbus_present == 1 || xt_vbus_err != 0))
+    /* Two cadences: the anomaly every 5 s, and a slow heartbeat while unarmed at all. The
+     * heartbeat is what makes silence meaningful -- without it, a stuck board that prints
+     * nothing could mean "the PMU says no cable" or "this console is dead", and those are
+     * different faults with different fixes. */
+    /* Counted in poll calls, not kernel ticks: this block runs once every
+     * USB_VBUS_POLL_TICKS (4 ticks = 40 ms), so 25 calls make a second. Getting this wrong
+     * turns a 5 s report into a 20 s one. */
+    static unsigned xt_heartbeat;
+    static unsigned xt_idle;
+    const unsigned idle_int = 5 * HZ / USB_VBUS_POLL_TICKS;
+    const unsigned beat_int = 30 * HZ / USB_VBUS_POLL_TICKS;
+
+    if (!xt_armed && (++xt_heartbeat >= beat_int ||
+                      xt_vbus_present == 1 || xt_vbus_err != 0))
     {
-        static unsigned xt_idle;
-        if (++xt_idle >= 5 * HZ)
+        if (xt_heartbeat >= beat_int)
+            xt_heartbeat = 0;
+
+        if (xt_vbus_present == 1 || xt_vbus_err != 0)
+            xt_idle++;
+        else
+            xt_idle = idle_int; /* unarmed and no cable: heartbeat only */
+
+        if (xt_idle >= idle_int)
         {
             xt_idle = 0;
             printf("usb idle: cable=%d miss=%d i2c_err=%lu rtc_usb=%08lx clk0=%08lx tick=%lu\n",
