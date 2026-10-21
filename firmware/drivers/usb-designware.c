@@ -1777,11 +1777,27 @@ int usb_drv_get_frame_number(void)
     /*
      * SOFFN is a 14-bit microframe number for high-speed hosts and
      * a plain frame number for full-speed hosts.
+     *
+     * The field position is core-specific. On esp32s3 the register packs
+     * suspsts at bit 0, enumspd at bits 2:1 and SOFFN at bits 17:4 (see
+     * soc/usb_dwc_struct.h), so the generic shift of 8 reads a value that only
+     * advances once every sixteen real frames. That is not cosmetic: usb_audio's
+     * feedback cadence is `(frame + 1) % 32 == 0`, and the window that latches
+     * send_fb is measured in frames, so with the wrong shift the device never
+     * sends an isochronous feedback value at all. Measured on the board: audF's
+     * feedback field sat at 0 across a whole streaming session while the host
+     * streamed audio, and the mixer underflow counter climbed -- an ASYNC
+     * endpoint with no feedback is paced by the host in bursts, which is audible
+     * as the same block of audio pulsing.
      */
+#if defined(CPU_XTENSA)
+    return (DWC_DSTS >> 4) & 0x3fff;
+#else
     if (usb_drv_port_speed())
         return (DWC_DSTS >> 11) & 0x7FF;
     else
         return (DWC_DSTS >> 8) & 0x3FFF;
+#endif
 }
 
 static bool handle_set_address(struct usb_ctrlrequest *req)
