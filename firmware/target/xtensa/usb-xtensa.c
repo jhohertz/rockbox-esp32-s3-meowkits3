@@ -1039,8 +1039,19 @@ void __wrap_usb_enable(bool on)
      * uOut/uClk/wRet never appear because the read that would record them never returns.
      * The same trap is why the pad release now runs before the gate is dropped.
      */
-    uint32_t pre_gsnpsid = DWC_GSNPSID;
-    uint32_t pre_otgconf = rd(XT_USB_OTG_CONF);
+    uint32_t pre_gsnpsid;
+    uint32_t pre_otgconf;
+
+    if (!on)
+    {
+        /* Tearing down: usb_core_exit() ends with usb_dw_target_disable_clocks(), which
+         * clears the USB-wrap gate, so the sample has to be taken while it is still
+         * clocked. Reading the block afterwards stalls the bus -- that read hung every
+         * detach since this breadcrumb existed, which is why the trail stopped at dRet.
+         */
+        pre_gsnpsid = DWC_GSNPSID;
+        pre_otgconf = rd(XT_USB_OTG_CONF);
+    }
 
     if (!on && xt_attach_tick != 0)
     {
@@ -1064,6 +1075,16 @@ void __wrap_usb_enable(bool on)
     {
         xt_armed = false;
         usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+    }
+
+    if (on)
+    {
+        /* Coming up: on a re-attach the wrap gate is still off, because the previous detach
+         * dropped it, so sampling before usb_core_init() hangs the attach instead -- the
+         * mirror of the bug above. It is clocked only after the driver has brought the core
+         * up. */
+        pre_gsnpsid = DWC_GSNPSID;
+        pre_otgconf = rd(XT_USB_OTG_CONF);
     }
 
     /* Both halves of the register state, recorded before anything can change it.
