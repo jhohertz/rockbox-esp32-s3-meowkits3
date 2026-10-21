@@ -922,6 +922,29 @@ static void usb_vbus_poll(void)
      * this hardware is that a player plugged into a host is in USB mode, because
      * charging here is not optional.
      */
+    /* The state where the cable is known but the transport never came up is the one
+     * state CDC cannot report, because CDC is what is missing: the OTG pads stay on
+     * USB-Serial-JTAG, so this console is the only channel that works. Deliberately reads
+     * nothing from the USB wrap block -- its clock gate is down in this state and a read
+     * there stalls the bus, which is the detach bug all over again. RTCCNTL and the
+     * peripheral clock register are always clocked.
+     *
+     * Gated on the anomaly (cable present while unarmed) or on I2C failures, so a player
+     * sitting on a desk with no cable stays quiet.
+     */
+    if (!xt_armed && (xt_vbus_present == 1 || xt_vbus_err != 0))
+    {
+        static unsigned xt_idle;
+        if (++xt_idle >= 5 * HZ)
+        {
+            xt_idle = 0;
+            printf("usb idle: cable=%d miss=%d i2c_err=%lu rtc_usb=%08lx clk0=%08lx tick=%lu\n",
+                   xt_vbus_present, xt_vbus_miss, xt_vbus_err,
+                   (unsigned long)rd(XT_RTC_USB_CONF), (unsigned long)rd(XT_PERIP_CLK_EN0),
+                   current_tick);
+        }
+    }
+
     status = vbus_sample();
 
     if (status != last)
