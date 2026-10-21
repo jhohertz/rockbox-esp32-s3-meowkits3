@@ -30,6 +30,9 @@
 #include <stdio.h>          /* snprintf */
 #include "usbstack/usb_serial.h"
 #endif
+#ifdef USB_ENABLE_AUDIO
+#include "usbstack/usb_audio.h"   /* state getters, for the trace line */
+#endif
 #include "kernel.h"
 #include "thread.h"
 #include "panic.h"
@@ -170,6 +173,11 @@ static volatile uint32_t xt_irq_daint_out;
  * for the routing dump), so the handler has to know which phase it is in. */
 static bool xt_armed;
 
+#ifdef USB_ENABLE_AUDIO
+/* Sampling rate for the interrupt-side audio breadcrumb, in endpoint events. */
+static volatile uint32_t xt_audio_trace;
+#endif
+
 static void usb_dwc_isr(void *arg)
 {
     (void)arg;
@@ -212,6 +220,24 @@ static void usb_dwc_isr(void *arg)
         if (!pend)
             xt_irq_none++;
     }
+
+#ifdef USB_ENABLE_AUDIO
+    /* Audio state sampled from the one context that is demonstrably running while
+     * the player is wedged in the audio profile: the tick task's CDC trace stops
+     * when the USB thread saturates on isochronous frames, and the RTC ring is the
+     * only thing that survives a chip reset. So pressing BOOT during the wedge
+     * leaves a readable record of what the core and the class driver were doing.
+     * About four entries a second at 1 kHz of endpoint events. */
+    if (++xt_audio_trace >= 256)
+    {
+        xt_audio_trace = 0;
+        xtensa_breadcrumb_rtc("audR", xt_irq_oep,
+                              (unsigned long)usb_audio_get_samples_rx_perframe());
+        xtensa_breadcrumb_rtc("audA", (unsigned long)usb_audio_get_active(),
+                              (unsigned long)usb_audio_get_playing());
+    }
+#endif
+
     INT_USB_FUNC();
 }
 
@@ -784,6 +810,48 @@ static void xt_usb_enter_download_mode(void)
 }
 #endif /* USB_ENABLE_SERIAL */
 
+#ifdef USB_ENABLE_AUDIO
+/* Strong override of the weak default in usbstack/usb_audio.c.
+ *
+ * The isochronous OUT buffer is written by the core's DMA. On this SoC that DMA
+ * is an internal AHB master and cannot reach the Ext_RAM window -- ESP-IDF says
+ * so outright, gating USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM on
+ * IDF_TARGET_ESP32P4 -- and core_alloc()'s pool *is* the PSRAM audiobuffer here.
+ * So the host's PCM would be transferred into memory the master cannot write,
+ * which shows up as a device that enumerates, streams, and says nothing.
+ *
+ * Internal SRAM has roughly a kilobyte of margin, so a dedicated static is not
+ * available. The mass-storage transfer buffer is: it is already allocated (8 KiB
+ * of .bss, sized 2 * max(USB_READ_BUFFER_SIZE, USB_WRITE_BUFFER_SIZE)), it is
+ * already DMA-reachable, and the CDC+HID+MSC and CDC+HID+Audio profiles are
+ * mutually exclusive -- usb.c disables the storage driver in charge-only mode --
+ * so the region is idle whenever audio is running. Borrowing it costs no memory.
+ */
+#define XT_STORAGE_XFER_SIZE \
+    (2 * (USB_READ_BUFFER_SIZE > USB_WRITE_BUFFER_SIZE ? \
+          USB_READ_BUFFER_SIZE : USB_WRITE_BUFFER_SIZE))
+
+_Static_assert(XT_STORAGE_XFER_SIZE >= 1024,
+               "the storage transfer buffer must hold the audio rx buffer (1023 -> 1024)");
+
+extern void *usb_storage_transfer_buffer_get(void);
+
+static void *xt_audio_rx_addr;   /* reported on the trace line */
+
+unsigned char *usb_audio_target_rx_buffer(size_t size)
+{
+    void *buf = usb_storage_transfer_buffer_get();
+
+    /* NULL means storage took its buffer from core_alloc(), i.e. from the very
+     * pool that is unusable for DMA here; there is nothing safe to lend. */
+    if (!buf || size > XT_STORAGE_XFER_SIZE)
+        return NULL;
+
+    xt_audio_rx_addr = buf;
+    return (unsigned char *)buf;
+}
+#endif /* USB_ENABLE_AUDIO */
+
 static void usb_vbus_poll(void)
 {
     static unsigned ticks;
@@ -846,6 +914,27 @@ static void usb_vbus_poll(void)
                              DWC_GINTSTS, DWC_DSTS);
             if (n > 0)
                 usb_serial_send((unsigned char *)cdc_line, n);
+
+            /* The audio profile gets its own line, because "are isochronous frames
+             * arriving" is a different question from "are endpoint interrupts
+             * firing": rx_perframe is what the core reported over the last two
+             * feedback cycles, and the rx buffer address says whether we are still
+             * pointing at the PSRAM window the DMA master cannot reach. */
+#ifdef USB_ENABLE_AUDIO
+            static char aud_line[160];
+            int an = snprintf(aud_line, sizeof(aud_line),
+                              "rockbox: usb-audio active=%d playing=%d allocfail=%d "
+                              "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu\r\n",
+                              (int)usb_audio_get_active(),
+                              (int)usb_audio_get_playing(),
+                              (int)usb_audio_get_alloc_failed(),
+                              (long)usb_audio_get_samples_rx_perframe(),
+                              usb_audio_get_prebuffering(),
+                              xt_audio_rx_addr,
+                              (unsigned long)xt_irq_oep);
+            if (an > 0)
+                usb_serial_send((unsigned char *)aud_line, an);
+#endif
 #endif
         }
 #endif
