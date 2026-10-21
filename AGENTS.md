@@ -1289,10 +1289,21 @@ I2C master  0x60013000
   `IROMORIG` in `app.lds` is `0x42900020` (entry 144) rather than `0x42000020`
   (entry 0) because DROM plus the codec/plugin buffers claim entries 0..128; with
   both windows at +0x20 the two mappings overwrite each other.
-- Flashing is one command, not a build step:
+- Flashing is one command, not a build step — **on the bare-metal branch only**:
+
   ```sh
   esptool --chip esp32s3 write_flash 0 rockbox.esp32s3
   ```
+
+  On the ESP-IDF branch this is wrong and destructive. IDF's layout puts the second-stage
+  bootloader at `0x0`, the partition table at `0x8000` and the app image at `0x10000`, so
+  writing an app image at `0x0` replaces the bootloader with a header the mask ROM
+  misparses; the board then boot-loops with `IllegalInstruction` at a flash-window address
+  and a memory dump of zeros, which looks like corrupt code and is not. Use
+  `make usbflash` (triggers download mode over CDC, then `idf.py flash`) or `make flash`.
+  Note that the AXP173 keeps the chip powered when USB is unplugged, so unplugging is not a
+  reset: to reach the downloader, power off, hold BOOT, power on while holding, release.
+  Verify the ROM answers (`Chip is ESP32-S3`) before writing anything.
   `tools/esp-elf2image` produces the image; it is byte-identical to
   `esptool elf2image --flash_mode dio --flash_freq 80m --flash_size 16MB` except
   for the digest flag and the appended SHA-256.
@@ -3088,7 +3099,8 @@ make bin        # firmware only
 make zip        # full package
 make tools      # host tools only
 make tags
-make flash      # esptool write_flash 0x0 rockbox.esp32s3
+make flash      # idf.py flash: bootloader 0x0, partition table 0x8000, app 0x10000
+make usbflash   # trigger download mode over CDC, then flash, then boot back up
 make espverify  # image_info on the packed image, no board needed
 ```
 
