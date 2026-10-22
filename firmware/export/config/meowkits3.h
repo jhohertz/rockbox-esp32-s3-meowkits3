@@ -381,15 +381,13 @@
 #define USB_DW_FORCE_DEVICE_MODE    /* OTG-capable core; pin it to device */
 #define USB_ENABLE_SERIAL
 
-/* TEMPORARY -- bisection for the USB-DAC lock-up, not a shipping setting.
- * USB_AUDIO_DRY_RUN: receive frames but never hand them to the mixer (excludes the
- * pcm/sink/GDMA chain). USB_AUDIO_NO_IRQ_MASK: do not run the completion handler
- * with the core's interrupts masked. The lock-up was reproduced with the dry run in
- * place, which excludes the mixer; that makes the mask the remaining thing on the
- * path that can wait for something no longer able to fire. A masked region can never
- * be recovered by the watchdog either, which is why the board shows no reset.
- * Delete both, and the #ifndefs in usb_audio.c, once the fault is named. */
-#define USB_AUDIO_NO_IRQ_MASK
+/* The receive-ring hand-off in usb_audio.c runs with interrupts masked, as upstream
+ * does: the mixer thread consumes ring slots while the isochronous interrupt fills
+ * them. That guard is not optional here -- without it the mixer reads a slot mid-write
+ * and a size that does not match the bytes present, which is audible as real audio
+ * fragments inside noise. The lock-up this was added to avoid was the CDC transmit
+ * path blocking on a stalled endpoint, which the target now prevents on its own.
+ */
 
 /* The isochronous packet size this core can actually buffer. The device FIFO RAM
  * measures 200 words and the split leaves 88 words (352 bytes) for RX, so the class
