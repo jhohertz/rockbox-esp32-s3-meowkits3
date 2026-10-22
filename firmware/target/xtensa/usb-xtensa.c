@@ -169,6 +169,14 @@ static volatile uint32_t xt_irq_rst;
 static volatile uint32_t xt_irq_enum;
 static volatile uint32_t xt_irq_iep;
 static volatile uint32_t xt_irq_oep;
+/* Sampling counters for the RTC ring: one record per 1024 isochronous OUT interrupts,
+ * so the arrival rate and the core's drop flag can be read out of RTC slow after a soft
+ * park. Reading them costs two memory writes per second of streaming and never touches
+ * the transport, which is the point -- every attempt to read this over the CDC console
+ * has hung the device, and a channel that perturbs its subject is not a measurement.
+ */
+static uint32_t xt_iso_cnt;
+static uint32_t xt_iso_last;
 static volatile uint32_t xt_irq_none;
 /* Handler runs that happened before the driver was armed, i.e. while the core was still
  * being configured. Kept separate from xt_irq_none, which means "the line was drawn with
@@ -238,6 +246,22 @@ static void usb_dwc_isr(void *arg)
 
 
     INT_USB_FUNC();
+
+#ifdef USB_ENABLE_AUDIO
+    /* Tick and completion count together give the packet rate between two records; the
+     * GINTSTS alongside says whether the core is throwing isochronous OUT packets away
+     * (isooutdrop is bit 14 per soc/usb_dwc_struct.h) and how full the mixer's queue is.
+     */
+    if (xt_irq_oep != xt_iso_last && ++xt_iso_cnt >= 1024)
+    {
+        xt_iso_cnt = 0;
+        xt_iso_last = xt_irq_oep;
+        xtensa_breadcrumb_rtc("isoA", (unsigned long)current_tick,
+                              (unsigned long)xt_irq_oep);
+        xtensa_breadcrumb_rtc("isoB", (unsigned long)DWC_GINTSTS,
+                              (unsigned long)usb_audio_get_prebuffering());
+    }
+#endif
 }
 
 void usb_dw_target_enable_clocks(void)
@@ -1128,7 +1152,7 @@ static void usb_vbus_poll(void)
                               "rockbox: usb-audio active=%d playing=%d allocfail=%d "
                               "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu "
                               "ep=%d ctl=%08x sz=%08x xfer=%d int=%08x daint=%08x "
-                              "dma=%p req=%08lx last=%08lx epdbg=%08lx\r\n",
+                              "dma=%p\r\n",
                               (int)usb_audio_get_active(),
                               (int)usb_audio_get_playing(),
                               (int)usb_audio_get_alloc_failed(),
@@ -1142,37 +1166,7 @@ static void usb_vbus_poll(void)
                               (int)(asz & 0x7ffff),
                               (unsigned)DWC_DOEPINT(aep),
                               (unsigned)DWC_DAINT,
-                              (void *)DWC_DOEPDMA(aep),
-                              /* req: interface-recipient count in the high half,
-                               * endpoint-recipient count in the low half. last: the most
-                               * recent class request as bRequestType:bRequest:wIndex,
-                               * which shows exactly how Linux addressed the sampling
-                               * frequency control. */
-                              ({ extern uint32_t usb_audio_dbg_req_counts;
-                                 usb_audio_dbg_req_counts; }),
-                              ({ extern uint32_t usb_audio_dbg_req_last;
-                                 usb_audio_dbg_req_last; }),
-                              /* epdbg: requests that reached the streaming endpoint's
-                               * control handler in the top byte, then refused for a wrong
-                               * control selector, then a wrong wLength, then answered -- so
-                               * "arrived but refused" and "arrived and answered" are
-                               * distinguishable. */
-                              ({ extern uint32_t usb_audio_dbg_ep_reqs,
-                                           usb_audio_dbg_ep_badval,
-                                           usb_audio_dbg_ep_badlen,
-                                           usb_audio_dbg_ep_ok;
-                                 (uint32_t)((usb_audio_dbg_ep_reqs << 24) |
-                                            (usb_audio_dbg_ep_badval << 16) |
-                                            (usb_audio_dbg_ep_badlen << 8) |
-                                            usb_audio_dbg_ep_ok); }),
-                              ({ extern uint32_t usb_audio_dbg_ep_reqs,
-                                           usb_audio_dbg_ep_badval,
-                                           usb_audio_dbg_ep_badlen,
-                                           usb_audio_dbg_ep_ok;
-                                 (uint32_t)((usb_audio_dbg_ep_reqs << 24) |
-                                            (usb_audio_dbg_ep_badval << 16) |
-                                            (usb_audio_dbg_ep_badlen << 8) |
-                                            usb_audio_dbg_ep_ok); }));
+                              (void *)DWC_DOEPDMA(aep));
             if (an > 0)
                 usb_serial_send((unsigned char *)aud_line, an);
 #endif

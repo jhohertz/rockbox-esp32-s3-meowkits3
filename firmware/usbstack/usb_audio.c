@@ -942,14 +942,6 @@ int usb_audio_get_alt_intf(void)
     return usb_as_playback_intf_alt;
 }
 
-/* TEMPORARY: request counters for the xtensa status line. */
-uint32_t usb_audio_dbg_req_counts;
-uint32_t usb_audio_dbg_req_last;
-uint32_t usb_audio_dbg_ep_reqs;
-uint32_t usb_audio_dbg_ep_badval;
-uint32_t usb_audio_dbg_ep_badlen;
-uint32_t usb_audio_dbg_ep_ok;
-
 int32_t usb_audio_get_samplesperframe(void)
 {
     return samples_fb;
@@ -964,18 +956,6 @@ static bool usb_audio_as_ctrldata_endpoint_request(struct usb_ctrlrequest* req, 
 {
     (void)reqdata_size; /* should check this? */
 
-    /* TEMPORARY: count what this handler actually did, so the status line can say whether
-     * the sampling-frequency request was answered or refused. The requests are known to
-     * arrive (the counter on the status line says so) and Linux still reports
-     * "cannot get freq at ep 0x2", so the question is what we reply with.
-     */
-    usb_audio_dbg_ep_reqs++;
-    if (req->wValue != (USB_AS_EP_CS_SAMPLING_FREQ_CTL << 8))
-        usb_audio_dbg_ep_badval++;
-    else if (req->wLength != 3)
-        usb_audio_dbg_ep_badlen++;
-    else
-        usb_audio_dbg_ep_ok++;
 
     /* only support sampling frequency */
     if(req->wValue != (USB_AS_EP_CS_SAMPLING_FREQ_CTL << 8))
@@ -1313,24 +1293,6 @@ static bool usb_audio_interface_request(struct usb_ctrlrequest* req, uint8_t* re
  */
 static bool usb_audio_control_request(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
 {
-    /* TEMPORARY instrumentation. Linux says "cannot get freq at ep 0x2" but the host cannot
-     * tell us which recipient and which index it actually used -- every class request is
-     * EBUSY for us because snd-usb-audio owns those interfaces -- and the debug console
-     * goes quiet within about twenty seconds of an attach, which is roughly when the host
-     * opens the stream. Counting the requests and latching the last one's fields on the
-     * status line says whether the request arrives at all, and how it is addressed.
-     */
-    static uint32_t req_if, req_ep;
-    static uint32_t req_last;
-
-    if ((req->bRequestType & USB_RECIP_MASK) == USB_RECIP_ENDPOINT)
-        req_ep++;
-    else
-        req_if++;
-    req_last = (req->bRequestType << 24) | (req->bRequest << 16) |
-               ((req->wIndex >> 8) << 8) | (req->wIndex & 0xff);
-    usb_audio_dbg_req_counts = ((req_if << 16) | req_ep);
-    usb_audio_dbg_req_last = req_last;
 
     switch(req->bRequestType & USB_RECIP_MASK)
     {
@@ -1530,9 +1492,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
         /* guard against IRQ to avoid race with completion audio completion */
-#ifndef USB_AUDIO_NO_IRQ_MASK
         int oldlevel = disable_irq_save();
-#endif
         /* setup a new transaction except if we ran out of buffers */
         if(rx_usb_idx != rx_play_idx)
         {
@@ -1553,29 +1513,9 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             static const struct mixer_play_cbs cbs = {
                 .get_more = playback_audio_get_more,
             };
-            /* TEMPORARY BISECTION for the xtensa port, enabled by defining
-             * USB_AUDIO_DRY_RUN in the target config: hand the received frames to
-             * the mixer or not. The whole point is that this call runs inside
-             * disable_irq_save(), so whatever it reaches (pcm start, sink play, GDMA
-             * arm) happens with the core's interrupts masked and cannot be observed
-             * afterwards -- no watchdog can fire, and a power cycle clears the RTC
-             * ring. Skipping it says whether the lock-up lives in the mixer/sink
-             * chain or in the isochronous receive path itself. Remove once the fault
-             * is named: audio without a mixer does nothing. */
-            /* The class declares 1023-byte isochronous packets (usb_audio.c:657) and
-             * usb_drv_ep_init() therefore configures the hardware endpoint at mps 1023
-             * too. On this core that needs ~256 words of RX FIFO and the whole device
-             * FIFO RAM measures 200 words, so the declared packet size is larger than
-             * the FIFO can ever hold -- worth knowing, but at 48 kHz the host only sends
-             * 192 bytes a frame, so it is a spec violation rather than an obvious cause.
-             */
-#ifndef USB_AUDIO_DRY_RUN
             mixer_channel_play_data(PCM_MIXER_CHAN_USBAUDIO, &cbs, NULL, 0);
-#endif
         }
-#ifndef USB_AUDIO_NO_IRQ_MASK
         restore_irq(oldlevel);
-#endif
         retval =  true;
     }
     else
