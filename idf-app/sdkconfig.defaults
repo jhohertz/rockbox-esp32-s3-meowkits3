@@ -111,15 +111,15 @@ CONFIG_SPIRAM_RODATA=y
 CONFIG_ESP_PANIC_HANDLER_IRAM=y
 CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
 
-# Test the starvation theory before spending DRAM on PANIC_HANDLER_IRAM. With
-# TASK_WDT_PANIC the watchdog turns a 5-second starvation into abort(), which is a
-# deliberate panic rather than a fault -- and it fits every symptom seen: UI going
-# laggy, the screen not waking, then a restart whose register dump never appears
-# because IDF's re-entry guard fires first. As a warning instead, starvation is
-# still reported but the device survives it, which distinguishes "we are starving
-# a core" from "we are faulting inside the panic handler".
-# CONFIG_ESP_TASK_WDT_PANIC is not set
-# CONFIG_TASK_WDT_PANIC is not set
+# A hang has to end in a reset, not in silence. With PANIC unset the watchdog only
+# prints a warning, and the warning goes to the USB-Serial-JTAG console, which the
+# running app has already handed to the OTG wrap -- so it is invisible, and the chip
+# stays hung with its endpoints half-initialised while the host keeps talking to a
+# device that can no longer answer. Panic instead: the register dump is short-lived
+# but xtensa_breadcrumb_rtc() and the RTC panic record live in RTC slow, which
+# survives a watchdog-triggered reset, and the rebooting boot prints that trail over
+# CDC. That is what makes a hang readable after the fact.
+CONFIG_ESP_TASK_WDT_PANIC=y
 
 # A panic should reboot, not halt. With PRINT_HALT the chip stops with the USB pad
 # * mux still handed to the OTG wrap (that override is in the RTC domain and only a
@@ -130,10 +130,13 @@ CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 # CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT is not set
 
-# The OTG interrupt experiment needs a CPU interrupt slot, and CPU 0's general-use pool
-# (22 slots) is already nearly full: allocating the OTG source without freeing something
-# makes IDF fail DMA_OUT_CH0 and panic in i2s. The interrupt watchdog is the one thing
-# here that can be spared during bring-up, because the attach judge restarts the chip on
-# its own. Drop this along with USB_ALLOW_ATTACH once the transport works.
-# CONFIG_ESP_INT_WDT is not set
-# CONFIG_INT_WDT is not set
+# The interrupt watchdog. This was disabled during the OTG interrupt experiment
+# because CPU 0's general-use pool is nearly full, but it is the only thing that
+# covers a fault the task watchdog cannot see: a core stuck with interrupts
+# disabled, or a storm of spurious interrupts that starves every thread. Both look
+# identical from outside -- enumeration holds, buttons do nothing, the screen will
+# not wake -- and without this the chip simply stays that way. Its alarm runs on
+# the existing esp_timer interrupt rather than claiming a pool slot.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=2000
+CONFIG_ESP_INT_WDT_CHECK_CPU1=y
