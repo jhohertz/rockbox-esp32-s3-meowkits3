@@ -128,35 +128,6 @@
 
 #define GET_DTXFNUM(ep) ((DWC_DIEPCTL(ep)>>22) & 0xf)
 
-/* Target-side observation of IN endpoint lifecycle events. Empty by default; a target
- * that needs to know which path left an endpoint disabled overrides it. 'what' is one of
- * the USB_DW_EP_EV_* constants in usb-designware.h, 'epnum' the endpoint, and 'diepctl'
- * the endpoint control register after the event. No behaviour depends on this hook.
- */
-__attribute__((weak)) void usb_dw_target_ep_event(int what, int epnum,
-                                                  unsigned int diepctl)
-{
-    (void)what;
-    (void)epnum;
-    (void)diepctl;
-}
-
-/* Target-side observation of SETUP packets. Empty by default; used to correlate an EP0
- * stall with the request that caused it. No behaviour depends on this hook.
- */
-__attribute__((weak)) void usb_dw_target_setup_received(uint8_t bmRequestType,
-                                                        uint8_t bRequest,
-                                                        uint16_t wValue,
-                                                        uint16_t wIndex,
-                                                        uint16_t wLength)
-{
-    (void)bmRequestType;
-    (void)bRequest;
-    (void)wValue;
-    (void)wIndex;
-    (void)wLength;
-}
-
 #define USB_DW_NUM_DIRS 2
 #define USB_DW_DIR_OFF(dir) (((dir) == USB_DW_EPDIR_IN) ? 0 : 16)
 
@@ -259,9 +230,6 @@ static void usb_dw_set_stall(int epnum, enum usb_dw_epdir epdir, int stall)
         DWC_EPCTL(epnum, epdir) &= ~STALL;
         DWC_EPCTL(epnum, epdir) |= SETD0PIDEF;
     }
-
-    if (epdir == USB_DW_EPDIR_IN)
-        usb_dw_target_ep_event(USB_DW_EP_EV_STALL, epnum, DWC_DIEPCTL(epnum));
 }
 
 static void usb_dw_set_address(uint8_t address)
@@ -623,8 +591,6 @@ static void usb_dw_nptx_unqueue(int epnum)
             if (~DWC_DIEPCTL(ep) & EPENA)
                 continue;
             DWC_DIEPCTL(ep) |= EPDIS|SNAK;
-            usb_dw_target_ep_event(USB_DW_EP_EV_UNQUEUE, ep, DWC_DIEPCTL(ep));
-
             /* Adjust */
             uint32_t packetsleft = (DWC_DIEPTSIZ(ep) >> 19) & 0x3ff;
             if (!packetsleft) continue;
@@ -698,8 +664,6 @@ static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
 
                 /* Disable the EP we are going to flush */
                 usb_dw_disable_ep(epnum, epdir);
-                usb_dw_target_ep_event(USB_DW_EP_EV_DISABLE, epnum, DWC_DIEPCTL(epnum));
-
                 /* Flush it all the way down! */
                 usb_dw_flush_fifo(TXFFLSH, dtxfnum);
 
@@ -871,6 +835,17 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPDMA(epnum, epdir) = USB_DW_PHYSADDR((uint32_t)buf);
 #endif
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
+    /* Endpoint 0 is the control endpoint: it has to answer whatever the host asks next, and
+     * a stall latched by an earlier refused request would otherwise hold back every later
+     * reply. Measured on ESP32-S3: EP0 IN armed with EPENA and STALL both set, after which
+     * Linux reports "cannot get freq at ep 0x2" for the rest of the session and the CDC
+     * console goes quiet. Clearing it on the way to arming is what a gadget function does
+     * when a new request arrives. Other endpoints keep their stall -- there it is a real
+     * signal to the host.
+     */
+    if (epnum == 0 && epdir == USB_DW_EPDIR_IN && (DWC_EPCTL(0, USB_DW_EPDIR_IN) & STALL))
+        DWC_EPCTL(0, USB_DW_EPDIR_IN) &= ~STALL;
+
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
         /*
@@ -915,9 +890,6 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
         DWC_DIEPEMPMSK |= (1 << GET_DTXFNUM(epnum));
 #endif
 #endif
-
-    if (epdir == USB_DW_EPDIR_IN)
-        usb_dw_target_ep_event(USB_DW_EP_EV_ARM, epnum, DWC_DIEPCTL(epnum));
 }
 
 static void usb_dw_transfer(int epnum, enum usb_dw_epdir epdir,
@@ -1071,13 +1043,7 @@ static void usb_dw_handle_setup_received(void)
     DISCARD_DCACHE_RANGE(ep0_buffer, 64);
 #endif
     struct usb_ctrlrequest req;
-    memcpy(&req, ep0_buffer, sizeof(struct usb_ctrlrequest));
-    /* The values are little-endian on the wire and this arch is little-endian, which is
-     * also how usb_core.c reads them, so they are passed unconverted.
-     */
-    usb_dw_target_setup_received(req.bRequestType, req.bRequest,
-                                 req.wValue, req.wIndex, req.wLength);
-    /* Abort both old data/status directions before delivering the new SETUP.
+    memcpy(&req, ep0_buffer, sizeof(struct usb_ctrlrequest));    /* Abort both old data/status directions before delivering the new SETUP.
      * Flush does not report completions, so notify the core explicitly once. */
     usb_dw_flush_endpoint(0, USB_DW_EPDIR_IN);
     usb_dw_flush_endpoint(0, USB_DW_EPDIR_OUT);

@@ -290,14 +290,6 @@ extern void usb_dw_target_enable_irq(void);
 extern void usb_dw_target_disable_irq(void);
 extern void usb_dw_target_clear_irq(void);
 
-/* IN endpoint lifecycle events reported to the target by usb_dw_target_ep_event(). A
- * target overrides that weak hook to observe them; nothing in the driver depends on the
- * override doing anything.
- */
-#define USB_DW_EP_EV_ARM     1  /* a transmit was armed: EPENA set */
-#define USB_DW_EP_EV_UNQUEUE 2  /* nptx_unqueue disabled it to reclaim the shared FIFO */
-#define USB_DW_EP_EV_DISABLE 3  /* flush_endpoint disabled it while shutting down */
-#define USB_DW_EP_EV_STALL   4  /* stall state changed */
 
 /* endpoint allocation */
 struct usb_drv_ep_alloc_ctx_dw
