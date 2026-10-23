@@ -218,12 +218,18 @@ void es8311_close(void)
 }
 
 /* Rockbox always passes centibels. reg = round((db + 95.5) / 0.5). */
-/* val is in Rockbox's 0.1 dB unit, matching the AUDIOHW_SETTING bounds of -955
- * and 320. The register is 0.5 dB per step from a -95.5 dB floor, so:
+/* val is in Rockbox's 0.1 dB unit, matching the AUDIOHW_SETTING bounds of -955 and 0.
+ * The register is 0.5 dB per step from a -95.5 dB floor, so:
  *
  *   -955 -> 0   (-95.5 dB, the floor)
  *   -250 -> 141 (-25.0 dB, the default)
- *   +320 -> 255 (+32.0 dB, the ceiling)
+ *     0  -> 191 (0 dB, unity -- and the ceiling the range now declares)
+ *   +320 -> 255 (+32.0 dB, unreachable: the declared range stops at 0 dB because the
+ *                stock firmware caps this amplifier at register 191 for its 1 W rating)
+ *
+ * The clamp below stays as a guard rather than as the range limit: Rockbox would only
+ * reach it if something outside the audiohw setting table handed us a value above the
+ * declared maximum.
  *
  * The previous formula divided by 50 after adding 9550, i.e. it treated val as
  * centibels. On the -25.0 dB default that produced 0xBA, which is -2.5 dB -- 22.5
