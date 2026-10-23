@@ -380,14 +380,18 @@
  * and the CDC OUT packet. That caps this at 320: 512 bytes would need 176 RX words, which
  * the split cannot pay for, so raising it is not an option on this silicon.
  *
- * 320 carries 44.1 kHz (176 bytes), 48 kHz (192) and up to 80 kHz (320). The class default
- * of 1023 could never be armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE
- * at all.
+ * 320 carries Rockbox's 44.1 kHz (176 bytes a frame), 48 kHz (192) and 64 kHz (256). There
+ * is no 80 kHz entry to carry: hw_freq_sampr[] is 192/176/96/88/64/48/44/32/24/22/16/12/11/8,
+ * so 64 kHz is the ceiling this packet can hold. The class default of 1023 could never be
+ * armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE at all.
  *
  * HW_SAMPR_CAPS is SAMPR_CAP_ALL_96, so hw_freq_sampr still contains 88.2 kHz (353 bytes a
  * frame) and 96 kHz (384) -- both over this packet size, and a frame that does not fit is
  * dropped silently. USB_AUDIO_MAX_PACKET_BYTES below is what stops the descriptor from
- * offering them; without it the host is free to request 96 kHz, as the CDC log showed.
+ * offering them; without it the host is free to request 96 kHz, as the CDC log showed. The
+ * aligned alternative is HW_SAMPR_CAPS itself, which is how every other target expresses
+ * "the hardware cannot carry these rates" -- but that knob feeds local playback and
+ * recording as well, so it costs 88.2/96 kHz off the player, not just off the DAC.
  */
 #define USB_AUDIO_BUFFER_SIZE 320
 
