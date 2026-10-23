@@ -40,22 +40,6 @@
  */
 #define CPU_FREQ 240000000
 
-/* Bring-up instrumentation for the dircache scan fault and the Ext_RAM MMU
- * faults: the STRACE() calls in firmware/common/dircache.c and firmware/kernel/,
- * the .noinit ring in firmware/target/xtensa/scan_trace.c, and the sampling in
- * vApplicationTickHook.
- *
- * Off now, not deleted -- the questions it answered are settled (the PSRAM MMU
- * indexing, the Ext_RAM read/write asymmetry, the codec I2C addressing), and
- * leaving it on costs real time on a hot path. With it defined, the 1 kHz tick
- * reads intenable plus two EXTMEM status registers every eighth tick, and every
- * sixty-fourth walks 128 volatile MMU entries at 0x600C5000. That is what was
- * left running on the tick after the button-tick probe was removed.
- *
- * Uncomment to re-arm everything at once. The ring is .noinit, so a trace
- * survives a reset and is printed by the boot log on the next start. */
-/* #define ROCKBOX_SCAN_TRACE */
-
 /* Not set, on purpose. Rockbox's cpu_boost() exists to call
  * set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
  * IDF moves the analog regulator bias (dbias) along with the core clock via
@@ -389,13 +373,131 @@
  * path blocking on a stalled endpoint, which the target now prevents on its own.
  */
 
-/* The isochronous packet size this core can actually buffer. The device FIFO RAM
- * measures 200 words and the split leaves 88 words (352 bytes) for RX, so the class
- * default of 1023 bytes -- 256 words -- cannot be armed: the endpoint gets sized
- * beyond its FIFO. 320 bytes covers 48 kHz stereo (192 bytes a frame) with room for
- * 64 kHz; 96 kHz (384 bytes) is out of reach at full speed on this silicon.
+/* The isochronous packet size this target arms per frame, which is also the OUT endpoint's
+ * declared wMaxPacketSize and therefore the ceiling on what the descriptor may promise.
+ * The device FIFO RAM measures 200 words; after NPTX 16 and PTX 8 x 6 the RX side is 136
+ * words = 544 bytes, and usb-xtensa.c asserts it can hold one isochronous packet plus EP0's
+ * and the CDC OUT packet. That caps this at 320: 512 bytes would need 176 RX words, which
+ * the split cannot pay for, so raising it is not an option on this silicon.
+ *
+ * 320 carries 44.1 kHz (176 bytes), 48 kHz (192) and up to 80 kHz (320). The class default
+ * of 1023 could never be armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE
+ * at all.
+ *
+ * HW_SAMPR_CAPS is SAMPR_CAP_ALL_96, so hw_freq_sampr still contains 88.2 kHz (353 bytes a
+ * frame) and 96 kHz (384) -- both over this packet size, and a frame that does not fit is
+ * dropped silently. USB_AUDIO_MAX_PACKET_BYTES below is what stops the descriptor from
+ * offering them; without it the host is free to request 96 kHz, as the CDC log showed.
  */
 #define USB_AUDIO_BUFFER_SIZE 320
+
+/* Advertise only the sample rates whose per-frame payload (2 channels x 16-bit = 4 bytes)
+ * fits the armed packet. The class default of 0 advertises all of hw_freq_sampr, as every
+ * other target does; here it follows the buffer size so the two cannot drift apart. */
+#define USB_AUDIO_MAX_PACKET_BYTES  USB_AUDIO_BUFFER_SIZE
+
+/* Cushion, declared in slots (one slot = one full-speed packet = one ms at any rate this
+ * device negotiates). Unit convention follows target/hosted/hiby/usb-dac-hiby.c, which
+ * declares DAC_RING_FRAMES 8192 with "~186 ms at 44.1 kHz" as the comment: the buffer is
+ * declared in the unit the code indexes by, and wall clock is written down for the human.
+ *
+ * The mixer consumes mix_frame_size (MIX_FRAME_SAMPLES 256 frames = 1024 bytes) per pass, a
+ * pass every 256 frames, i.e. 5.33 slots every 5.33 ms with a slot holding one packet. The
+ * restart gate is therefore a floor that one pass sits below: with the 22-slot gate below the
+ * trough is roughly 16.7 slots, versus the 10.7 the previous 16/32 geometry allowed. The gate
+ * is only meaningful in wall clock -- a slot's width comes from the arm -- so widening the arm
+ * means dividing the gate by the same factor or the cushion silently changes with it.
+ *
+ * Arming two packets per transfer was tried once fairly, with the gate divided in half so
+ * nothing else moved, and it changed nothing: Frames dropped stayed at ~10/s and the queue sat
+ * exactly on the new gate (Min/Max 6/11). That outcome is itself the measurement -- had the
+ * core delivered two packets per completion, the frame number would have advanced by 2 each
+ * time and the class's adjacency test would have counted ~500 drops a second rather than 10.
+ * So this core retires every isochronous packet as its own transfer whatever PKTCNT holds, and
+ * a wider arm cannot hold the endpoint open across a frame boundary. It also costs cushion: a
+ * trough of 6 two-millisecond slots is 12 ms where the one-packet geometry gives 17 ms. An
+ * even earlier revision armed four packets and cut NR_BUFFERS to 12 with a gate of 6 at the
+ * same time, so the 110 -> 553 underflow cycles it produced measured the shrunken ring, not
+ * the arm; that result is void, and the fair re-test above is what replaced it.
+ *
+ * Cost is deliberate and should be re-checked after any change: NR_BUFFERS *
+ * REAL_DSP_BUF_SIZE is 48 * 1280 = 61,440 bytes, requested from core_alloc() in
+ * usb_audio_request_buf(). The stride does not follow the arm -- REAL_DSP_BUF_SIZE comes from
+ * BUFFER_SIZE*4, which is why usb_audio.c's slot array already tolerates a completion carrying
+ * two packets -- so a wider arm would cost queue width, not memory.
+ * usb_audio_request_buf(). core_alloc maps onto the audiobuffer, which on this board is the
+ * 4 MB buflib arena (MEMORY.md section 3), NOT the PSRAM window. ALLOC FAILED! on the USB
+ * Audio debug page is the live check that the request was satisfied.
+ */
+#define NR_BUFFERS               48  /* 48 slots: ~48 ms at 48 kHz, one packet per slot */
+
+/* This gate is also the feedback controller's setpoint. usb_audio.c forms the command as
+ *
+ *     samples_fb = 48 - (queue - MINIMUM_BUFFERS_QUEUED)/4, clamped to +/-1 sample
+ *
+ * so a gate above the queue's natural equilibrium leaves the controller permanently pressed
+ * toward its +1 clamp, modulating the host's send rate by up to 1% -- which is audible as
+ * warble on sustained material, invisible in digital silence, and independent of volume.
+ * Measured on this board with a gate of 24: the queue sits at 22.5-23.5, Samples used per
+ * Frame floats between 48.5 and 48.9 rather than settling, and a burst-marker capture through
+ * the speaker shows 0.17 ms of peak-to-peak time-base swing over 200 ms windows, about
+ * +/-0.35%, which is the hunting itself.
+ *
+ * The device also plays slightly fast: a 1 kHz tone measured 1000.33 Hz against the host's own
+ * capture clock, i.e. the DAC consumes 48,016 frames/s rather than 48,000 (+333 ppm). So the
+ * command that actually holds the queue is 48.016, not 48.000 -- a steady demand of 0.016
+ * samples per frame, comfortably inside the clamp and 0.6 cents, which is not a pitch problem.
+ * It does mean the nominal in samples_base is wrong by that much, and any residual drift here
+ * should be read against 48.016 rather than 48.
+ *
+ * 22 puts the setpoint at the measured equilibrium instead of above it. Judge the change by
+ * Samples used per Frame settling near 48.02 and by the capture's time-base swing shrinking;
+ * Buffers filled cannot show it, because it is the variable being aimed at.
+ */
+#define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
+
+/* Re-arm the isochronous OUT endpoint before copying the completed packet, using two
+ * alternating receive buffers (usb_audio.c's USB_AUDIO_RX_PINGPONG).
+ *
+ * Measured: no effect on the drops. Frames dropped stayed at ~10/s and Samples used per Frame
+ * near 48.7, unchanged from the single-buffer ordering -- and the two-packet arm, which widens
+ * the same window instead of shortening it, also did nothing. Do not cite this as a latency
+ * fix. It is kept because handing the hardware its next buffer before touching the payload is
+ * the shape TinyUSB's audio_device.c, espressif's usb_device_uac and
+ * firmware/target/hosted/hiby/usb-dac-hiby.c all use.
+ *
+ * Cost is zero: the second span comes out of the same borrowed storage transfer buffer
+ * (usb-xtensa.c's usb_audio_target_rx_buffer()), which is 2 * max(read, write) = 1024 bytes
+ * and carries 2 * 320 = 640. Both halves are 32-byte aligned because REAL_BUF_SIZE is.
+ *
+ * usb_audio.c exposes USB_AUDIO_RX_ARM_SIZE for a wider arm; it is deliberately left at its
+ * default here, one packet, for the reasons recorded against NR_BUFFERS above.
+ */
+#define USB_AUDIO_RX_PINGPONG    1
+
+/* The frame-parity PID assertion in usb_dw_epstart() is load-bearing on this core, not an
+ * artifact. Dropping it -- arming isochronous OUT without SETD0PIDEF/SETD1PIDOF, the shape
+ * TinyUSB uses because it programs the PID once at edpt_open instead of per transfer -- was
+ * measured on this board: Frames dropped went from ~10/s to ~100/s and the queue bottomed out
+ * at Min 1 every time. Each isochronous OUT transfer therefore needs an explicit expectation
+ * written with its arm. Do not try to skip it again. */
+
+/* The isochronous completion path runs the codec's DSP chain -- usb_audio.c's dsp_process()
+ * on the instance it takes from dsp_get_config(CODEC_IDX_AUDIO) -- rather than queueing
+ * packets verbatim. A bypass macro was in place while the noise was being localised and is
+ * gone now: the transport measured innocent, so the chain is restored to match every other
+ * target.
+ *
+ * The cost is per-packet work inside the USB interrupt at ~1000/s. If Frames dropped rises
+ * once this is back, the response is to move that work out of the handler -- a pump thread,
+ * as firmware/target/hosted/hiby/usb-dac-hiby.c does -- not to skip the chain.
+ *
+ * Note usb_audio.c sets dsp_buf_size[] from dsp_process()'s output count, and the class
+ * documents that samples consumed and produced need not correspond: a packet the chain
+ * absorbs lands as a zero-length slot. That is what usb_audio_target_get_more() exists to
+ * skip, rather than tearing the mixer channel down and muting for MINIMUM_BUFFERS_QUEUED
+ * every time one appears.
+ */
 /* Rockbox's own vendor id, deliberately not Espressif's 0x303A/0x1001: that pair is
  * what the ROM's USB-Serial-JTAG reports, so a kernel log could not tell the console
  * from this device -- and both appear on the same port within seconds of each other
