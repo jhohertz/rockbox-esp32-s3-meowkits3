@@ -23,13 +23,11 @@
  * context switch only ever runs from thread context, never from an ISR.
  */
 
-#include "driver/gptimer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"   /* esp_reset_reason */
 
-extern void scan_trace_early_dump(void);
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
@@ -136,62 +134,6 @@ static void rockbox_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-/* Diagnostic: allocate an interrupt on core 0 *after* the FreeRTOS tick on
- * that core has gone quiet, and count its callbacks. If a freshly allocated
- * source fires, core 0 still takes interrupts and the systimer's binding
- * specifically is what broke. If this stays at zero too, core 0's interrupt
- * delivery as a whole is dead -- two very different bugs. */
-volatile unsigned rb_late_hits;
-volatile unsigned rb_late_err;
-volatile unsigned rb_probe_ran;
-
-static bool IRAM_ATTR rb_late_cb(gptimer_handle_t timer,
-                                 const gptimer_alarm_event_data_t *edata,
-                                 void *user_ctx)
-{
-    (void)timer; (void)edata; (void)user_ctx;
-    rb_late_hits++;
-    return false;
-}
-
-static void rb_late_probe(void *arg)
-{
-    gptimer_handle_t tm;
-    gptimer_config_t cfg = {
-        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
-        .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 1000000,
-    };
-    gptimer_event_callbacks_t cbs = { .on_alarm = rb_late_cb };
-    gptimer_alarm_config_t ac = {
-        .alarm_count = 100000,        /* 100 ms */
-        .reload_count = 0,
-        .flags.auto_reload_on_alarm = true,
-    };
-
-    (void)arg;
-    rb_probe_ran = 1;
-
-    /* Everything that matters happens before the first blocking call. This
-     * task is pinned to a core that, once its tick dies, is never preempted
-     * again -- so anything behind a vTaskDelay there simply never runs. That
-     * is what made the first version of this probe worthless. */
-    rb_late_err = gptimer_new_timer(&cfg, &tm);
-    if (rb_late_err == ESP_OK)
-        rb_late_err = gptimer_register_event_callbacks(tm, &cbs, NULL);
-    if (rb_late_err == ESP_OK)
-        rb_late_err = gptimer_enable(tm);
-    if (rb_late_err == ESP_OK)
-        rb_late_err = gptimer_set_alarm_action(tm, &ac);
-    if (rb_late_err == ESP_OK)
-        rb_late_err = gptimer_start(tm);
-
-    /* Then get out of the way. The alarm callback is an ISR; it does not need
-     * this task to run again, so Rockbox keeps the core and behaves normally
-     * while the counter tells us whether core 0 is being served. */
-    vTaskDelay(portMAX_DELAY);
-}
-
 void app_main(void)
 {
     /* IDF's console is USB-Serial-JTAG and the pads move to the OTG core about 865 ms
@@ -203,7 +145,6 @@ void app_main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
-    scan_trace_early_dump();
     xtensa_paniclog_dump();
     /* The RTC-slow ring survives the reset that clears internal DRAM, and it is where the
      * audio counters are recorded (usbAud: isochronous frames received and the endpoint's
@@ -268,7 +209,6 @@ void app_main(void)
      * silent no-show. */
     static StaticTask_t rockbox_tcb;
 
-    xTaskCreatePinnedToCore(rb_late_probe, "lateprobe", 4096, NULL, 2, NULL, 0);
 
     TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
         rockbox_task, "rockbox", ROCKBOX_STACK_WORDS, NULL,

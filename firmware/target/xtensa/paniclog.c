@@ -43,7 +43,8 @@ struct panic_record
 
 /* .noinit: not in the image, not cleared at startup, and placed in internal
  * SRAM by IDF's sections.ld -- which is what survives the reset a panic causes.
- * Same mechanism scan_trace.c uses, for the same reason. */
+ * .noinit is what makes a crash record survivable: IDF's panic path resets through
+ * RTC_SW_CPU_RST, which leaves internal SRAM alone. */
 static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
 
 /* ------------------------------------------------------------------ *
@@ -355,41 +356,6 @@ void xtensa_panic_log(const char *msg)
     esp_rom_printf("\r\n*PANIC* %s\r\n", rec.msg);
 }
 
-/* Called early in the next boot, before anything can panic of its own accord. */
-/* Bring-up switch. Remove with the attach instrumentation once enumeration works.
- * Deliberately a define in this file rather than in the model header: nothing else
- * needs to know about it, and it must not silently survive into a shipping build. */
-#define XT_BRINGUP_TRAIL_REPEAT 1
-
-#ifdef XT_BRINGUP_TRAIL_REPEAT
-/* Bring-up only: re-print the trail from the tick task thread every ~10 s.
- *
- * The dump in app_main() lands about a second after boot, which is before the
- * host has finished enumerating USB-Serial-JTAG and created /dev/ttyACM0 -- so
- * the trail existed, was never consumed (bc_next is deliberately left alone),
- * and was still uncatchable: there was no reader and no node to read from. A
- * repeating print means any listener at any time sees the same history, and it
- * costs nothing to remove once the attach is proven.
- */
-static bool xt_repeat_started;
-
-static void xt_trail_repeat(void)
-{
-    static unsigned ticks;
-
-    if (++ticks < 10 * HZ)
-        return;
-    ticks = 0;
-
-    xtensa_paniclog_dump();
-}
-
-static void xtensa_paniclog_repeat_start(void)
-{
-    tick_add_task(xt_trail_repeat);
-}
-#endif
-
 int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count)
 {
     struct rtc_store *s = (struct rtc_store *)rtc_store;
@@ -477,34 +443,15 @@ void xtensa_paniclog_dump(void)
     }
 
     /* Consume the record, so a stale one is not replayed forever: a fault that looks
-     * like it keeps happening is the kind of lead that costs a day.
-     *
-     * Except while the trail is being repeated. A panic during a USB attach has no
-     * console to print to -- the pads are with the OTG core -- so it reboots quietly,
-     * and the next boot prints this record about a second after starting, which is
-     * before the host has enumerated USB-Serial-JTAG and created the serial node. The
-     * print happens, nobody can read it, and consuming the record destroys the only
-     * copy of the reason. Keeping it here means the repeating dump shows it on a
-     * console that exists. Remove along with XT_BRINGUP_TRAIL_REPEAT.
+     * like it keeps happening is the kind of lead that costs a day. The dump above has
+     * already printed it by now.
      */
-#ifdef XT_BRINGUP_TRAIL_REPEAT
-    /* keep the record for the repeating dump */
-#else
     rec.magic = 0;
-#endif
 
     /* Do NOT clear bc_next. The trail is ring-buffered and written by name, so
      * leaving it in place means the next crash overwrites the oldest entries
      * rather than starting from a blank slate -- and clearing it here would also
      * erase the boot stamp that proves the trail survived the reset at all. */
-
-#ifdef XT_BRINGUP_TRAIL_REPEAT
-    if (!xt_repeat_started)
-    {
-        xt_repeat_started = true;
-        xtensa_paniclog_repeat_start();
-    }
-#endif
 }
 
 /* Proven on hardware the first time it was used: a crash during WAV resume

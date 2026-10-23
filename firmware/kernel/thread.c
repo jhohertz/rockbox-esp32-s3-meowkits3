@@ -36,19 +36,6 @@
 #endif
 #include "core_alloc.h"
 
-/* TEMPORARY bring-up instrumentation, paired with ROCKBOX_SCAN_TRACE and
- * firmware/target/xtensa/scan_trace.c. Tags 40..42 bracket the three parts of
- * a context switch so a trace that stops mid-switch says which part. Delete
- * along with the define. */
-#ifdef ROCKBOX_SCAN_TRACE
-extern void scan_trace(int tag, unsigned long a, unsigned long b,
-                       unsigned long c);
-#define STRACE(t,a,b,c) scan_trace((t),(unsigned long)(a),(unsigned long)(b), \
-                                   (unsigned long)(c))
-#else
-#define STRACE(t,a,b,c) do {} while (0)
-#endif
-
 #if (CONFIG_PLATFORM & PLATFORM_HOSTED)
 #include <errno.h>
 #endif
@@ -930,8 +917,6 @@ static NO_INLINE void check_tmo_expired_inner(struct core_entry *corep)
     struct thread_entry *prev = NULL;
     struct thread_entry *thread = TMO_THREAD_FIRST(&corep->tmo);
 
-    STRACE(44, corep, corep->tmo.head, corep->tmo.tail);
-
     /* If there are no processes waiting for a timeout, just keep the check
        tick from falling into the past. */
 
@@ -943,9 +928,6 @@ static NO_INLINE void check_tmo_expired_inner(struct core_entry *corep)
         enable_irq();
 
         struct thread_entry *next = TMO_THREAD_NEXT(thread);
-
-        STRACE(45, thread, thread->id, next);
-        STRACE(46, thread, thread->tmo_tick, thread->state);
 
         /* Lock thread slot against explicit wakeup */
         disable_irq();
@@ -1036,14 +1018,6 @@ static FORCE_INLINE void prepare_block(struct thread_entry *current,
  */
 void switch_thread(void)
 {
-#ifdef RB_DIAG_NO_SWITCH
-    /* Bisect: never perform a context switch. Rockbox threads
-     * busy-wait instead, but current_tick still advances, so timeouts
-     * still expire and the system still makes progress. If the OS tick
-     * survives this, the switch is what kills it. */
-    return;
-#endif
-
     const unsigned int core = CURRENT_CORE;
     struct core_entry *corep = __core_id_entry(core);
     struct thread_entry *thread = corep->running;
@@ -1057,21 +1031,7 @@ void switch_thread(void)
         /* Check core_ctx buflib integrity */
         core_check_valid();
 #endif
-        /* TEMPORARY: core 0 polices its own running-thread pointer at every
-           switch. The corruption is not caused by the switch -- the pointer is
-           valid on entry to one and nonsense after the thread has run a while
-           -- so checking it here bounds the writer to the code that ran in
-           between, instead of whatever access finally trips over it. */
-        {
-            extern unsigned int thread_bookkeeping_check(void);
-            unsigned int bad = thread_bookkeeping_check();
-
-            if (bad)
-                STRACE(93, bad, thread, current_tick);
-        }
-        STRACE(40, thread, thread->id, thread->state);
         thread_store_context(thread);
-        STRACE(41, thread, thread->context.sp, 0);
 
         /* Check if the current thread stack is overflown */
         if (UNLIKELY(thread->stack[0] != DEADBEEF) && thread->stack_size > 0)
@@ -1095,16 +1055,7 @@ void switch_thread(void)
 
         /* Enter sleep mode to reduce power usage */
         RTR_UNLOCK(corep);
-        /* Recorded, but only every 4096th pass: an idle core does this
-           thousands of times a second and would push every interesting
-           breadcrumb out of the ring. Seeing the pair at all is the point --
-           it says the scheduler found nothing runnable and woke up again. */
-        static unsigned sleep_n;
-        if ((++sleep_n & 4095u) == 0)
-            STRACE(68, current_tick, get_irq_level(), sleep_n);
         core_sleep(IF_COP(core));
-        if ((sleep_n & 4095u) == 0)
-            STRACE(69, current_tick, get_irq_level(), sleep_n);
 
         /* Awakened by interrupt or other CPU */
     }
@@ -1160,50 +1111,8 @@ void switch_thread(void)
     profile_thread_started(THREAD_ID_SLOT(thread->id));
 #endif
 
-#if defined(CPU_XTENSA)
-    {
-        unsigned int ie, ps;
-        asm volatile ("rsr %0, intenable" : "=r"(ie));
-        asm volatile ("rsr %0, ps"        : "=r"(ps));
-        STRACE(47, ie, ps, current_tick);
-        {
-            /* `interrupt` is the set of CPU interrupt lines currently asserted
-             * to this core; `intstatus` is that set ANDed with INTENABLE. A
-             * bit sitting in intstatus while we are running thread code means
-             * the core is refusing an interrupt it has been handed; both empty
-             * means nothing is even arriving at this core. */
-            static int injected;
-            unsigned ip;
-            asm volatile ("rsr %0, interrupt" : "=r"(ip));
-            STRACE(65, ip, ip & ie, ie);   /* asserted, asserted-and-enabled */
-
-            /* Nothing ever asserts core 0's systimer line, and re-arming the
-             * peripheral does not bring it back. So ask the core to raise that
-             * same line itself. If IDF's SysTickIsrHandler then runs (its own
-             * served-count advances), core 0 accepts interrupts fine and the
-             * fault is upstream of the CPU. If the count stays frozen, core 0
-             * cannot take an interrupt at all. */
-            if ((ie & (1u << 29)) && !injected)
-            {
-                injected = 1;
-                asm volatile ("wsr %0, intset" : : "r"(1u << 29));
-                asm volatile ("rsync");
-            }
-        }
-    }
-#endif
-    STRACE(42, thread, get_irq_level(), current_tick);
-    STRACE(70, thread, (unsigned int)(uintptr_t)thread->name,
-           (unsigned int)(uintptr_t)thread->context.sp);
     /* And finally, give control to the next thread. */
-        /* TEMPORARY: validate the slot the scheduler is about to resume. */
-        {
-            extern unsigned int thread_slot_check(const void*);
-            unsigned int bad = thread_slot_check(thread);
-            if (bad)
-                STRACE(98, thread, bad, current_tick);
-        }
-thread_load_context(thread);
+    thread_load_context(thread);
 }
 
 /*---------------------------------------------------------------------------
@@ -1310,20 +1219,6 @@ unsigned int create_thread(void (*function)(void),
 
     thread->context.sp = (typeof (thread->context.sp))(stack + stack_size);
     THREAD_STARTUP_INIT(core, thread, function);
-
-    /* TEMPORARY: xt_thread_start is entered with its argument = the thread
-       pointer rather than a function. Record what create_thread was actually
-       handed, by thread, so the bad call site names itself. */
-    {
-        extern void scan_trace_sticky_once(int, unsigned long, unsigned long,
-                                           unsigned long);
-        /* A real entry point lives in the flash or IRAM instruction windows,
-           both above 0x40000000. Anything below is data. */
-        if ((unsigned long)(uintptr_t)function < 0x40000000UL)
-            scan_trace_sticky_once(6, (unsigned long)(uintptr_t)thread,
-                                   (unsigned long)(uintptr_t)function,
-                                   (unsigned long)(uintptr_t)name);
-    }
 
     int oldlevel = disable_irq_save();
     LOCK_THREAD(thread);
@@ -1698,61 +1593,3 @@ void INIT_ATTR init_threads(void)
     }
 #endif /* NUM_CORES */
 }
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-/* TEMPORARY bring-up: what the scheduler itself believes.
- *
- * The gated-task model means "Rockbox thinks this thread is runnable" and
- * "FreeRTOS can actually dispatch this thread" are two different statements,
- * and the play hang is the gap between them. This prints both halves of it:
- * which thread the kernel believes is running, and which threads it believes
- * are runnable. A thread named in rtr= that also shows as run in
- * thread_debug_dump() but never makes progress is a thread waiting for a gate
- * nobody intends to give. */
-int scheduler_debug_state(char *out, int sz)
-{
-    struct core_entry *corep = __core_id_entry(CURRENT_CORE);
-    struct thread_entry *t;
-    int pos, n = 0;
-
-    if (sz <= 0)
-        return 0;
-
-    pos = snprintf(out, sz, "running=%s rtr=",
-                   corep->running && corep->running->name
-                       ? corep->running->name : "(none)");
-    if (RTR_EMPTY(&corep->rtr))
-    {
-        snprintf(out + pos, sz - pos, "empty");
-        return pos;
-    }
-
-    pos += snprintf(out + pos, sz - pos, "[");
-    /* core_entry.rtr is an lldc: a doubly-linked CIRCULAR list whose last node
-     * points back to the first, not a NULL-terminated one. Walking it with
-     * `for (t = FIRST; t; t = NEXT(t))` therefore never ends -- which is exactly
-     * what it looked like when it happened, and read as "the runnable list is
-     * full of duplicates". Terminate on returning to the first node, and cap at
-     * the slot count as a belt-and-braces guard against a genuinely broken
-     * link. */
-    {
-        struct thread_entry *first = RTR_THREAD_FIRST(&corep->rtr);
-
-        t = first;
-        do
-        {
-            if (pos >= sz - 32)
-                break;
-            pos += snprintf(out + pos, sz - pos, "%s%s", n++ ? "," : "",
-                            t->name ? t->name : "?");
-            t = RTR_THREAD_NEXT(t);
-        } while (t != first && n < MAXTHREADS);
-
-        if (t != first)
-            snprintf(out + pos, sz - pos, " ...BROKEN-LINK");
-        else
-            snprintf(out + pos, sz - pos, "]");
-    }
-    return pos;
-}
-#endif /* CPU_XTENSA bring-up instrumentation */*
