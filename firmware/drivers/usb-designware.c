@@ -858,20 +858,15 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
          * This also breaks for USB 1.0 endpoints with bInterval > 1 for
          * the same reason.
          *
-         * At full speed, however, an isochronous endpoint carries exactly one
-         * packet per frame and that packet is always Data0 (USB 2.0 spec, 5.6.4:
-         * "Isochronous transfers ... always use the DATA0 PID" at full speed).
-         * Choosing the expected PID from the frame parity instead arms Data1 on
-         * every even frame, the host's Data0 packet is then rejected as out of
-         * sync, DOEPINT reports the error rather than XFRC, and because a rejected
-         * packet never completes, the endpoint's expectation never advances -- it
-         * stays wrong for the rest of the session. Measured on ESP32-S3: DOEPTSIZ
-         * armed for one 320-byte packet, DOEPINT = 0x2000 (error, not XFRC), and
-         * samples received never left zero.
+         * Measured on ESP32-S3: leaving SETD0PIDEF/SETD1PIDOF alone and letting
+         * the core keep its own toggle is not a fix but a ten-fold regression --
+         * Frames dropped went from ~10/s to ~100/s -- so each isochronous OUT
+         * transfer does need an explicit expectation, and the core carries none
+         * across transfers. TinyUSB can omit the per-arm write because it
+         * programs the PID once at edpt_open (dcd_dwc2.c:325-327) and leaves it
+         * alone afterwards; here every arm is a new transfer.
          */
-        if (!usb_drv_port_speed())
-            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
-        else if (usb_drv_get_frame_number() & 1)
+        if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
         else
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD1PIDOF;

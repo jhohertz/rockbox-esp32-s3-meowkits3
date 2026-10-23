@@ -43,15 +43,27 @@
 #include "pcm_mixer.h"
 #include "dsp_core.h"
 
-/* Logging is deliberately off here, and the reason is worth keeping: with
- * ROCKBOX_HAS_LOGF and USB_ENABLE_SERIAL, _logf() not only formats the line but also
- * pushes it out over CDC (usb_serial_send at the end of logf.c). The isochronous OUT
- * completion runs this from interrupt context once per frame -- a thousand times a
- * second -- so the handler spends the whole core formatting and transmitting to an
- * endpoint the host never reads. That starves every thread and IDF's timer task, fills
- * the CDC IN FIFO so the console goes dead, and leaves only whatever was already in the
- * audio FIFO to play, which sounds like static. The sibling usbstack classes keep this
- * commented out for the same reason.
+/* Off for shipping, as every sibling usbstack class keeps it.
+ *
+ * The reason is now measurement rather than assumption. With LOGF_ENABLE on, the
+ * isochronous completion path emitted roughly three lines per packet -- ~45 kB/s pushed
+ * through the CDC bulk IN endpoint, ~30k lines per 10 s -- and the transport still accepted
+ * 980 of the 1000 frames arriving each second, with zero underflows. So formatting is not
+ * what was corrupting the audio, and the earlier claim that enabling it "sounds like
+ * static" was never true on this port.
+ *
+ * It does, however, spend part of the ~2% of interrupt headroom in which the remaining
+ * frame gaps live, so the diagnostic comes out before the next change is judged. Uncomment
+ * to read packet arrival straight off /dev/ttyACM0: frame number and byte count per
+ * completion, mixer pulls, underflow and restart cycles, alternate-setting changes and
+ * volume control requests -- which is what located the frame-number defect and the 11/s
+ * underflow cycles.
+ *
+ * Note where the build-level gate actually sits: meowkits3.h:552 defines ROCKBOX_HAS_LOGF
+ * deliberately, because GPIO19/20 moving to the OTG core takes the console away and logf
+ * over CDC is then the only way to see usb_core.c and usb-designware.c messages during an
+ * attach. config.h includes the model header after autoconf.h, so that define wins and
+ * configure's -l option is not what enables or disables logging -- this line is.
  */
 /* #define LOGF_ENABLE */
 #include "logf.h"
@@ -382,13 +394,70 @@ static struct usb_class_driver_ep_allocation ep_allocs[2] = {
  *
  * Making the executive decision to only export frequencies 44.1k+.
  */
+/* Ring depth and restart gate, in slots -- one slot per isochronous packet, which is the
+ * only rate-independent unit available here: a full-speed packet carries 48 frames at
+ * 48 kHz and 96 at 96 kHz, so declaring these in samples would make the cushion a different
+ * size at every rate. Targets that need a different cushion override them alongside
+ * USB_AUDIO_BUFFER_SIZE, which sets the packet size these slots hold. The defaults are the
+ * historic values, so every existing target is unchanged.
+ *
+ * Both matter because the mixer's appetite is denominated elsewhere: it takes
+ * mix_frame_size (MIX_FRAME_SAMPLES * 4 bytes) per pass, and at 48 kHz that is 5.33 slots.
+ * MINIMUM_BUFFERS_QUEUED is therefore the floor of a sawtooth whose trough sits about one
+ * pass below it, and NR_BUFFERS - MINIMUM_BUFFERS_QUEUED is what remains below the ceiling
+ * before the overflow path pauses receiving and discards packets. */
+#ifndef NR_BUFFERS
 #define NR_BUFFERS      32
+#endif
+#ifndef MINIMUM_BUFFERS_QUEUED
 #define MINIMUM_BUFFERS_QUEUED 16
+#endif
 /* The isochronous packet size and the endpoint's hardware maximum are defined
  * above the endpoint allocation table, which uses them: see USB_AUDIO_BUFFER_SIZE. */
+/* How much to arm the isochronous OUT endpoint with per transfer, which is deliberately
+ * separate from BUFFER_SIZE -- the endpoint's hardware maximum. Arming more than one
+ * maximum is what makes the controller's packet count greater than one, so the core can
+ * absorb several frames of audio in a single transfer and toggle the expected data PID
+ * between the packets of that transfer itself, with no CPU involvement between them.
+ * That matters because a full-speed isochronous packet arrives every frame and isochro-
+ * nous has no retry: with a one-packet arm, any delay in the completion handler leaves
+ * the next frame nowhere to land, and a discarded isochronous packet reports nothing at
+ * all -- no error, no counter, just missing audio. The default keeps every existing
+ * target arming exactly one packet, as it always has.
+ *
+ * The slot array already accommodates a wider arm: DSP_BUF_SIZE is BUFFER_SIZE*4, so a
+ * completion that carries several packets still lands in one slot of dsp_buf and the
+ * mixer consumes it across passes unchanged. */
+#ifndef USB_AUDIO_RX_ARM_SIZE
+#define USB_AUDIO_RX_ARM_SIZE BUFFER_SIZE
+#endif
 /* make sure each buffer size is actually a multiple of 32 bytes to avoid any
  * issue with strange alignements */
-#define REAL_BUF_SIZE   ALIGN_UP(BUFFER_SIZE, 32)
+#define REAL_BUF_SIZE   (USB_AUDIO_RX_ARM_SIZE > BUFFER_SIZE ? \
+                         ALIGN_UP(USB_AUDIO_RX_ARM_SIZE, 32) : ALIGN_UP(BUFFER_SIZE, 32))
+
+/* Whether the isochronous receive buffer is ping-ponged -- two buffers, with the endpoint
+ * re-armed for the next packet *before* the completed packet is copied out of the one the
+ * core just wrote.
+ *
+ * The reason is the arm window. DWC2 disables an isochronous OUT endpoint when its transfer
+ * completes, and full-speed isochronous has no retry: from the completion until the EPENA
+ * write there is nowhere for the next frame to land, and a discarded packet reports nothing
+ * at all. With one buffer the copy has to precede the arm, because re-arming would point the
+ * DMA at the very bytes being read. Two buffers remove that ordering constraint, which is how
+ * every other implementation of this is built: TinyUSB's audio_device.c and espressif's
+ * usb_device_uac both have the isochronous callback swap buffers and re-arm, then hand the
+ * payload to a task, and firmware/target/hosted/hiby/usb-dac-hiby.c decouples the two ends
+ * with a ring and a pump thread.
+ *
+ * This is not depth, and cannot be: arming more than one packet per transfer does not give
+ * it, because a core may raise a completion per isochronous packet regardless of the
+ * programmed packet count (measured on esp32s3, where it also widened the slots and made the
+ * trough worse). Ping-pong shortens the window instead of padding it. Default 0 keeps every
+ * existing target on the single-buffer ordering it has always used. */
+#ifndef USB_AUDIO_RX_PINGPONG
+#define USB_AUDIO_RX_PINGPONG 0
+#endif
 
 bool alloc_failed = false;
 bool usb_audio_playing = false;
@@ -396,6 +465,10 @@ int tmp_saved_vol;
 
 /* buffers used for usb, queuing and playback */
 static unsigned char *rx_buffer;
+/* Ping-pong partner: the buffer the DMA wrote before the current one, or NULL when
+ * USB_AUDIO_RX_PINGPONG is off. Both live in one contiguous allocation handed out by
+ * usb_audio_target_rx_buffer(), which is asked for two spans in that mode. */
+static unsigned char *rx_buffer_alt;
 int rx_buffer_handle;
 /* buffer size */
 static int rx_buf_size[NR_BUFFERS]; // only used for debug screen counter now
@@ -539,6 +612,17 @@ unsigned long usb_audio_get_playback_sampling_frequency(void)
     return hw_freq_sampr[as_playback_freq_idx];
 }
 
+/* Largest isochronous packet the target can arm, in bytes. A rate whose per-frame payload
+ * (2 channels x 16-bit = 4 bytes, which is what this descriptor declares) exceeds it cannot
+ * be received: the frames do not fit the armed packet and go missing without an error, a
+ * completion or a counter. Rates above it are therefore not advertised at all, and bLength
+ * and bSamFreqType follow the filtered count so the descriptor cannot promise a rate the
+ * endpoint cannot take. The default of 0 imposes no limit, which is what every target
+ * without a packet-size override has always done. */
+#ifndef USB_AUDIO_MAX_PACKET_BYTES
+#define USB_AUDIO_MAX_PACKET_BYTES 0
+#endif
+
 /*
  * Initialize the driver. Called by usb_core_init().
  * Currently initializes the sampling frequency values available
@@ -547,14 +631,26 @@ unsigned long usb_audio_get_playback_sampling_frequency(void)
 static void usb_audio_init(void)
 {
     unsigned int i;
+    unsigned int count = 0;
     /* initialized tSamFreq array */
     logf("usbaudio: (init) supported frequencies");
     // only values 44.1k and higher (array is in descending order)
     for(i = 0; i <= HW_FREQ_44; i++)
     {
+#if USB_AUDIO_MAX_PACKET_BYTES
+        /* bytes per frame at 2 channels, 16 bits */
+        if (hw_freq_sampr[i] / 250 > USB_AUDIO_MAX_PACKET_BYTES)
+            continue;
+#endif
         logf("usbaudio: %lu Hz", hw_freq_sampr[i]);
-        encode3(as_playback_format_type_i.tSamFreq[i], hw_freq_sampr[i]);
+        encode3(as_playback_format_type_i.tSamFreq[count], hw_freq_sampr[i]);
+        count++;
     }
+
+    /* Equal to HW_FREQ_44 + 1 when nothing is filtered, so the default target sees the
+     * same descriptor it always did. */
+    as_playback_format_type_i.bSamFreqType = count;
+    as_playback_format_type_i.bLength = USB_AS_SIZEOF_FORMAT_TYPE_I_DISCRETE(count);
 }
 
 /* The isochronous receive buffer is a DMA destination. On some SoCs the DWC
@@ -601,8 +697,13 @@ __attribute__((weak)) bool usb_audio_target_fb_latch(int frame, int startframe)
     return frame == (startframe + FEEDBACK_UPDATE_RATE_FRAMES * 2) % (USB_FRAME_MAX + 1);
 }
 
-/* How full the queue is, in fixed point, for the feedback term. Negative means "use the
- * generic accumulator", which is only fed by completions from other endpoints. */
+/* How full the queue is, in fixed point, relative to the minimum, for the feedback term.
+ * The term is signed, but a negative return is reserved for "no measurement, use the generic
+ * accumulator" -- which is fed from usb_audio_get_prebuffering() every frame between updates
+ * and so already measures real ring depth in both directions. An override here can therefore
+ * only report at-or-above the minimum: it can slow the host, never speed it up, and a clamped
+ * 0 reads to the controller as "exactly at target" for every occupancy below its setpoint.
+ * Override only with a measurement genuinely better than the queue. */
 __attribute__((weak)) int32_t usb_audio_target_fb_buffers_filled(int queued_buffers,
                                                                  int minimum_buffers)
 {
@@ -621,8 +722,13 @@ int usb_audio_request_buf(void)
     // stop playback first thing
     audio_stop();
 
+    /* In ping-pong mode both buffers are requested as one span. REAL_BUF_SIZE is already a
+     * multiple of 32, so the second half is cache-line aligned like the first, which is what
+     * usb_dw_epstart() requires of a DMA destination. */
+    const size_t rx_span = REAL_BUF_SIZE * (USB_AUDIO_RX_PINGPONG ? 2 : 1);
+
     // attempt to allocate the receive buffers
-    rx_buffer = usb_audio_target_rx_buffer(REAL_BUF_SIZE);
+    rx_buffer = usb_audio_target_rx_buffer(rx_span);
     if (rx_buffer)
     {
         /* Supplied by the target: nothing to pin and nothing to release. -1
@@ -632,7 +738,7 @@ int usb_audio_request_buf(void)
     }
     else
     {
-        rx_buffer_handle = core_alloc(REAL_BUF_SIZE);
+        rx_buffer_handle = core_alloc(rx_span);
         if (rx_buffer_handle < 0)
         {
             alloc_failed = true;
@@ -655,6 +761,7 @@ int usb_audio_request_buf(void)
         if (rx_buffer_handle >= 0)
             rx_buffer_handle = core_free(rx_buffer_handle);
         rx_buffer = NULL;
+        rx_buffer_alt = NULL;
         return -1;
     }
     else
@@ -665,6 +772,8 @@ int usb_audio_request_buf(void)
 
         dsp_buf = core_get_data(dsp_buf_handle);
     }
+
+    rx_buffer_alt = USB_AUDIO_RX_PINGPONG ? rx_buffer + REAL_BUF_SIZE : NULL;
     // logf("usbaudio: got buffer");
     return 0;
 }
@@ -675,6 +784,7 @@ void usb_audio_free_buf(void)
     if (rx_buffer_handle >= 0)
         rx_buffer_handle = core_free(rx_buffer_handle);
     rx_buffer = NULL;
+    rx_buffer_alt = NULL;
 
     dsp_buf_handle = core_free(dsp_buf_handle);
     dsp_buf = NULL;
@@ -812,7 +922,7 @@ static void playback_audio_get_more(const void **start, size_t *size)
     {
         logf("usbaudio: recover usb rx overflow");
         usb_rx_overflow = false;
-        usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
+        usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, USB_AUDIO_RX_ARM_SIZE);
     }
     restore_irq(oldlevel);
 }
@@ -851,7 +961,7 @@ static void usb_audio_start_playback(void)
     mixer_set_frequency(hw_freq_sampr[as_playback_freq_idx]);
     mixer_channel_set_amplitude(PCM_MIXER_CHAN_USBAUDIO, MIX_AMP_UNITY);
 
-    usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
+    usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, USB_AUDIO_RX_ARM_SIZE);
 }
 
 static void usb_audio_stop_playback(void)
@@ -1475,10 +1585,46 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         // debug screen counter
         samples_received = samples_received + length;
 
+        int oldlevel;
+        unsigned char *src_buf;
+
+#if USB_AUDIO_RX_PINGPONG
+        /* Top half: put the endpoint back on the bus before anything else. Everything below
+         * this point is work that does not have to happen before the next frame arrives, and
+         * the endpoint cannot accept that frame until EPENA is written again. */
+        oldlevel = disable_irq_save();
+        /* The buffer the core just wrote. It stays valid for the copy below either way: the
+         * swap only moves which buffer the DMA is pointed at. */
+        unsigned char *done_buf = rx_buffer;
+
+        /* Same room test the generic path makes after publishing the slot, made here because
+         * the decision has to precede the arm: the slot this completion publishes is
+         * rx_usb_idx, and the one after it is free unless the mixer is reading it. */
+        if ((rx_usb_idx + 1) % NR_BUFFERS != rx_play_idx)
+        {
+            rx_buffer = rx_buffer_alt;
+            rx_buffer_alt = done_buf;
+            logf("usbaudio: new transaction");
+            usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, USB_AUDIO_RX_ARM_SIZE);
+        }
+        else
+        {
+            /* Out of room: leave the endpoint disabled, as the generic path does, and let
+             * playback_audio_get_more() re-arm it once the consumer has moved on. */
+            logf("usbaudio: rx overflow");
+            usb_rx_overflow = true;
+        }
+        restore_irq(oldlevel);
+
+        src_buf = done_buf;
+#else
+        src_buf = rx_buffer;
+#endif
+
         // process through DSP right away!
         struct dsp_buffer src;
         src.remcount = length/4; // in samples
-        src.pin[0] = rx_buffer;
+        src.pin[0] = src_buf;
         src.proc_mask = 0;
 
         struct dsp_buffer dst;
@@ -1492,18 +1638,20 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
         /* guard against IRQ to avoid race with completion audio completion */
-        int oldlevel = disable_irq_save();
+        oldlevel = disable_irq_save();
+#if !USB_AUDIO_RX_PINGPONG
         /* setup a new transaction except if we ran out of buffers */
         if(rx_usb_idx != rx_play_idx)
         {
             logf("usbaudio: new transaction");
-            usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
+            usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, USB_AUDIO_RX_ARM_SIZE);
         }
         else
         {
             logf("usbaudio: rx overflow");
             usb_rx_overflow = true;
         }
+#endif
         /* if audio underflowed and prebuffering is done, restart audio */
         if(playback_audio_underflow && prebuffering_done())
         {
