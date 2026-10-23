@@ -305,10 +305,9 @@ static unsigned long rx_rate;
 #endif
 
 
-/* TEMPORARY: one counter per link in the playback chain, so "it does not play"
- * becomes a statement about where the chain stops rather than which link is
- * suspected. Printed from the button probe, which is known to emit. Remove once
- * playback works.
+/* One counter per link in the playback chain, so "it does not play" becomes a statement
+ * about where the chain stops rather than which link is suspected. Printed by the periodic
+ * probe and by the debug readout below, both of which are known to emit.
  *
  * init  : sink_init() ran, so i2s_init() and audiohw_preinit() ran
  * play  : the PCM layer handed us a buffer to transmit
@@ -335,11 +334,10 @@ volatile unsigned long xt_wd_last_dw0;
 volatile int  xt_wd_idx_hist[4] = { -1, -1, -1, -1 };
 volatile unsigned long xt_wd_dw0_hist[4];
 
-/* TEMPORARY: the whole playback chain as one aligned readout, the way the
- * scheduler was finally diagnosed -- every stage's own view of what it is doing,
- * sampled at the same instant and emitted as a single printf so no other thread
- * can land between two stages. The answer is the seam where two adjacent stages
- * disagree, never one counter on its own:
+/* The whole playback chain as one aligned readout, the way the scheduler was finally
+ * diagnosed -- every stage's own view of what it is doing, sampled at the same instant and
+ * emitted as a single printf so no other thread can land between two stages. The answer is
+ * the seam where two adjacent stages disagree, never one counter on its own:
  *
  *   insert climbing, pcmbuf used climbing, mixer cb static
  *        -> the mixer is not being driven at all
@@ -360,11 +358,6 @@ volatile unsigned long xt_wd_dw0_hist[4];
  * there is anything to hand down. Clock and reset state are included because a
  * peripheral held in reset reads back zero and is otherwise indistinguishable
  * from a wrong base address.
- */
-/* TEMPORARY: the whole playback chain as one aligned readout -- every stage's
- * own view, sampled at the same instant and emitted as a single printf so no
- * other thread can land between two stages. The answer is the seam where two
- * adjacent stages disagree, never one counter on its own.
  *
  * Hardware flags are printed DECODED. Two separate misreads cost most of a day
  * here: out_eof was taken for bit 0 when the BIT() define says bit 1, and the
@@ -524,37 +517,25 @@ static void fill(int i, const void *src, unsigned long len);
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
-    /* Zero terminates the link list: the engine stops rather than wrapping.
+    /* The descriptor link, and the record of what was tried, because two variants were
+     * conflated for a long time:
      *
-     * Three variants, and the record matters because two of them were conflated
-     * for a long time:
+     *  - next = &desc[i] (SELF-linked) is genuinely bad: the engine follows one slot
+     *    forever, giving one out_dscr_err per frame (err tracked irq exactly, +1) and a
+     *    noticeable lag on pause while it replayed the last buffer. Measured.
      *
-     *  - next = &desc[i] (SELF-linked) was tried and is genuinely bad: the engine
-     *    follows one slot forever, giving one out_dscr_err per frame (err tracked
-     *    irq exactly, +1) and a noticeable lag on pause while it replayed the last
-     *    buffer. That measurement is real and is what motivated this line.
+     *  - next = 0 terminates the list, the encoding of imx233's `dma.next = NULL`, so the
+     *    engine stops and the driver restarts deliberately. It cannot be combined with
+     *    gdma_init()'s auto-writeback -- see the note there -- and it is NOT what this line
+     *    does. An earlier revision of this comment claimed it was.
      *
-     *  - next = &desc[(i+1) % XT_TX_RING] (a real ring, which is what gdma_init()
-     *    already builds before the first arm() call un-chains it) was tried on the
-     *    reasoning that self-linking does not predict it -- the engine walks
-     *    forward instead of looping, and the owner bit already gates every slot.
-     *    Result: no improvement. Clicks at frame boundaries persisted, and the CHAIN
-     *    probe captured no non-zero gdma counters during playback at all, so there
-     *    is no evidence the ring ever engaged, and no evidence that it did not.
-     *    Reverted. This is NOT a refutation of the ring; it is an inconclusive
-     *    experiment, and the reason is the next bullet.
-     *
-     *  - next = 0 (what is here) is the encoding of imx233's `dma.next = NULL`:
-     *    the transfer ends and the driver restarts it deliberately.
-     *
-     * The blocker on all of this is observability, not the descriptor link. The
-     * CHAIN dump does not sample during steady playback, so a per-frame property
-     * like slot occupancy cannot be measured by it -- every comparison so far has
-     * been against a snapshot taken at some other moment. Before this line is
-     * changed again, the probe needs a periodic sample while audio is running;
-     * otherwise any result here is unfalsifiable. */
-    /* Keep the chain gdma_init() built -- see the note in gdma_init() on why
-     * auto-writeback and next = 0 are the one combination that cannot work. */
+     *  - next = &desc[(i+1) % XT_TX_RING], which is what this line sets: a forward ring,
+     *    the same chain gdma_init() builds, kept live so the engine walks the slots and the
+     *    owner bit gates each one. Tried as a change when clicks at frame boundaries were
+     *    being chased; it produced no improvement, and the CHAIN probe captured no non-zero
+     *    gdma counters during playback, so that experiment was inconclusive rather than a
+     *    refutation of the ring. The observability gap it exposed was fixed by
+     *     i2s_probe_tick(), which samples while audio is actually running. */
     desc[i].next   = (uint32_t)(unsigned long)&desc[(i + 1) % XT_TX_RING];
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
@@ -589,7 +570,9 @@ static volatile unsigned long bl_n, bl_zero, bl_sum;
  * that is the invariant this mode buys and the price it charges. */
 static void fill_silence(int i)
 {
-    unsigned long len = tx_frame_len;
+    /* Must match what fill() arms, for the same reason: a short slot completes early
+     * and hands refill() a consumed-buffer event the DAC has not earned yet. */
+    unsigned long len = XT_TX_SLOT;
 
     memset(dma_buf[i], 0, len);
     discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
@@ -640,10 +623,43 @@ static void tx_recover(void)
 
 static void fill(int i, const void *src, unsigned long len)
 {
+    unsigned long arm_len;
+
     if (len)
         tx_frame_len = len;
 
     memcpy(dma_buf[i], (const void *)src, len);
+
+    /* Always hand the engine a whole frame.
+     *
+     * len is pend_size, which comes straight from mixer_pcm_callback(): *size =
+     * next_size, and next_size is smaller than mix_frame_size whenever a channel
+     * stopped part-way through a frame -- which is exactly what a USB underflow
+     * does, over and over. The GDMA takes the slot as a transfer of len bytes, so a
+     * short frame completes EARLY: the next out_done fires before the I2S has
+     * drained a frame, refill() dutifully reports a consumed buffer, and the mixer
+     * produces another one. Consumption then outruns the DAC clock, self-amplifying,
+     * while the transmitter underruns the difference -- and an underrunning I2S TX
+     * replays stale bytes rather than silence. That is a draining ring with a healthy
+     * wire, correct tempo, and a rasp on top: all three of the things the USB Audio
+     * page could not explain.
+     *
+     * Zero is the degenerate case of the same bug and completes instantly, so it is
+     * covered by the same clamp: this makes fill_silence()'s invariant -- every slot
+     * is owned AND full -- hold on the data path too, not just the no-buffer path.
+     *
+     * The reference is XT_TX_SLOT, deliberately not a value learned from what the
+     * mixer handed us: one slot IS one mixer frame at the rates this ring can hold,
+     * and a target that ratchets down to the first short frame would stop padding at
+     * exactly the moment it was needed -- which is how this paragraph's first draft
+     * was wrong. Above 48 kHz pcm_mixer.c doubles mix_frame_size to 2048 while the
+     * slot stays MIX_FRAME_SAMPLES*4, so the memcpy above would already have run past
+     * the buffer; high rates are an older and separate problem than this clamp.
+     */
+    arm_len = XT_TX_SLOT;
+
+    if (len < arm_len)
+        memset((unsigned char *)dma_buf[i] + len, 0, arm_len - len);
 
     {
         static unsigned long bl_ctr;
@@ -714,8 +730,8 @@ static void fill(int i, const void *src, unsigned long len)
      * engine wrote the owner bit clear through the bus, and our cached copy of
      * this line still has whatever we put there. */
     discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
-    arm(i, len);
-    commit_dcache_range(dma_buf[i], len ? len : XT_TX_SLOT);
+    arm(i, arm_len);
+    commit_dcache_range(dma_buf[i], arm_len);
     commit_dcache_range((const void *)&desc[i], sizeof(desc[i]));
 
     /* Arming a descriptor is not enough on its own, and this is the step that
