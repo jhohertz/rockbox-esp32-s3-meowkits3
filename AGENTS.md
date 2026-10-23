@@ -451,45 +451,34 @@ us the D-cache address room is DRAM0 (`0x3FC88000-0x3FD00000`, exactly
 `SDMMC_DSCADDR_REG` is a plain 32-bit register; GDMA cannot, because its descriptor
 address comes from a 20-bit window based at `0x3FC00000`.
 
-### Self-triggered flashing over Rockbox's own USB serial
+### Flashing is host-side only - no firmware handover
 
-`make usbflash` (from `tools/espflash.make`, running `tools/esp-usbflash.py`) flashes
-the board without the BOOT button and without a power cycle: one `'f'` byte on the CDC
-OUT endpoint makes the firmware release the pads, write
-`RTC_CNTL_OPTION1.FORCE_DOWNLOAD_BOOT` and reset; esptool then runs with
-`--before no_reset` and its default `--after hard_reset`, which boots Rockbox again.
-Measured end to end in ~13 s. Facts that are not obvious from the register names:
+The firmware used to answer one byte on the CDC OUT endpoint by soft-disconnecting,
+handing GPIO19/20 to USB-Serial-JTAG, setting `RTC_CNTL_OPTION1.FORCE_DOWNLOAD_BOOT` and
+`esp_restart()`ing, so that `make usbflash` needed neither BOOT nor a power cycle. That
+subsystem is gone: the target's handler, the weak `usb_serial_target_rx()` hook in
+`usbstack/usb_serial.c` (that file is byte-identical to upstream again), `make usbflash`
+and `tools/esp-usbflash.py`. The reason is a measurement, not a style preference.
 
-- **`SYSTEM.perip_clk_en1.usb_device_clk_en` (bit 10) is shared** between the DWC core
-  and USB-Serial-JTAG (`usb_serial_jtag_ll.h:326` gates the USJ with that same bit).
-  Clearing it when releasing the pads clocks the console and the flash port out too. A
-  detach used to leave no console, and the first handover attempt left the host seeing
-  no device at all, because the USJ pad write landed in an unclocked block.
-- **The ROM comes up on the OTG core, not the USJ, when the reset is software-driven.**
-  USJ `CONF0` (`0x60009018`) reads `0x00000800` afterwards -- `usb_pad_enable` (bit 14)
-  clear -- and the host keeps its stale `/dev/ttyACM` entry, which is why esptool works
-  on the node it already had. DTR/RTS therefore do nothing on this path: esptool's
-  `default_reset` cannot be used, and neither can a manual line-state pulse.
-- **`FORCE_DOWNLOAD_BOOT` is consumed by the ROM**: `RTC_CNTL_OPTION1`
-  (`DR_REG_RTCCNTL_BASE 0x60008000 + 0x12C`) reads 0 afterwards. It is not sticky.
-- **`--after no_reset` parks the board in download mode.** If the flash then fails for
-  another reason, nothing resets it out, the app never runs, and the host sits on a
-  stale device entry that looks like a working Rockbox. Recover with
-  `esptool --before no_reset --after hard_reset flash_id`.
-- `flash_args` contains **relative** paths (`bootloader/bootloader.bin`, …), so esptool
-  must run with the IDF build directory as its cwd.
-- **The trigger is acted on by the tick task, so download mode arrives a tick or two
-  after the byte.** A fixed sleep made the tool race the reset and fail in a way that
-  looks like a broken port; it now polls the ROM (`read_mac` with `--before no_reset`)
-  until the chip answers. Measured: the first poll failed, the second succeeded.
-- **A stale sysfs product string is not evidence the app is running.** Linux keeps the
-  device entry when the chip stops answering, so a board parked in download mode reads
-  as "Rockbox media player". The tool decides by reading the CDC trace bytes instead, and
-  retries through the ROM if the app did not come back.
-- The RX hook that carries the trigger is `usb_serial_target_rx()`, weak in
-  `usb_serial.c` with an empty body, so every target that does not define one behaves
-  exactly as before. It runs in interrupt context; the target records the byte and acts
-  from the tick task.
+- The DWC2 OUT endpoint re-delivers packets it has already consumed, so a command byte
+  received minutes earlier can reach the handler again. Cooldowns were layered over that,
+  and it still fired: the console recorded `rst:0xc (RTC_SW_CPU_RST),boot:0x3
+  (DOWNLOAD(USB/UART0))` during a DAC session with nothing typed. A device that can
+  reboot itself into the bootloader invalidates every measurement taken on it, including
+  the one you are taking when it happens.
+
+Flashing is `make flash` (power off, hold BOOT, power on while held, release), or esptool
+against a board already in the downloader. `boot:0x3 (DOWNLOAD)` and
+`waiting for download` on the console are the proof the ROM has the chip.
+
+Two facts survive the removal:
+
+- `FORCE_DOWNLOAD_BOOT` is in the RTC block and is **not** cleared by a reset, so a board
+  that reached the downloader stays there across resets. Every boot clears it in
+  `usb_init_device()`; if that ever stops happening the board looks unbootable from the
+  host.
+- A host process holding `/dev/ttyACM*` steals esptool's replies - two openers on one
+  ttyACM split the incoming bytes. Stop readers before flashing.
 
 ### MeowKit board (the reference hardware)
 
@@ -1300,7 +1289,7 @@ I2C master  0x60013000
   writing an app image at `0x0` replaces the bootloader with a header the mask ROM
   misparses; the board then boot-loops with `IllegalInstruction` at a flash-window address
   and a memory dump of zeros, which looks like corrupt code and is not. Use
-  `make usbflash` (triggers download mode over CDC, then `idf.py flash`) or `make flash`.
+  `make flash`, holding BOOT to reach the downloader.
   Note that the AXP173 keeps the chip powered when USB is unplugged, so unplugging is not a
   reset: to reach the downloader, power off, hold BOOT, power on while holding, release.
   Verify the ROM answers (`Chip is ESP32-S3`) before writing anything.
@@ -3100,7 +3089,6 @@ make zip        # full package
 make tools      # host tools only
 make tags
 make flash      # idf.py flash: bootloader 0x0, partition table 0x8000, app 0x10000
-make usbflash   # trigger download mode over CDC, then flash, then boot back up
 make espverify  # image_info on the packed image, no board needed
 ```
 
@@ -3118,6 +3106,29 @@ Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 target status list; a new target must be added there too. `target_id` is a
 unique number (currently max 126 in `configure`, max `MODEL_NUMBER` 132 in
 `config/*.h`) — use the next free one.
+
+### A firmware flash does not touch the SD card - say so when it is not enough
+
+Flashing writes the app image only. Everything the player loads at runtime lives on
+the card under `/.rockbox`, and **whenever a change needs the card written as well,
+state it explicitly before flashing** - do not assume it, and do not let a "just
+flash it" step quietly produce a device that cannot decode anything.
+
+Card contents that need re-copying, and what triggers each:
+
+| Card path | Needs a rewrite when... |
+|---|---|
+| `/.rockbox/codecs/` | anything under `lib/rbcodec/codecs/`, a codec's `.make`, or `CODEC_SIZE` / the `codecbuf` address changes. `apps/codecs.c` rejects a codec whose header `load_addr` is not exactly `codecbuf`, so an `app.lds` / `plugin.lds` change is a *firmware and card* change together |
+| `/.rockbox/fonts/` | `font.c`, the built-in font data, or a skin that names a font changes |
+| `/.rockbox/themes/`, `/.rockbox/wps/` | a `.wps`/`.theme` we edit, or a skin-engine field the shipped WPS uses changes |
+| `/.rockbox/lang/` | `lang.h` regeneration changed a string id used by a WPS or plugin |
+| `/.rockbox/rolo/` | only relevant to a rolo upgrade, not to an `esptool` flash |
+
+`make zip` assembles all of the above; copying the whole `/.rockbox` tree from a
+fresh `make zip` is the safe move when in doubt. A stale `/.rockbox` is a
+misleading device, and a device that silently cannot load its codec looks exactly
+like a codec bug.
+
 
 ---
 
@@ -3295,17 +3306,20 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   inside `usb_uart_otg_rx_one_char_block`, and never by that decision — the ESP32/S2 idiom of
   writing OPTION1 then `esp_restart()` does nothing on S3. What makes the ROM come up in
   download mode is a *host-driven* reset plus sync bytes, i.e. esptool's `--before
-  default_reset` over the USJ node. An application handover therefore has to release the pads
-  to USJ, reset, and let the host reset it again; polling the port that carried the trigger
-  finds nothing because that node is gone and the replacement may have a different ttyACM
-  index.
+  default_reset` over the USJ node. That is why the handover belongs on the host and not in
+  the firmware: nothing the app can do to itself is more reliable than the ROM deciding at
+  reset, and every attempt to arrange it from the app has either failed to re-enumerate or
+  fired when nobody asked (see "Flashing is host-side only").
 - **Retained `.noinit` state survives a watchdog reset; the boot console does not.** The
   breadcrumb ring came back holding the previous boot's entries after a task-watchdog reset.
   Whether it also survives IDF's panic reboot is unproven — the single read that suggested it
   did not may simply have been a fresh boot — so do not build a scheme on that assumption.
   What is definitely lost is console output: USB-Serial-JTAG drops whatever nobody is reading,
   and the pads belong to the OTG core as soon as the app attaches, so a post-mortem printed
-  only at boot arrives in fragments. Send it over the transport instead.
+  only at boot arrives in fragments. The lesson runs the other way from the obvious one: do
+  not solve that by pushing the trail over CDC. Unsolicited writes on a transport whose host
+  may not be reading wedged the sending thread and loaded the endpoint that carries control
+  traffic. Keep the surviving record in RTC slow and read it when a human asks.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
   constant is treated as an absolute section address, and the region usage is then
   computed from that address instead of the section size — a spurious overflow of
@@ -3328,12 +3342,10 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
 - A breadcrumb in an SRAM `.noinit` ring is useless for exactly the faults that reset the chip.
   Post-mortem markers need RTC slow (`0x50001000` here, 32-bit accesses only; byte stores
   silently do nothing).
-- On this board, a host process holding `/dev/ttyACM*` breaks `make usbflash` in a confusing
-  way: the trigger byte goes out over CDC, the board enters the mask ROM downloader, esptool
-  cannot open the port, and the board then sits in the loader with the pads on USB-Serial-JTAG.
-  From outside that is indistinguishable from "firmware is running but the attach failed". Stop
-  readers before flashing; `boot:0x3 (DOWNLOAD)` and `waiting for download` on the console
-  confirm it.
+- A host process holding `/dev/ttyACM*` interferes with esptool in a confusing way, because
+  two openers on one ttyACM split the incoming bytes: the ROM's replies to esptool's sync can
+  be read by the other opener instead. Stop readers before flashing; `boot:0x3 (DOWNLOAD)` and
+  `waiting for download` on the console confirm the ROM has the chip.
 - Rockbox's file browser filters by playable type, so files written over MSC (`.bin` and
   friends) are not visible on the player even when the directory entry is correct. Verify MSC
   writes host-side with a checksum.
