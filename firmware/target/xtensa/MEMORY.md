@@ -345,6 +345,58 @@ $BIN/xtensa-esp32s3-elf-nm --print-size --size-sort rockbox.elf \
   | awk '{a=strtonum("0x"$1); s=strtonum("0x"$2);
           if (a>=0x3FC88000 && a<0x3FD00000 && ($3=="b"||$3=="B")) print s,$4}' | sort -n | tail -25
 
+## USB DAC numbers, measured rather than derived (2026-10-23)
+
+Device FIFO RAM is 200 words (GHWCFG3[31:16]), not the 256 the header implies, and the
+split is fixed by asserts in usb-xtensa.c: NPTX 16, PTX 8 x 6 dedicated IN FIFOs, RX 136
+words = 544 bytes. An isochronous packet must fit inside that RX budget plus EP0's and the
+CDC OUT packet, which is why USB_AUDIO_BUFFER_SIZE is 320 and cannot be raised -- 512 needs
+176 RX words. Rates whose per-frame payload exceeds 320 (88.2 kHz at 353 B, 96 kHz at 384)
+are not advertised, via usb_audio.c's USB_AUDIO_MAX_PACKET_BYTES.
+
+Audio ring: NR_BUFFERS 48 slots at REAL_DSP_BUF_SIZE = 1280 = 61,440 bytes from the 4 MB
+audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE = 640, borrowed from the
+storage transfer buffer (1024 bytes), which is why usb_audio_target_rx_buffer() asserts on
+the size. The restart gate / controller setpoint is MINIMUM_BUFFERS_QUEUED 22, because the
+queue measures 22.5-23.5 with a gate of 24 -- see USB-AUDIO-RESEARCH.md section 9.
+
+Interrupt levels on esp32s3, read from the config that this app actually builds with rather
+than from the IDF source line that looked authoritative:
+
+| source | level | where it is decided |
+|---|---|---|
+| audio GDMA OUT channel 0 | 1 | `ESP_INTR_FLAG_LEVEL1` in `gdma_init()`, i2s-xtensa.c; runs the mixer refill |
+| FreeRTOS tick | 1 | sdkconfig sets `CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1=y`; the `ESP_INTR_FLAG_LEVEL3` line at `components/freertos/port_systick.c:64` is inside `#ifdef CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL3`, which is not set |
+| esp_timer | 1 | `CONFIG_ESP_TIMER_INTERRUPT_LEVEL=1`; its Kconfig gives `range 1 1` when the target is not esp32 |
+| SD host | 1 | `sdmmc_host.c:539` allocates with flags 0, and `intr_alloc.c` turns a zero level mask into level 1 |
+| I2C master | 1 | IDF allocates `ESP_INTR_FLAG_LOWMED`, which accepts level 1 or 2 and takes the lowest free one |
+| cross-core | 1 | `crosscore_int.c` passes flags 0 |
+| USB OTG | 2 | ours, `ESP_INTR_FLAG_LEVEL2` -- and therefore the top of the tree |
+
+An earlier version of this table said the tick was level 3. It is not, and the mistake is the
+interesting part: `port_systick.c` does contain `const unsigned level = ESP_INTR_FLAG_LEVEL3`,
+but inside an `#ifdef` for a choice symbol this app does not select. Reading the source without
+reading the built config produced a whole theory about tick occupancy delaying the transport.
+
+What follows from the corrected table: nothing runs above level 2, so raising USB to 3 preempts
+nothing, and `CONFIG_FREERTOS_HZ` cannot delay the transport at all -- the tick chains with the
+audio GDMA pass at level 1, and IDF chains same-level handlers instead of nesting them. The only
+thing that can hold a USB completion out is a region with interrupts disabled:
+`esp_cpu_enter_critical()`, Rockbox's own `disable_irq_save()`, or IDF's flash/cache-disable
+window. `esp_cpu_enter_critical()` remains the unmeasured suspect for the ~1% frame loss.
+
+The display is the only console the audio profile has. With the cable attached, OTG passes to
+our firmware about a second after boot, so the USB-Serial-JTAG console that carries the
+breadcrumb dump is gone before a reader can attach; with the cable unplugged there is no
+console at all, since GPIO 43/44 are the PMU interrupt and not UART0. Anything measured inside
+the USB interrupt therefore has to reach `dbg_hw_info()`, not the RTC ring.
+
+The laptop-mic capture of the speaker is not an instrument: two runs of one build gave
+0.9 and 16.4 discrete >=2 ms slips per second, an 18x spread, because the marker envelope
+rides on the speaker's 3-4 kHz resonance. Practical rig notes: start playback before
+recording or PipeWire kills the capture stream, and `pw-record` has no `--format` flag.
+
+
 # every codec must link at the firmware's codecbuf or apps/codecs.c rejects it
 FW=$($BIN/xtensa-esp32s3-elf-nm rockbox.elf | awk '$3=="codecbuf"{print $1}')
 for c in $(find lib/rbcodec/codecs -name '*.codec'); do

@@ -90,6 +90,18 @@
  *
  * Note the declared max_packet_size of the notification endpoint is still 64; the FIFO is
  * sized for what is actually transmitted, not for the descriptor's ceiling.
+ *
+ * Shrinking this to 4 words was tried to buy the RX side more headroom -- 24 words, taking
+ * the RX FIFO from 136 words = 544 bytes to 160 words = 640 bytes, roughly 2.8 to 3.3
+ * isochronous packets of late-service tolerance. It made things worse: dropped frames went
+ * from about 3 a second to about 10. The likely reason is in usb_dw_fill_txfifo(), which
+ * sizes a transfer from the endpoint's *declared* maximum packet size -- 64 bytes for the
+ * CDC notification endpoint -- so words is 16 while the FIFO holds 4; the failure path does
+ * not complete the transfer, it re-enables PTXFE, so the empty-TX-FIFO interrupt keeps
+ * firing into the same handler that services isochronous OUT. That is why 8 words stayed:
+ * it is already below what the notification endpoint declares, and notifications are simply
+ * never sent at a rate that exposes it. Revert this line only with a drop-rate measurement
+ * to judge it by, not by the arithmetic, which looks perfectly reasonable.
  */
 #define PTX_FIFOSZ      8
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
@@ -117,14 +129,34 @@ const struct usb_dw_config usb_dw_config = {
      * disappeared was the one that also turned on the wrap's pad_pull_override; that,
      * not PHYSEL, is what took the connection away (see usb_dw_target_enable_clocks).
      *
-     * The register is recorded in the attach trail (usbGusb) so this stays checkable.
+     * The 0x40001460 reading above was taken with the enumeration-era attach trail, which
+     * has since been removed; GUSBCFG is no longer mirrored anywhere on the device.
      */
     .phytype       = FSINTF,
     .rx_fifosz     = RX_FIFOSZ,
     .nptx_fifosz   = NPTX_FIFOSZ,
     .ptx_fifosz    = PTX_FIFOSZ,
-    /* No burst on the AHB side: the DMA is fed from the FIFO. */
-    .ahb_burst_len = HBSTLEN_SINGLE,
+    /* AHB burst length. Every other DWC2 target in the tree programs a burst --
+     * s5l8700 INCR4, as3525 and s5l8702 INCR8, stm32h7 INCR8, x1000 INCR16 -- and
+     * TinyUSB's dwc2 common init, which is what actually drives this core in production
+     * ESP32 code, sets GAHBCFG_DMAEN | GAHBCFG_HBSTLEN_2 (dwc2_common.c:238), where
+     * HBSTLEN_2 is field value 3, the same encoding as HBSTLEN_INCR4 here. So INCR4 is
+     * both the Rockbox convention and the value the vendor's own USB stack uses on this
+     * silicon.
+     *
+     * ESP-IDF's bare HAL leaves it at Single (usb_dwc_hal.c:92) and only raises it to
+     * INCR for esp32-s2 below revision 1.00, to dodge an AHB arbiter errata that could
+     * corrupt other peripherals' DMA bursts; that errata is not applied to esp32s3, so
+     * a burst here is not working around anything the chip requires.
+     *
+     * The mirror of that note: a burst holds the arbiter, so peripherals sharing the AHB
+     * with this core (audio GDMA, I2C, the flash cache path) see less arbitration. If a
+     * GDMA or I2C regression ever appears on this board, this field is the first thing to
+     * put back to HBSTLEN_SINGLE.
+     */
+    .ahb_burst_len = HBSTLEN_INCR4,
+    /* Rx FIFO thresholding stays off, as on x1000 and stm32h7: Synopsys recommends
+     * disabling it because it misbehaves under certain error conditions. */
     .ahb_threshold = 0,
 };
 
@@ -169,14 +201,6 @@ static volatile uint32_t xt_irq_rst;
 static volatile uint32_t xt_irq_enum;
 static volatile uint32_t xt_irq_iep;
 static volatile uint32_t xt_irq_oep;
-/* Sampling counters for the RTC ring: one record per 1024 isochronous OUT interrupts,
- * so the arrival rate and the core's drop flag can be read out of RTC slow after a soft
- * park. Reading them costs two memory writes per second of streaming and never touches
- * the transport, which is the point -- every attempt to read this over the CDC console
- * has hung the device, and a channel that perturbs its subject is not a measurement.
- */
-static uint32_t xt_iso_cnt;
-static uint32_t xt_iso_last;
 static volatile uint32_t xt_irq_none;
 /* Handler runs that happened before the driver was armed, i.e. while the core was still
  * being configured. Kept separate from xt_irq_none, which means "the line was drawn with
@@ -248,19 +272,6 @@ static void usb_dwc_isr(void *arg)
     INT_USB_FUNC();
 
 #ifdef USB_ENABLE_AUDIO
-    /* Tick and completion count together give the packet rate between two records; the
-     * GINTSTS alongside says whether the core is throwing isochronous OUT packets away
-     * (isooutdrop is bit 14 per soc/usb_dwc_struct.h) and how full the mixer's queue is.
-     */
-    if (xt_irq_oep != xt_iso_last && ++xt_iso_cnt >= 1024)
-    {
-        xt_iso_cnt = 0;
-        xt_iso_last = xt_irq_oep;
-        xtensa_breadcrumb_rtc("isoA", (unsigned long)current_tick,
-                              (unsigned long)xt_irq_oep);
-        xtensa_breadcrumb_rtc("isoB", (unsigned long)DWC_GINTSTS,
-                              (unsigned long)usb_audio_get_prebuffering());
-    }
 #endif
 }
 
@@ -429,7 +440,40 @@ void usb_dw_target_enable_irq(void)
          * already run once against status raised during configuration. With INTRDISABLED
          * the very first pending event is the one that never draws the line, which is
          * the failure measured on the board. */
-        err = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LOWMED,
+        /* Level 2, not the allocator's default level 1. The audio GDMA interrupt is
+         * allocated at ESP_INTR_FLAG_LEVEL1 (gdma_init() in i2s-xtensa.c) and runs the mixer
+         * pass at
+         * that level, so with USB also at level 1 the two are serialised by IDF's
+         * dispatcher and a packet completion cannot preempt a pass. Measured on the board
+         * with the log path enabled: ~530 accepted 196-byte packets per second against
+         * ~1000 on the wire, ~100 kB/s arriving against a proven 192 kB/s consumed. A
+         * full-speed isochronous packet carries exactly one frame and has no retry, so
+         * every millisecond the handler waits is a frame of audio silently gone -- the
+         * core discards it and reports nothing. Level 2 gives the transport priority over
+         * the mixer.
+         *
+         * Level 2 is already the top of the tree on this build, which is worth stating
+         * because it is easy to assume otherwise. Everything else sits at level 1: IDF's
+         * FreeRTOS tick, because sdkconfig selects CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1
+         * and the ESP_INTR_FLAG_LEVEL3 line at components/freertos/port_systick.c:64 is
+         * inside #ifdef CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL3, which is not set here; I had
+         * this wrong and read that line as unconditional. esp_timer is pinned to level 1 on
+         * this chip (its Kconfig gives range 1 1 when the target is not esp32). The SD host is
+         * allocated with flags 0 at sdmmc_host.c:539, and intr_alloc.c turns a zero level mask
+         * into level 1. IDF's I2C master passes ESP_INTR_FLAG_LOWMED, which accepts level 1 or
+         * 2 and takes the lowest free one -- level 1 has free slots, so it lands there.
+         *
+         * Two consequences. Raising USB to level 3 would preempt nothing, since nothing runs
+         * above 2, and IDF chains handlers at the same level rather than nesting them. And
+         * CONFIG_FREERTOS_HZ cannot be what delays this handler: halving the tick only halves
+         * level-1 traffic, which never blocks a level-2 entry -- the tick chains with the
+         * audio GDMA pass, not with the transport. The only thing that can hold a packet
+         * completion out is a region with interrupts disabled: esp_cpu_enter_critical(),
+         * Rockbox's own disable_irq_save(), or IDF's flash/cache-disable window.
+         *
+         * The handler is flash-resident and runs with the cache enabled, which is the only
+         * requirement IDF places on a non-IRAM handler above level 1. */
+        err = esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LEVEL2,
                              usb_dwc_isr, NULL, &usb_intr);
         if (err != ESP_OK)
         {
@@ -441,6 +485,7 @@ void usb_dw_target_enable_irq(void)
             xtensa_breadcrumb("usbIrqE", (unsigned long)err, 0);
             return;
         }
+
     }
     else
     {
@@ -676,224 +721,25 @@ static uint32_t xt_attach_tick;
  */
 #define USB_VBUS_POLL_TICKS 4
 
-#ifdef USB_ENABLE_SERIAL
-/*
- * Flash handover, requested by the host over our own CDC.
+/* Nothing here talks on the CDC endpoint unless asked, and nothing here resets the
+ * chip.
  *
- * The request is recorded as a flag rather than acted on where it arrives:
- * usb_serial_target_rx() runs in interrupt context, and the sequence below disconnects
- * the device, writes the RTC block and resets the chip. None of that belongs in a
- * handler, so the tick task picks it up.
- */
-static volatile bool xt_flash_request;
-/* Asked for the retained breadcrumb trail over CDC. The boot console is USJ and the pads
- * are the OTG core's while USB mode is up, so after an unplug that ended in a reboot the
- * trail is only reachable through the transport that survived it. */
-static volatile bool xt_trail_request;
-/* When the last compact post-mortem went out, in ticks. */
-static unsigned xt_boot_report;
-#define XT_RTC_WINDOW 24
-/* How long to ignore further command bytes, in ticks.
+ * Removed, because none of it is porting Rockbox to this device:
  *
- * Reading the trail over CDC produced 3177 breadcrumb lines for one 't': the OUT endpoint
- * hands the same byte to the rx hook again and again -- 79 trail dumps in 90 seconds --
- * which is the transport re-delivering a packet the driver already consumed, not the host
- * sending it. Harmless for 'f' (download mode is idempotent), fatal for 't', because each
- * dump is another few KB over the endpoint and the ring it prints is the thing we are
- * trying to preserve: the flood overwrote the crash tail before I could read it.
+ *   - the 'f' flash handover (usb_serial_target_rx -> xt_usb_enter_download_mode), which
+ *     soft-disconnected, handed the pads to USB-Serial-JTAG, set FORCE_DOWNLOAD_BOOT and
+ *     esp_restart()ed. The CDC OUT endpoint re-delivers packets it already consumed, so a
+ *     byte received minutes ago could be honoured as a fresh request -- seen on the
+ *     console as rst:0xc (RTC_SW_CPU_RST),boot:0x3 (DOWNLOAD(USB/UART0)) with nothing
+ *     typed. A device that reboots itself into the bootloader during audio playback makes
+ *     every measurement of audio playback worthless. Flashing is a host-side act on the
+ *     ROM, not something the firmware should be asked to do to itself.
+ *   - the 't' trail dump over CDC, and the periodic register and usb-audio lines. They
+ *     were a load on a transport whose host may not be reading, and the crash trail is
+ *     still available: xtensa_breadcrumb() keeps the ring and the boot console prints it.
  *
- * A cooldown rather than a driver fix, because the commands are human-triggered and
- * seconds apart. The re-delivery itself is a bug in usb-designware.c's OUT handling and
- * is worth a look once the transport is no longer the only way to see the device. */
-static int xt_trail_hold;
-static int xt_flash_hold;
+ * What is left is the transport, the audio endpoints and the cable sense. */
 
-#define XT_CMD_HOLD_TICKS (5 * HZ)
-/* Whether the target puts unsolicited traffic on the CDC endpoint: the periodic register
- * trace line and the repeated post-mortem. Both are my instrumentation and both are a load
- * on a transport whose host may not be reading. Off while the detach crash is being tested;
- * 't' still answers on demand and the RTC ring survives a reset, so a crash remains readable
- * with no unsolicited traffic at all. Set to 1 to restore the live view in bring-up. */
-#define XT_USB_CDC_UNSOLICITED 1
-
-
-
-/* Whether the CDC IN endpoint can actually shift bytes out.
- *
- * A stalled or disabled endpoint accepts queued transmit data that never completes. Rockbox
- * serial's transmit buffer is fixed, so after a handful of pushes it is full and the next
- * send blocks the calling thread indefinitely. That is the ~30-45 second freeze measured on
- * this board -- not USB corruption, but the target's own unsolicited traffic wedging the
- * thread that also runs the attach poll and the diagnostic self-park. Endpoint 1 is the CDC
- * bulk IN in this composite.
- */
-static bool xt_cdc_sendable(void)
-{
-    uint32_t ctl = DWC_DIEPCTL(1);
-    return (ctl & 0x80000000u) != 0 && (ctl & 0x8000u) == 0;   /* EPENA, not STALL */
-}
-
-static void xt_cdc_send(const unsigned char *buf, int len)
-{
-    if (xt_cdc_sendable())
-        usb_serial_send((unsigned char *)buf, len);
-}
-
-/* Panic record line plus the whole retained ring, chunked. Same buffer reused per chunk
- * because the static region cannot hold forty formatted lines. */
-/* The part that survives a watchdog reset: the panic record line, the reset reason and
- * the RTC-slow ring. Small enough to send repeatedly. */
-static void xt_send_rtc_trail(void)
-{
-    static char trail[256];
-    int start;
-    extern int xtensa_paniclog_head(char *buf, int bufsize);
-    extern int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count);
-
-    /* Two senders writing the CDC ring buffer in the same tick interleave mid-line --
-     * that is how audD arrived as "audD a=" followed by the next report's head, which is
-     * the field that answers the question. Serialising the whole sequence costs no DRAM;
-     * an aggregation buffer did not fit (dram0 has ~2.4 KiB free). Every send here is a
-     * short queue onto the endpoint, so the mask window is bounded.
-     */
-    int oldlevel = disable_irq_save();
-
-    {
-        char head[128];
-        int n = xtensa_paniclog_head(head, sizeof head);
-        if (n > 0)
-            xt_cdc_send((unsigned char *)head, n);
-    }
-
-    xt_cdc_send((unsigned char *)"rtc:\r\n", 5);
-    for (start = 0; start < XT_RTC_WINDOW; start += 8)
-    {
-        int n = xtensa_breadcrumb_rtc_window(trail, sizeof trail, start, 8);
-        if (n <= 0)
-            break;
-        xt_cdc_send((unsigned char *)trail, n);
-    }
-    xt_cdc_send((unsigned char *)"rtc end\r\n", 8);
-
-    restore_irq(oldlevel);
-}
-
-/* Everything, including the internal-SRAM ring that a watchdog reset clears. Asked for
- * explicitly, because it is a 1.6 KB burst. */
-static void xt_send_trail(void)
-{
-    static char trail[352];
-    int start;
-    extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
-
-    for (start = 0; start < 40; start += 10)
-    {
-        int n = xtensa_breadcrumb_window(trail, sizeof trail, start, 10);
-        if (n <= 0)
-            break;
-        xt_cdc_send((unsigned char *)trail, n);
-    }
-    xt_send_rtc_trail();
-}
-
-void usb_serial_target_rx(const unsigned char *data, int length)
-{
-    int i;
-
-    /* The OUT endpoint re-arms and re-delivers the same bytes many times over, so a
-     * single keystroke arrives here dozens of times. Each delivery used to re-arm the
-     * trail request, and the unsolicited console printer runs every tick: one 't' became
-     * a sustained stream of 1 KB IN bursts, which fills the transmit FIFOs and starves
-     * EP0's status phase. That is why the console goes quiet seconds after typing and why
-     * Linux reports "cannot get freq at ep 0x2" even though the audio class answered every
-     * request. Treat a command as level-triggered one-shot: act on a byte only when it
-     * differs from the last one handled, so a re-delivery storm is a no-op.
-     */
-    static unsigned char last_handled;
-    static bool have_last;
-
-    for (i = 0; i < length; i++)
-    {
-        if (data[i] == 'f')
-        {
-            /* Honour it, but only once per cooldown window. The CDC OUT endpoint
-             * re-arms and re-delivers the bytes it already received, so a stale 'f'
-             * from a much earlier session can arrive again on its own -- measured: the
-             * chip reset into download mode during a DAC session in which nothing was
-             * ever typed (rst:0xc RTC_SW_CPU_RST, boot:0x3 DOWNLOAD). A pending request
-             * or an active hold means this delivery is a replay, not a keypress.
-             */
-            if (!xt_flash_request && xt_flash_hold == 0)
-            {
-                xt_flash_request = true;
-                xtensa_breadcrumb("usbRx", (unsigned long)length, data[i]);
-            }
-        }
-        else if (data[i] == 't')
-        {
-            if (have_last && data[i] == last_handled)
-                continue;
-            xt_trail_request = true;
-        }
-        if (data[i] != 'f')
-        {
-            have_last = true;
-            last_handled = data[i];
-        }
-    }
-}
-
-/* USJ CONF0 usb_pad_enable. Computed from the bitfield layout in
- * usb_serial_jtag_struct.h rather than guessed: phy_sel is bit 0, exchg_pins_override
- * 1, exchg_pins 2, vrefh 3:4, vrefl 5:6, vref_override 7, pad_pull_override 8,
- * dp_pullup 9, dp_pulldown 10, dm_pullup 11, dm_pulldown 12, pullup_value 13,
- * usb_pad_enable 14. */
-#define XT_USJ_CONF0_PAD_ENABLE   (1u << 14)
-
-/* Hand the port back, then ask the ROM to come up in download mode.
- *
- * The trigger arrives over our CDC, but the ESP32-S3 ROM's USB download mode is the
- * USB-Serial-JTAG device, so this has to give the pads back rather than persist the
- * OTG core. The mux override lives in the RTC block and survives esp_restart(), so
- * without an explicit release the ROM would find D+/D- still routed to a core it does
- * not speak to in download mode. usb_dw_target_disable_clocks() is the same release a
- * detach performs: it clears the wrap's pad_enable and the RTC override together.
- *
- * Then the USJ has to be connected *before* the reset. The ROM chooses between UART and
- * USB download at the very start of boot, and it can only choose USB if it sees a host
- * on these pins -- measured without this, the board entered download mode and
- * enumerated nothing on USB at all, which is the UART path. phy_sel (bit 0) stays clear
- * so the internal PHY is the one used, and no pull override is set: like the OTG core,
- * the USJ drives its own pull-up once its pad is enabled. Its bus clock is the same bit
- * the OTG core uses (SYSTEM.perip_clk_en1.usb_device_clk_en, usb_serial_jtag_ll.h:326),
- * so usb_dw_target_disable_clocks() has to leave that one set -- see the note there.
- *
- * Persist flags are deliberately not set. chip_usb_set_persist_flags(USBDC_PERSIST_ENA)
- * is the ESP32-S2 shape of this, where the ROM's download mode does run on the OTG
- * core; on the S3 it would leave the pads claimed by something the ROM ignores.
- */
-static void xt_usb_enter_download_mode(void)
-{
-    xtensa_breadcrumb("usbFlsh", DWC_DCTL, rd(XT_USB_OTG_CONF));
-
-    DWC_DCTL = SDIS;                /* stop answering the host before the pads move */
-    usb_dw_target_disable_clocks(); /* wrap releases the pads */
-    REG_WRITE(USB_SERIAL_JTAG_CONF0_REG,
-              REG_READ(USB_SERIAL_JTAG_CONF0_REG) | XT_USJ_CONF0_PAD_ENABLE);
-    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-
-    /* Read the request back before the reset, because after it nothing can be read.
-     * Measured: an ordinary boot honours FORCE_DOWNLOAD_BOOT and the ROM comes up in
-     * USB download mode; a boot that follows a panic reboot resets the chip but the ROM
-     * boots the app normally. Whether the bit is actually set at this point, and what
-     * the pad state looks like, is the only way to tell "the write did not take" from
-     * "the ROM ignored it". */
-    xtensa_breadcrumb("usbDl",
-                      REG_READ(RTC_CNTL_OPTION1_REG),
-                      REG_READ(USB_SERIAL_JTAG_CONF0_REG));
-    esp_restart();
-}
-#endif /* USB_ENABLE_SERIAL */
 
 #ifdef USB_ENABLE_AUDIO
 /* Strong override of the weak default in usbstack/usb_audio.c.
@@ -919,11 +765,33 @@ static void xt_usb_enter_download_mode(void)
 _Static_assert(XT_STORAGE_XFER_SIZE >= 1024,
                "the storage transfer buffer must hold the audio rx buffer (1023 -> 1024)");
 
+/* With ping-pong receive buffers the class asks for two packet spans in one call, so the
+ * borrowed region has to hold both or the hook declines and the class falls back to
+ * core_alloc() -- which on this target is the pool the DWC DMA cannot reach. */
+/* What one isochronous receive span has to hold: the arm size, doubled when the class
+ * ping-pongs two buffers. The borrowed region has to cover it or the hook declines and the
+ * class falls back to core_alloc() -- which on this target is the pool the DWC DMA cannot
+ * reach, so the audio endpoint would DMA into memory it cannot see. */
+#ifdef USB_AUDIO_RX_ARM_SIZE
+#define XT_AUDIO_RX_ARM USB_AUDIO_RX_ARM_SIZE
+#else
+#define XT_AUDIO_RX_ARM USB_AUDIO_BUFFER_SIZE
+#endif
+#ifdef USB_AUDIO_RX_PINGPONG
+#define XT_AUDIO_RX_SPAN (2 * XT_AUDIO_RX_ARM)
+#else
+#define XT_AUDIO_RX_SPAN XT_AUDIO_RX_ARM
+#endif
+
+_Static_assert(XT_STORAGE_XFER_SIZE >= XT_AUDIO_RX_SPAN,
+               "the borrowed storage buffer cannot hold the audio receive span");
+
 extern void *usb_storage_transfer_buffer_get(void);
 
 /* The buffer the isochronous OUT endpoint DMAs into, handed out by
  * usb_audio_target_rx_buffer() below and remembered so the cache-maintenance hook knows
- * which buffer is the audio one.
+ * which buffer is the audio one. The class asks for one span, or two when it ping-pongs
+ * them, and splits that region itself; this base covers both halves.
  */
 static void *xt_audio_rx_addr;
 
@@ -946,82 +814,167 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
  * bytes without going through it, so a receiver that reads the cached address sees
  * whatever was there before the transfer. cache_hal_invalidate_addr() takes no lock and
  * is safe from the interrupt context this is called in.
+ *
+ * No counters here. This hook is a convenient place to sample DOEPTSIZ and DOEPCTL at
+ * receive completion, and did briefly carry four such counters; they were removed because
+ * the display is the only console on this board and the RTC breadcrumb ring cannot be read
+ * in the audio profile -- the cable gives OTG to our firmware about a second after boot, so
+ * the Serial-JTAG console that would carry the dump is gone before anything can listen.
  */
 void usb_dw_target_dma_discard(void *buf, unsigned int len)
 {
     discard_dcache_range(buf, len);
-
 }
 
-/* The esp32s3 core packs DSTS as suspsts at bit 0, enumspd at bits 2:1 and SOFFN at bits
- * 17:4 (soc/usb_dwc_struct.h). The driver's generic shift of 8 therefore reads a frame
- * number that advances once every sixteen real frames, which is what made the audio
- * feedback cadence miss entirely. */
-int usb_dw_target_frame_number(uint32_t dsts)
-{
-    return (int)((dsts >> 4) & 0x3fff);
-}
+/* No usb_dw_target_frame_number() override: the driver's generic full-speed reading,
+ * (DWC_DSTS >> 8) & 0x3fff, is the correct one for this core, and the driver's own comment
+ * says why -- "SOFFN is a 14-bit microframe number for high-speed hosts and a plain frame
+ * number for full-speed hosts."
+ *
+ * This file overrode it with (dsts >> 11) & 0x7ff, i.e. the high-speed shift, on the
+ * assumption that SOFFN carries a microframe offset in its low three bits at full speed too.
+ * It does not. Measured through the CDC log path, the value this override returns advanced
+ * only ~125 times per second on a bus whose frames advance a thousand times per second --
+ * exactly 1000/8, which is what shifting a plain frame number by three further bits does.
+ *
+ * That is not merely a wrong number on the debug page. usb_dw_epstart() picks the expected
+ * data PID for an isochronous receive endpoint from usb_drv_get_frame_number(), and a
+ * full-speed stream alternates DATA0/DATA1 every frame. A counter whose parity flips every
+ * 8 ms therefore matches the host's PID for roughly one frame in eight -- and a rejected
+ * isochronous packet raises no completion, no error and no counter, so half the audio
+ * disappears while every gauge still reads healthy. That is the ~530 accepted 196-byte
+ * packets per second against ~1000 on the wire, which no change to interrupt level, armed
+ * packet count or feedback control altered.
+ *
+ * The two overrides before this one were wrong in the same shape: (dsts >> 4) returned the
+ * frame multiplied by 16, and the measurement that appeared to "prove" full speed always
+ * uses DATA0 was taken while the parity test was reading a frame number whose low bits were
+ * not the parity at all. Falling back to the generic reading also puts this target back on
+ * the same rule the high-speed DWC2 targets already rely on.
+ */
 
 #ifdef USB_ENABLE_AUDIO
-/* These mirror usb_audio.c's own constants: FEEDBACK_UPDATE_RATE_FRAMES is 1 << (10 - 5)
- * and a full-speed frame counter wraps at 1024. */
-#define XT_FB_PERIOD      32
-#define XT_FB_FRAME_MAX   1023
-#define XT_FB_FIXED(v)    ((int32_t)(v) << 16)
-
-/* Nothing for the target to do here.
+/* Hand over the next slot that actually carries audio.
  *
- * The mixer fills a frame from several get_more calls -- pcm_mixer.c consumes what a
- * channel offers, then "goto fill_frame" and asks again -- so one packet-sized slot per
- * call is exactly what it expects, and MIX_FRAME_SAMPLES (256) against a full-speed
- * packet of 48 frames is not a shortfall. An earlier version of this hook returned a run
- * of slots as one block, which was wrong for a different reason: slots are 1280 bytes
- * apart while a packet writes about 192, so the mixer read the gap between them as audio.
- * That is what turned pulsed music into plain noise, and what made the noise keep playing
- * out of the ring after the host stopped. Measured, not reasoned: the character changed at
- * exactly that commit and reverted at this one.
- */
+ * The generic path hands back one slot per call, whatever dsp_buf_size[] says it holds --
+ * including zero. That is not a no-op on the other side: pcm_mixer.c tests
+ *
+ *     if (!(chan->start && chan->size))
+ *         channel_stopped(chan);
+ *
+ * -- the comment there reads "Channel is stopping" -- so an empty slot is read as the end
+ * of the stream. The channel is torn down, playback mutes, and it does not come back until
+ * MINIMUM_BUFFERS_QUEUED buffers have re-accumulated -- 16 ms of silence, repeatedly, while
+ * the ring around it is full of perfectly good data.
+ *
+ * Empty slots are not a curiosity. Rockbox documents the behaviour at the head of
+ * dsp_process(): "samples consumed and samples produced do not necessarily have a direct
+ * correlation. Samples may be consumed without producing any output and samples may be
+ * produced without consuming any input." The class sets
+ *
+ *     dsp_buf_size[rx_usb_idx] = dst.remcount * 2 * sizeof(*dsp_buf);
+ *
+ * straight from that output count, so any packet an internal stage absorbs lands in the ring
+ * with size 0. That also explains two things measured on the board: gaps at a rate that
+ * barely changed between 44.1 kHz and 48 kHz, and two very different feedback setpoints
+ * producing byte-identical queue traces. Neither was a rate error; the channel was being
+ * stopped by a zero, not by an empty ring.
+ *
+ * What this hook must NOT do is coalesce several slots into one block by treating the ring
+ * as contiguous: slots are REAL_DSP_BUF_SIZE (1280) apart while a packet writes about 192
+ * bytes, so the mixer would read the gap between them as audio. That turned pulsed music
+ * into plain noise, and made the noise keep playing after the host stopped. Measured, not
+ * reasoned: the character changed at exactly that commit and reverted at this one. */
 int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
                               const int *slot_sizes, const int16_t *buf, size_t slot_stride,
                               const void **start, size_t *size)
 {
-    (void)play_idx; (void)filled; (void)nr_buffers; (void)slot_sizes;
-    (void)buf; (void)slot_stride; (void)start; (void)size;
+    /* The common case: this slot has data, let the generic hand-off deal with it. */
+    if (slot_sizes[play_idx] > 0)
+        return 0;
+
+    for (int n = 1; n < filled; n++)
+    {
+        int idx = play_idx + n;
+
+        if (idx >= nr_buffers)
+            idx -= nr_buffers;
+
+        if (slot_sizes[idx] > 0)
+        {
+            /* Same address arithmetic the class uses for the generic path. */
+            *start = buf + (idx * (slot_stride / sizeof(*buf)));
+            *size = slot_sizes[idx];
+            return n + 1; /* class advances rx_play_idx past the empty slots */
+        }
+    }
+
+    /* Every queued slot is empty, or none are: report it the way the generic path does so
+     * a genuine underflow still sets its flag and prebuffers before resuming. */
     return 0;
 }
 
-/* A completion lands on whichever frame the host's burst happened to fill, so the generic
- * "frame + 1 is a multiple of 32" test is rarely true; measured 1663 opportunities with
- * zero feedback values queued. Take the boundary itself instead. */
-bool usb_audio_target_fb_due(int frame, bool send_fb)
-{
-    return send_fb && (frame % XT_FB_PERIOD) == 0;
-}
+/* usb_audio_target_fb_due() stays generic. (frame + 1) % FEEDBACK_UPDATE_RATE_FRAMES is a
+ * period test, so with an honest frame number it advances reliably: one feedback value every
+ * 32 frames, as designed.
+ *
+ * usb_audio_target_fb_latch() has to be overridden, and that is not a matter of taste.
+ * The generic latch -- frame == (startframe + 64) % (USB_FRAME_MAX + 1) -- is the only place
+ * send_fb is ever set true, and it is evaluated in the else leg of the cadence test. Arming
+ * feedback therefore depends on catching one exact frame number, once, ever. fb_startframe
+ * is captured at playback start (usb_audio.c:845) while the comparison runs at completion
+ * time against DWC_DSTS, which reports the frame it is now: if the host lets its first ISO
+ * packet land past that boundary, the window is missed, send_fb stays false for the whole
+ * session, and no feedback value is ever computed or sent. The host then paces open loop on
+ * its own clock while our DAC free-runs on ours, and the queue walks down into the restart
+ * gate forever -- with every target-side controller setting rendered inaudible.
+ *
+ * Measured on this board, with no change to this code path in between: "Samples used per
+ * frame" on the USB Audio debug page read 48.000000 on one build and 0.000000 on the next.
+ * That is the race, not the logic. Elapsed time since startframe is what the latch means, so
+ * test the elapsed count instead of one instant of it.
+ *
+ * Both constants mirror usb_audio.c, which does not export them: FEEDBACK_UPDATE_RATE_FRAMES
+ * is 1 << (10 - FEEDBACK_UPDATE_RATE_P) = 32 and USB_FRAME_MAX is 0x7ff. */
+#define XT_FB_ARM_FRAMES 64 /* FEEDBACK_UPDATE_RATE_FRAMES * 2, the generic margin */
 
-/* The generic latch waits for one exact frame number, which a burst-paced completion
- * stream can miss entirely. Any elapsed 64 frames will do. */
 bool usb_audio_target_fb_latch(int frame, int startframe)
 {
-    return ((frame - startframe) & XT_FB_FRAME_MAX) >= XT_FB_PERIOD * 2;
+    return ((frame - startframe) & 0x7ff) >= XT_FB_ARM_FRAMES;
 }
 
-/* The generic term averages an accumulator that is only fed by completions from endpoints
- * other than the isochronous OUT one -- which do not occur while a DAC stream runs -- so it
- * stayed 0 and the feedback was a constant nominal value. Queue depth is the thing that
- * needs controlling, and it is available directly. */
-int32_t usb_audio_target_fb_buffers_filled(int queued_buffers, int minimum_buffers)
-{
-    return XT_FB_FIXED(queued_buffers - minimum_buffers);
-}
 
-/* +/- 1 sample per frame is a 2% correction band. The queue measured 13, 8, 1 and 4 buffers
- * while the feedback sat at exactly nominal, so the shortfall is larger than that band can
- * cover; 8 samples per frame (about 16%) is enough to hold the queue up.
- */
-int usb_audio_target_fb_limit_samples(void)
-{
-    return 8;
-}
+/* Feedback control is deliberately NOT overridden here, and that is a decision rather than
+ * an omission.
+ *
+ * Both overrides below started from a claim that proved false: that the generic accumulator
+ * "is only fed by completions from endpoints other than the isochronous OUT one", so it
+ * stayed 0 and feedback sat at nominal. It is not. usb_audio.c adds
+ * (usb_audio_get_prebuffering() - MINIMUM_BUFFERS_QUEUED) to that accumulator on every frame
+ * between feedback updates, and usb_audio_get_prebuffering() is the true ring occupancy,
+ * (rx_usb_idx - rx_play_idx + NR_BUFFERS) % NR_BUFFERS. It is signed, so it moves feedback
+ * both ways. The flat reading that motivated the override was the fb_latch race just above,
+ * which is fixed on its own terms; once send_fb latched there was nothing wrong with the
+ * generic term.
+ *
+ * What the override then did was actively harmful, and the debug page hid it perfectly. The
+ * seam's return value is signed in the arithmetic (samples_fb = samples_base -
+ * buffers_filled/4) but a negative return is reserved for "the target measured nothing", so
+ * an under-full queue cannot be reported through it: nominal is the ceiling. Clamped to stay
+ * non-negative, the hook said "queue at target" -- buffers_filled = 0, samples_fb =
+ * samples_base -- for every occupancy from 0 buffers up to the 36-slot setpoint. That is the
+ * entire range this stream ever occupies. Which is why "Samples used per frame" read a serene
+ * 48.000000 while Min sat at 1 and UNDERFLOW blinked continuously: a one-way valve wired to
+ * the half of the queue that never happens, reporting health because it could not report
+ * emptiness.
+ *
+ * The generic path needs no separate setpoint -- its reference is MINIMUM_BUFFERS_QUEUED, the
+ * same quantity the restart logic uses, so controller and gate cannot disagree. The band
+ * stays at the weak default of +/- 1 sample per frame: on a full-speed bus that is +/- 2.08%,
+ * which is not a tight tolerance but the whole authority this endpoint has, since UAC1
+ * feedback at full speed counts whole samples per 1 ms frame and the host may clamp to that
+ * band regardless. Widening it, as this file used to, only commands rates the host is
+ * entitled to ignore. */
 #endif /* USB_ENABLE_AUDIO */
 
 static void usb_vbus_poll(void)
@@ -1076,165 +1029,15 @@ static void usb_vbus_poll(void)
                           (unsigned long)usb_audio_get_playing());
 #endif
 
-#ifdef USB_ENABLE_SERIAL
-        /* Same numbers out of the CDC IN endpoint. The breadcrumb ring only reaches
-         * the console at the *next* boot, and during an attach the USJ console is gone
-         * because the OTG core owns the pads, so a live attach is otherwise invisible.
-         *
-         * logf would be the natural route and does push to usb_serial_send, but that
-         * push is gated on HAVE_SERIAL && LOGF_SERIAL (firmware/logf.c:244), which are
-         * iPod-only defines; HAVE_SERIAL would also pull drivers/serial.c into the
-         * build, which expects target serial hardware we do not have. So this writes
-         * the class directly. usb_serial_send() returns without effect when the class
-         * is not active, so this is harmless before enumeration. Tick-task context, as
-         * everything here is: the send path takes an endpoint, not a lock. */
-        {
-            /* The sticky DAINT masks say which endpoints the OEPINT/IEPINT counts
-             * belong to. oep runs at 2.4/s against iep at 0.3/s, and nothing in this
-             * profile should be receiving that much: knowing whether it is EP0 or the
-             * CDC OUT endpoint is the difference between a chattering host and a driver
-             * that re-primes an endpoint it should not. */
-#if XT_USB_CDC_UNSOLICITED
-            static char cdc_line[192];
-            int n = snprintf(cdc_line, sizeof(cdc_line),
-                             "rockbox: irq=%lu iep=%lu oep=%lu rst=%lu "
-                             "enum=%lu none=%lu early=%lu en=%lu/%lu "
-                             "dain=%04lx,%04lx gintsts=%08lx dsts=%08lx pcgc=%08lx dctl=%08lx rxf=%08lx tx0=%08lx\r\n",
-                             xt_usb_irqs, xt_irq_iep, xt_irq_oep, xt_irq_rst,
-                             xt_irq_enum, xt_irq_none, xt_irq_early,
-                             xt_irq_enable_n, xt_irq_disable_n,
-                             xt_irq_daint_in, xt_irq_daint_out,
-                             DWC_GINTSTS, DWC_DSTS,
-                             /* PCGCCTL is the core's own low-power control: bit 0 StopPclk
-                              * and bit 6 PhysSleep park the PHY clock, bit 3 ResetPwdwnModule
-                              * holds the core in reset after suspend. ESP-IDF clears StopPclk
-                              * in its DWC2 init for ESP32-P4 only, with the comment that the
-                              * peripheral bring-up forces the PHY into suspend before gating
-                              * its clock to stop leakage current. Nothing does that here, so
-                              * if the bit is set the core legitimately reports a suspended
-                              * device -- which is what ESUSP says and what drops every
-                              * isochronous OUT packet (ISOODPR). DCTL is read alongside it to
-                              * see whether the soft disconnect or the global NAK bits are
-                              * latched. */
-                             DWC_PCGCCTL, DWC_DCTL,
-                             /* ISOODPR says the core threw away an isochronous OUT packet.
-                              * The RX FIFO has to hold the whole packet plus its status
-                              * word, so the programmed sizes are worth reading next to the
-                              * endpoint's 320-byte packet: rxf is GRXFSIZ in words and tx0
-                              * is the non-periodic TX FIFO (start and depth packed). */
-                             DWC_GRXFSIZ, DWC_TX0FSIZ);
-            if (n > 0)
-                xt_cdc_send((unsigned char *)cdc_line, n);
-
-            /* The audio profile gets its own line, because "are isochronous frames
-             * arriving" is a different question from "are endpoint interrupts
-             * firing": rx_perframe is what the core reported over the last two
-             * feedback cycles, and the rx buffer address says whether we are still
-             * pointing at the PSRAM window the DMA master cannot reach.
-             *
-             * The ep fields are that endpoint's own hardware state, because rxframe=0
-             * cannot say why. ctl is DOEPCTL: bit 31 EPENA, bits 18-20 EPTYP (1 = isoch),
-             * bit 15 USBAEP, bits 0-9 the packet size. sz is DOEPTSIZ as programmed
-             * (PKTCNT above bit 19, XFERSIZE below it) and xfer is that XFERSIZE field
-             * read live: it counts down as the core consumes packets, so if it moves
-             * while the host streams, packets are reaching the endpoint and the fault is
-             * in the completion path; if it never moves, nothing arrives and the fault is
-             * upstream -- the alternate setting, the endpoint address, or the FIFO. int is
-             * DOEPINT (bit 0 XFERC) and daint is the core's active-endpoint register,
-             * which has never shown bit 2. dma is the address the core writes to.
-             */
-#ifdef USB_ENABLE_AUDIO
-            static char aud_line[220];
-            /* The isochronous OUT endpoint, index 2 in this profile's descriptors. */
-            const int aep = 2;
-            uint32_t asz = DWC_DOEPTSIZ(aep);
-            int an = snprintf(aud_line, sizeof(aud_line),
-                              "rockbox: usb-audio active=%d playing=%d allocfail=%d "
-                              "rxframe=%ld prebuf=%d rxbuf=%p oep=%lu "
-                              "ep=%d ctl=%08x sz=%08x xfer=%d int=%08x daint=%08x "
-                              "dma=%p\r\n",
-                              (int)usb_audio_get_active(),
-                              (int)usb_audio_get_playing(),
-                              (int)usb_audio_get_alloc_failed(),
-                              (long)usb_audio_get_samples_rx_perframe(),
-                              usb_audio_get_prebuffering(),
-                              xt_audio_rx_addr,
-                              (unsigned long)xt_irq_oep,
-                              aep,
-                              (unsigned)DWC_DOEPCTL(aep),
-                              (unsigned)asz,
-                              (int)(asz & 0x7ffff),
-                              (unsigned)DWC_DOEPINT(aep),
-                              (unsigned)DWC_DAINT,
-                              (void *)DWC_DOEPDMA(aep));
-            if (an > 0)
-                usb_serial_send((unsigned char *)aud_line, an);
-#endif
-#endif
-        }
-#endif
 
           /* The pad/ownership and EP0 snapshot that used to follow these entries is
            * gone: scaffolding for the -71 enumeration stage (GUSBCFG, DCTL, DOEPINT,
-           * EPTSIZ, GINTMSK, INTENABLE), now closed. It took eight of the ring's forty
-           * slots per burst -- most of the history the ring exists to keep -- and the
-           * same numbers are on the CDC trace line (gintsts, dsts, dain) or in the
-           * attach transition dump (usbWrap, usbVbus, usbGusb). */
+           * EPTSIZ, GINTMSK, INTENABLE). It took eight of the ring's forty slots per
+           * burst -- most of the history the ring exists to keep -- for a fault that is
+           * fixed. What remains for enumeration is the CDC trace line (gintsts, dsts,
+           * dain) and the two audio breadcrumbs above. */
     }
 
-#ifdef USB_ENABLE_SERIAL
-    /* One command per cooldown window each, so a re-delivered byte cannot repeat a dump
-     * without blocking the other command: pressing the trail right after a flash request
-     * has to still work. */
-    if (xt_trail_hold > 0)
-        xt_trail_hold--;
-    if (xt_flash_hold > 0)
-        xt_flash_hold--;
-
-    /* Picked up here rather than in the hook: this runs on the tick task thread. */
-    if (xt_trail_request && xt_trail_hold == 0)
-    {
-        xt_trail_request = false;
-        xt_trail_hold = XT_CMD_HOLD_TICKS;
-        xt_send_trail();
-    }
-
-    /* Push the retained trail without being asked. Reading it on demand needs a host that
-     * is fast: the boot console is USJ and only ours for the four seconds before the OTG
-     * core takes the pads, and IDF drops console output when nothing is reading, so the
-     * dump of the boot that died was consistently half-captured. Three seconds after the
-     * attach, the previous boot's entries are still in the ring (this boot writes about
-     * sixteen), and the transport is up, so a device that crashed on unplug delivers its
-     * own post-mortem to whoever plugs it in. */
-    /* Repeat it rather than sending once. The bulk IN endpoint drops whatever the host
-     * has not read, and at the moment this fires nobody has the ACM port open yet, so a
-     * single 1.6 KB post-mortem can vanish entirely -- measured: the head line arrived,
-     * the body did not. Twelve sends at five-second intervals covers the first minute of
-     * anyone plugging in, and stops rather than running forever. */
-    /* Repeated, and compact. One burst at boot is lost: the bulk IN endpoint drops what
-     * the host has not read, and nobody holds the ACM port open at that moment -- measured,
-     * the head line arrived and the body did not. The RTC section is a few hundred bytes, so
-     * sending it every five seconds means whoever opens the port gets the surviving trail
-     * whenever they open it. The full internal-SRAM ring stays behind 't'. */
-    /* One tick after the report cadence rather than on it: both fire on the same tick
-     * otherwise, and two senders writing the CDC ring buffer in the same tick interleave
-     * mid-line, which is how "dSdi a=usbIRQ 0000072f" ended up in a read. */
-#if XT_USB_CDC_UNSOLICITED
-    if (xt_armed && current_tick - xt_boot_report >= 5 * HZ + 1)
-    {
-        xt_boot_report = current_tick;
-        xt_send_rtc_trail();
-    }
-#endif
-
-
-    if (xt_flash_request && xt_flash_hold == 0)
-    {
-        xt_flash_request = false;
-        xt_flash_hold = XT_CMD_HOLD_TICKS;
-        xt_usb_enter_download_mode();
-    }
-#endif
 
     if (++ticks < USB_VBUS_POLL_TICKS)
         return;
