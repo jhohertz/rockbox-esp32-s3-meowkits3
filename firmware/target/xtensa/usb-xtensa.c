@@ -914,34 +914,21 @@ int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
     return 0;
 }
 
-/* usb_audio_target_fb_due() stays generic. (frame + 1) % FEEDBACK_UPDATE_RATE_FRAMES is a
- * period test, so with an honest frame number it advances reliably: one feedback value every
- * 32 frames, as designed.
+/* usb_audio_target_fb_due() and usb_audio_target_fb_latch() both stay generic.
  *
- * usb_audio_target_fb_latch() has to be overridden, and that is not a matter of taste.
- * The generic latch -- frame == (startframe + 64) % (USB_FRAME_MAX + 1) -- is the only place
- * send_fb is ever set true, and it is evaluated in the else leg of the cadence test. Arming
- * feedback therefore depends on catching one exact frame number, once, ever. fb_startframe
- * is captured at playback start (usb_audio.c:845) while the comparison runs at completion
- * time against DWC_DSTS, which reports the frame it is now: if the host lets its first ISO
- * packet land past that boundary, the window is missed, send_fb stays false for the whole
- * session, and no feedback value is ever computed or sent. The host then paces open loop on
- * its own clock while our DAC free-runs on ours, and the queue walks down into the restart
- * gate forever -- with every target-side controller setting rendered inaudible.
+ * The latch used to be overridden here -- `frame == (startframe + 64) % (USB_FRAME_MAX + 1)`
+ * is the only place send_fb becomes true, and it is tested in the else leg of the cadence
+ * check, so the override argued that arming feedback depended on catching one exact frame
+ * once, ever, and a missed window would leave the host pacing open loop forever.
  *
- * Measured on this board, with no change to this code path in between: "Samples used per
- * frame" on the USB Audio debug page read 48.000000 on one build and 0.000000 on the next.
- * That is the race, not the logic. Elapsed time since startframe is what the latch means, so
- * test the elapsed count instead of one instant of it.
- *
- * Both constants mirror usb_audio.c, which does not export them: FEEDBACK_UPDATE_RATE_FRAMES
- * is 1 << (10 - FEEDBACK_UPDATE_RATE_P) = 32 and USB_FRAME_MAX is 0x7ff. */
-#define XT_FB_ARM_FRAMES 64 /* FEEDBACK_UPDATE_RATE_FRAMES * 2, the generic margin */
-
-bool usb_audio_target_fb_latch(int frame, int startframe)
-{
-    return ((frame - startframe) & 0x7ff) >= XT_FB_ARM_FRAMES;
-}
+ * That argument rested on a measurement taken while the frame number was wrong: the readings
+ * quoted at the time -- "Samples used per frame" 48.000000 on one build and 0.000000 on the
+ * next -- were made before usb_dw_target_frame_number() was deleted, when DWC_DSTS was being
+ * shifted by 11 and the frame advanced ~125 times a second instead of 1000. With an honest
+ * frame the equality is a normal period test, and it is the same one every high-speed target
+ * depends on. The override is gone on that basis; the check is that Samples used per Frame
+ * settles near 48.87 rather than reading 0.000000, which is what an unarmed latch looks like.
+ */
 
 
 /* Feedback control is deliberately NOT overridden here, and that is a decision rather than

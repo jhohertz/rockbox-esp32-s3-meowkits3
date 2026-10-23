@@ -27,15 +27,17 @@ Measured healthy, on the device's own USB Audio debug page, after tonight's fixe
 
 Fixes landed tonight (all committed to the working tree, not pushed):
 
-1. `usb_dw_target_frame_number()`: SOFFN frame is at `DWC_DSTS >> 11`, masked to the
-   class's 11-bit `USB_FRAME_MAX`. Two earlier readings of this field were wrong.
-2. `usb_audio_target_fb_latch()` reinstated as a tolerant override. The generic latch
-   (`frame == (startframe + 64) % 1024`) is the only place `send_fb` becomes true, it is
-   a single-frame window read against a register that reports *now*, and a host that
-   starts its ISO stream past that boundary never arms feedback for the whole session.
-   Proof it was live: `Samples used per frame` read 48.000000 on one build and
-   0.000000 on the next with no change to that path.
-3. `usb_audio_target_fb_buffers_filled()` clamped to non-negative. The seam reserves
+1. `usb_dw_target_frame_number()` existed for a reason and turned out to be the bug. SOFFN
+   at full speed is a plain frame number at `DWC_DSTS >> 8`, masked to 14 bits, which is what
+   the driver's generic reading already does; the override's `>> 11` made the frame advance
+   ~125 times a second instead of 1000. Deleted -- see section 8 for how that was found.
+2. `usb_audio_target_fb_latch()` was overridden as a tolerant elapsed-time test, on the claim
+   that the generic exact-frame window could be missed and leave feedback unarmed for a whole
+   session. The proof quoted for it -- `Samples used per frame` reading 48.000000 on one build
+   and 0.000000 on the next -- was taken while the frame number was wrong by a factor of eight,
+   so it proves nothing. The override has since been removed and the generic latch used; the
+   check is that `used` settles near 48.87 rather than reading 0.000000.
+3. `usb_audio_target_fb_buffers_filled()` was clamped to non-negative. The seam reserves
    negative for the "-1 = I measured nothing" sentinel, so a target that returns
    `queued - target` has its correction silently discarded in exactly the case that
    needs it: the controller could only ever decelerate.
@@ -406,10 +408,12 @@ before/after claim. Two practical notes: PipeWire tears down a capture stream st
 before the sink is awake, so start playback first and record second; and `pw-record` takes
 no `--format` flag, writing 48 kHz stereo 16-bit natively.
 
-Descriptor and control items left as known deviations, because changing them is core
-behaviour and Linux tolerates them today: `bRefresh` is 0 on the ISO OUT endpoint (Linux
-reads the *sync* endpoint's field, so it is inert); the Feature Unit answers GET_RES with a
-stall, which the host retries rather than failing; there is no AudioControl interrupt
-endpoint although the FU advertises MUTE|VOLUME; `bDelay` claims 1 ms against a real ~35-45
-ms; and the feedback endpoint declares wMaxPacketSize 4 while 3 bytes are sent at full
-speed.
+Descriptor and control items that are NOT our deviations. `bDelay = 1`, the absent
+AudioControl interrupt endpoint, and `as_iso_synch_in_ep.wMaxPacketSize = 4` are all upstream
+values that every target ships: a declared maximum of 4 while sending 3 bytes at full speed is
+legal, and UAC1 gives the mute selector only a `CUR` request, so stalling `GET_RES` on mute is
+conformant while `GET_RES` on volume is handled (`usb_audio.c:1243`). Fixing any of those in a
+target would be a core-behaviour change for one board. What is genuinely ours and deliberately
+kept: `as_iso_audio_out_ep.wMaxPacketSize = BUFFER_SIZE` (upstream's 1023 cannot be armed on a
+320-byte full-speed packet) and the filtered rate list, whose aligned alternative is described
+against `HW_SAMPR_CAPS`.
