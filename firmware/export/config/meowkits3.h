@@ -450,11 +450,24 @@
  * It does mean the nominal in samples_base is wrong by that much, and any residual drift here
  * should be read against 48.016 rather than 48.
  *
- * 22 puts the setpoint at the measured equilibrium instead of above it. Judge the change by
- * Samples used per Frame settling near 48.02 and by the capture's time-base swing shrinking;
- * Buffers filled cannot show it, because it is the variable being aimed at.
+ * 22 was meant to put the setpoint at the measured equilibrium, but the queue never gets
+ * there: with this gate it averages 18-19 (Buffers filled), so the error term is about -3.5
+ * slots and the command sits near 48.875 -- just inside the clamp, held there to make up for
+ * the ~2% of frames that never arrive. Demand 48.875 against consumption 48.016 is a +1.79%
+ * surplus, which is the loss. The gate is simply unreachable while the clamp is one sample,
+ * which is why the controller reads as permanently pressed rather than hunting.
+ *
+ * 19 aims at where the queue actually is, so the error term goes to ~0 and the controller
+ * comes off the clamp. Judge it by Samples used per Frame falling to ~48.02: the clock offset
+ * and nothing else. Buffers filled cannot show this, because it is the variable being aimed
+ * at. If instead used stays near 48.9 while Buffers filled sinks toward 19, the shortfall is
+ * larger than the clamp can cover and the answer is a wider clamp
+ * (usb_audio_target_fb_limit_samples), not a smaller gate.
+ *
+ * Cost: the gate is also the re-prebuffer length after an underflow, so the cushion goes from
+ * ~22 ms to ~19 ms against a mixer pass of 5.33 slots -- still comfortably above it.
  */
-#define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
+#define MINIMUM_BUFFERS_QUEUED   19  /* restart gate, mute length, and the controller setpoint */
 
 /* Re-arm the isochronous OUT endpoint before copying the completed packet, using two
  * alternating receive buffers (usb_audio.c's USB_AUDIO_RX_PINGPONG).
