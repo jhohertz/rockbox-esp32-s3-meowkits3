@@ -457,17 +457,31 @@
  * surplus, which is the loss. The gate is simply unreachable while the clamp is one sample,
  * which is why the controller reads as permanently pressed rather than hunting.
  *
- * 19 aims at where the queue actually is, so the error term goes to ~0 and the controller
- * comes off the clamp. Judge it by Samples used per Frame falling to ~48.02: the clock offset
- * and nothing else. Buffers filled cannot show this, because it is the variable being aimed
- * at. If instead used stays near 48.9 while Buffers filled sinks toward 19, the shortfall is
- * larger than the clamp can cover and the answer is a wider clamp
- * (usb_audio_target_fb_limit_samples), not a smaller gate.
+ * 22 is where the gate belongs. The queue cannot reach the setpoint because roughly 2% of
+ * frames never arrive, and the controller's law is
  *
- * Cost: the gate is also the re-prebuffer length after an underflow, so the cushion goes from
- * ~22 ms to ~19 ms against a mixer pass of 5.33 slots -- still comfortably above it.
+ *     samples_fb = samples_base - (queue - gate)/4, clamped to +/-1 sample
+ *
+ * so in steady state the deficit is set by the loss, not by the gate: queue = gate - 4L, with
+ * L about 0.875 frames a frame here. Two readings from one build family confirm it -- gate 22
+ * gave Buffers filled 18-19, gate 19 gave 15-16, both a deficit of ~3.5 slots and both the
+ * same command near 48.875. Buffers filled is therefore an output of the loss, not a target:
+ * dropping the gate moved the whole queue down, changed nothing else, and cost 3 ms of cushion
+ * and re-prebuffer length.
+ *
+ * The clamp also sets the ceiling. With the limit at one sample the controller can compensate
+ * at most a 4-slot deficit, so 22 is the highest gate that stays off the clamp. 24 presses it
+ * -- and the queue sitting at 22.5-23.5 under a gate of 24, with Samples used per Frame
+ * floating between 48.5 and 48.9 rather than settling, is exactly that saturation: the host's
+ * rate pinned at +/-1 whatever the queue does, audible as warble on sustained material. A
+ * deeper cushion needs the gate and usb_audio_target_fb_limit_samples() raised together.
+ *
+ * The deficit is a usable measurement: L = (gate - Buffers filled)/4 frames per frame, so on
+ * any build a single debug-page glance gives the loss rate -- here 0.875, i.e. ~875 frames/s,
+ * which agrees with the ~950/s derived independently from the host's hw_ptr against the
+ * measured DAC consumption.
  */
-#define MINIMUM_BUFFERS_QUEUED   19  /* restart gate, mute length, and the controller setpoint */
+#define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
 
 /* Re-arm the isochronous OUT endpoint before copying the completed packet, using two
  * alternating receive buffers (usb_audio.c's USB_AUDIO_RX_PINGPONG).
