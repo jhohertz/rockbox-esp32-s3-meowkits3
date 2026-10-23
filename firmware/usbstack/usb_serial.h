@@ -24,16 +24,6 @@
 
 void usb_serial_send(const unsigned char *data, int length);
 
-/* Optional target hook, called with whatever arrived on the serial class's OUT
- * endpoint. Defined weak in usb_serial.c with an empty body, so a target that has no
- * use for received bytes links the no-op and behaves exactly as it did before this
- * existed -- the core has never dispatched received data to anybody.
- *
- * Runs in interrupt context: usb_core_transfer_complete() is reached from the device
- * driver's handler. A target that wants to act on a command records it here and acts
- * from a thread or a tick task, not inside this call. */
-void usb_serial_target_rx(const unsigned char *data, int length);
-
 extern struct usb_class_driver usb_cdrv_serial;
 
 #endif
