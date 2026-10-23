@@ -684,7 +684,6 @@ target/coldfire/ata-as-coldfire.S
  * core timer. That whole layer lives on the tagged branch baremetal-pre-idf,
  * along with crt0.S, vectors.S, irom-map.c, mmu-xtensa.c, psram-xtensa.c,
  * rom_cache.c, irq-xtensa.c and app.lds. */
-target/xtensa/scan_trace.c
 target/xtensa/paniclog.c
 target/xtensa/thread-idf.c
 target/xtensa/memory-xtensa-syms.S

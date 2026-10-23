@@ -42,23 +42,6 @@
 #include "linked_list.h"
 #include "crc32.h"
 
-/* TEMPORARY bring-up instrumentation (paired with ROCKBOX_SCAN_TRACE). The
- * fault under investigation reaches ESP-IDF's _DoubleExceptionVector, which is
- * `break 1, 4` before anything is recorded, so the cause of the first exception
- * is gone by the time a panic prints. This writes breadcrumbs to a DRAM ring in
- * .noinit instead; that section is NOLOAD, so it is neither in the image nor
- * cleared at startup, and a panic reboots through RTC_SW_CPU_RST, which leaves
- * internal SRAM alone. The next boot prints what this one was doing. Remove
- * along with the define. */
-#ifdef ROCKBOX_SCAN_TRACE
-extern void scan_trace(int tag, unsigned long a, unsigned long b,
-                       unsigned long c);
-#define STRACE(t,a,b,c) scan_trace((t),(unsigned long)(a),(unsigned long)(b), \
-                                   (unsigned long)(c))
-#else
-#define STRACE(t,a,b,c) do {} while (0)
-#endif
-
 /**
  * Cache memory layout:
  * x - array of struct dircache_entry
@@ -1252,9 +1235,7 @@ static void sab_process_sub(struct sab *sabp)
     struct file_base_info *const infop = &sabp->info;
 
     int idx = infop->dcfile.idx;
-    STRACE(20, sabp, idx, sabp->top);
     int *downp = get_downidxp(idx);
-    STRACE(21, downp, downp ? *downp : 0, 0);
     if (!downp)
         return;
 
@@ -1264,15 +1245,12 @@ static void sab_process_sub(struct sab *sabp)
         compp->idx   = idx;
         compp->downp = downp;
         compp->prevp = downp;
-        STRACE(22, compp, sabp->top, idx);
 
         /* open directory stream */
         filestr_base_init(streamp);
         fileobj_fileop_open(streamp, infop, FO_DIRECTORY);
-        STRACE(23, streamp, infop, 0);
         fat_rewind(&streamp->fatstr);
         uncached_rewinddir_internal(infop);
-        STRACE(24, streamp->infop, 0, 0);
 
         const long dircluster = streamp->infop->fatfile.firstcluster;
 
@@ -1282,22 +1260,16 @@ static void sab_process_sub(struct sab *sabp)
             if (sabp->stack + 1 < sabp->stackend)
             {
                 /* release control and process queued events */
-                STRACE(31, sabp->stack, sabp->stackend, compp);
                 dircache_unlock();
-                STRACE(32, sabp->top, compp->idx, *compp->prevp);
                 process_events();
-                STRACE(33, sabp->quit, compp->idx, 0);
                 dircache_lock();
-                STRACE(34, sabp->top, compp->downp, 0);
 
                 if (sabp->quit || !compp->idx)
                     break;
             }
             /* else an immediate-contents directory scan */
 
-            STRACE(25, streamp, infop, fatentp);
             int rc = uncached_readdir_internal(streamp, infop, fatentp);
-            STRACE(26, rc, infop->fatfile.e.entry, 0);
             if (rc <= 0)
             {
                 if (rc < 0)
@@ -1327,7 +1299,6 @@ static void sab_process_sub(struct sab *sabp)
             }
 
             int idx = create_entry(fatentp->name, &ce);
-            STRACE(27, idx, ce, 0);
             if (idx <= 0)
             {
                 if (idx == -ENAMETOOLONG)
@@ -1366,11 +1337,9 @@ static void sab_process_sub(struct sab *sabp)
             infop->dcfile.idx           = idx;
             infop->dcfile.serialnum     = ce->serialnum;
             binding_resolve(infop);
-            STRACE(28, idx, ce, infop->fatfile.e.entry);
         } /* end while */
 
         close_stream_internal(streamp);
-        STRACE(29, sabp->quit, compp->idx, 0);
 
         if (sabp->quit)
             return;
@@ -1386,7 +1355,6 @@ static void sab_process_sub(struct sab *sabp)
             if (idx)
             {
                 ce = get_entry(idx);
-                STRACE(30, idx, ce, ce->down);
                 compp->prevp = &ce->next;
 
                 if (ce->frontier != FRONTIER_SETTLED)
@@ -1428,15 +1396,8 @@ static void sab_process_dir(struct file_base_info *infop, bool issab)
 
     /* allocate the stack right now to the max demand */
     size_t stackdepth = (issab ? DIRCACHE_MAX_DEPTH : 1);
-    /* Tags 10 and 11 straddle the alloca, which on this core compiles to
-       `movsp` -- the instruction that takes an AllocCause exception
-       (EXCCAUSE 5) when the new stack pointer is not already allocated in the
-       current window. A ring that ends at 10 without ever reaching 11 names
-       that instruction as the fault. */
-    STRACE(10, infop, issab, stackdepth);
     struct sab *sabp = alloca(sizeof(*sabp) +
                               sizeof(sabp->stack[0]) * stackdepth);
-    STRACE(11, sabp, sabp->stack, sabp->stackend);
 
     sabp->quit     = false;
     sabp->stackend = &sabp->stack[stackdepth];
@@ -1447,9 +1408,7 @@ static void sab_process_dir(struct file_base_info *infop, bool issab)
         DCRIVOL(infop)->sabp = sabp;
 
     establish_frontier(infop->dcfile.idx, FRONTIER_NEW | FRONTIER_RENEW);
-    STRACE(12, sabp, infop->dcfile.idx, sabp->top);
     sab_process_sub(sabp);
-    STRACE(13, sabp, 0, 0);
 
     if (issab)
         DCRIVOL(infop)->sabp = NULL;
@@ -2072,18 +2031,11 @@ static void dircache_thread(void)
            do it for real below */
         int *rcp = (int *)ev.data;
 
-        STRACE(75, current_tick, 0, 0);
         if (!rcp && prepare_build(NULL) > 0)
-        {
-            STRACE(76, current_tick, 1, 0);
             continue;
-        }
-        STRACE(76, current_tick, 0, 0);
 
         bool realloced;
-        STRACE(77, current_tick, 0, 0);
         int rc = prepare_build(&realloced);
-        STRACE(78, current_tick, 1, rc);
         if (rcp)
             *rcp = rc;
 
@@ -2091,17 +2043,11 @@ static void dircache_thread(void)
             continue;
 
         trigger_cpu_boost();
-        STRACE(79, current_tick, 0, 0);
         build_volumes();
-        STRACE(80, current_tick, 0, 0);
 
         /* if it was reallocated, compact it */
         if (realloced)
-        {
-            STRACE(81, current_tick, 0, 0);
             compact_cache();
-            STRACE(82, current_tick, 0, 0);
-        }
      }
 
      dircache_unlock();
