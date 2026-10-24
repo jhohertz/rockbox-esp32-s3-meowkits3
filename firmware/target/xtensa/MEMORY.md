@@ -418,6 +418,30 @@ slow, and the boot report prints both on the `rb build` line. A backtrace resolv
 against the wrong build is worse than no backtrace, which is the reason the line
 exists.
 
+## A stamp written on a crashing path is lost with the D-cache
+
+Eight crashes produced byte-identical instrument output, including two stamp slots
+whose value should have tracked the recording arena -- and the arena base visibly
+alternated between boots (`pcm buf 3c37dd00` vs `3c37dcc0`). The stamps did not
+change. That is not the encoder being silent; it is the cache.
+
+`.noinit` is ordinary cached DRAM (`0x3fc......`). A store to it lands in a D-cache
+line and stays there until something evicts that line. A panic resets the chip with
+the cache invalidated and no write-back, so a store made moments before the fault
+never reaches memory, and the next boot reads whatever stale DRAM was there -- which
+survives warm resets, so it looks identical every time. The same record was read
+successfully for `xtensa_pcm_slots` because those words are written in
+`init_rec_buffers()`, seconds earlier, and normal operation evicted and wrote them
+back in between.
+
+The rule this establishes: **a value measured on a path that can fault is not durable
+just because it is in `.noinit`.** It has to be read by the panic handler, which runs
+while the caches are still coherent, and copied into RTC slow (`0x5000......`), which
+is not cached. The boot report then reads RTC. This is also why the encoder stamp got
+a fifth slot holding a call count: a zero count means the function was never entered,
+where a stale value means the store was lost -- the two look the same otherwise, and
+confusing them cost a build.
+
 ## Verifying
 
 ```sh

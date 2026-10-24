@@ -3297,6 +3297,14 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- **A `.noinit` stamp is not durable on a crashing path.** `.noinit` is cached DRAM,
+  and a panic resets the chip with the D-cache invalidated and unwritten, so a store
+  made moments before a fault is lost and the next boot reads stale DRAM — eight
+  crashes in a row reported identical stamp values while the arena base they should
+  have tracked visibly alternated. Values measured on a path that can fault must be
+  read by the panic handler (caches still coherent) and copied into RTC slow, which
+  is not cached. Give such a record a counter slot too: a stale value and "never
+  written" look the same otherwise.
 - **CDC cannot carry anything measured on a crashing path.** `usb_serial_send()` is
   a 512-byte ring drained by IN transfers that need interrupt service; a panic
   masks interrupts at debug level and the ring resets with the chip, so a trace
