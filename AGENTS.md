@@ -1358,12 +1358,23 @@ asynchronous layer is a *better* match for this peripheral than the byte-at-a-ti
 `i2c_start`/`i2c_outb`/`i2c_inb` API, which cannot be implemented at all: a single
 command cannot be executed on its own.
 
-`firmware/target/xtensa/i2c-xtensa.c` therefore implements `__i2c_async_submit()`
-and `i2c_irq()`, and the synchronous entry points are thin wrappers over
-`i2c_async_queue()` plus a semaphore. There is then exactly one path to the
-hardware and one in-flight transaction, which is what makes it safe for the
-touchscreen to poll the bus every tick while the codec or the PMU is doing
-something else.
+`firmware/target/xtensa/i2c-xtensa.c` therefore implements `__i2c_async_submit()`,
+and the synchronous entry points are thin wrappers over `i2c_async_queue()` plus a
+semaphore. There is then exactly one path to the hardware and one in-flight
+transaction, which is what makes it safe for the touchscreen to poll the bus while
+the codec or the PMU is doing something else.
+
+That submit **polls** rather than interrupts: `i2c_init()` writes `INT_ENA = 0` and
+`i2c_irq()` is a stub that only clears pending bits, because the completion is read
+inline. Consequence worth knowing: a transaction is 1.6 ms for the touch panel's
+14-byte read and up to the poll's 10 ms bound on a NACK, and `i2c_async_queue()`
+originally ran it while holding `disable_irq_save()`. On xtensa that is
+`set_irq_level(DISABLE_INTERRUPTS)` — `PS.INTLEVEL = 15`, which blocks **every**
+interrupt including the level-2 USB handler, so no amount of priority rescues a
+masked region. Twenty transactions a second (the throttled touch poll) cost ~1.8% of
+USB audio frames; deferring the submit until the mask is released,
+`I2C_ASYNC_SUBMIT_UNMASKED`, removed the loss entirely. Any new long-running work
+inside an `i2c_async_queue()` caller has to respect the same rule.
 
 Two details that are easy to get wrong:
 
@@ -1383,10 +1394,11 @@ free: 1 is the tick, 2 the audio GDMA, 3 SDHOST, 5 the recording GDMA, 4 is the
 WiFi baseband and 6/7 are the core timer and the software interrupt.
 
 The FT6336's INT pin is not connected (`CTP_INT_PIN = -1` in the reference
-firmware), so `ft6x06_irq_handler()` is called from `button_read_device()` every
-tick. It queues with `I2C_Q_ONCE`, so the call cannot pile up transactions; the
-effective poll rate is set by how long a transaction takes, about 1.6 ms for the
-14-byte register read.
+firmware), so `ft6x06_irq_handler()` is called from `button_read_device()`,
+throttled to every fifth tick — 20 Hz, not the 100 Hz the tick runs at, because the
+bus is shared with the codec, the PMU and the IO expander. It queues with
+`I2C_Q_ONCE`, so the call cannot pile up transactions; the effective poll rate is set
+by how long a transaction takes, about 1.6 ms for the 14-byte register read.
 
 The controller's own axes are the panel's short side first: registers 0x03/0x04 run
 0..240 and 0x05/0x06 run 0..320, while the panel is driven as 320x240. The reference

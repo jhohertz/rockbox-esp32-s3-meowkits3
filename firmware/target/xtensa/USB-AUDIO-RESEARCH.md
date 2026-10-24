@@ -361,25 +361,39 @@ Tried and rejected, each on one flash:
   blocks a level-2 USB entry. Reverted to 1000. The one thing it bought is the corrected level
   map in MEMORY.md.
 
-That leaves the loss attributed to a region with interrupts disabled -- `esp_cpu_enter_critical()`
-in IDF's queue and ready-list paths, Rockbox's own `disable_irq_save()` in the completion and
-consumer paths, or IDF's flash/cache-disable window during a settings save -- because there is no
-handler above level 2 to delay entry, and every buffer, arm, cadence, PID and FIFO lever has now
-been measured and either kept for alignment or reverted. Proving which of those it is needs
-instrumentation in the interrupt-entry path, and that instrumentation was deliberately removed
-once it started costing more than it told us; the display is the only console in the audio
-profile, so nothing new can be read from the USB handler anyway. The honest position is that the
-~2% is characterised, not solved.
+**Resolved (2026-10-24): the loss was an interrupt-masked region, and it was ours.**
+`disable_irq_save()` on this port is `set_irq_level(DISABLE_INTERRUPTS)`, which writes
+`PS.INTLEVEL = 15`. Nothing on the core can be taken while that is set, level 2
+included, so priority is simply not a factor against a mask -- which is why raising
+USB to level 2 improved throughput (530 -> 980 packets/s) and never removed a single
+dropped frame. `i2c_async_queue()` held that mask across `__i2c_async_submit()`, and
+this target's submit *is* the transaction: it programs the command list and polls
+`TRANS_COMPLETE`, about 1.6 ms for the FT6336's 14-byte read and up to its 10 ms
+bound on a NACK. At the 20 Hz touch throttle that was 20 everything-off windows a
+second. `Filled` sat at 18-19 against a gate of 22, i.e. `L = (gate - Filled)/4 =
+0.875` frames per frame, ~875 frames/s, ~1.8%.
 
-What remains: roughly 1% of frames go missing, with no error, no completion and no counter.
-Host `hw_ptr` advanced ~48,960/s while the DAC consumes ~48,012/s (a 1 kHz tone measured
-1000.25 Hz against the host's clock, +253 ppm), so the host is honouring the feedback and
-something between the wire and the mixer is not delivering. Every buffer, FIFO, cadence, DSP
-and handler-order lever is exhausted, and the class's own drop accounting is innocent --
-`usb_audio_fast_transfer_complete()` only counts, it never discards, so the missing packets
-never reach the endpoint at all. Read the counter with one caveat: it over-reads by about
-0.5/s, because usb_audio.c wraps its adjacency test at `USB_FRAME_MAX 0x7ff` while the driver
-returns a 14-bit frame, so every 2048 frames it counts a drop that never happened.
+Turning the touch poll off brought the loss to almost nothing -- that is what located
+it, and it is also why the residual looked periodic and looked like the display: any
+bus user does this, and a redraw that triggers a bus read shows the same effect.
+Deferring the submit until the mask is released (`I2C_ASYNC_SUBMIT_UNMASKED` in
+`firmware/drivers/i2c-async.c`, target opt-in, upstream path unchanged) with the poll
+restored gives `Filled` at the gate, no frames dropped under any UI activity tested,
+and no pops or flutter. Exclusivity is unaffected: only the idle-bus path starts a
+transaction and enqueueing the node has already made the bus non-idle.
+
+The attribution this replaces -- IDF queue and ready-list critical sections, or the
+flash/cache-disable window during a settings save -- was never ruled out and never
+needed: every masked region on the UI path goes through the same queue.
+
+For completeness, the host side was and remains innocent. `hw_ptr` advanced ~48,960/s
+while the DAC consumed ~48,012/s (a 1 kHz tone measured 1000.25 Hz against the host's
+clock, +253 ppm), so the host honours the feedback and was delivering everything. The
+class's drop accounting is also innocent: `usb_audio_fast_transfer_complete()` only
+counts, never discards. Read that counter with one caveat: it over-reads by about
+0.5/s, because usb_audio.c wraps its adjacency test at `USB_FRAME_MAX 0x7ff` while the
+driver returns a 14-bit frame, so every 2048 frames it counts a drop that never
+happened.
 
 The data PID asserted at arm time turned out to be load-bearing, not the leak. `usb_dw_epstart()`
 programs `SETD0PIDEF` or `SETD1PIDOF` from the parity of the frame number read in the completion
