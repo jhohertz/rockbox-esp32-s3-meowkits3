@@ -515,8 +515,11 @@ void xtensa_crash_report_logf(void)
          xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count(),
          (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
 
-    /* Newest first, matching the debug page and the panic handler's own report. */
-    for (back = 0; back < 3; back++)
+    /* Newest first, matching the debug page and the panic handler's own report.
+     * Six rather than three: the recorder's own path is what we are trying to see,
+     * and three entries only ever showed the SD traffic on top of it. Still bounded
+     * -- six lines is roughly 220 bytes, inside the 512-byte ring. */
+    for (back = 0; back < 6; back++)
     {
         if (xtensa_breadcrumb_back(back, line, sizeof line) == 0)
             break;
