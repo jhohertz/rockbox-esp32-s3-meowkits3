@@ -106,10 +106,16 @@ int sd_init(void)
     slot.width = 1;
 
     esp_err_t err = sdmmc_host_init();
+    /* Stamped either way, not only on success: the trail is how a crash inside the
+     * first card access after recording starts gets attributed, and a step that
+     * never returns leaves its completion note absent. */
+    xtensa_breadcrumb("sdHost", (unsigned long)err, 0);
     if (err == ESP_OK)
         err = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot);
+    xtensa_breadcrumb("sdSlot", (unsigned long)err, 0);
     if (err == ESP_OK)
         err = sdmmc_card_init(&host, &card);
+    xtensa_breadcrumb("sdCard", (unsigned long)err, 0);
 
     if (err != ESP_OK)
     {
@@ -146,8 +152,12 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
     sd_last_activity = current_tick;
 
     {
-        esp_err_t e = sdmmc_read_sectors(&card, buf, (uint32_t)start,
-                                         (uint32_t)count);
+        esp_err_t e;
+
+        xtensa_breadcrumb("sdRd", (unsigned long)start, (unsigned long)count);
+        e = sdmmc_read_sectors(&card, buf, (uint32_t)start,
+                               (uint32_t)count);
+        xtensa_breadcrumb("sdRc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }
@@ -161,8 +171,15 @@ int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *bu
     sd_last_activity = current_tick;
 
     {
-        esp_err_t e = sdmmc_write_sectors(&card, buf, (uint32_t)start,
-                                          (uint32_t)count);
+        esp_err_t e;
+
+        /* A recording write is the access most likely to be running when the
+         * recorder faults, so both edges are marked: "sdWr" present with no
+         * "sdWc" means the call itself did not return. */
+        xtensa_breadcrumb("sdWr", (unsigned long)start, (unsigned long)count);
+        e = sdmmc_write_sectors(&card, buf, (uint32_t)start,
+                                (uint32_t)count);
+        xtensa_breadcrumb("sdWc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }
