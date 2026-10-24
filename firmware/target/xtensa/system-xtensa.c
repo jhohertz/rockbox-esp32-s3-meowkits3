@@ -35,10 +35,11 @@
 #include "config.h"
 #include <stdio.h>
 
-#include <stdlib.h>     /* abort(): esp_cache.h used to drag it in, cache_hal.h does not */
-
 #include "system.h"
 #include "memory-xtensa.h"   /* XT_LOADADDRESS_ADDR -- needs config.h first */
+#include "button-target.h"   /* button_hw_any_pressed() -- the panic hold */
+#include "lcd.h"             /* the panic screen is already drawn; this adds the hint */
+#include "font.h"            /* FONT_SYSFIXED, FONT_HEIGHT */
 
 #include "sdkconfig.h"
 
@@ -145,16 +146,48 @@ void system_reboot(void)
 }
 
 /*
- * Reached from the panic paths after the message has been printed. IDF's abort
- * is the honest answer: it runs the registered panic handler, which prints a
- * backtrace and either halts or resets depending on CONFIG_ESP_SYSTEM_PANIC_*.
- * The bare-metal version spun on `waiti 0` forever, which under IDF just waits
- * for the RTC watchdog to reset the chip without saying why.
+ * Reached from firmware/panic.c after the message has been drawn on the glass and
+ * written to retained memory. It used to call abort(), which runs IDF's panic
+ * handler: that prints a backtrace to a console this board only has while the USB
+ * pads are still its -- the pads pass to the OTG core about a second after boot --
+ * and CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT then resets within milliseconds. The
+ * result was a panic message nobody could read: on the screen for long enough to
+ * flash, and gone.
+ *
+ * Holding the screen is the target's job, and it has to be polled rather than
+ * waited on: interrupts are masked on this path, so the tick never runs and
+ * button_get_with_timeout() would never return. The GPIO keys are inputs on the
+ * IO MUX with pull-ups, so a plain level read works with nothing scheduled.
+ *
+ * Bounded, because a device hanging with a dead button while the screen already
+ * says it died is worse than a reboot you missed. IDF arms the RTC watchdog only
+ * inside its own handler, which no longer runs here, so this loop is the only
+ * timer -- nothing will reset us out from under it.
  */
+#define PANIC_HOLD_STEP_MS  100
+#define PANIC_HOLD_MAX_MS   20000
+
 void system_exception_wait(void)
 {
-    abort();
+    int waited = 0;
+    int row = LCD_HEIGHT / SYSFONT_HEIGHT - 1;
 
-    while (1)
-        ;
+    if (row > 1)
+    {
+        lcd_setfont(FONT_SYSFIXED);
+        lcd_puts(1, row, (const unsigned char *)"key = restart");
+        lcd_update();
+    }
+
+    while (waited < PANIC_HOLD_MAX_MS)
+    {
+        if (button_hw_any_pressed())
+            break;
+        udelay(PANIC_HOLD_STEP_MS * 1000);
+        waited += PANIC_HOLD_STEP_MS;
+    }
+
+    extern void esp_restart(void);
+
+    esp_restart();
 }

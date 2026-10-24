@@ -34,4 +34,9 @@
  * only read by firmware/drivers/button.c under HAVE_SW_POWEROFF, which this
  * target does not define. */
 
+/* Raw key state for the panic path: firmware/panic.c holds the screen until a key
+ * is pressed, and that has to work with interrupts masked -- so no tick, no
+ * debounce and no I2C touch read. Implemented in button-xtensa.c. */
+int button_hw_any_pressed(void);
+
 #endif /* _BUTTON_TARGET_H_ */

@@ -88,6 +88,21 @@ void touchscreen_enable_device(bool en)
 }
 #endif
 
+int button_hw_any_pressed(void)
+{
+    /* Deliberately narrower than button_read_device(): the panic path runs with
+     * interrupts masked, so it cannot use the tick, the debounce state or the
+     * touchscreen read (which goes through I2C). Any active-low level counts. */
+    static const int pins[] = { PIN_BTN_A, PIN_BTN_B, PIN_JOY_UP,
+                                PIN_JOY_DOWN, PIN_JOY_LEFT, PIN_JOY_RIGHT };
+    int i;
+
+    for (i = 0; i < (int)ARRAYLEN(pins); i++)
+        if (!gpio_read_pin(pins[i]))
+            return 1;
+    return 0;
+}
+
 int button_read_device(int *data)
 {
     /* This function is the hot path: the common button code calls it every button
