@@ -78,8 +78,6 @@ static void spi_apply_config(void)
  * produced banding and noise over a solid fill. */
 #define SPI_CLK_80M     SPI_CLK_EQU_SYSCLK
 
-
-
 /* Measure the bit stream at the pin. A 64-byte transfer must produce exactly 512
  * clock edges; anything else means MS_DLEN is not being honoured and the panel is
  * receiving a stream that is longer or shorter than the buffer we filled.
@@ -195,9 +193,6 @@ void spi_init(void)
     spi_apply_config();
 }
 
-volatile unsigned int xt_spi_calls;
-volatile unsigned int xt_spi_stuck;
-
 /* Spin until the controller has finished clocking. The reference's
  * dc_control() does exactly this before it touches the DC pin: if DC changes
  * while a transfer is still shifting out, the panel samples the remaining bytes
@@ -256,12 +251,9 @@ void spi_write(const unsigned char *data, int len)
         {
             if (++spins > 200000)
             {
-                xt_spi_stuck++;
                 break;
             }
         }
-        xt_spi_calls++;
-
         len -= n;
         data += n;
     }
