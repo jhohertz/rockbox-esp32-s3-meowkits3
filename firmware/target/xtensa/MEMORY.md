@@ -93,22 +93,48 @@ reservations below `codecbuf`. The real idle figure at that point was 25,284 byt
 the current build measures **26,636**, and §3 shows every byte of where the rest
 went.
 
-### The buflib arena is 4 MiB of PSRAM, and recording fits in it
+### The buflib arena is 4 MiB of PSRAM, and recording's ring is 2 MiB
 
 `core_allocator_init()` maps the core context over `audiobuffer..audiobufend`, and
 those two linker symbols measure exactly what they say in the linked image:
 `0x3c1612e0` and `0x3c5612e0`, i.e. **4 MiB**, in the PSRAM part of the Ext_RAM
-window. `init_rec_buffers()` (`apps/recorder/pcm_record.c`) carves one maximum
-allocation into `|PCMBUF|STREAMBUF|FILENAME|ENCBUF|`, which for this target is
-512 KiB + 64 KiB + 276 B before the encoder ring gets anything. Even with dircache
-and the tagcache buffers committed first the grant is far above that, so the
-encoder ring is not the degenerate zero-length case.
+window.
 
-The guard in `on_init_recording()` is still weaker than the layout needs: it tests
-`rec_buffer_size < PCM_BUF_SIZE`, which passes when the grant is *exactly* the ring
-size and leaves `enc_buflen` 0 and `stream_buffer`/`fname_buf`/`enc_buffer` pointing
-past the allocation. Nothing observed is in that state, but the check does not
-exclude it.
+`init_rec_buffers()` (`apps/recorder/pcm_record.c`) carves one maximum allocation
+into `|PCMBUF|STREAMBUF|FILENAME|ENCBUF|`. The sizes for this target are not the
+ones an earlier revision of this file claimed. `tools/configure` gives meowkits3
+`MEMORYSIZE = 16`, so `pcm_record.c` takes the `#elif MEMORYSIZE <= 16` branch,
+which defines **only** `PANIC_SECONDS` and `FLUSH_SECONDS` -- no chunk sizing --
+and everything else falls to the defaults:
+
+| | value | consequence |
+|---|---|---|
+| `PCM_NUM_CHUNKS` | 256 | default, not overridden |
+| `PCM_CHUNK_SAMP` | 2048 | default |
+| `PCM_SAMP_SIZE` | 4 | `2 * sizeof(int16_t)` |
+| `PCM_CHUNK_SIZE` | 8192 | |
+| `PCM_BUF_SIZE` | **2,097,152** (2 MiB) | not 512 KiB |
+| `STREAM_BUF_SIZE` | 65,536 | default |
+| `ENC_HDR_SIZE` | 4 | `union enc_chunk_hdr` is one word on 32-bit |
+| filename block | 264 B | `CHUNK_FILE_COUNT(MAX_PATH) * 4` |
+| layout minimum | 2,162,952 B | ring + stream + filename, before ENCBUF |
+
+`struct enc_chunk_data` is `{ hdr; pcm_count; data[] }`, so the encoder's payload
+starts at offset 8. That matches what `wav_enc`'s `codec_run` computes
+(`a10 = a7 + 8`), so the two sides agree on the chunk layout.
+
+`rec_buffer_size` is never assigned before the allocation. `buflib_alloc_maximum()`
+(buflib_mempool.c:859) compacts and shrinks other allocations, then **overwrites**
+`*size` with `buflib_allocatable()` -- so the grant is "whatever is free", not what
+was asked for. `on_init_recording()` guards with `rec_buffer_size < PCM_BUF_SIZE`,
+which passes when the grant is *exactly* 2 MiB. In that state `size` wraps (it is a
+`size_t`) after subtracting the 64 KiB stream buffer, `enc_buflen` becomes ~357
+million slots, `encbuf_get_write_ptr()`'s bounds test never fires, the ring never
+wraps, and `enc_widx` grows until writes pass `audiobufend` into PSRAM pages the MMU
+does not map. Nothing observed is in that state -- the fault's destination addresses
+have all been inside the arena -- but the check does not exclude it.
+
+`xt_arena_dump()` walked the allocator to answer that question and has been removed;
 
 `xt_arena_dump()` walked the allocator to answer that question and has been removed;
 the two numbers above are the answer, and the walk was only ever reachable through a

@@ -3297,6 +3297,14 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- **CDC cannot carry anything measured on a crashing path.** `usb_serial_send()` is
+  a 512-byte ring drained by IN transfers that need interrupt service; a panic
+  masks interrupts at debug level and the ring resets with the chip, so a trace
+  line emitted moments before a fault is simply lost (observed: the codec-load
+  line arrived, the encoder-buffer lines queued behind it did not). Measurement on
+  such a path belongs in RTC slow or `.noinit`, which survive, and is printed by
+  the next boot's report. Exceeding the ring is worse than losing data: it is how
+  an earlier boot dump put the board into a reboot loop.
 - **A flash cannot be confirmed by watching the board.** The ESP32-S3 has no UART
   bridge: the host talks to the SoC's USB-Serial-JTAG on GPIO19/20, and Rockbox
   hands those pads to the DWC OTG core ~865 ms into `app_main`. esptool's
