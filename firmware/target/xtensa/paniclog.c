@@ -683,6 +683,10 @@ struct bt_rtc
        USB pads. */
     uint32_t crash_id[XT_BT_ID_WORDS];
     uint32_t bt_magic;
+    /* The loaded image's API handover as it stood at the fault: address of the
+       image's codec pointer, the pointer, and the enc_pcmbuf_read slot. */
+    uint32_t api[3];
+    uint32_t api_magic;
 };
 
 void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sps,
@@ -761,7 +765,7 @@ int xtensa_paniclog_backtrace_text(char *buf, int bufsize, int line)
     return len;
 }
 
-/* The build id of the crash, as stored by the handler. Returns 0 when absent. */
+/* One line with the build id of the crash, as stored by the handler. Returns 0 when absent. */
 int xtensa_paniclog_crash_build(char *buf, int bufsize)
 {
     volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
@@ -781,6 +785,42 @@ int xtensa_paniclog_crash_build(char *buf, int bufsize)
         return 0;
 
     return snprintf(buf, bufsize, "crashed %s", id);
+}
+
+/* Store the image's API handover as the handler found it. Written after the
+ * backtrace, so a fault during this read still leaves the frames. */
+void xtensa_paniclog_api_handover(const unsigned long *words, int n)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    int i;
+
+    if (words == NULL || n < 1)
+        return;
+    if (n > 3)
+        n = 3;
+
+    for (i = 0; i < n; i++)
+        bt->api[i] = (uint32_t)words[i];
+    bt->api_magic = XT_BT_RTC_MAGIC;
+}
+
+/* slot = address of the image's codec pointer, ptr = what that pointer holds
+ * (the firmware's ci), enc_read = the word at ci+136 the image called. With a
+ * healthy handover ptr is the firmware ci and enc_read is a code address; the
+ * fault says otherwise, so which of the three differs from the boot-time trace
+ * is the answer. */
+int xtensa_paniclog_api_handover_text(char *buf, int bufsize)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (bt->magic != XT_BT_RTC_MAGIC || bt->api_magic != XT_BT_RTC_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize, "api slot %08lx ptr %08lx enc_read %08lx",
+                    (unsigned long)bt->api[0], (unsigned long)bt->api[1],
+                    (unsigned long)bt->api[2]);
 }
 
 void xtensa_paniclog_dump(void)
@@ -953,6 +993,13 @@ void xtensa_crash_report_logf(void)
             break;
         logf("rb %s", line);
     }
+
+    /* The handover as the fault found it. Compare with the codec-load trace's
+       line, which printed the same slot healthy: this is the same three words
+       read at the moment of the fault. */
+    len = xtensa_paniclog_api_handover_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
 
     /* Which image is reporting, and which one crashed. They differ whenever a
      * flash happened without the chip restarting -- the reset pulse cannot reach

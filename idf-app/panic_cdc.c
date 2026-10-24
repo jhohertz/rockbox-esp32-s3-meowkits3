@@ -59,6 +59,7 @@ extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
 extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
                                       const unsigned long *sps, int n,
                                       const char *build);
+extern void xtensa_paniclog_api_handover(const unsigned long *words, int n);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -80,6 +81,37 @@ extern void esp_panic_handler_feed_wdts(void);
  * thread's own stack, so its frames occupy the first several slots; anything
  * shorter never reaches the thread that actually faulted. */
 #define RB_BT_FRAMES 16
+
+/* The loaded image's API handover, read at fault time.
+ *
+ * Three samples of the firmware's ci -- at codec load, after the image's
+ * CODEC_LOAD entry returns, and immediately before run_proc() -- all showed the
+ * encoder slots as real code. The codec then called offset 136 and executed a
+ * stack address, so the change happens inside its own run. Reading the handover
+ * here, at the moment of the fault, separates the two remaining cases: the
+ * struct was written through, or the image's pointer slot was.
+ *
+ * The header layout is fixed by lib/rbcodec/codecs/codecs.h: struct lc_header is
+ * five words (magic, target_id, version, start_addr, end_addr), then entry_point,
+ * run_proc, then api -- so the api field is at byte 28 of the image, which is
+ * codecbuf. Its value is the address of the image's own `codec` pointer, and the
+ * word there is the firmware's ci the image dereferences.
+ *
+ * PSRAM is mapped when esp_panic_handler runs (IDF re-enables the flash cache
+ * before calling it), so these loads are safe. The pointer is still range-checked
+ * before it is dereferenced: a corrupted slot must not turn this read into a
+ * second fault, and at debug exception level there is no handler left to catch
+ * one.
+ */
+#define RB_IMG_BASE      0x3c680000u   /* codecbuf, pinned by memory-xtensa.h */
+#define RB_IMG_API_OFF   28u
+#define RB_ENC_READ_OFF  136u
+#define RB_IMG_WORDS     3
+
+static int img_word_is_readable(uint32_t v)
+{
+    return esp_ptr_internal((const void *)v) || esp_ptr_external_ram((const void *)v);
+}
 
 /* EPC and DEPC are only readable at their own exception levels: reading EPC1 at
  * level 1 is a DISASTER exception, which would manufacture a third fault and
@@ -242,6 +274,25 @@ void esp_panic_handler(panic_info_t *info)
         if (n > 0)
             xtensa_paniclog_backtrace(pcs, sps, n,
                                       esp_app_get_description()->version);
+    }
+
+    /* What the loaded image was holding at the instant of the fault: the address
+     * of its codec pointer, the pointer itself, and the enc_pcmbuf_read slot it
+     * dereferences. */
+    {
+        unsigned long handover[RB_IMG_WORDS] = { 0, 0, 0 };
+        uint32_t slot_addr = *(volatile uint32_t *)(RB_IMG_BASE + RB_IMG_API_OFF);
+
+        handover[0] = slot_addr;
+        if (img_word_is_readable(slot_addr))
+        {
+            uint32_t api = *(volatile uint32_t *)slot_addr;
+
+            handover[1] = api;
+            if (img_word_is_readable(api))
+                handover[2] = *(volatile uint32_t *)(api + RB_ENC_READ_OFF);
+        }
+        xtensa_paniclog_api_handover(handover, RB_IMG_WORDS);
     }
 
     /* Short form in the text record, bounded by its 96-character field, so the
