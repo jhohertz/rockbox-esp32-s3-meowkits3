@@ -36,7 +36,7 @@
 #define LOGF_ENABLE
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern uint32_t xtensa_pcm_slots[4];
-extern uint32_t xtensa_enc_stamp[4];
+extern uint32_t xtensa_enc_stamp[5];
 #endif
 #include "logf.h"
 #include "thread.h"
@@ -1854,6 +1854,9 @@ static int enc_pcmbuf_read(void *buffer, int count)
            address the fault then executed. */
         xtensa_enc_stamp[2] = (uint32_t)(uintptr_t)buffer;
         xtensa_enc_stamp[3] = (uint32_t)size;
+        /* A count, so a zero in the report means enc_read was never entered at
+           all, as distinct from its stamps being lost. */
+        xtensa_enc_stamp[4]++;
         xtensa_breadcrumb("ENCR", (unsigned long)buffer, (unsigned long)size);
     }
 #endif
