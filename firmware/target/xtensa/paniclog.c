@@ -106,7 +106,7 @@ static uint32_t bc_next  __attribute__((section(".noinit")));
  * immediately after a flash therefore belongs to the old image, and the only way
  * to tell the two apart is to have the running build say so. The panic handler
  * stores the build id of the image that faulted, so a report can show both. */
-static char rb_build_now[24] __attribute__((section(".noinit"), aligned(4)));
+static char rb_build_now[32] __attribute__((section(".noinit"), aligned(4)));
 
 void xtensa_build_id_stamp(const char *id)
 {
@@ -115,7 +115,11 @@ void xtensa_build_id_stamp(const char *id)
     if (id == NULL)
         return;
 
-    for (i = 0; i < 23 && id[i] != '\0'; i++)
+    /* 32 characters: `git describe` on this tree gives 31 ("baremetal-pre-idf-323-
+       g122e992e") and the first version of this buffer was 24, which printed
+       "baremetal-pre-idf-323-g" -- the hash is the part that identifies the
+       build, so a truncated id defeats the whole point of stamping it. */
+    for (i = 0; i < 31 && id[i] != '\0'; i++)
         rb_build_now[i] = id[i];
     rb_build_now[i] = '\0';
 }
@@ -130,7 +134,7 @@ const char *xtensa_build_id_running(void)
     if (c < '0' || (c > '9' && c < 'A') || (c > 'Z' && c < 'a') || c > 'z')
         return NULL;
 
-    rb_build_now[23] = '\0';
+    rb_build_now[31] = '\0';
     return rb_build_now;
 }
 
@@ -597,10 +601,17 @@ int xtensa_paniclog_frame_regs_text(char *buf, int bufsize)
         return 0;
 
     return snprintf(buf, bufsize,
-                    "ps %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
-                    (unsigned long)fr->ps, (unsigned long)fr->epc1,
-                    (unsigned long)fr->epc2, (unsigned long)fr->epc3,
-                    (unsigned long)fr->epc4, (unsigned long)fr->depc);
+                    "ps %08lx sp %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
+                    (unsigned long)fr->ps,
+                    /* Word 4 of the frame is XtExcFrame.a1, the stack pointer of
+                       the interrupted context. It belongs on this line because
+                       the fault address is usually a value inside it, and
+                       comparing the two is what distinguishes a hijacked return
+                       address from a stray pointer. */
+                    (unsigned long)fr->word[4],
+                    (unsigned long)fr->epc1, (unsigned long)fr->epc2,
+                    (unsigned long)fr->epc3, (unsigned long)fr->epc4,
+                    (unsigned long)fr->depc);
 }
 
 int xtensa_paniclog_frame_cache(char *buf, int bufsize)
@@ -656,8 +667,8 @@ int xtensa_paniclog_frame_cache(char *buf, int bufsize)
  * --------------------------------------------------------------------------- */
 #define XT_BT_RTC_BASE   0x50001600u
 #define XT_BT_RTC_MAGIC  0x43544252u   /* "RBTC" */
-#define XT_BT_FRAMES     8
-#define XT_BT_ID_WORDS   6             /* 24 characters of build id, including NUL */
+#define XT_BT_FRAMES     16
+#define XT_BT_ID_WORDS   8             /* 32 characters of build id, including NUL */
 
 struct bt_rtc
 {
@@ -711,9 +722,15 @@ void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sp
     bt->bt_magic = XT_BT_RTC_MAGIC;
 }
 
-/* Two frames per line, oldest first, so line 0 is the faulting frame. A frame
- * pair prints as pc:sp; nothing prints for a slot beyond the count, which keeps
- * a short walk from looking like a zero address. */
+/* Five PCs per line, oldest first, so line 0 holds the faulting frame. The
+ * values are the raw slots: entry 0 is the frame's real PC, and every entry
+ * after it is a windowed-ABI return address, which carries the window increment
+ * in bits 10-11 and points one instruction past the call. So 0x8002e4bc is
+ * 0x4002e4b9 in ROM once the increment is folded out and the instruction
+ * stepped back -- exactly what esp_cpu_process_stack_pc does, and deliberately
+ * NOT applied here. A slot that resolves to a literal pool rather than to a
+ * function is evidence that the chain has gone insensible, and the unprocessed
+ * value is what makes that visible. */
 int xtensa_paniclog_backtrace_text(char *buf, int bufsize, int line)
 {
     volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
@@ -728,20 +745,19 @@ int xtensa_paniclog_backtrace_text(char *buf, int bufsize, int line)
         bt->count == 0)
         return 0;
 
-    base = (uint32_t)line * 2u;
+    base = (uint32_t)line * 5u;
     if (base >= bt->count)
         return 0;
 
     len = snprintf(buf, bufsize, "bt%d:", line);
 
     n = bt->count - base;
-    if (n > 2)
-        n = 2;
+    if (n > 5)
+        n = 5;
 
-    for (i = 0; (uint32_t)i < n && len < bufsize - 20; i++)
-        len += snprintf(buf + len, bufsize - len, " %08lx:%08lx",
-                        (unsigned long)bt->pc[base + (uint32_t)i],
-                        (unsigned long)bt->sp[base + (uint32_t)i]);
+    for (i = 0; (uint32_t)i < n && len < bufsize - 12; i++)
+        len += snprintf(buf + len, bufsize - len, " %08lx",
+                        (unsigned long)bt->pc[base + (uint32_t)i]);
     return len;
 }
 
@@ -914,25 +930,22 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
+    (void)exc;
+    (void)pseudo;
     xtensa_paniclog_frame_info(&exc, &pseudo, &count);
-    if (count > 0)
-    {
-        /* Only the frame's first four words: exit, pc, ps and a0. The rest of
-         * the 32-word dump is register state that the caller chain below
-         * interprets better, and keeping all of it pushed this report past the
-         * 512-byte CDC ring the last time it was widened. */
-        len = xtensa_paniclog_frame_words(line, sizeof line, 0);
-        if (len > 0)
-            logf("rb %s", line);
-    }
 
-    /* The caller chain, two frames per line, three lines (six frames). The whole
-     * thing is bounded on purpose: usb_serial_send() has a 512-byte ring drained
-     * by transfers the host reads, and a payload that overruns it does not just
-     * lose characters -- the ring cannot advance while a transfer is outstanding,
-     * which is how an earlier version of this report put the board into a reboot
-     * loop. Panic text, reset line, register line, frame line, three backtrace
-     * lines and the build line come to roughly 420 bytes. */
+    /* The caller chain: five raw PCs per line, three lines, so fifteen of the
+     * sixteen kept. Six was not enough -- the exception handler runs on the
+     * faulting thread's own stack, so its frames occupy the first few slots and
+     * the interrupted thread's frames only appear above them.
+     *
+     * The whole thing is bounded on purpose: usb_serial_send() has a 512-byte
+     * ring drained by transfers the host reads, and a payload that overruns it
+     * does not just lose characters -- the ring cannot advance while a transfer
+     * is outstanding, which is how an earlier version of this report put the
+     * board into a reboot loop. Panic text, reset line, register line with the
+     * interrupted SP, three backtrace lines and the build line come to roughly
+     * 400 bytes; the cache line only appears when the latch reported something. */
     for (back = 0; back < 3; back++)
     {
         len = xtensa_paniclog_backtrace_text(line, sizeof line, back);

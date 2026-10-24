@@ -471,7 +471,7 @@ needs it:
 | `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state, **the retained panic text and reset reason** |
 | the panic screen itself | the screen | held for 20 s or until a key is pressed — see `system_exception_wait()` |
 | `xtensa_paniclog_dump()` | boot console, first thing `app_main` does | previous boot's SRAM trail, reset reason, RTC trail, panic text |
-| the `rb bt` lines in the boot report | CDC, next boot | the faulting frame's caller chain, walked with IDF's `esp_backtrace_get_next_frame`; resolve each pc with addr2line against the `rb build` line |
+| the `rb bt` lines in the boot report | CDC, next boot | up to 16 raw frame slots stepped by IDF's `esp_backtrace_get_next_frame`, 15 printed. Entry 0 is the real PC; later entries are windowed-ABI return addresses (bits 10-11 carry the window increment, and they point one instruction past the call), so fold them out offline rather than trusting them as printed. The interrupted SP is on the `ps` line, and comparing the two is what separates a hijacked return address from a stray pointer |
 | the `rb build` line | CDC, next boot | which image is reporting and which one crashed — see §Flashing |
 | `xt_usb_irqs` -> the `usbIRQ` trail entry | same dump | whether the OTG core interrupts at all |
 | `dscr_streak` | not printed; it drives `tx_recover()` | whether a descriptor error is a transient or a storm |
