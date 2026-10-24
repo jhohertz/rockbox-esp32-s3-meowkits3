@@ -442,6 +442,27 @@ a fifth slot holding a call count: a zero count means the function was never ent
 where a stale value means the store was lost -- the two look the same otherwise, and
 confusing them cost a build.
 
+## The backtrace walk can show the *previous* boot's frames
+
+`enc_encbuf_get_buffer()` and `enc_pcmbuf_read()` stamp their buffer and copy size,
+and the panic handler reads those slots from `.noinit` while the caches are still
+coherent. With the slots poisoned to `0xC0DEC0DE` at `init_rec_buffers()`, a fault
+reported `encb c0dec0de/… encr c0dec0de/… n0`: the encoder callbacks were never
+entered. Yet the same capture's backtrace contained `0x42600046`, which is exactly the
+return address of `codec_run`'s `callx8` on the `enc_read` slot, and the slots above it
+resolved to `codec_run_proc` and `run_codec`.
+
+Both are true because DRAM survives a warm reset. The codec thread's stack still holds
+the previous boot's frames when the new boot faults at the same place, and the walk
+reads `sp-16`/`sp-12` from whatever is there -- so it can reconstruct a call chain that
+this boot never executed. A backtrace taken this way is evidence about the *last* crash,
+not this one, and it is only trustworthy where it is corroborated by something that
+cannot be stale: the register slots, the cache latch, and stamps with a sentinel.
+
+The practical consequence: the fault is earlier than the encoder path. `codec_run` calls
+`get_command` (offset 60) before `get_buf` (144) and `enc_read` (136); nothing has yet
+reached 144 or 136, so the fault is on the first call or in the recorder's own entry.
+
 ## Verifying
 
 ```sh

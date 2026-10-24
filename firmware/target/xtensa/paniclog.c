@@ -349,6 +349,13 @@ struct frame_rtc
     uint32_t depc;
     uint32_t cache_vaddr; /* the access the cache refused */
     uint32_t cache_size;  /* and how wide it was */
+    /* Window state, read from the registers because the frame does not carry it:
+       windowbase, windowstart, and a5 (the pointer the spill and underflow
+       handlers walk). */
+    uint32_t windowbase;
+    uint32_t windowstart;
+    uint32_t a5;
+    uint32_t win_magic;
     uint32_t regs_magic;
 };
 
@@ -618,6 +625,39 @@ void xtensa_paniclog_frame_regs(const unsigned long *regs, int count)
     if (count > 6) fr->cache_vaddr = (uint32_t)regs[6];
     if (count > 7) fr->cache_size = (uint32_t)regs[7];
     fr->regs_magic = XT_REGS_RTC_MAGIC;
+}
+
+/* Window state at fault. The frame does not contain windowbase or windowstart, and
+ * a fault whose PC equals the interrupted SP is the signature of a register-window
+ * spill or underflow walking a chain that does not exist. a5 is the pointer those
+ * handlers use as the ancestor frame address, so it is the value that says whether
+ * the walk was sane. */
+void xtensa_paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
+                                  uint32_t a5)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    fr->windowbase = windowbase;
+    fr->windowstart = windowstart;
+    fr->a5 = a5;
+    fr->win_magic = XT_REGS_RTC_MAGIC;
+}
+
+int xtensa_paniclog_frame_window_text(char *buf, int bufsize)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC || fr->win_magic != XT_REGS_RTC_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize, "win wb %08lx ws %08lx a5 %08lx",
+                    (unsigned long)fr->windowbase,
+                    (unsigned long)fr->windowstart,
+                    (unsigned long)fr->a5);
 }
 
 /* One line with the register slots. Returns 0 when nothing was stored. Slots that
@@ -1105,6 +1145,13 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
+    /* The window state. A fault whose PC is the interrupted SP is what a window
+     * spill or underflow produces when the ancestor chain is wrong, and these are
+     * the three registers that say so. */
+    len = xtensa_paniclog_frame_window_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
+
     (void)exc;
     (void)pseudo;
     xtensa_paniclog_frame_info(&exc, &pseudo, &count);
@@ -1119,9 +1166,9 @@ void xtensa_crash_report_logf(void)
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, one backtrace line, two handover lines, the PCM slots, the
-     * encoder copy stamp and the build line come to roughly 400 bytes; the cache
-     * line only appears when the latch reported something. */
+     * interrupted SP, the window state, one backtrace line, the encoder callbacks,
+     * the PCM slots, the encoder copy stamp and the build line come to roughly 430
+     * bytes; the cache line only appears when the latch reported something. */
     for (back = 0; back < 1; back++)
     {
         len = xtensa_paniclog_backtrace_text(line, sizeof line, back);
@@ -1130,16 +1177,12 @@ void xtensa_crash_report_logf(void)
         logf("rb %s", line);
     }
 
-    /* The handover as the fault found it. Line 0 is the pointer chain, line 1 the
-       four encoder callbacks; the codec-load trace printed the same fields healthy,
-       so a difference here is the whole answer. */
-    for (back = 0; back < 2; back++)
-    {
-        len = xtensa_paniclog_api_handover_text(line, sizeof line, back);
-        if (len == 0)
-            break;
+    /* The encoder callbacks as the fault found them. The pointer chain is omitted:
+     * three captures have shown slot and pointer unchanged, so only the four
+     * callback words carry information. */
+    len = xtensa_paniclog_api_handover_text(line, sizeof line, 1);
+    if (len > 0)
         logf("rb %s", line);
-    }
 
     /* The pcm_record statics the encoder path dereferences, read live at fault. */
     len = xtensa_paniclog_pcm_text(line, sizeof line);
