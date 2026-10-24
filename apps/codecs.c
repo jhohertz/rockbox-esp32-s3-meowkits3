@@ -179,13 +179,6 @@ void *codec_get_buffer_callback(size_t *size)
 static void *curr_handle = NULL;
 static struct codec_header *c_hdr = NULL;
 
-#ifdef CODEC_LOAD_API_TRACE
-/* Recorded so the panic handler can inspect the handover at the moment of a
- * fault without guessing the image's header layout. Defined in
- * firmware/target/xtensa/paniclog.c, in .noinit, so it survives the reset. */
-extern uint32_t xtensa_codec_api_slot;
-#endif
-
 static int codec_load_ram(struct codec_api *api)
 {
     struct lc_header *hdr;
@@ -230,41 +223,8 @@ static int codec_load_ram(struct codec_api *api)
 
     *(c_hdr->api) = api;
 
-    /* CODEC_LOAD_API_TRACE: a target-side check of what the loaded image is
-     * about to be given. The header's `api` field is a `struct codec_api **`,
-     * so this line points the image's own global at the firmware's `ci` rather
-     * than copying anything: every callback the codec later calls is read from
-     * this struct in DRAM. A codec that faults on an indirect call is therefore
-     * reporting the state of `ci`, and printing the encoder slots at the one
-     * place they are handed over separates "never set" from "set and then
-     * overwritten". Opt-in because it costs a logf line per codec load.
-     *
-     * The fields are named here rather than offset-arithmetic: this file has
-     * the type, so the compiler resolves both sides of the API contract.
-     */
-#ifdef CODEC_LOAD_API_TRACE
-    xtensa_codec_api_slot = (uint32_t)(uintptr_t)c_hdr->api;
-    logf("ci %p img %p: enc_read %p enc_adv %p get_buf %p fin_buf %p",
-         (void *)api, (void *)*c_hdr->api,
-         (void *)api->enc_pcmbuf_read, (void *)api->enc_pcmbuf_advance,
-         (void *)api->enc_encbuf_get_buffer, (void *)api->enc_encbuf_finish_buffer);
-#endif
-
     logf("Codec: calling entrypoint");
     ret = c_hdr->entry_point(CODEC_LOAD);
-
-    /* The same slots again. `enc_read` valid before the entry call and wrong
-     * after it means the codec's own CODEC_LOAD handling wrote through the API
-     * struct -- which is what the fault looks like: run_proc loads offset 136
-     * and executes it, and the value there is a codec_stack address even though
-     * it was 0x4202e23c seconds earlier. Unchanged after the entry call moves
-     * the suspect to whatever runs between this and run_proc(). */
-#ifdef CODEC_LOAD_API_TRACE
-    logf("ci after entry ret %d: enc_read %p enc_adv %p get_buf %p fin_buf %p",
-         ret, (void *)api->enc_pcmbuf_read, (void *)api->enc_pcmbuf_advance,
-         (void *)api->enc_encbuf_get_buffer,
-         (void *)api->enc_encbuf_finish_buffer);
-#endif
 
     return ret;
 }
@@ -296,14 +256,6 @@ int codec_load_file(const char *plugin, struct codec_api *api)
 
     codec_get_full_path(path, plugin);
 
-    /* Which image is being loaded. The encoders are separate files from the
-     * decoders (wav_enc.c, mp3_enc.c, wavpack_enc.c, aiff_enc.c) and all of them
-     * link at the same addresses, so a fault pc cannot be attributed to an image
-     * without this -- 0x42600046 means different instructions in each. */
-#ifdef CODEC_LOAD_API_TRACE
-    logf("codec load %s", path);
-#endif
-
     curr_handle = lc_open(path, codecbuf, CODEC_SIZE);
 
     if (curr_handle == NULL) {
@@ -323,26 +275,6 @@ int codec_run_proc(void)
 
     logf("Codec: entering run state");
 
-    /* Third sample of the same slots, immediately before the image is entered.
-     * codec_run calls get_command (offset 60) and enc_encbuf_get_buffer (144)
-     * before it reaches enc_pcmbuf_read (136), so if the slot is still good
-     * here the damage happens inside the image's own run -- from a write through
-     * one of the callbacks it was given. If it is already wrong here, whatever
-     * ran between codec_load_ram and this point is the writer. */
-#ifdef CODEC_LOAD_API_TRACE
-    {
-        /* A local rather than inline dereferences: `(void)(*c_hdr->api)->field`
-           casts before the member access, which the compiler rejects. The field
-           itself is `struct codec_api **`, so one dereference gives the pointer
-           the image was handed. */
-        struct codec_api *ap = *c_hdr->api;
-
-        logf("ci before run: ptr %p enc_read %p enc_adv %p get_buf %p fin_buf %p",
-             (void *)ap, (void *)ap->enc_pcmbuf_read,
-             (void *)ap->enc_pcmbuf_advance, (void *)ap->enc_encbuf_get_buffer,
-             (void *)ap->enc_encbuf_finish_buffer);
-    }
-#endif
 
     return c_hdr->run_proc();
 }

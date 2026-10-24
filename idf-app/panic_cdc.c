@@ -44,7 +44,6 @@
 #include "esp_private/panic_internal.h"
 #include "esp_private/cache_err_int.h"
 #include "xtensa_context.h"
-#include "esp_debug_helpers.h"
 #include "esp_memory_utils.h"
 #include "esp_app_desc.h"
 #include "panic_funcs.h"
@@ -58,12 +57,7 @@ extern void xtensa_paniclog_frame(const unsigned long *words, int count,
 extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
 extern void xtensa_paniclog_frame_window(uint32_t windowbase,
                                          uint32_t windowstart, uint32_t a5);
-extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
-                                      const unsigned long *sps, int n,
-                                      const char *build);
-extern void xtensa_paniclog_api_handover(const unsigned long *words, int n);
-extern void xtensa_paniclog_pcm_slots(const unsigned long *words, int n);
-extern uint32_t xtensa_pcm_slots[4];
+extern void xtensa_paniclog_crash_id(const char *build);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -78,50 +72,6 @@ extern void esp_panic_handler_feed_wdts(void);
  * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size, windowbase,
  * windowstart, a5. */
 #define RB_REGS 11
-
-/* Frames of caller chain to retain. IDF walks until the chain goes insensible;
- * eight is what fits in the report and enough to name the caller whose return
- * address was hijacked. */
-/* Frames of caller chain to retain. The exception handler runs on the faulting
- * thread's own stack, so its frames occupy the first several slots; anything
- * shorter never reaches the thread that actually faulted. */
-#define RB_BT_FRAMES 16
-
-/* The loaded image's API handover, read at fault time.
- *
- * Three samples of the firmware's ci -- at codec load, after the image's
- * CODEC_LOAD entry returns, and immediately before run_proc() -- all showed the
- * encoder slots as real code. The codec then called offset 136 and executed a
- * stack address, so the change happens inside its own run. Reading the handover
- * here, at the moment of the fault, separates the two remaining cases: the
- * struct was written through, or the image's pointer slot was.
- *
- * The header layout is fixed by lib/rbcodec/codecs/codecs.h: struct lc_header is
- * five words (magic, target_id, version, start_addr, end_addr), then entry_point,
- * run_proc, then api -- so the api field is at byte 28 of the image, which is
- * codecbuf. Its value is the address of the image's own `codec` pointer, and the
- * word there is the firmware's ci the image dereferences.
- *
- * PSRAM is mapped when esp_panic_handler runs (IDF re-enables the flash cache
- * before calling it), so these loads are safe. The pointer is still range-checked
- * before it is dereferenced: a corrupted slot must not turn this read into a
- * second fault, and at debug exception level there is no handler left to catch
- * one.
- */
-/* Where the image keeps its codec pointer, as recorded by codec_load_ram().
- *
- * Hard-coding the header offset here was a mistake: struct lc_header is four
- * words in this build, so the header's `api` field is at byte 24 of the image,
- * and reading codecbuf+28 reported 0x000000a8 -- the tail of api_size, not a
- * pointer. The boot side has the typed struct and knows the address, so it hands
- * it over and this reads what it is told. .noinit survives the reset, and it is
- * written on every codec load, so it names whichever image was loaded last. */
-extern uint32_t xtensa_codec_api_slot;
-
-static int img_word_is_readable(uint32_t v)
-{
-    return esp_ptr_internal((const void *)v) || esp_ptr_external_ram((const void *)v);
-}
 
 /* EPC and DEPC are only readable at their own exception levels: reading EPC1 at
  * level 1 is a DISASTER exception, which would manufacture a third fault and
@@ -238,125 +188,18 @@ void esp_panic_handler(panic_info_t *info)
                                     f != NULL ? (uint32_t)f->a5 : 0);
     }
 
-    /* The caller chain, stepped with IDF's esp_backtrace_get_next_frame: it
-     * reads frame(i-1)'s base-save area from the four words below SP (return PC
-     * at sp-16, caller SP at sp-12), which the exception vectors fill for every
-     * frame because XT_DEBUG_BACKTRACE is unconditional in xtensa_vectors.S.
+    /* Which image faulted, as opposed to which image will later report it: a flash
+     * cannot confirm itself, because the reset pulse never reaches a chip whose pads
+     * the previous image already handed to the DWC core.
      *
-     * Two deliberate departures from how IDF uses it.
-     *
-     * Its return value is ignored. It reports false when the frame it just read
-     * has an insensible SP or a non-executable PC, which is right for a
-     * human-readable trace and wrong here: the first such frame is the
-     * interesting one, and stopping at it hides it. Termination is therefore only
-     * about safety -- each SP is validated with esp_stack_ptr_is_sane before the
-     * step that reads below it, because a read through a bad SP faults and a fault
-     * inside this handler is a third exception with no handler left, which would
-     * take the whole record with it.
-     *
-     * PCs are stored unprocessed. esp_cpu_process_stack_pc folds the windowed
-     * ABI's window-increment bits and steps off the return address, which turns a
-     * slot holding a literal-pool address into something that looks like code.
-     * The raw value is what lets the host tell a genuine return address from a
-     * data slot -- the first version of this walk printed processed PCs and
-     * showed 0x42600043, which resolved inside a codec's literal pool and looked
-     * like a frame until the raw slot (0x42600046) said otherwise.
-     *
-     * Each frame is committed before the next is attempted, and the frame and
-     * register slots are stored first, so a walk that dies part-way keeps what it
-     * already had.
-     */
-    {
-        unsigned long pcs[RB_BT_FRAMES];
-        unsigned long sps[RB_BT_FRAMES];
-        esp_backtrace_frame_t bf;
-        unsigned long prev_sp = 0;
-        int n = 0;
-
-        if (f != NULL)
-        {
-            bf.pc       = (uint32_t)f->pc;
-            bf.sp       = (uint32_t)f->a1;
-            bf.next_pc  = (uint32_t)f->a0;
-            bf.exc_frame = f;
-
-            pcs[n] = bf.pc;
-            sps[n] = bf.sp;
-            n++;
-
-            while (n < RB_BT_FRAMES && bf.next_pc != 0)
-            {
-                /* A repeated SP means the base-save area points back at the same
-                   frame; without this the walk spins to the cap. */
-                if (!esp_stack_ptr_is_sane(bf.sp) || bf.sp == prev_sp)
-                    break;
-                prev_sp = bf.sp;
-
-                esp_backtrace_get_next_frame(&bf);
-
-                pcs[n] = bf.pc;
-                sps[n] = bf.sp;
-                n++;
-            }
-        }
-
-        /* The build id of the image that faulted, not of the one that will print
-         * this: a flash cannot confirm itself because the post-flash reset pulse
-         * never reaches a chip whose pads the old image already gave to the DWC
-         * core. */
-        if (n > 0)
-            xtensa_paniclog_backtrace(pcs, sps, n,
-                                      esp_app_get_description()->version);
-    }
-
-    /* What the loaded image held at the instant of the fault: the address of its
-     * codec pointer, that pointer, and four words of the API struct at offsets
-     * 136..148 -- enc_pcmbuf_read, enc_pcmbuf_advance, enc_encbuf_get_buffer,
-     * enc_encbuf_finish_buffer. Those four are the slots the image calls. An
-     * earlier version read offsets 120..133 as well (memcmp, memchr, logf, qsort),
-     * which were always healthy and said nothing about the fault, and printing
-     * eight words instead of four is what pushed the boot report past the CDC
-     * ring. Both pointers are range-checked before dereference: at debug
-     * exception level a fault here has no handler left, and losing the record
-     * would be worse than not reading it. */
-    {
-        unsigned long handover[6] = { 0 };
-        uint32_t slot_addr = xtensa_codec_api_slot;
-        int i;
-
-        handover[0] = slot_addr;
-        if (slot_addr != 0 && img_word_is_readable(slot_addr))
-        {
-            uint32_t api = *(volatile uint32_t *)slot_addr;
-
-            handover[1] = api;
-            if (api != 0 && img_word_is_readable(api))
-            {
-                for (i = 0; i < 4; i++)
-                    handover[2 + i] = *(volatile uint32_t *)(api + 136 + i * 4);
-            }
-        }
-        xtensa_paniclog_api_handover(handover, 6);
-    }
-
-    /* The pcm_record statics, read live through the addresses the recorder
-     * recorded. pcm_copyfn is the point of this: it is a function pointer in
-     * .bss, and if it holds a stack address then the "fetch refused at a DRAM
-     * address" fault is the copy routine being called, not a corrupted return.
-     * Slots the recorder has not filled yet read as zero and print as absent. */
-    {
-        unsigned long pcmw[4] = { 0, 0, 0, 0 };
-        int i;
-
-        for (i = 0; i < 4; i++)
-        {
-            uint32_t addr = xtensa_pcm_slots[i];
-
-            if (addr != 0 && esp_ptr_internal((const void *)addr))
-                pcmw[i] = *(volatile uint32_t *)addr;
-        }
-        xtensa_paniclog_pcm_slots(pcmw, 4);
-    }
+     * The backtrace walk that used to live here is gone. It stepped a register-window
+     * chain through sp-16/sp-12, and DRAM survives a warm reset, so its slots can hold
+     * the previous boot's frames -- in one capture it printed codec_run's exact return
+     * address for a call that the codec's own stamps proved had never happened. A
+     * trace that can be stale is worse than no trace, and the fault it was chasing
+     * turned out to be a stale codec image indexing struct codec_api one field early,
+     * which no amount of frame walking would have named. */
+    xtensa_paniclog_crash_id(esp_app_get_description()->version);
 
     /* Short form in the text record, bounded by its 96-character field, so the
      * fault is identifiable from the debug page as well as the serial report. */
