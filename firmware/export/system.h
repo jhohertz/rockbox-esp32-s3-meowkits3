@@ -376,6 +376,17 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 /* Same idea, but the ring lives in RTC slow memory and therefore survives the reset a
  * watchdog or a panic performs. Use it for the steps that can end in a hang. */
 void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
+/* Retain the raw exception frame across the reset. The frame is copied verbatim
+ * because which layout it is in (XtExcFrame or XtDbFrame) is the open question --
+ * EPC1 holding the vector address means a second exception overwrote it -- and
+ * decoding that at fault time would be guessing. exception/pseudo come from IDF's
+ * panic_info_t and say which layout to read the words with. */
+void xtensa_paniclog_frame(const unsigned long *words, int count,
+                           int exception, int pseudo);
+void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
+                                unsigned long *count);
+/* Four retained frame words per line, line 0 first. 0 when nothing is stored. */
+int xtensa_paniclog_frame_words(char *buf, int bufsize, int line);
 /* Read the SRAM trail back one entry at a time, newest first, for a caller that has
  * no console: the screen. Hardware exceptions go to IDF's handler and reset without
  * ever reaching Rockbox's panic(), so the trail is what survives them. Returns 0
