@@ -222,6 +222,25 @@ static int codec_load_ram(struct codec_api *api)
 
     *(c_hdr->api) = api;
 
+    /* CODEC_LOAD_API_TRACE: a target-side check of what the loaded image is
+     * about to be given. The header's `api` field is a `struct codec_api **`,
+     * so this line points the image's own global at the firmware's `ci` rather
+     * than copying anything: every callback the codec later calls is read from
+     * this struct in DRAM. A codec that faults on an indirect call is therefore
+     * reporting the state of `ci`, and printing the encoder slots at the one
+     * place they are handed over separates "never set" from "set and then
+     * overwritten". Opt-in because it costs a logf line per codec load.
+     *
+     * The fields are named here rather than offset-arithmetic: this file has
+     * the type, so the compiler resolves both sides of the API contract.
+     */
+#ifdef CODEC_LOAD_API_TRACE
+    logf("ci %p img %p: enc_read %p enc_adv %p get_buf %p fin_buf %p",
+         (void *)api, (void *)*c_hdr->api,
+         (void *)api->enc_pcmbuf_read, (void *)api->enc_pcmbuf_advance,
+         (void *)api->enc_encbuf_get_buffer, (void *)api->enc_encbuf_finish_buffer);
+#endif
+
     logf("Codec: calling entrypoint");
     return c_hdr->entry_point(CODEC_LOAD);
 }
