@@ -20,6 +20,10 @@
  ****************************************************************************/
 #include <stdio.h>
 #include <ctype.h>
+/* TEMPORARY diagnostic so the existing logf("sys_poweroff()") and logf("cancel_shutdown()")
+ * in this file actually emit. Remove with the probe in apps/misc.c. */
+#define LOGF_ENABLE
+
 #include "config.h"
 #include "system.h"
 #include "kernel.h"
