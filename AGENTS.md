@@ -3297,6 +3297,16 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- **A codec image calls the firmware's API by struct offset, so the zip is part of
+  the ABI.** Codec images index `struct codec_api` numerically, and the struct grows
+  conditionally on `config.h` defines. Enabling `ROCKBOX_HAS_LOGF` inserted a word at
+  offset 128 and shifted `enc_pcmbuf_read`/`advance`/`get_buffer`/`finish_buffer` from
+  132/136/140/144 to 136/140/144/148 — the stale codecs then called `qsort` as their
+  PCM read, which is what put execution at a stack address. `apps/codecs.c:217` only
+  rejects a codec whose `api_size` is *larger* than the firmware's, so a shifted-down
+  struct loads silently. `make` does not rebuild `rockbox.zip`; after any change that
+  touches `struct codec_api` or a define it depends on, run `make zip` and re-extract
+  the card, because the card is populated only from the zip.
 - **A `.noinit` stamp is not durable on a crashing path.** `.noinit` is cached DRAM,
   and a panic resets the chip with the D-cache invalidated and unwritten, so a store
   made moments before a fault is lost and the next boot reads stale DRAM — eight
