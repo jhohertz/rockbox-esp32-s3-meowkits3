@@ -190,28 +190,10 @@ static volatile uint32_t xt_usb_irqs;
 /* How many times the post-init one-shot service fired, i.e. how much status the core
  * had already latched by the time the interrupt was enabled. */
 
-
-/* Which masked source is firing, and on which endpoint. Measured: 14,500 interrupts
- * per second while only ~23 CDC lines per second are being sent, and GINTSTS & GINTMSK
- * reads as 0 at report time -- the conditions are set and cleared between reports, so
- * the attribution has to happen inside the handler. DAINT is read before the driver
- * runs because the driver is what clears it, and the masks are sticky so a slow report
- * cadence still shows which endpoints were involved at all. */
-static volatile uint32_t xt_irq_rst;
-static volatile uint32_t xt_irq_enum;
-static volatile uint32_t xt_irq_iep;
-static volatile uint32_t xt_irq_oep;
-static volatile uint32_t xt_irq_none;
-/* Handler runs that happened before the driver was armed, i.e. while the core was still
- * being configured. Kept separate from xt_irq_none, which means "the line was drawn with
- * no masked source set" -- conflating the two would hide a real delivery fault. */
-static volatile uint32_t xt_irq_early;
 /* enable/disable churn from the driver, counted rather than trailed: see the note in
  * usb_dw_target_enable_irq(). */
 static volatile uint32_t xt_irq_enable_n;
 static volatile uint32_t xt_irq_disable_n;
-static volatile uint32_t xt_irq_daint_in;
-static volatile uint32_t xt_irq_daint_out;
 
 /* Set between usb_enable(true) and usb_enable(false), purely so the poll can report
  * what the armed core is doing. Deliberately not used by usb_detect(), which answers
@@ -241,34 +223,8 @@ static void usb_dwc_isr(void *arg)
          * a later event. */
         DWC_GINTSTS = 0xFFFFFFFF;
         DWC_GOTGINT = 0xFFFFFFFF;
-        xt_irq_early++;
         return;
     }
-    {
-        uint32_t pend = DWC_GINTSTS & DWC_GINTMSK;
-        uint32_t daint = DWC_DAINT;
-
-        if (pend & USBRST)
-            xt_irq_rst++;
-        if (pend & ENUMDNE)
-            xt_irq_enum++;
-        if (pend & IEPINT)
-        {
-            xt_irq_iep++;
-            xt_irq_daint_in |= daint & 0xffff;
-        }
-        if (pend & OEPINT)
-        {
-            xt_irq_oep++;
-            xt_irq_daint_out |= (daint >> 16) & 0xffff;
-        }
-        /* An interrupt with no masked source set is its own answer: the line was
-         * drawn by something the driver will not look at. */
-        if (!pend)
-            xt_irq_none++;
-    }
-
-
     INT_USB_FUNC();
 
 #ifdef USB_ENABLE_AUDIO
@@ -529,105 +485,6 @@ void usb_dw_target_clear_irq(void)
     DWC_GOTGINT = 0xFFFFFFFF;
 }
 
-/* TEMPORARY: identity probe, deliberately pad-free.
- *
- * The endpoint budget for both USB profiles rests on what this core reports,
- * not on the array sizes in IDF's usb_struct.h, so the numbers are read from the
- * silicon and printed. Only the peripheral clock gate is touched: the pad mux
- * (XT_USB_PAD_ENABLE and the RTC override) is *not* set, because GPIO19/20 are
- * shared with USB-Serial-JTAG and taking them would silence the console and
- * esptool. Offsets and field positions come from IDF's generated
- * usb_dwc_struct.h: numdeveps at ghwcfg2[13:10], numhstchnl at [17:14],
- * dfifodepth at ghwcfg3[31:16], numdevperioeps at ghwcfg4[3:0], ineps at
- * ghwcfg4[29:26], dedfifomode at bit 25.
- */
-#define USB_HW_PROBE 1
-#ifdef USB_HW_PROBE
-#define USB_WRAP_CLK_EN         (1u << 31)   /* OTG_CONF bit 31 */
-#define USB_WRAP_DFIFO_FORCE_PU (1u << 22)   /* force the FIFO power *up* */
-#define USB_WRAP_DFIFO_FORCE_PD (1u << 3)    /* force it *down* -- reads back 0 */
-#define USB_WRAP_PHY_CLK_FORCE  (1u << 20)
-#define USB_WRAP_AHB_CLK_FORCE  (1u << 19)
-#define USB_WRAP_PAD_ENABLE     (1u << 18)   /* NOT touched: pads belong to USJ */
-#define USB_WRAP_PHY_SEL        (1u << 2)    /* NOT touched: 1 = external PHY */
-
-static void usb_hw_probe(void)
-{
-    uint32_t clk0_saved = rd(XT_PERIP_CLK_EN0);
-    uint32_t clk1_saved = rd(XT_PERIP_CLK_EN1);
-    uint32_t rst0_saved = rd(XT_PERIP_RST_EN0);
-    uint32_t rst1_saved = rd(XT_PERIP_RST_EN1);
-    uint32_t wrap_saved = rd(XT_USB_OTG_CONF);
-    uint32_t id, c2, c3, c4;
-
-    printf("USB probe: clk0=%08x clk1=%08x rst0=%08x rst1=%08x otg_conf=%08x rtc=%08x\n",
-           (unsigned)clk0_saved, (unsigned)clk1_saved, (unsigned)rst0_saved,
-           (unsigned)rst1_saved, (unsigned)wrap_saved,
-           (unsigned)rd(XT_RTC_USB_CONF));
-
-    /* Both gates, both resets cleared. Reading with only the wrap gate enabled is
-     * what produced the first all-zero probe on this board. */
-    wr(XT_PERIP_CLK_EN0, clk0_saved | XT_USB_CLK_EN);
-    wr(XT_PERIP_CLK_EN1, clk1_saved | XT_USB_DEVICE_CLK_EN);
-    wr(XT_PERIP_RST_EN0, rst0_saved & ~XT_USB_RST);
-    wr(XT_PERIP_RST_EN1, rst1_saved & ~XT_USB_DEVICE_RST);
-
-    id = DWC_GSNPSID;
-    printf("USB probe: id with clocks as-found = %08x\n", (unsigned)id);
-
-    /* Force the OTG block's clocks and DFIFO power up. Deliberately does not
-     * touch USB_PAD_ENABLE or PHY_SEL: those decide who owns GPIO19/20, and the
-     * console and esptool are on USB-Serial-JTAG. DFIFO_FORCE_PD is cleared
-     * because a powered-down block reads back as all zeroes rather than
-     * faulting, which is what the first probe saw. */
-    wr(XT_USB_OTG_CONF,
-       (wrap_saved & ~(USB_WRAP_DFIFO_FORCE_PD | USB_WRAP_PHY_SEL |
-                       USB_WRAP_PAD_ENABLE)) |
-       USB_WRAP_CLK_EN | USB_WRAP_DFIFO_FORCE_PU |
-       USB_WRAP_PHY_CLK_FORCE | USB_WRAP_AHB_CLK_FORCE);
-
-    id = DWC_GSNPSID;
-    c2 = DWC_GHWCFG2;
-    c3 = DWC_GHWCFG3;
-    c4 = DWC_GHWCFG4;
-
-    printf("USB probe: otg_conf=%08x id=%08x rev=%d\n",
-           (unsigned)rd(XT_USB_OTG_CONF), (unsigned)id, (int)(id & 0xff));
-    printf("USB core: hwcfg2=%08x eps=%d hstchnl=%d fsphy=%d hsphy=%d\n",
-           (unsigned)c2, (int)(((c2 >> 10) & 0xf) + 1),
-           (int)(((c2 >> 14) & 0xf) + 1), (int)((c2 >> 8) & 3),
-           (int)((c2 >> 6) & 3));
-    printf("USB core: fifo_words=%u hwcfg3=%08x\n",
-           (unsigned)(c3 >> 16), (unsigned)c3);
-    printf("USB core: hwcfg4=%08x perio_eps=%d in_eps=%d ded_fifo=%d\n",
-           (unsigned)c4, (int)((c4 & 0xf) + 1), (int)((c4 >> 26) & 0xf),
-           (int)((c4 >> 25) & 1));
-    printf("USB core: hwcfg1=%08x gusbcfg=%08x dcfg=%08x gintsts=%08x\n",
-           (unsigned)DWC_GHWCFG1, (unsigned)DWC_GUSBCFG, (unsigned)DWC_DCFG,
-           (unsigned)DWC_GINTSTS);
-
-    /* The claim usb_dw_check_hw() now makes: fsintf (bit 5) selects the internal
-     * FS PHY and is writable. Verify it here rather than finding out during a
-     * bring-up that also needs the pads. */
-    {
-        uint32_t g = DWC_GUSBCFG;
-        DWC_GUSBCFG = g | FSINTF;
-        printf("USB probe: gusbcfg %08x -> %08x (fsintf %s)\n",
-               (unsigned)g, (unsigned)DWC_GUSBCFG,
-               (DWC_GUSBCFG & FSINTF) ? "writable" : "read-only");
-        DWC_GUSBCFG = g;
-    }
-
-    /* Leave the block exactly as it was found: the console and esptool are on
-     * USB-Serial-JTAG, and the pad mux was never touched. */
-    wr(XT_USB_OTG_CONF, wrap_saved);
-    wr(XT_PERIP_CLK_EN0, clk0_saved);
-    wr(XT_PERIP_CLK_EN1, clk1_saved);
-    wr(XT_PERIP_RST_EN0, rst0_saved);
-    wr(XT_PERIP_RST_EN1, rst1_saved);
-}
-#endif /* USB_HW_PROBE */
-
 /*
  * VBUS is not a GPIO and not a SoC input on this board: it is reported by the
  * AXP173 over I2C. That read takes ~1.6 ms on this command-list peripheral, far
@@ -739,7 +596,6 @@ static uint32_t xt_attach_tick;
  *     still available: xtensa_breadcrumb() keeps the ring and the boot console prints it.
  *
  * What is left is the transport, the audio endpoints and the cable sense. */
-
 
 #ifdef USB_ENABLE_AUDIO
 /* Strong override of the weak default in usbstack/usb_audio.c.
@@ -930,7 +786,6 @@ int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
  * settles near 48.87 rather than reading 0.000000, which is what an unarmed latch looks like.
  */
 
-
 /* Feedback control is deliberately NOT overridden here, and that is a decision rather than
  * an omission.
  *
@@ -971,7 +826,6 @@ static void usb_vbus_poll(void)
     static int last = USB_EXTRACTED;
     int status;
 
-
     /* While the core is armed, carry its state to the trail every ~4 s. Two
      * entries, oldest-first on the next boot:
      *   usbIRQ  a = interrupt count, b = GINTSTS
@@ -990,41 +844,7 @@ static void usb_vbus_poll(void)
         report = 0;
         xtensa_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
         xtensa_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
-        /* Source attribution from the handler, not from this snapshot. */
-        xtensa_breadcrumb("usbSrc", xt_irq_iep, xt_irq_oep);
-        xtensa_breadcrumb("usbRstE", xt_irq_rst, xt_irq_enum);
-        xtensa_breadcrumb("usbDain", xt_irq_daint_in, xt_irq_daint_out);
-        xtensa_breadcrumb("usbNone", xt_irq_none, 0);
-
-
-#ifdef USB_ENABLE_AUDIO
-        /* Isochronous arrival, into the RTC ring rather than only the CDC line. Probing
-         * the console is what wedges the device, so the counters have to survive a boot
-         * that never received a command: play to the DAC, power-cycle, and the next boot's
-         * USJ console reports what the previous boot saw.
-         *   usbAud a = isochronous frames received, b = DOEPTSIZ XFERSIZE still armed
-         *   usbAud2 a = sink active, b = playing
-         * If usbAud's frame count stays 0 while the host is streaming, packets never reach
-         * the endpoint; if it moves and audio is still silent, the fault is downstream in
-         * the sink or the mixer.
-         */
-        xtensa_breadcrumb("usbAud",
-                          (unsigned long)usb_audio_get_samples_rx_perframe(),
-                          (unsigned long)(DWC_DOEPTSIZ(2) & 0x7ffff));
-        xtensa_breadcrumb("usbAud2",
-                          (unsigned long)usb_audio_get_active(),
-                          (unsigned long)usb_audio_get_playing());
-#endif
-
-
-          /* The pad/ownership and EP0 snapshot that used to follow these entries is
-           * gone: scaffolding for the -71 enumeration stage (GUSBCFG, DCTL, DOEPINT,
-           * EPTSIZ, GINTMSK, INTENABLE). It took eight of the ring's forty slots per
-           * burst -- most of the history the ring exists to keep -- for a fault that is
-           * fixed. What remains for enumeration is the CDC trace line (gintsts, dsts,
-           * dain) and the two audio breadcrumbs above. */
     }
-
 
     if (++ticks < USB_VBUS_POLL_TICKS)
         return;
@@ -1148,10 +968,6 @@ void usb_init_device(void)
     wr(XT_RTC_USB_CONF, rd(XT_RTC_USB_CONF) & ~XT_SW_USB_PHY_SEL);
 #endif
 
-#ifdef USB_HW_PROBE
-    usb_hw_probe();
-#endif
-
 #ifdef USB_ALLOW_ATTACH
     tick_add_task(usb_vbus_poll);
 #endif
@@ -1226,7 +1042,6 @@ void __wrap_usb_enable(bool on)
         xt_usb_irqs = 0;
         xt_armed = true;
         usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
-
 
     }
     else

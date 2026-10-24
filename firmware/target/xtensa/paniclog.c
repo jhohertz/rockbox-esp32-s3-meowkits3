@@ -219,8 +219,8 @@ void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b)
     s->slot[i].b = (uint32_t)b;
 }
 
-/* Copy an rtc slot out before formatting it, so snprintf never reads the volatile
- * bank directly. */
+/* Copy an rtc slot out before formatting it, so the dump never reads the
+ * volatile bank directly. */
 static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 {
     char tag[5];
@@ -235,9 +235,9 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
                     tag, (unsigned long)slot->a, (unsigned long)slot->b);
 }
 
-/* Same window contract as xtensa_breadcrumb_window(), over the RTC-slow ring, so the
- * post-mortem a device pushes over CDC after a crash carries the part that survived. */
-
+/* The head line carries the RTC count as well as the reset reason: after a
+ * watchdog reset the SRAM ring is gone, and "rtc 0" is the difference between a
+ * hang that never reached the USB teardown and one that did. */
 int xtensa_paniclog_head(char *buf, int bufsize)
 {
     /* The RTC count rides on the head line because the bulk IN endpoint drops whatever
@@ -288,33 +288,6 @@ int xtensa_paniclog_head(char *buf, int bufsize)
                     (unsigned long)xt_reset_reason, (unsigned long)rtc);
 }
 
-int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count)
-{
-    int n, i, len = 0;
-
-    if (buf == NULL || bufsize <= 0 || bc_magic != BC_MAGIC)
-        return 0;
-
-    n = (bc_next < BC_SLOTS) ? (int)bc_next : BC_SLOTS;
-    if (start >= n)
-        return 0;
-    if (start + count > n)
-        count = n - start;
-
-    for (i = start; i < start + count; i++)
-    {
-        const struct breadcrumb *e = &bc[i % BC_SLOTS];
-        int used = snprintf(buf + len, bufsize - len,
-                            "%s %08lx %08lx\r\n",
-                            e->tag, (unsigned long)e->a, (unsigned long)e->b);
-
-        if (used <= 0 || used >= bufsize - len)
-            break; /* truncated rather than overflowing the caller */
-        len += used;
-    }
-    return len;
-}
-
 void xtensa_panic_log(const char *msg)
 {
     if (rec.magic != PANICLOG_MAGIC)
@@ -355,41 +328,6 @@ void xtensa_panic_log(const char *msg)
     /* Lock-free, and safe with interrupts masked. */
     esp_rom_printf("\r\n*PANIC* %s\r\n", rec.msg);
 }
-
-int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count)
-{
-    struct rtc_store *s = (struct rtc_store *)rtc_store;
-    int n, len = 0;
-    uint32_t total, avail;
-
-    if (s->magic != XT_RTC_SLOW_MAGIC || s->next == 0)
-    {
-        buf[0] = '\0';
-        return 0;
-    }
-
-    total = s->next;
-    if (total > XT_RTC_SLOTS)
-        total = XT_RTC_SLOTS;
-
-    avail = total > (uint32_t)start ? total - (uint32_t)start : 0;
-    n = count < (int)avail ? count : (int)avail;
-
-    for (int i = 0; i < n; i++)
-    {
-        uint32_t idx = (s->next - total + (uint32_t)start + (uint32_t)i) % XT_RTC_SLOTS;
-        int used = rtc_slot_line(buf + len, bufsize - len, &s->slot[idx]);
-
-        if (used <= 0 || len + used >= bufsize)
-            break;
-        len += used;
-    }
-
-    buf[len] = '\0';
-    return len;
-}
-
-
 
 void xtensa_paniclog_dump(void)
 {
@@ -471,14 +409,14 @@ void xtensa_paniclog_dump(void)
  *
  *   seg, seg, placed, blon x12, stop
  *
- * and no txstop. sink_stop() stamps "stop" and then calls stop_tx(), which stamps
- * "txstop", so the fault was inside sink_stop() between those two -- a window
- * whose only substantial content was i2s_audio_probe(), a temporary 40-argument
- * diagnostic that had no business being in the teardown path. Removing it from
- * that call site ended both repro modes. Both crashes in this file's history were
- * the probe, not the audio path, not the codec, and not a malformed WAV: the
- * recorder's headers are correct (0x0001, 2ch, 44100, 16-bit, byte_rate 176400,
- * block_align 4, data_chunk == file - 44, riff_size == file - 8).
+ * and no txstop. sink_stop() stamped "stop" and then called stop_tx(), which
+ * stamped "txstop", so the fault was inside sink_stop() between those two -- a
+ * window whose only substantial content was a 40-argument diagnostic dump that
+ * had no business being in the teardown path. Removing it from that call site
+ * ended both repro modes. Both crashes in this file's history were the probe,
+ * not the audio path, not the codec, and not a malformed WAV: the recorder's
+ * headers are correct (0x0001, 2ch, 44100, 16-bit, byte_rate 176400, block_align
+ * 4, data_chunk == file - 44, riff_size == file - 8).
  *
  * The lesson worth keeping: an instrument placed in the path it observes can
  * become the fault being observed. This one survived three crashes before the

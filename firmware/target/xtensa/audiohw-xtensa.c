@@ -42,11 +42,8 @@ void audiohw_close(void)
 
 void audiohw_set_volume(int val)
 {
-    /* An I2C write to the codec. Rapid file cycling means rapid fades, and the
-     * pre-crash log of the last two faults was dense with codec and backlight
-     * traffic rather than audio traffic. */
-    xtensa_breadcrumb("vol", (unsigned long)val, 0);
-
+    /* An I2C write to the codec, so it shares the bus with the touch poll, the
+     * PMU and the IO expander. Rapid file cycling means rapid fades. */
     es8311_set_volume(val);
 }
 
