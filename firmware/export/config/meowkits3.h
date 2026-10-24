@@ -615,17 +615,6 @@
  * bisect that touches this define must rebuild and recopy the codecs too. */
 #define HAVE_RECORDING
 
-/* TEMPORARY: diagnostics for the recording fault, remove once it is answered.
- *
- * The WAV encoder calls `ci->enc_pcmbuf_read` (offset 136 in this build, read
- * from DWARF, and the image calls exactly that offset) and the value it loaded
- * was 0x3fcaa420 -- inside codec_stack -- so the fetch landed on a stack
- * address. `*(c_hdr->api) = api` makes the image use the firmware's `ci` in
- * DRAM directly, so this prints those slots at the single moment they are
- * handed over: a NULL means recording_init() had not run, a stack address means
- * something wrote into `ci` afterwards. One logf line per codec load. */
-#define CODEC_LOAD_API_TRACE
-
 /* The ES7210 is the only input the board has. */
 #define INPUT_SRC_CAPS SRC_CAP_MIC
 

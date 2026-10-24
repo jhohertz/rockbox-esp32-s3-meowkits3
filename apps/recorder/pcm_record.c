@@ -27,16 +27,6 @@
 #include "string-extra.h"
 #include "pcm_record.h"
 #include "codecs.h"
-#ifdef CODEC_LOAD_API_TRACE
-/* logf() compiles away unless LOGF_ENABLE is set before logf.h is read. The codec
- * API trace in this file is the only reason it is on here -- and it is only
- * usable on paths that do not crash: the CDC ring resets with the chip, so
- * anything emitted moments before a fault is lost. The encoder path writes
- * through breadcrumbs into .noinit instead, which survives. */
-#define LOGF_ENABLE
-extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
-extern uint32_t xtensa_pcm_slots[4];
-#endif
 #include "logf.h"
 #include "thread.h"
 #include "storage.h"
@@ -548,22 +538,6 @@ static void init_rec_buffers(void)
 
     /* PCMBUF */
     pcm_buffer = CACHEALIGN_UP(buf); /* Line align */
-
-#ifdef CODEC_LOAD_API_TRACE
-    /* Recorded here as well as in enc_encbuf_get_buffer(): this runs before the
-     * codec is entered, so a fault-time read of zero means the slots were
-     * destroyed rather than never written. Without the early stamp, all-zero
-     * output was ambiguous between "get_buffer never ran" and "the stamp was
-     * broken" -- and it was the latter kind of ambiguity that cost a build. */
-    xtensa_pcm_slots[0] = (uint32_t)(uintptr_t)&pcm_copyfn;
-    xtensa_pcm_slots[1] = (uint32_t)(uintptr_t)&pcm_buffer;
-    xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
-    xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
-
-    /* A boundary in the codec's own progress ring, so the report can tell this
-     * session's marks from a previous boot's. */
-    xtensa_api_mark(XT_API_RREC, 0, 0);
-#endif
 
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
     buf = pcm_buffer + PCM_BUF_SIZE;
@@ -1839,26 +1813,6 @@ static int enc_pcmbuf_read(void *buffer, int count)
     size_t avail = pcmbuf_used();
     size_t size = count*PCM_SAMP_SIZE;
 
-    /* The encoder writes through `buffer`, which is the pointer it obtained from
-     * enc_encbuf_get_buffer() plus its own header offset, and it writes `size`
-     * bytes. If that pointer is inside the recording arena the write can only
-     * wrap within it; if it is a stack address then this copy is what corrupts
-     * the frames we see the fault in. Limited to the first calls of a session --
-     * the fault happens on the first one, and this is a per-frame path. */
-#ifdef CODEC_LOAD_API_TRACE
-    static int pcmrd_trace = 4;
-
-    if (pcmrd_trace > 0)
-    {
-        pcmrd_trace--;
-        /* Destination and byte count of the copy about to happen, written to RTC
-           slow because a store to cached DRAM does not survive the panic. If this
-           destination plus this length reaches codec_stack (0x3fc......), the copy
-           is what destroyed the return address. */
-        xtensa_api_mark(XT_API_ENCR, (unsigned long)buffer, (unsigned long)size);
-    }
-#endif
-
     if (count > 0 && avail >= size)
     {
         size_t endidx = pcm_ridx + size;
@@ -1903,12 +1857,6 @@ static int enc_pcmbuf_read(void *buffer, int count)
 /* Advance PCM buffer by count samples */
 static int enc_pcmbuf_advance(int count)
 {
-#ifdef CODEC_LOAD_API_TRACE
-    /* If enkb and encr appear but no adv, the copy completed and the fault is in
-     * the advance or in whatever the codec does next. */
-    xtensa_api_mark(XT_API_ADV, (unsigned long)count, (unsigned long)pcm_ridx);
-#endif
-
     if (count <= 0)
         return 0;
 
@@ -1982,32 +1930,6 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
 
     struct enc_chunk_data *data =
         encbuf_get_write_ptr(enc_widx, need, &enc_widx);
-
-    /* What the encoder is being handed to write into, and the geometry the
-       pointer came from. The arena is PSRAM, so a pointer outside 0x3c......
-       means the ring maths put the encoder's buffer somewhere it should never
-       have been. */
-#ifdef CODEC_LOAD_API_TRACE
-    static int encbuf_trace = 4;
-
-    if (encbuf_trace > 0)
-    {
-        encbuf_trace--;
-        /* The chunk handed to the encoder, and the ring geometry it came from.
-           The arena is PSRAM, so a pointer outside 0x3c...... means the ring
-           maths sent the encoder somewhere it should never have been. */
-        xtensa_api_mark(XT_API_ENCB, (unsigned long)data, (unsigned long)need);
-        xtensa_breadcrumb("ENCB", (unsigned long)data, (unsigned long)need);
-    }
-
-    /* Where the handler should look at fault time. Live contents, not these
-       values: pcm_copyfn in particular is a function pointer the crash may have
-       found overwritten. */
-    xtensa_pcm_slots[0] = (uint32_t)(uintptr_t)&pcm_copyfn;
-    xtensa_pcm_slots[1] = (uint32_t)(uintptr_t)&pcm_buffer;
-    xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
-    xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
-#endif
 
     if (state == REC_STATE_IDLE)
         data->hdr.pre = 1;

@@ -108,24 +108,6 @@ static uint32_t bc_next  __attribute__((section(".noinit")));
  * stores the build id of the image that faulted, so a report can show both. */
 static char rb_build_now[32] __attribute__((section(".noinit"), aligned(4)));
 
-/* Address of the loaded image's codec-pointer slot, recorded by codec_load_ram()
- * and read by the panic handler so it can inspect the handover at the moment of
- * the fault without guessing the header layout. Written on every codec load. */
-uint32_t xtensa_codec_api_slot __attribute__((section(".noinit")));
-
-/* Addresses of the pcm_record statics the encoder path dereferences, recorded by
- * init_rec_buffers() and on_recording_options(): &pcm_copyfn, &pcm_buffer,
- * &pcm_ridx, &enc_buffer.
- *
- * Addresses rather than values, because the panic handler needs the live contents
- * at the instant of the fault: pcm_copyfn is a function pointer in .bss and "it
- * was valid at load" is precisely the pattern this crash shows. Addresses rather
- * than named symbols, because .bss layout moves between builds -- the fault
- * address shifted by 0x20 between two consecutive images, so a hard-coded address
- * here would read the wrong variable without complaining. .noinit survives the
- * reset, and both writers run before the codec image is entered. */
-uint32_t xtensa_pcm_slots[4] __attribute__((section(".noinit"), aligned(4)));
-
 void xtensa_build_id_stamp(const char *id)
 {
     int i;
@@ -387,161 +369,6 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 
     return snprintf(buf, bufsize, "%s a=%08lx b=%08lx\n",
                     tag, (unsigned long)slot->a, (unsigned long)slot->b);
-}
-
-/* The codec's own progress ring, in RTC slow at an offset nothing else uses.
- *
- * The shared breadcrumb ring above is 24 slots written by the USB and watchdog
- * diagnostics as well: wRet is stamped once per tick, so codec entries were pushed
- * out within milliseconds and the boot report showed uClk/uIn register dumps instead
- * of the encoder path. Separation, not size, is the fix -- 24 more slots stamped the
- * same way would evict just as fast.
- *
- * 0x50001800 sits above the four existing records (teardown ring 0x50001000, panic
- * 0x50001200, exception frame 0x50001400 ending 0x500014cc, backtrace 0x50001600
- * ending 0x500016dc) and inside the 8 KiB bank. Word stores only: RTC slow accepts
- * nothing narrower on this chip. */
-#define XT_API_RTC_BASE   0x50001800u
-#define XT_API_RTC_MAGIC  0x49415052u   /* "RPAI" */
-#define XT_API_SLOTS      16
-
-struct api_slot
-{
-    uint32_t id;
-    uint32_t a;
-    uint32_t b;
-};
-
-struct api_store
-{
-    uint32_t magic;
-    uint32_t next;
-    struct api_slot slot[XT_API_SLOTS];
-};
-
-static volatile struct api_store *api_store =
-    (volatile struct api_store *)XT_API_RTC_BASE;
-
-/* Below the ring: the last chunk handed to the encoder and the last PCM copy, in
- * fixed slots. A ring shows recency, but the codec stamps cmd/enkb/encr/adv once per
- * chunk, so by the time of a fault on the second iteration the ring's newest four
- * entries were cmd and adv from the loop -- enkb and encr sit between them and are
- * pushed out. Fixed last-value slots cannot be evicted, and the values they hold are
- * the whole question: where the copy wrote, and how far.
- *
- * Each carries the ring sequence at the time it was written, so a report can tell
- * whether the copy belongs to the iteration that faulted or an earlier one. */
-struct api_last
-{
-    uint32_t magic;
-    uint32_t encb_ptr;
-    uint32_t encb_need;
-    uint32_t encb_seq;
-    uint32_t encr_dst;
-    uint32_t encr_len;
-    uint32_t encr_seq;
-};
-
-#define XT_API_LAST_BASE  0x500018D0u   /* past the ring, inside the bank */
-#define XT_API_LAST_MAGIC 0x4C535452u   /* "RSTL" */
-
-static volatile struct api_last *api_last =
-    (volatile struct api_last *)XT_API_LAST_BASE;
-
-void xtensa_api_mark(enum xtensa_api_mark_id id, unsigned long a, unsigned long b)
-{
-    volatile struct api_store *s = api_store;
-    uint32_t i;
-
-    if ((int)id < XT_API_RREC || (int)id > XT_API_FIN)
-        return;
-
-    if (s->magic != XT_API_RTC_MAGIC)
-    {
-        /* First power-on, or the bank holds something else: start the ring fresh
-           rather than mixing a stale sequence with this one. */
-        s->magic = XT_API_RTC_MAGIC;
-        s->next  = 0;
-    }
-
-    i = s->next % XT_API_SLOTS;
-    s->slot[i].id = (uint32_t)id;
-    s->slot[i].a  = (uint32_t)a;
-    s->slot[i].b  = (uint32_t)b;
-    s->next++;
-
-    /* ENCB and ENCR also land in fixed last-value slots. The ring shows recency, but
-     * the codec stamps cmd/enkb/encr/adv once per chunk, so a fault in the second
-     * iteration leaves a ring whose newest four entries are cmd and adv -- enkb and
-     * encr sit between them and are pushed out. These cannot be evicted, and they
-     * carry the sequence they were written at so the report can tell which iteration
-     * they belong to. */
-    if (id == XT_API_ENCB || id == XT_API_ENCR)
-    {
-        volatile struct api_last *l = api_last;
-        uint32_t seq = s->next;
-
-        if (l->magic != XT_API_LAST_MAGIC)
-        {
-            l->magic     = XT_API_LAST_MAGIC;
-            l->encb_ptr  = 0;
-            l->encb_seq  = 0;
-            l->encr_dst  = 0;
-            l->encr_seq  = 0;
-        }
-
-        if (id == XT_API_ENCB)
-        {
-            l->encb_ptr  = (uint32_t)a;
-            l->encb_need = (uint32_t)b;
-            l->encb_seq  = seq;
-        }
-        else
-        {
-            l->encr_dst = (uint32_t)a;
-            l->encr_len = (uint32_t)b;
-            l->encr_seq = seq;
-        }
-    }
-}
-
-static const char *api_mark_name(uint32_t id)
-{
-    switch ((enum xtensa_api_mark_id)id)
-    {
-        case XT_API_RREC: return "rrec";
-        case XT_API_CMD:  return "cmd";
-        case XT_API_ENCB: return "enkb";
-        case XT_API_ENCR: return "encr";
-        case XT_API_ADV:  return "adv";
-        case XT_API_FIN:  return "fin";
-    }
-    return "?";
-}
-
-/* Newest first, for the boot report. Returns 0 when the ring is empty or back is
- * past what it holds, so the caller can stop rather than print absent entries. */
-int xtensa_api_mark_back(int back, char *buf, int bufsize)
-{
-    volatile struct api_store *s = api_store;
-    const volatile struct api_slot *slot;
-    uint32_t n;
-
-    if (buf == NULL || bufsize <= 0 || back < 0)
-        return 0;
-    if (s->magic != XT_API_RTC_MAGIC || s->next == 0)
-        return 0;
-
-    n = s->next < XT_API_SLOTS ? s->next : XT_API_SLOTS;
-    if ((uint32_t)back >= n)
-        return 0;
-
-    slot = &s->slot[(s->next - 1 - (uint32_t)back) % XT_API_SLOTS];
-
-    return snprintf(buf, bufsize, "%s %08lx %08lx n%lu",
-                    api_mark_name(slot->id),
-                    (unsigned long)slot->a, (unsigned long)slot->b,
-                    (unsigned long)s->next);
 }
 
 /* The head line carries the RTC count as well as the reset reason: after a
@@ -846,33 +673,19 @@ int xtensa_paniclog_frame_cache(char *buf, int bufsize)
 }
 
 /* ---------------------------------------------------------------------------
- * The frame's caller chain, in RTC slow.
+ * Which image faulted, in RTC slow.
  *
- * The frame dump says what the CPU was doing; it cannot say who put it there.
- * IDF prints exactly that in its panic handler, but printing needs a transport
- * and this context has none, so the walk is taken here and stored instead.
- *
- * It is IDF's walk, not a reconstruction of one. esp_backtrace_get_next_frame
- * (IRAM, 0x40375808 in this image) reads frame(i-1)'s base-save area from the
- * four words below SP: the return PC at sp-16 and the caller's SP at sp-12.
- * Those words exist for every exception because xtensa_vectors.S defines
- * XT_DEBUG_BACKTRACE unconditionally -- checked in the linked image, which
- * carries `s32e a0, a5, -16` and `s32e a1, a5, -12` at 0x40374000 -- and the
- * seeding is IDF's too, {pc = f->pc, sp = f->a1, next_pc = f->a0} from
- * panic_arch.c:337.
- *
- * The care taken here is about what happens when the chain is wrong, which is
- * the case we are looking for. Reading through a bad SP faults, and a fault
- * inside the panic handler is a third exception with no handler left: the chip
- * stops, and with it the store. So each SP is validated with IDF's
- * esp_stack_ptr_is_sane *before* the step that reads below it, and every frame
- * is committed before the next one is attempted. A walk that dies part-way
- * leaves the part that succeeded, and `count` says how far it got.
- *
- * PCs are stored after esp_cpu_process_stack_pc, which folds the windowed ABI's
- * top-two-bit window increment back into the address space and steps off the
- * return address. That is why 0x8002e4bc in the frame is a real ROM address
- * (0x4002e4b9) and not the garbage it looks like.
+ * This record used to carry a caller chain walked with IDF's
+ * esp_backtrace_get_next_frame, and that walk is what identified the frames of the
+ * recording crash for many builds. It is gone, and the reason is worth keeping:
+ * internal DRAM survives a warm reset, so the base-save words at sp-16 and sp-12
+ * that the walk reads can belong to the *previous* boot's stack. One capture proved
+ * it -- the codec's own stamps showed that enc_pcmbuf_read had never been entered,
+ * while the walk still printed codec_run's exact return address for the call to it.
+ * A trace that can be stale is worse than no trace. The fault itself turned out to
+ * be a stale codec image indexing struct codec_api one field early, which no frame
+ * walking could have named; the register slots and the cache latch above are what
+ * survive as the permanent record.
  *
  * 0x50001600 is past the frame record (which ends at 0x500014bc) and inside the
  * 8 KB RTC-slow bank, which runs to 0x50002000. Word stores only, as everywhere
@@ -880,238 +693,62 @@ int xtensa_paniclog_frame_cache(char *buf, int bufsize)
  * --------------------------------------------------------------------------- */
 #define XT_BT_RTC_BASE   0x50001600u
 #define XT_BT_RTC_MAGIC  0x43544252u   /* "RBTC" */
-#define XT_BT_FRAMES     16
 #define XT_BT_ID_WORDS   8             /* 32 characters of build id, including NUL */
 
-struct bt_rtc
+struct crash_rtc
 {
     uint32_t magic;
-    uint32_t count;
-    uint32_t pc[XT_BT_FRAMES];
-    uint32_t sp[XT_BT_FRAMES];
     /* Which image this crash belongs to. The boot report otherwise prints the
        version of the image that is *asking*, and after a flash those are two
        different builds -- a distinction that has already been confused once,
        because a post-flash reset cannot reach this board while Rockbox owns the
        USB pads. */
     uint32_t crash_id[XT_BT_ID_WORDS];
-    uint32_t bt_magic;
-    /* The loaded image's API handover as it stood at the fault: address of the
-       image's codec pointer, the pointer, and eight words of the struct from
-       offset 120. */
-    uint32_t api[10];
-    uint32_t api_magic;
-    /* The pcm_record statics as the fault found them: pcm_copyfn, pcm_buffer,
-       pcm_ridx, enc_buffer. */
-    uint32_t pcm[4];
-    uint32_t pcm_magic;
+    uint32_t id_magic;
 };
 
-void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sps,
-                               int n, const char *build)
+/* Record which build faulted. Called from the panic handler, which is the only
+ * place that knows the difference between "this image is running" and "this image
+ * crashed". */
+void xtensa_paniclog_crash_id(const char *build)
 {
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    int i;
+    volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
+    char id[XT_BT_ID_WORDS * 4];
+    int j;
 
-    if (pcs == NULL || sps == NULL || n < 1)
+    if (build == NULL)
         return;
-    if (n > XT_BT_FRAMES)
-        n = XT_BT_FRAMES;
 
-    if (bt->magic != XT_BT_RTC_MAGIC)
-        bt->count = 0;
-    bt->magic = XT_BT_RTC_MAGIC;
+    memset(id, 0, sizeof id);
+    for (j = 0; j < (int)sizeof id - 1 && build[j]; j++)
+        id[j] = build[j];
+    for (j = 0; j < XT_BT_ID_WORDS; j++)
+        cr->crash_id[j] = *(uint32_t *)&id[j * 4];
 
-    if (build != NULL)
-    {
-        char id[XT_BT_ID_WORDS * 4];
-        int j;
-
-        memset(id, 0, sizeof id);
-        for (j = 0; j < (int)sizeof id - 1 && build[j]; j++)
-            id[j] = build[j];
-        for (j = 0; j < XT_BT_ID_WORDS; j++)
-            bt->crash_id[j] = *(uint32_t *)&id[j * 4];
-    }
-
-    for (i = 0; i < n; i++)
-    {
-        bt->pc[i] = (uint32_t)pcs[i];
-        bt->sp[i] = (uint32_t)sps[i];
-        /* Commit per frame: if the next read faults, this one is already kept. */
-        bt->count = (uint32_t)(i + 1);
-    }
-    bt->bt_magic = XT_BT_RTC_MAGIC;
-}
-
-/* Five PCs per line, oldest first, so line 0 holds the faulting frame. The
- * values are the raw slots: entry 0 is the frame's real PC, and every entry
- * after it is a windowed-ABI return address, which carries the window increment
- * in bits 10-11 and points one instruction past the call. So 0x8002e4bc is
- * 0x4002e4b9 in ROM once the increment is folded out and the instruction
- * stepped back -- exactly what esp_cpu_process_stack_pc does, and deliberately
- * NOT applied here. A slot that resolves to a literal pool rather than to a
- * function is evidence that the chain has gone insensible, and the unprocessed
- * value is what makes that visible. */
-int xtensa_paniclog_backtrace_text(char *buf, int bufsize, int line)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    uint32_t base;
-    uint32_t n;
-    int len;
-    int i;
-
-    if (buf == NULL || bufsize <= 0 || line < 0)
-        return 0;
-    if (bt->magic != XT_BT_RTC_MAGIC || bt->bt_magic != XT_BT_RTC_MAGIC ||
-        bt->count == 0)
-        return 0;
-
-    base = (uint32_t)line * 5u;
-    if (base >= bt->count)
-        return 0;
-
-    len = snprintf(buf, bufsize, "bt%d:", line);
-
-    n = bt->count - base;
-    if (n > 5)
-        n = 5;
-
-    for (i = 0; (uint32_t)i < n && len < bufsize - 12; i++)
-        len += snprintf(buf + len, bufsize - len, " %08lx",
-                        (unsigned long)bt->pc[base + (uint32_t)i]);
-    return len;
+    cr->magic = XT_BT_RTC_MAGIC;
+    cr->id_magic = XT_BT_RTC_MAGIC;
 }
 
 /* One line with the build id of the crash, as stored by the handler. Returns 0 when absent. */
 int xtensa_paniclog_crash_build(char *buf, int bufsize)
 {
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
     char id[XT_BT_ID_WORDS * 4];
     int j;
 
     if (buf == NULL || bufsize <= 0)
         return 0;
-    if (bt->magic != XT_BT_RTC_MAGIC || bt->bt_magic != XT_BT_RTC_MAGIC)
+    if (cr->magic != XT_BT_RTC_MAGIC || cr->id_magic != XT_BT_RTC_MAGIC)
         return 0;
 
     for (j = 0; j < XT_BT_ID_WORDS; j++)
-        *(uint32_t *)&id[j * 4] = bt->crash_id[j];
+        *(uint32_t *)&id[j * 4] = cr->crash_id[j];
     id[sizeof id - 1] = '\0';
 
     if (id[0] == '\0')
         return 0;
 
     return snprintf(buf, bufsize, "crashed %s", id);
-}
-
-/* Store the image's API handover as the handler found it. Written after the
- * backtrace, so a fault during this read still leaves the frames. */
-void xtensa_paniclog_api_handover(const unsigned long *words, int n)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    int i;
-
-    if (words == NULL || n < 1)
-        return;
-    if (n > 10)
-        n = 10;
-
-    for (i = 0; i < n; i++)
-        bt->api[i] = (uint32_t)words[i];
-    bt->api_magic = XT_BT_RTC_MAGIC;
-}
-
-/* Line 0: the slot address and the pointer it holds. Lines 1 and 2: the API
- * words from offset 120, labelled by offset so the encoder callbacks
- * (136 enc_pcmbuf_read, 140 enc_pcmbuf_advance, 144 enc_encbuf_get_buffer,
- * 148 enc_encbuf_finish_buffer) can be read straight off the line. */
-int xtensa_paniclog_api_handover_text(char *buf, int bufsize, int line)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    int len;
-    int i;
-
-    if (buf == NULL || bufsize <= 0 || line < 0)
-        return 0;
-    if (bt->magic != XT_BT_RTC_MAGIC || bt->api_magic != XT_BT_RTC_MAGIC)
-        return 0;
-
-    if (line == 0)
-        return snprintf(buf, bufsize, "api slot %08lx ptr %08lx",
-                        (unsigned long)bt->api[0], (unsigned long)bt->api[1]);
-
-    /* One line, four words: offsets 136..148 of struct codec_api --
-     * enc_pcmbuf_read, enc_pcmbuf_advance, enc_encbuf_get_buffer and
-     * enc_encbuf_finish_buffer, which are the slots the image calls through. The
-     * handler used to capture offsets 120..148, which put memcmp, memchr, logf and
-     * qsort on the line: always healthy, and nothing to do with the fault. The
-     * eight words plus a second backtrace line were also what pushed this report
-     * past the 512-byte CDC ring, which is why the trail and build lines vanished. */
-    len = snprintf(buf, bufsize, "api enc:");
-    for (i = 0; i < 4; i++)
-    {
-        uint32_t v = bt->api[2 + (line - 1) * 4 + i];
-
-        if (v == 0)
-            continue;   /* absent, not address 0 */
-        if (len >= bufsize - 12)
-            break;
-        len += snprintf(buf + len, bufsize - len, " %08lx", (unsigned long)v);
-    }
-    return len;
-}
-
-/* Store the pcm_record statics the handler read through xtensa_pcm_slots. */
-void xtensa_paniclog_pcm_slots(const unsigned long *words, int n)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    int i;
-
-    if (words == NULL || n < 1)
-        return;
-    if (n > 4)
-        n = 4;
-
-    for (i = 0; i < n; i++)
-        bt->pcm[i] = (uint32_t)words[i];
-    bt->pcm_magic = XT_BT_RTC_MAGIC;
-}
-
-/* One line: the copy routine, the PCM ring base, the read index and the encode
- * ring base. pcm_copyfn is the interesting one -- it is a function pointer in
- * .bss set to memcpy, and executing it is what a "fetch at a DRAM address" fault
- * looks like if something wrote a stack address over it. */
-int xtensa_paniclog_pcm_text(char *buf, int bufsize)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-
-    if (buf == NULL || bufsize <= 0)
-        return 0;
-    if (bt->magic != XT_BT_RTC_MAGIC || bt->pcm_magic != XT_BT_RTC_MAGIC)
-        return 0;
-
-    return snprintf(buf, bufsize, "pcm fn %08lx buf %08lx ridx %08lx enc %08lx",
-                    (unsigned long)bt->pcm[0], (unsigned long)bt->pcm[1],
-                    (unsigned long)bt->pcm[2], (unsigned long)bt->pcm[3]);
-}
-
-/* One line: the last chunk handed to the encoder and the last PCM copy, with the
- * ring sequence each was written at. */
-int xtensa_paniclog_api_last_text(char *buf, int bufsize)
-{
-    volatile struct api_last *l = api_last;
-
-    if (buf == NULL || bufsize <= 0)
-        return 0;
-    if (l->magic != XT_API_LAST_MAGIC)
-        return 0;
-
-    return snprintf(buf, bufsize, "last b=%08lx/%lu s%lu r=%08lx/%lu s%lu",
-                    (unsigned long)l->encb_ptr, (unsigned long)l->encb_need,
-                    (unsigned long)l->encb_seq,
-                    (unsigned long)l->encr_dst, (unsigned long)l->encr_len,
-                    (unsigned long)l->encr_seq);
 }
 
 void xtensa_paniclog_dump(void)
@@ -1233,8 +870,6 @@ void xtensa_crash_report_logf(void)
 {
     char line[96];
     int len;
-    int back;
-    unsigned long exc, pseudo, count;
 
     len = xtensa_paniclog_text(line, sizeof line);
     if (len > 0)
@@ -1268,48 +903,21 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
-    (void)exc;
-    (void)pseudo;
-    xtensa_paniclog_frame_info(&exc, &pseudo, &count);
-
     /* The whole thing is bounded on purpose: usb_serial_send() has a 512-byte
      * ring drained by transfers the host reads, and a payload that overruns it
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, the window state, the PCM slots, three codec marks, the last
-     * chunk and copy, and the build line come to roughly 450 bytes; the cache line
-     * only appears when the latch reported something.
+     * interrupted SP, the window state and the build line come to roughly 250
+     * bytes; the cache line only appears when the latch reported something.
      *
-     * The backtrace walk is no longer reported. It reads a register-window chain
-     * through sp-16/sp-12, and DRAM survives a warm reset, so the slots can belong
-     * to the previous boot's stack: a capture whose encoder stamps proved the codec
-     * never reached enc_read still showed the exact return address of codec_run's
-     * call on that slot. The RTC trail below is written by the code itself and
-     * cannot be stale. */
-    len = xtensa_paniclog_pcm_text(line, sizeof line);
-    if (len > 0)
-        logf("rb %s", line);
-
-    /* The codec's own progress, newest first. The loop stamps cmd/enkb/encr/adv once
-     * per chunk, so four entries only cover one and a half iterations; what matters
-     * is whether enkb and encr appear at all in the iteration that faulted, which the
-     * fixed last-value slots below answer directly. */
-    for (back = 0; back < 3; back++)
-    {
-        len = xtensa_api_mark_back(back, line, sizeof line);
-        if (len == 0)
-            break;
-        logf("rb %s", line);
-    }
-
-    /* The last chunk and the last copy, from slots nothing can evict. If encr's
-       destination plus its length reaches codec_stack (0x3fca......), the copy wrote
-       over the frame whose return address the fault then executed. If encr's sequence
-       is well behind the ring's, the fault happened before this iteration's copy. */
-    len = xtensa_paniclog_api_last_text(line, sizeof line);
-    if (len > 0)
-        logf("rb %s", line);
+     * What was dropped, and why it is safe to drop: the backtrace walk reads a
+     * register-window chain through sp-16/sp-12, and DRAM survives a warm reset,
+     * so its slots can belong to the previous boot's stack -- a capture proved
+     * that by showing codec_run's exact return address for a call the encoder
+     * stamps said never happened. The codec API handover and the pcm_record slot
+     * reads existed to chase that fault, and the fault turned out to be a stale
+     * codec image calling the API one field early. */
 
     /* Which image is reporting, and which one crashed. They differ whenever a
      * flash happened without the chip restarting -- the reset pulse cannot reach

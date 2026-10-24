@@ -376,21 +376,6 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 /* Same idea, but the ring lives in RTC slow memory and therefore survives the reset a
  * watchdog or a panic performs. Use it for the steps that can end in a hang. */
 void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
-/* A codec-path step, written into a *dedicated* RTC-slow ring that nothing else
- * touches. xtensa_breadcrumb_rtc() shares one 24-slot ring with the USB and watchdog
- * diagnostics, which stamp it continuously -- wRet once per tick -- so codec entries
- * were evicted within a few milliseconds and the boot report showed only USB register
- * dumps. These ids name the codec's own progress; the ring is uncached, so an entry
- * survives the panic that follows it. */
-enum xtensa_api_mark_id {
-    XT_API_RREC = 1,  /* recording buffers allocated            */
-    XT_API_CMD  = 2,  /* codec_get_command_callback entered     */
-    XT_API_ENCB = 3,  /* enc_encbuf_get_buffer returned a chunk */
-    XT_API_ENCR = 4,  /* enc_pcmbuf_read about to copy          */
-    XT_API_ADV  = 5,  /* enc_pcmbuf_advance entered             */
-    XT_API_FIN  = 6,  /* enc_encbuf_finish_buffer entered       */
-};
-void xtensa_api_mark(enum xtensa_api_mark_id id, unsigned long a, unsigned long b);
 /* Retain the raw exception frame across the reset. The frame is copied verbatim
  * because which layout it is in (XtExcFrame or XtDbFrame) is the open question --
  * EPC1 holding the vector address means a second exception overwrote it -- and
