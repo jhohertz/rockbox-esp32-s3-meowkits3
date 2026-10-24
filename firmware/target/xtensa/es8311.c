@@ -246,15 +246,11 @@ void es8311_set_volume(int val)
     if (reg > 255)
         reg = 255;
 
-    int r = write_reg(REG_DAC32, reg);
-
-    /* Read straight back. The reference driver reads this register in its
-     * volume-get, so it is not write-only -- if it comes back 0 the write did not
-     * take, and that is a different fault from "we never asked for a volume".
-     * Doing it here rather than in the boot dump keeps the answer free of any
-     * question about what ran before or after what. */
-    printf("ES8311 volume: %d (0.1dB) -> reg32=%02x read %02x (r=%d)\n",
-           val, reg & 0xff, read_reg(REG_DAC32) & 0xff, r);
+    /* i2c_writemem returns -1 on a failed transfer. That is the only thing worth
+     * saying here: the register value itself is derived, and a volume change is a
+     * keypress-rate event, so a trace line for every one of them is noise. */
+    if (write_reg(REG_DAC32, reg) < 0)
+        printf("ES8311: volume write failed\n");
 }
 
 void es8311_mute(int mute)

@@ -74,18 +74,11 @@ static int rec_locked;
 static volatile bool rx_wanted;
 static volatile bool rx_running;
 static volatile bool rx_thread_idle = true;
-static volatile bool rx_thread_started;;
 
 static struct semaphore rx_sem;
 static long rx_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 static const char rx_thread_name[] = "i2srx";
 static unsigned int rx_thread_id;
-
-/* Reads that returned data and reads that failed. Both feed the retry rule in
- * i2s_rx_thread(): a session that has produced nothing yet is retried rather
- * than reported as a finished capture. */
-static volatile unsigned long rx_irq_count;
-static volatile unsigned long rx_err_count;
 
 /* The recorder is driven by callbacks, not by a blocking reader, so a small
  * thread converts one into the other: read a chunk, advance the destination, and
@@ -94,14 +87,10 @@ static volatile unsigned long rx_err_count;
  * teardown is normal and the loop exits on rx_wanted anyway. */
 static void i2s_rx_thread(void)
 {
-    rx_thread_started = true;
-
     while (true)
     {
         semaphore_wait(&rx_sem, TIMEOUT_BLOCK);
         rx_thread_idle = false;
-        printf("RX thread woke: wanted=%d left=%lu\n", rx_wanted,
-               (unsigned long)rec_left);
 
         while (rx_wanted && rec_left > 0)
         {
@@ -112,23 +101,16 @@ static void i2s_rx_thread(void)
             want = rec_left < RX_CHUNK ? rec_left : RX_CHUNK;
             err = i2s_channel_read(rx_chan, rec_ptr, want, &got, 200);
 
-            /* First few results printed whatever happens. If the read never
-             * returns, nothing prints here and the thread is blocked inside IDF
-             * despite the 200 ms timeout -- a different problem from a read that
-             * returns a timeout error, and the two look identical from outside. */
-            if (rx_irq_count + rx_err_count < 4u)
-                printf("RX read: err=%d got=%lu want=%lu\n", (int)err,
-                       (unsigned long)got, (unsigned long)want);
-
             if (err != ESP_OK || got == 0)
             {
-                rx_err_count++;
+                /* A timeout during teardown is normal; a timeout while the
+                 * recorder still wants data is retried, not treated as the end of
+                 * the capture. */
                 if (!rx_wanted)
                     break;
                 continue;
             }
 
-            rx_irq_count++;
             rec_ptr += got;
             rec_left -= got;
 
@@ -293,9 +275,6 @@ void pcm_rec_dma_init(void)
     /* The ADC is started before the channel is enabled so it has its clocks
      * already present when the first frame is clocked out of us. */
     es7210_start();
-
-    printf("RX channel ready: rate=%lu desc=%d frame=%d thread=%u\n",
-           rx_chan_rate, RX_DMA_DESC_NUM, RX_DMA_FRAME_NUM, rx_thread_id);
 }
 
 void pcm_rec_dma_close(void)
@@ -346,8 +325,6 @@ void pcm_rec_dma_start(void *addr, size_t size)
 
     rec_ptr = (unsigned char *)addr;
     rec_left = size;
-    rx_irq_count = 0;
-    rx_err_count = 0;
 
     /* Bring the ADC up for this session, at the rate the bus is already running.
      * It used to be reset and clock-programmed from sink_init(), i.e. on every
@@ -358,8 +335,6 @@ void pcm_rec_dma_start(void *addr, size_t size)
      * fault in the capture path rather than an absent device. */
     if (!es7210_init(i2s_rx_sample_rate()))
         printf("ES7210: init FAILED (no answer at 0x41?)\n");
-    else
-        printf("ES7210: init ok\n");
 
     /* The receiver cannot clock anything out of pads it does not own, so take
      * them before enabling the channel. */
