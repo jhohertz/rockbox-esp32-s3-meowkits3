@@ -179,6 +179,13 @@ void *codec_get_buffer_callback(size_t *size)
 static void *curr_handle = NULL;
 static struct codec_header *c_hdr = NULL;
 
+#ifdef CODEC_LOAD_API_TRACE
+/* Recorded so the panic handler can inspect the handover at the moment of a
+ * fault without guessing the image's header layout. Defined in
+ * firmware/target/xtensa/paniclog.c, in .noinit, so it survives the reset. */
+extern uint32_t xtensa_codec_api_slot;
+#endif
+
 static int codec_load_ram(struct codec_api *api)
 {
     struct lc_header *hdr;
@@ -236,6 +243,7 @@ static int codec_load_ram(struct codec_api *api)
      * the type, so the compiler resolves both sides of the API contract.
      */
 #ifdef CODEC_LOAD_API_TRACE
+    xtensa_codec_api_slot = (uint32_t)(uintptr_t)c_hdr->api;
     logf("ci %p img %p: enc_read %p enc_adv %p get_buf %p fin_buf %p",
          (void *)api, (void *)*c_hdr->api,
          (void *)api->enc_pcmbuf_read, (void *)api->enc_pcmbuf_advance,
