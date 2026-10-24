@@ -277,6 +277,18 @@
  */
 #define HAVE_I2C_ASYNC
 
+/* This target's __i2c_async_submit() is a blocking transaction: it programs the
+ * command list and then polls TRANS_COMPLETE, typically 1.6 ms for the 14-byte
+ * touch read and up to its 10 ms bound on a NACK. i2c_async_queue() holds
+ * disable_irq_save() across the submit, and on xtensa that is PS.INTLEVEL = 15 --
+ * everything off, including the level-2 USB interrupt that feeds the DAC. Measured:
+ * with the 20 Hz touch poll live the USB Audio page loses about 1.8% of frames
+ * (Filled 18-19 against a gate of 22); with it off, almost none. Deferring the
+ * submit until the mask is dropped keeps the bus exclusive and gives the audio
+ * interrupt its milliseconds back. See firmware/drivers/i2c-async.c.
+ */
+#define I2C_ASYNC_SUBMIT_UNMASKED
+
 /* FT6336 capacitive touch at 0x38. Its INT pin is left unconnected on this board,
  * so the controller is polled from the button tick instead of interrupting.
  */
