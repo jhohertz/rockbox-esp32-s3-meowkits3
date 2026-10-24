@@ -98,6 +98,8 @@ enum
     INFO_MMU,
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
+    INFO_PANIC,
+    INFO_RESET,
     INFO_COUNT
 };
 
@@ -134,6 +136,24 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
             snprintf(buf, bufsz, "DWC2 @ 0x%08x: core id 0x%08x",
                      XT_USB_DWC_BASE, (unsigned)rd(OTGBASE + 0x40));
         }
+        break;
+    case INFO_PANIC: {
+        /* The panic screen is readable for twenty seconds and then the device
+         * resets, so this is the copy you get if you missed it. It is the RTC-slow
+         * record, which survives the reset that clears the SRAM one. */
+        char msg[48];
+        int n = xtensa_paniclog_text(msg, sizeof msg);
+
+        snprintf(buf, bufsz, "Prev panic: %s", n > 0 ? msg : "none");
+        break;
+    }
+    case INFO_RESET:
+        /* A reset reason of 1 (power-on) with an rtc count above zero means the
+         * previous boot wrote teardown steps and then lost the chip: a hang, not a
+         * clean shutdown. rtc 0 with a panic message means it died before the USB
+         * teardown ran at all. */
+        snprintf(buf, bufsz, "Reset %lu, rtc trail %lu",
+                 xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count());
         break;
     default: {
         int i = item - INFO_I2C_BASE;

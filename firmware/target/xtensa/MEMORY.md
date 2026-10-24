@@ -428,11 +428,21 @@ needs it:
 | what | reads it | answers |
 |---|---|---|
 | the USB Audio debug page | the screen | `Filled`, `Min`/`Max`, `Frames dropped`, samples used per frame |
-| `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state |
+| `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state, **the retained panic text and reset reason** |
+| the panic screen itself | the screen | held for 20 s or until a key is pressed — see `system_exception_wait()` |
 | `xt_arena_dump("at boot")` | boot console, if a terminal was open before the power cycle | who holds the buflib arena |
 | `xtensa_paniclog_dump()` | boot console, first thing `app_main` does | previous boot's SRAM trail, reset reason, RTC trail, panic text |
 | `xt_usb_irqs` -> the `usbIRQ` trail entry | same dump | whether the OTG core interrupts at all |
 | `dscr_streak` | not printed; it drives `tx_recover()` | whether a descriptor error is a transient or a storm |
+
+`CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT` means IDF's own handler resets within
+milliseconds of a panic, and its backtrace goes to UART0 — which this board exposes
+only while the USB pads are still the console's, i.e. the first second of a boot with
+no cable. That combination made a Rockbox panic unreadable: `panic()` draws the text
+and `system_exception_wait()` reset before it could be read. The hook now polls the
+GPIO keys (interrupts are masked on that path, so the tick and `button_get_*` cannot
+work) for up to 20 s, prints `key = restart` on the last row, and resets. The record is
+also on the debug page afterwards, which is the only way to read a panic you missed.
 
 Everything else the bring-up measured is now recorded here or in USB-SPRINT.md instead of
 being re-derived on the device each boot.
