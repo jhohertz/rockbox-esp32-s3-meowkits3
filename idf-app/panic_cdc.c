@@ -40,6 +40,7 @@
 #include <string.h>
 
 #include "esp_private/panic_internal.h"
+#include "esp_private/cache_err_int.h"
 #include "xtensa_context.h"
 #include "panic_funcs.h"
 #include "esp_rom_sys.h"
@@ -76,7 +77,15 @@ void esp_panic_handler(panic_info_t *info)
     char line[80];
     int back;
     int waited = 0;
-    unsigned long pc = (unsigned long)(info->addr ? info->addr : 0);
+    /* info->addr is frame->pc, but IDF leaves it NULL on the cache-error path --
+     * panic_soc_fill_info() overrides the reason with "Cache error" and does not
+     * fill addr -- which is why the first four recorder reports printed
+     * pc=00000000 and named nothing. The frame is the reliable source, and
+     * XtExcFrame carries pc at offset 4 (xtensa_context.h: XT_STK_EXIT, XT_STK_PC,
+     * XT_STK_PS, ...), so prefer it and fall back to info->addr only if there is
+     * no frame at all. */
+    unsigned long pc = f ? (unsigned long)f->pc
+                         : (unsigned long)(info->addr ? info->addr : 0);
     unsigned long excv = f ? (unsigned long)f->excvaddr : 0UL;
     unsigned long cause = f ? (unsigned long)f->exccause : 0UL;
     const char *reason = info->reason ? info->reason : "unknown";
@@ -101,6 +110,28 @@ void esp_panic_handler(panic_info_t *info)
         _logf("  a12=%08lx a13=%08lx a14=%08lx a15=%08lx",
               (unsigned long)f->a12, (unsigned long)f->a13,
               (unsigned long)f->a14, (unsigned long)f->a15);
+    }
+
+    /* A "Cache error" reason is IDF's override, not the architecture's: the real
+     * detail lives in the cache-error interrupt latch, which panic_arch reads the
+     * same way. vaddr and size say which access the cache refused, and that is the
+     * difference between a wild pointer and an unmapped MMU entry.
+     *
+     * There is no esp_cache_err_has_active_err() on esp32s3 -- that one is riscv
+     * and c-series only -- so the guard is the info itself: on this SoC
+     * esp_cache_err_get_panic_info() reads EXTMEM_CACHE_ILG_INT_ST and then the ACS
+     * latch, and leaves err_str NULL when neither reports anything (esp32s3/
+     * cache_err_int.c:131-146). */
+    {
+        esp_cache_err_info_t ci;
+
+        ci.err_str = NULL;
+        ci.vaddr = 0;
+        ci.size = 0;
+        esp_cache_err_get_panic_info(&ci);
+        if (ci.err_str != NULL)
+            _logf("  cache: %s vaddr=%08lx size=%lu",
+                  ci.err_str, (unsigned long)ci.vaddr, (unsigned long)ci.size);
     }
 
     for (back = 0; back < RB_PANIC_TRAIL; back++)

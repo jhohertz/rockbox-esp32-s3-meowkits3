@@ -119,6 +119,7 @@ target_include_directories(rockbox.elf PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${_idf_path}/components/esp_system/include"
     "${_idf_path}/components/esp_system/port/include/port"
+    "${_idf_path}/components/esp_system/port/include/private"
     "${_idf_path}/components/esp_common/include"
     "${_idf_path}/components/esp_rom/include"
     "${_idf_path}/components/esp_rom/esp32s3/include"
