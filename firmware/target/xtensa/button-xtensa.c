@@ -146,10 +146,20 @@ int button_read_device(int *data)
     /* Throttled to every fifth tick, and the reason is bus load, not the ISR
      * story that used to be written here (that was wrong -- button_read_device()
      * runs in tick_task_thread, see apps/main.c). A 14-byte read at 100 kHz is
-     * about 1.1 ms, so polling every tick at HZ=100 keeps the I2C controller busy
-     * roughly a tenth of the time and issues 100 transactions a second on a bus
-     * shared with the codec, the PMU and the IO expander. Every fifth tick is
-     * 20 Hz, which is far faster than a finger moves and cuts that to ~2%. */
+     * about 1.6 ms, so polling every tick at HZ=100 issues 100 transactions a
+     * second on a bus shared with the codec, the PMU and the IO expander. Every
+     * fifth tick is 20 Hz, far faster than a finger moves.
+     *
+     * The poll is also only affordable because the transaction it triggers no
+     * longer runs under disable_irq_save(): see I2C_ASYNC_SUBMIT_UNMASKED in
+     * config/meowkits3.h. With the submit inside the mask, 20 polls a second meant
+     * 20 windows of everything-off on the core -- xtensa's disable_irq_save() is
+     * PS.INTLEVEL = 15, which blocks the level-2 USB interrupt that feeds the DAC.
+     * That cost ~1.8% of audio frames (Filled 18-19 against a gate of 22); with the
+     * poll switched off it came to almost nothing, which is how the loss was
+     * located. If touch stops responding again, check that this call is live before
+     * suspecting the panel, the calibration, or the driver.
+     */
     {
         static unsigned poll_div;
         if (++poll_div >= 5)
