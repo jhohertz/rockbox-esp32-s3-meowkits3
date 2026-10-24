@@ -169,38 +169,37 @@ int main(int argc, char *argv[])
     sys_handle_argv(argc, argv);
 #else
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
-static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
-
-/* Exactly one thread may run the tick tasks. run_tick_tasks() (kernel/tick.c) walks
- * tick_funcs[] with no reentrancy guard, and this stack is a single fixed buffer, so a
- * second instance would both alias the first thread's frames and run every registered
+#if !(CONFIG_PLATFORM & PLATFORM_HOSTED)
+/* The xtensa level-1 ISR is a leaf: it only advances current_tick. The registered tick
+ * tasks are ordinary C -- button polling does I2C, which ends in a semaphore wait -- and a
+ * semaphore wait switches threads, which an exception frame on a core with no REGB option
+ * cannot do. So they run here, in thread context, on exactly one thread: run_tick_tasks()
+ * (kernel/tick.c) walks tick_funcs[] with no reentrancy guard, and this stack is a single
+ * fixed buffer, so a second instance would alias the first thread's frames and run every
  * task twice per tick -- timeout_tick with it, which halves every timeout in Rockbox.
  */
+static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
+
 static void tick_task_thread(void)
 {
-    /* The tick functions do not run from the interrupt on this core. They are
-     * ordinary C -- button polling does I2C, which ends in a semaphore wait --
-     * and a Rockbox semaphore wait switches threads, which an exception frame
-     * on a core with no REGB option cannot do (see the xtensa tick for the
-     * failure). The gptimer alarm advances current_tick only, so the clock is
-     * hardware-accurate while the work happens here, in thread context. */
     while (true)
     {
-        /* sleep() takes TICKS, not milliseconds -- sleep(0) waits for the next
-         * tick, which is what a tick-task loop wants: run_tick_tasks() then runs
-         * at HZ, the rate every tick consumer in Rockbox assumes.
+        /* sleep() takes TICKS, not milliseconds -- sleep(0) waits for the next tick, which
+         * is what a tick-task loop wants: run_tick_tasks() then runs at HZ, the rate every
+         * tick consumer in Rockbox assumes.
          *
-         * This used to say sleep(HZ/2), which with HZ=100 is sleep(50) -- half a
-         * second. Button polling lives in these tasks (button_init() registers
-         * button_tick via tick_add_task), so the stick was sampled twice a second
-         * and an ordinary 40-80 ms press usually fell entirely between two
-         * samples. That is the whole of the "have to press several times"
-         * complaint, and it is why removing the console spam from the button path
-         * did not fix it. */
+         * This used to say sleep(HZ/2), which with HZ=100 is sleep(50) -- half a second.
+         * Button polling lives in these tasks (button_init() registers button_tick via
+         * tick_add_task), so the stick was sampled twice a second and an ordinary 40-80 ms
+         * press usually fell entirely between two samples. That is the whole of the "have to
+         * press several times" complaint, and it is why removing the console spam from the
+         * button path did not fix it.
+         */
         sleep(0);
         run_tick_tasks();
     }
 }
+#endif /* !PLATFORM_HOSTED */
 
 int main(void)
 {
@@ -453,23 +452,8 @@ static void init(void)
     font_init();
     show_logo_boot();
     button_init();
-    /* Xtensa's level-1 ISR is a leaf: it only advances current_tick. The registered tick
-     * tasks have to run from a thread, otherwise they would nest C code inside an
-     * exception frame whose window cannot rotate. This is the only such thread -- see the
-     * note above tick_task_thread() for why one is required and why a second one sharing
-     * this stack would be fatal.
-     */
-    create_thread(tick_task_thread, tick_thread_stack,
-                  sizeof tick_thread_stack, 0,
-                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
     powermgmt_init();
     backlight_init();
-    /* Rockbox leaves the lights as the bootloader set them. On this target the mask
-     * ROM is the bootloader and sets nothing, so the panel would stay dark until the
-     * backlight thread's own timeout logic ran. Light it here so the boot logo and the
-     * dircache progress are actually visible.
-     */
-    backlight_on();
     unicode_init();
 #ifdef HAVE_MULTIVOLUME
     init_volume_names();
@@ -573,6 +557,17 @@ static void init(void)
 #endif
     /* current_tick should be ticking by now */
     CHART("ticking");
+
+#if !(CONFIG_PLATFORM & PLATFORM_HOSTED)
+    /* Started here rather than earlier: enable_irq() above is what makes current_tick
+     * advance, so sleep(0) in the loop has something to wait for. Every tick task is
+     * registered below this point -- button_init(), usb_init(), powermgmt_init() and the
+     * first timeout_add() -- so nothing is missed.
+     */
+    create_thread(tick_task_thread, tick_thread_stack,
+                  sizeof tick_thread_stack, 0,
+                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
+#endif
 
     unicode_init();
     lcd_init();
