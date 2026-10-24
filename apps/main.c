@@ -171,6 +171,11 @@ int main(int argc, char *argv[])
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
 static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 
+/* Exactly one thread may run the tick tasks. run_tick_tasks() (kernel/tick.c) walks
+ * tick_funcs[] with no reentrancy guard, and this stack is a single fixed buffer, so a
+ * second instance would both alias the first thread's frames and run every registered
+ * task twice per tick -- timeout_tick with it, which halves every timeout in Rockbox.
+ */
 static void tick_task_thread(void)
 {
     /* The tick functions do not run from the interrupt on this core. They are
@@ -448,6 +453,12 @@ static void init(void)
     font_init();
     show_logo_boot();
     button_init();
+    /* Xtensa's level-1 ISR is a leaf: it only advances current_tick. The registered tick
+     * tasks have to run from a thread, otherwise they would nest C code inside an
+     * exception frame whose window cannot rotate. This is the only such thread -- see the
+     * note above tick_task_thread() for why one is required and why a second one sharing
+     * this stack would be fatal.
+     */
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
@@ -562,13 +573,6 @@ static void init(void)
 #endif
     /* current_tick should be ticking by now */
     CHART("ticking");
-
-    /* Xtensa's level-1 ISR is a leaf: it only advances current_tick. The
-     * registered tick tasks have to run from a thread, otherwise they would
-     * nest C code inside an exception frame whose window cannot rotate. */
-    create_thread(tick_task_thread, tick_thread_stack,
-                  sizeof tick_thread_stack, 0,
-                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
 
     unicode_init();
     lcd_init();
