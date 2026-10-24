@@ -387,6 +387,14 @@ void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
                                 unsigned long *count);
 /* Four retained frame words per line, line 0 first. 0 when nothing is stored. */
 int xtensa_paniclog_frame_words(char *buf, int bufsize, int line);
+/* Store ps, epc1..epc4, depc and the cache-error detail alongside the frame.
+ * These are read from the registers, not the frame: on a double exception the ISA
+ * shifts the original EPC1 down to EPC2, so the faulting instruction is nowhere
+ * in the frame the handler sees. */
+void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
+int xtensa_paniclog_frame_regs_text(char *buf, int bufsize);
+/* The address and width the cache refused; 0 when the latch reported nothing. */
+int xtensa_paniclog_frame_cache(char *buf, int bufsize);
 /* Read the SRAM trail back one entry at a time, newest first, for a caller that has
  * no console: the screen. Hardware exceptions go to IDF's handler and reset without
  * ever reaching Rockbox's panic(), so the trail is what survives them. Returns 0
