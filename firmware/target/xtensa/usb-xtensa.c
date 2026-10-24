@@ -75,44 +75,46 @@
 
 /* EP0 IN. Full speed caps the packet at 64 bytes = 16 words. */
 #define NPTX_FIFOSZ     16
-/* Each dedicated IN FIFO must hold the largest packet that endpoint actually sends.
- * The driver reserves one FIFO per endpoint, but this profile uses only three of them:
- * the CDC notification endpoint (payload <= 16 bytes), HID (8 bytes) and the audio
- * feedback endpoint (4 bytes). 8 words covers all three, and the 48 words that used to
- * be wasted on the three unused FIFOs go to the RX side instead.
+/* How many dedicated transmit FIFOs actually exist. GHWCFG4[29:26] reads 4 on this
+ * core (hwcfg4=0xd3f0a030, measured at boot), and usb_dw_check_hw() clamps
+ * n_ptxfifos to that number however many endpoints are declared, so reserving room
+ * for USB_NUM_ENDPOINTS-1 of them budgets 32 words for FIFOs that will never be
+ * programmed. Both profiles need exactly four IN endpoints -- CDC bulk IN, CDC
+ * notification IN, HID IN, and then either the storage bulk IN or the audio
+ * feedback IN -- so 4 is also what is used, not just what is available. */
+#define XT_PTX_FIFOS    4
+/* Each dedicated IN FIFO must hold one whole packet of the endpoint that owns it.
+ * This is not a nicety: usb_dw_handle_dtxfifo() (the path compiled here, since
+ * USB_DW_SHARED_FIFO is unset) pushes whole packets only --
  *
- * That waste was the audio bug: with 16 words per FIFO the RX FIFO came out at 88 words
- * = 352 bytes, and an isochronous OUT packet of 320 bytes plus EP0's and the CDC OUT
- * endpoint's 64-byte packets needs about 448. The core had nowhere to put the ISO packet,
- * so it discarded it: ISOODPR set, DAINT never showing bit 2, DOEPTSIZ XFERSIZE frozen at
- * 320, and the RTC ring recording audR frames=0 while the sink reported active and
- * playing -- the host streamed audio and the device never saw a single frame.
+ *     maxpktwords = max_packet_size >> 2;              // 64/4 = 16
+ *     words = (fifospace / maxpktwords) * maxpktwords; // (8/16)*16 = 0
+ *     if (!words) break;
  *
- * Note the declared max_packet_size of the notification endpoint is still 64; the FIFO is
- * sized for what is actually transmitted, not for the descriptor's ceiling.
+ * With a 32-byte FIFO and a 64-byte bulk packet that computes zero words and breaks,
+ * forever. Mass storage therefore enumerated (EP0 runs on the NPTX FIFO, 16 words) and
+ * then never answered INQUIRY, READ_CAPACITY or a CSW, so the host showed a device with
+ * no volume. That was the regression 1df51c1468 introduced when this value went from 16
+ * to 8 to buy RX room; the guard that used to reject it, `PTX_FIFOSZ >= 64 / 4`, was
+ * rewritten as `>= 16 / 4` -- the CDC notification payload -- so the build said nothing.
  *
- * Shrinking this to 4 words was tried to buy the RX side more headroom -- 24 words, taking
- * the RX FIFO from 136 words = 544 bytes to 160 words = 640 bytes, roughly 2.8 to 3.3
- * isochronous packets of late-service tolerance. It made things worse: dropped frames went
- * from about 3 a second to about 10. The likely reason is in usb_dw_fill_txfifo(), which
- * sizes a transfer from the endpoint's *declared* maximum packet size -- 64 bytes for the
- * CDC notification endpoint -- so words is 16 while the FIFO holds 4; the failure path does
- * not complete the transfer, it re-enables PTXFE, so the empty-TX-FIFO interrupt keeps
- * firing into the same handler that services isochronous OUT. That is why 8 words stayed:
- * it is already below what the notification endpoint declares, and notifications are simply
- * never sent at a rate that exposes it. Revert this line only with a drop-rate measurement
- * to judge it by, not by the arithmetic, which looks perfectly reasonable.
- */
-#define PTX_FIFOSZ      8
+ * Going back to 16 costs audio nothing, because the RX side no longer pays for six
+ * FIFOs: 200 - 16 - 4*16 = 120 words = 480 bytes, against the 88 words = 352 bytes that
+ * the old six-FIFO reservation left when this value was 16. The audio bug 1df51c1468 was
+ * fixing -- an isochronous OUT packet of 320 bytes with nowhere to land -- stays fixed
+ * with 480 bytes, which is one ISO packet plus two 64-byte control packets and 32 words
+ * to spare. */
+#define PTX_FIFOSZ      16
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
-                         PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1))
+                         PTX_FIFOSZ * XT_PTX_FIFOS)
 
-_Static_assert(PTX_FIFOSZ >= 16 / 4, "a dedicated IN FIFO cannot hold our largest periodic packet");
-_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4 + 1) + 2 * USB_NUM_ENDPOINTS,
+_Static_assert(PTX_FIFOSZ >= 64 / 4,
+               "a dedicated IN FIFO cannot hold one full-speed packet");
+_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4),
                "RX FIFO cannot hold an isochronous packet plus the two control packets");
-_Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * (USB_NUM_ENDPOINTS - 1) + RX_FIFOSZ
+_Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * XT_PTX_FIFOS + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
-               "device FIFO split exceeds the core's 256-word FIFO RAM");
+               "device FIFO split exceeds the core's measured FIFO RAM");
 
 const struct usb_dw_config usb_dw_config = {
     /* The internal full-speed PHY. Two bits, and we were only setting one:
