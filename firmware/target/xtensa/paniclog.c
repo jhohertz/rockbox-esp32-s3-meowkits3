@@ -119,13 +119,10 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
 /* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
  * absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore yields
  * chronological order whether or not the ring has wrapped. */
-/* One line describing the retained panic record, empty if there is none. A caller that
- * can only reach the device over USB (the next boot's CDC transport, once the pads are the
- * core's again) needs this alongside the trail: the trail says where execution got to, the
- * record says whether panicf() named a reason. */
-/* Reset reason of the reset that produced this boot, kept here so the post-mortem can name
- * it. The breadcrumb ring is only forty slots and a busy attach fills them in seconds, so an
- * rstR entry is gone before anyone can read it; the head line is not. */
+/* Reset reason of the reset that produced this boot, stamped by app_main before
+ * anything can overwrite it. The breadcrumb ring is only forty slots and a busy USB
+ * attach fills them in seconds, so an rstR entry is gone before anyone can read it;
+ * this is not. Read back by xtensa_paniclog_reset_reason(). */
 static uint32_t xt_reset_reason;
 
 void xtensa_paniclog_set_reset(unsigned reason)
@@ -238,54 +235,67 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 /* The head line carries the RTC count as well as the reset reason: after a
  * watchdog reset the SRAM ring is gone, and "rtc 0" is the difference between a
  * hang that never reached the USB teardown and one that did. */
-int xtensa_paniclog_head(char *buf, int bufsize)
+/* The retained panic message, RTC copy preferred. RTC slow survives the reset that
+ * clears internal DRAM, so it is the record that can name a crash the SRAM trail
+ * cannot. Returns 0 when nothing was retained. */
+int xtensa_paniclog_text(char *buf, int bufsize)
 {
-    /* The RTC count rides on the head line because the bulk IN endpoint drops whatever
-     * the host has not read, and the body of a post-mortem is the part most likely to be
-     * lost. One number here says whether the surviving ring was ever written. */
-    uint32_t rtc = rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0xFFFFFFFFu;
+    volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+    int len = 0;
 
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    buf[0] = '\0';
+
+    if (pr->magic == XT_PANIC_RTC_MAGIC)
     {
-        volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+        uint32_t n = pr->len > 96 ? 96 : pr->len;
+        uint32_t i;
 
-        if (pr->magic == XT_PANIC_RTC_MAGIC)
+        /* The bank stores four characters per word. Read them out before
+         * formatting so snprintf never touches the volatile region. */
+        for (i = 0; i < 24 && len < bufsize - 1; i++)
         {
-            char msg[100];
-            uint32_t n = pr->len;
-            uint32_t i;
+            uint32_t w = pr->word[i];
+            int j;
 
-            if (n > 96)
-                n = 96;
-            for (i = 0; i < 24; i++)
+            for (j = 0; j < 4; j++)
             {
-                uint32_t w = pr->word[i];
-                int j;
+                uint32_t k = i * 4 + (uint32_t)j;
+                char c;
 
-                for (j = 0; j < 4; j++)
-                {
-                    uint32_t k = i * 4 + (uint32_t)j;
-
-                    msg[k] = k < n ? (char)((w >> (8 * j)) & 0xff) : '\0';
-                }
+                if (k >= n)
+                    break;
+                c = (char)((w >> (8 * j)) & 0xff);
+                if (c == '\0')
+                    break;
+                buf[len++] = c;
             }
-            msg[96] = '\0';
-
-            return snprintf(buf, bufsize,
-                            "reset-reason %lu, rtc %lu, panic #%lu: %s\r\n",
-                            (unsigned long)xt_reset_reason, (unsigned long)rtc,
-                            (unsigned long)pr->seq, msg);
         }
+        buf[len] = '\0';
+        return len;
     }
 
     if (rec.magic == PANICLOG_MAGIC)
-        return snprintf(buf, bufsize,
-                        "reset-reason %lu, rtc %lu, prev panic #%lu: %s\r\n",
-                        (unsigned long)xt_reset_reason, (unsigned long)rtc,
-                        (unsigned long)rec.seq, rec.msg);
+        return snprintf(buf, bufsize, "%s", rec.msg);
 
-    return snprintf(buf, bufsize,
-                    "reset-reason %lu, rtc %lu, no panic record\r\n",
-                    (unsigned long)xt_reset_reason, (unsigned long)rtc);
+    return 0;
+}
+
+/* The reset that produced this boot. The breadcrumb ring is only forty slots and a
+ * busy USB attach fills them in seconds, so an rstR entry is gone before anyone can
+ * read it; this is not. */
+unsigned long xtensa_paniclog_reset_reason(void)
+{
+    return xt_reset_reason;
+}
+
+/* How many entries the RTC ring holds. Zero on a clean power-on, and the difference
+ * between "the dead boot never reached the USB teardown" and "it reached it and
+ * hung" once a panic message is on the glass. */
+unsigned long xtensa_paniclog_rtc_count(void)
+{
+    return rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0;
 }
 
 void xtensa_panic_log(const char *msg)

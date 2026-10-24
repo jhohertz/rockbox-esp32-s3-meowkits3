@@ -356,6 +356,14 @@ bool dbg_hw_info(void);
  * Implemented in target/xtensa/paniclog.c. */
 void xtensa_panic_log(const char *msg);
 void xtensa_paniclog_dump(void);
+/* Read the retained panic record back from a context that has no console: the
+ * screen. text() prefers the RTC-slow copy, which survives the reset that clears
+ * internal DRAM, and returns 0 when nothing was retained. reset_reason() is the
+ * reset that produced this boot; rtc_count() says whether the surviving trail was
+ * ever written -- zero means the dead boot never reached the steps that stamp it. */
+int xtensa_paniclog_text(char *buf, int bufsize);
+unsigned long xtensa_paniclog_reset_reason(void);
+unsigned long xtensa_paniclog_rtc_count(void);
 /* Record a step that might be the last one. Read back by
  * xtensa_paniclog_dump() on the next boot; see paniclog.c for why this exists
  * rather than a panic-time hook. */
