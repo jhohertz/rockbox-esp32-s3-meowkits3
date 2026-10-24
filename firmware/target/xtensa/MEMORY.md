@@ -422,6 +422,21 @@ breadcrumb dump is gone before a reader can attach; with the cable unplugged the
 console at all, since GPIO 43/44 are the PMU interrupt and not UART0. Anything measured inside
 the USB interrupt therefore has to reach `dbg_hw_info()`, not the RTC ring.
 
+What survives the cleanup, and is the whole set — do not add to it without a question that
+needs it:
+
+| what | reads it | answers |
+|---|---|---|
+| the USB Audio debug page | the screen | `Filled`, `Min`/`Max`, `Frames dropped`, samples used per frame |
+| `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state |
+| `xt_arena_dump("at boot")` | boot console, if a terminal was open before the power cycle | who holds the buflib arena |
+| `xtensa_paniclog_dump()` | boot console, first thing `app_main` does | previous boot's SRAM trail, reset reason, RTC trail, panic text |
+| `xt_usb_irqs` -> the `usbIRQ` trail entry | same dump | whether the OTG core interrupts at all |
+| `dscr_streak` | not printed; it drives `tx_recover()` | whether a descriptor error is a transient or a storm |
+
+Everything else the bring-up measured is now recorded here or in USB-SPRINT.md instead of
+being re-derived on the device each boot.
+
 The laptop-mic capture of the speaker is not an instrument: two runs of one build gave
 0.9 and 16.4 discrete >=2 ms slips per second, an 18x spread, because the marker envelope
 rides on the speaker's 3-4 kHz resonance. Practical rig notes: start playback before
@@ -434,8 +449,6 @@ for c in $(find lib/rbcodec/codecs -name '*.codec'); do
   o=$($BIN/xtensa-esp32s3-elf-readelf -l "$c" | awk '/LOAD/{print $3; exit}')
   [ "$o" != "0x$FW" ] && echo "MISMATCH $c $o"
 done
-
-# the live MMU map is printed at boot by sd-idf.c (TEMPORARY probe)
 
 # Name every arena allocation from an xt_arena_dump() log: buflib stores no
 # owner names, but it does store the ops pointer, and every caller passes its own

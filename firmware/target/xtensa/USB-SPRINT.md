@@ -390,13 +390,14 @@ That is acceptable rather than ideal, for a reason that is about *when* each is 
   while I2S TX is also running. That combination is not reachable through either
   profile, because the DAC profile does not drive the I2S sink.
 
-If measurement ever shows the GDMA handler's worst-case duration hurting USB (the
-`isr ... worst=` field in `i2s_dma_line()` is the number to read), moving USB to
-`ESP_INTR_FLAG_LEVEL2` is a one-line change: IDF's dispatcher supports levels 1-3,
-and nothing in Rockbox's own vector handling is involved on this branch. Note that
+USB runs at `ESP_INTR_FLAG_LEVEL2` — measured, and the top of this build's
+interrupt tree (everything else is level 1, see MEMORY.md's level table). Level 3
+was never tried because there is nothing above level 2 to preempt. Note that
 neither handler carries `ESP_INTR_FLAG_IRAM` -- the GDMA one deliberately does not,
 because it reaches code in the instruction-cache window -- so a higher level buys
-latency, not safety.
+latency, not safety. The GDMA handler's duration is no longer instrumented: the
+probe that measured it is deleted, and what it established is in the sections
+above.
 
 ## Measured configuration, resolved through the target preprocessor
 

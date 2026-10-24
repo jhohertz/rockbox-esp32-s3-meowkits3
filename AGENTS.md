@@ -698,8 +698,9 @@ Four related facts, all measured rather than read:
   invalidates every instruction line, so the ISR re-fills its cache while the bus is
   saturated. That is the mechanism proposed for the 115 ms of rearm delay behind the
   20-error burst; the placement is verified, the causal timing is not yet measured.
-  The instrument exists and is switched off: `i2s_audio_probe()` prints
-  `ISR: avg/max/worst` in microseconds and is suppressed by `TX_PROBE_QUIET`.
+  The instrument that measured it (`i2s_audio_probe()`'s `ISR: avg/max/worst` in
+  microseconds) has since been removed — it is in git history, and USB moved to
+  `ESP_INTR_FLAG_LEVEL2`, so the question it answered is settled.
 - **The remaining `err` is codec reload, not the transport.** After the teardown was
   quiesced (see `stop_tx()`), a 26-sample window over 15,138 frames showed
   `err` moving in exactly one sample: the one containing **nine codec loads in 2.5
@@ -3301,12 +3302,16 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   a single test and the driver never notices the buffer being handed back. Check the
   disassembly, not just the source.
 - **A probe placed in the path it observes can become the fault being observed.**
-  `i2s_audio_probe()` — a ~40-argument diagnostic — was called from `sink_stop()`
-  and was the thing crashing, on two independent repro modes, after three crashes
-  produced nothing because IDF's panic handler re-enters. It is now gated behind
-  `TX_STOP_PROBE` (off by default). Keep diagnostics out of teardown and ISR paths;
-  stamp a `.noinit` breadcrumb trail instead (`paniclog.c`), which needs no
-  console, lock, stack or working panic handler to survive a crash-reboot.
+  A ~40-argument diagnostic called from `sink_stop()` was the thing crashing, on two
+  independent repro modes, after three crashes produced nothing because IDF's panic
+  handler re-enters. It is deleted rather than gated: a switch that defaults to off
+  still invites the next session to turn it back on in the same place. Keep
+  diagnostics out of teardown and ISR paths; stamp a `.noinit` breadcrumb trail
+  instead (`paniclog.c`), which needs no console, lock, stack or working panic handler
+  to survive a crash-reboot. The same rule is why nothing prints inside
+  `gdma_tx_isr()` or `sink_play()` — `usb_audio.c` reaches the latter inside
+  `disable_irq_save()`, where a `printf()` takes the stdout lock and the core cannot
+  drain it.
 - `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
   63, and the GPSPI signals are 101-103.
 - **The ESP32-S3 mask ROM cannot be told to enter download mode by a register write.**
