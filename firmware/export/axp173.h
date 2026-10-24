@@ -19,7 +19,10 @@
 #define AXP_REG_CHARGESTATUS    0x01
 #define AXP_REG_OUTPUTCTRL      0x12
 #define AXP_REG_VOFF            0x31
-#define AXP_REG_SHUTDOWN        0x32
+#define AXP_REG_SHUTDOWN        0x32   /* bit 7 = software shutdown: drops every output
+                                         except LDO1. DCDC1 feeds this SoC, so writing
+                                         it takes the app with it (datasheet section 9.2,
+                                         which expects the write from the PEK handler). */
 #define AXP_REG_CHARGECTRL      0x33
 #define AXP_REG_TIMING          0x36
 #define AXP_REG_ADCENABLE1      0x82
@@ -83,7 +86,9 @@
 #define AXP_REG_IRQST4      0x47
 #define AXP_REG_IRQST5      0x4D
 
-/* IRQEN3 / IRQST3 */
+/* IRQEN3 / IRQST3 -- datasheet REG 42H (default 0x3B) and REG 46H. PEK long press is
+   IRQ23 = bit 0 of both, short press is IRQ22 = bit 1. Note that REG 44H bit 0 is
+   reserved: the vendor driver for this board reads PEK status there and is wrong. */
 #define AXP_IRQ_PEK_LONG    (1u << 0)
 #define AXP_IRQ_PEK_SHORT   (1u << 1)
 #define AXP_IRQ_LDO4_LOW    (1u << 3)
@@ -92,10 +97,11 @@
 #define AXP_IRQ_CHG_UNDER   (1u << 6)
 #define AXP_IRQ_OVERTEMP    (1u << 7)
 
-/* TIMING (0x36): bits 7:6 the press that powers the chip on, bits 5:4 the
-   long-press threshold, bit 3 "auto power off when the press outlasts the off
-   time", bit 2 the PWROK delay, bits 1:0 the hold time before the chip cuts its
-   own output. 3 is the longest off time, 10 s. */
+/* TIMING (0x36, default 0x5D): bits 7:6 ONLEVEL the press that powers the chip on,
+   bits 5:4 IRQLEVEL the long-press threshold, bit 3 "auto power off when the press
+   outlasts OFFLEVEL", bit 2 the PWROK delay, bits 1:0 OFFLEVEL -- the press duration
+   beyond which the chip cuts its own outputs (4/6/8/10 s; 3 is the longest, 10 s).
+   OFFLEVEL is a duration the user must outlast, not a countdown that survives release. */
 #define AXP_PEK_ON_SHIFT    6
 #define AXP_PEK_LONG_SHIFT  4
 #define AXP_PEK_OFF_SHIFT   0
