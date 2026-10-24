@@ -113,6 +113,19 @@ static char rb_build_now[32] __attribute__((section(".noinit"), aligned(4)));
  * the fault without guessing the header layout. Written on every codec load. */
 uint32_t xtensa_codec_api_slot __attribute__((section(".noinit")));
 
+/* Addresses of the pcm_record statics the encoder path dereferences, recorded by
+ * init_rec_buffers() and on_recording_options(): &pcm_copyfn, &pcm_buffer,
+ * &pcm_ridx, &enc_buffer.
+ *
+ * Addresses rather than values, because the panic handler needs the live contents
+ * at the instant of the fault: pcm_copyfn is a function pointer in .bss and "it
+ * was valid at load" is precisely the pattern this crash shows. Addresses rather
+ * than named symbols, because .bss layout moves between builds -- the fault
+ * address shifted by 0x20 between two consecutive images, so a hard-coded address
+ * here would read the wrong variable without complaining. .noinit survives the
+ * reset, and both writers run before the codec image is entered. */
+uint32_t xtensa_pcm_slots[4] __attribute__((section(".noinit"), aligned(4)));
+
 void xtensa_build_id_stamp(const char *id)
 {
     int i;
@@ -693,6 +706,10 @@ struct bt_rtc
        offset 120. */
     uint32_t api[10];
     uint32_t api_magic;
+    /* The pcm_record statics as the fault found them: pcm_copyfn, pcm_buffer,
+       pcm_ridx, enc_buffer. */
+    uint32_t pcm[4];
+    uint32_t pcm_magic;
 };
 
 void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sps,
@@ -841,6 +858,40 @@ int xtensa_paniclog_api_handover_text(char *buf, int bufsize, int line)
         len += snprintf(buf + len, bufsize - len, " %08lx", (unsigned long)v);
     }
     return len;
+}
+
+/* Store the pcm_record statics the handler read through xtensa_pcm_slots. */
+void xtensa_paniclog_pcm_slots(const unsigned long *words, int n)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    int i;
+
+    if (words == NULL || n < 1)
+        return;
+    if (n > 4)
+        n = 4;
+
+    for (i = 0; i < n; i++)
+        bt->pcm[i] = (uint32_t)words[i];
+    bt->pcm_magic = XT_BT_RTC_MAGIC;
+}
+
+/* One line: the copy routine, the PCM ring base, the read index and the encode
+ * ring base. pcm_copyfn is the interesting one -- it is a function pointer in
+ * .bss set to memcpy, and executing it is what a "fetch at a DRAM address" fault
+ * looks like if something wrote a stack address over it. */
+int xtensa_paniclog_pcm_text(char *buf, int bufsize)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (bt->magic != XT_BT_RTC_MAGIC || bt->pcm_magic != XT_BT_RTC_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize, "pcm fn %08lx buf %08lx ridx %08lx enc %08lx",
+                    (unsigned long)bt->pcm[0], (unsigned long)bt->pcm[1],
+                    (unsigned long)bt->pcm[2], (unsigned long)bt->pcm[3]);
 }
 
 void xtensa_paniclog_dump(void)
@@ -1004,10 +1055,10 @@ void xtensa_crash_report_logf(void)
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, two backtrace lines, three handover lines and the build
-     * line come to roughly 440 bytes; the cache line only appears when the latch
-     * reported something. */
-    for (back = 0; back < 2; back++)
+     * interrupted SP, one backtrace line, two handover lines, the PCM slots, two
+     * trail entries and the build line come to roughly 460 bytes; the cache line
+     * only appears when the latch reported something. */
+    for (back = 0; back < 1; back++)
     {
         len = xtensa_paniclog_backtrace_text(line, sizeof line, back);
         if (len == 0)
@@ -1015,12 +1066,30 @@ void xtensa_crash_report_logf(void)
         logf("rb %s", line);
     }
 
-    /* The handover as the fault found it. Compare against the codec-load trace,
-       which printed the same fields healthy: line 0 is the pointer chain, lines
-       1-2 are the API words that include the encoder callbacks. */
-    for (back = 0; back < 3; back++)
+    /* The handover as the fault found it: line 0 is the pointer chain, line 1 the
+       API words that carry the encoder callbacks. The codec-load trace printed the
+       same fields healthy, so a difference here is the whole answer. */
+    for (back = 0; back < 2; back++)
     {
         len = xtensa_paniclog_api_handover_text(line, sizeof line, back);
+        if (len == 0)
+            break;
+        logf("rb %s", line);
+    }
+
+    /* The pcm_record statics the encoder path dereferences, read live at fault. */
+    len = xtensa_paniclog_pcm_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
+
+    /* The two most recent trail entries. The encoder path stamps the buffer it
+     * hands the codec and the destination the PCM copy writes into here rather
+     * than through the console, because CDC cannot survive the crash that follows
+     * -- the ring resets with the chip. Newest first, same order as the debug
+     * page. */
+    for (back = 0; back < 2; back++)
+    {
+        len = xtensa_breadcrumb_back(back, line, sizeof line);
         if (len == 0)
             break;
         logf("rb %s", line);

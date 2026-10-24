@@ -28,9 +28,14 @@
 #include "pcm_record.h"
 #include "codecs.h"
 #ifdef CODEC_LOAD_API_TRACE
-/* logf() compiles away unless LOGF_ENABLE is set before logf.h is read. The
- * codec API trace in this file is the only reason it is on here. */
+/* logf() compiles away unless LOGF_ENABLE is set before logf.h is read. The codec
+ * API trace in this file is the only reason it is on here -- and it is only
+ * usable on paths that do not crash: the CDC ring resets with the chip, so
+ * anything emitted moments before a fault is lost. The encoder path writes
+ * through breadcrumbs into .noinit instead, which survives. */
 #define LOGF_ENABLE
+extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+extern uint32_t xtensa_pcm_slots[4];
 #endif
 #include "logf.h"
 #include "thread.h"
@@ -1824,14 +1829,15 @@ static int enc_pcmbuf_read(void *buffer, int count)
      * the frames we see the fault in. Limited to the first calls of a session --
      * the fault happens on the first one, and this is a per-frame path. */
 #ifdef CODEC_LOAD_API_TRACE
-    static int pcmrd_trace = 2;
+    static int pcmrd_trace = 4;
 
     if (pcmrd_trace > 0)
     {
         pcmrd_trace--;
-        logf("encrd buf %p count %d size %u ridx %u avail %u",
-             buffer, count, (unsigned)size, (unsigned)pcm_ridx,
-             (unsigned)avail);
+        /* Destination and byte count of the copy about to happen. If the
+           destination is not inside the arena this write is what corrupts the
+           frame whose return address the fault then executes. */
+        xtensa_breadcrumb("ENCR", (unsigned long)buffer, (unsigned long)size);
     }
 #endif
 
@@ -1958,15 +1964,24 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
        means the ring maths put the encoder's buffer somewhere it should never
        have been. */
 #ifdef CODEC_LOAD_API_TRACE
-    static int encbuf_trace = 2;
+    static int encbuf_trace = 4;
 
     if (encbuf_trace > 0)
     {
         encbuf_trace--;
-        logf("encbuf ptr %p need %u widx %u ridx %u buflen %u base %p",
-             (void *)data, (unsigned)need, (unsigned)enc_widx,
-             (unsigned)enc_ridx, (unsigned)enc_buflen, (void *)enc_buffer);
+        /* The chunk handed to the encoder, and the ring geometry it came from.
+           The arena is PSRAM, so a pointer outside 0x3c...... means the ring
+           maths sent the encoder somewhere it should never have been. */
+        xtensa_breadcrumb("ENCB", (unsigned long)data, (unsigned long)need);
     }
+
+    /* Where the handler should look at fault time. Live contents, not these
+       values: pcm_copyfn in particular is a function pointer the crash may have
+       found overwritten. */
+    xtensa_pcm_slots[0] = (uint32_t)(uintptr_t)&pcm_copyfn;
+    xtensa_pcm_slots[1] = (uint32_t)(uintptr_t)&pcm_buffer;
+    xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
+    xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
 #endif
 
     if (state == REC_STATE_IDLE)

@@ -60,6 +60,8 @@ extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
                                       const unsigned long *sps, int n,
                                       const char *build);
 extern void xtensa_paniclog_api_handover(const unsigned long *words, int n);
+extern void xtensa_paniclog_pcm_slots(const unsigned long *words, int n);
+extern uint32_t xtensa_pcm_slots[4];
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -308,6 +310,25 @@ void esp_panic_handler(panic_info_t *info)
             }
         }
         xtensa_paniclog_api_handover(handover, 10);
+    }
+
+    /* The pcm_record statics, read live through the addresses the recorder
+     * recorded. pcm_copyfn is the point of this: it is a function pointer in
+     * .bss, and if it holds a stack address then the "fetch refused at a DRAM
+     * address" fault is the copy routine being called, not a corrupted return.
+     * Slots the recorder has not filled yet read as zero and print as absent. */
+    {
+        unsigned long pcmw[4] = { 0, 0, 0, 0 };
+        int i;
+
+        for (i = 0; i < 4; i++)
+        {
+            uint32_t addr = xtensa_pcm_slots[i];
+
+            if (addr != 0 && esp_ptr_internal((const void *)addr))
+                pcmw[i] = *(volatile uint32_t *)addr;
+        }
+        xtensa_paniclog_pcm_slots(pcmw, 4);
     }
 
     /* Short form in the text record, bounded by its 96-character field, so the
