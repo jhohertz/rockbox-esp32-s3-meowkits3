@@ -104,6 +104,35 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
     bc_next++;
 }
 
+/* One retained trail entry, counted back from the newest: 0 is the last thing that
+ * happened before the reset. This exists because the trail is the only record that
+ * survives a hardware exception on this target -- those never reach Rockbox's
+ * panic(), they go to IDF's handler, which prints to UART0 and resets, and the
+ * .noinit ring is left alone by that reset. A caller with no console (the screen)
+ * needs it entry by entry rather than as a dump. Returns 0 when there is nothing at
+ * that index -- no trail, or fewer entries than asked for. */
+int xtensa_breadcrumb_back(int back, char *buf, int bufsize)
+{
+    uint32_t n;
+    const struct breadcrumb *e;
+
+    if (buf == NULL || bufsize <= 0 || back < 0)
+        return 0;
+    if (bc_magic != BC_MAGIC || bc_next == 0)
+        return 0;
+
+    n = bc_next < BC_SLOTS ? bc_next : BC_SLOTS;
+    if ((uint32_t)back >= n)
+        return 0;
+
+    /* bc_next only increases and the ring is written by name, so the newest entry
+     * is the absolute index bc_next - 1 however many times it has wrapped. */
+    e = &bc[(bc_next - 1 - (uint32_t)back) % BC_SLOTS];
+
+    return snprintf(buf, bufsize, "-%d %s %08lx %08lx", back, e->tag,
+                    (unsigned long)e->a, (unsigned long)e->b);
+}
+
 /* Stamped at every boot. If it shows up in the next boot's trail, .noinit
  * survived the reset and the whole mechanism is proven end to end; if it
  * doesn't, internal DRAM is cleared by panic_restart() and no panic-time

@@ -100,12 +100,28 @@ enum
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_PANIC,
     INFO_RESET,
-    INFO_COUNT
+    /* The crash trail, newest first. A hardware exception goes to IDF's handler,
+     * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
+     * no message to show and this ring is the only surviving record. Six rows is
+     * enough to see which subsystem was last; the ring holds forty. */
+    INFO_TRAIL_BASE,
+    INFO_TRAIL_COUNT = 6,
+    INFO_COUNT = INFO_TRAIL_BASE + INFO_TRAIL_COUNT
 };
 
 static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
 {
     (void)data;
+
+    if (item >= INFO_TRAIL_BASE)
+    {
+        int k = item - INFO_TRAIL_BASE;   /* 0 = the last thing that ran */
+
+        if (xtensa_breadcrumb_back(k, buf, bufsz) == 0)
+            snprintf(buf, bufsz, "%s",
+                     k == 0 ? "trail: nothing retained" : "");
+        return buf;
+    }
 
     switch (item) {
     case INFO_CPU:
