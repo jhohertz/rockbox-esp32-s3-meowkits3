@@ -121,27 +121,33 @@ void axp173_init(void)
     axp173_write_reg(AXP_REG_ADCENABLE2, AXP_ADC_TEMP);
     axp173_write_reg(AXP_REG_ADCRATE, AXP_ADC_RATE_25HZ);
 
-    /* PEK timings. A 1 s hold powers the chip on, the long-press IRQ fires at
-     * 1 s, and the chip's own cutoff is pushed to the longest it offers, 10 s.
-     * That leaves Rockbox nine seconds to flush the audiobuffer, save settings
-     * and close the card before the rails drop.
+    /* PEK timings. REG 36H resets to 0x5D: ONLEVEL 512 ms, IRQLEVEL 1.5 s, auto-off on,
+     * PWROK 64 ms, OFFLEVEL 6 s. We ask for a 1 s press to power the chip on and a 1 s
+     * long-press threshold, so the IRQ23 latch arrives as early as this chip allows, and
+     * OFFLEVEL at its longest, 10 s, while the software path is being proven.
      *
-     * Bit 3 must stay set: it is what makes the chip actually cut its outputs
-     * when a press outlasts the off time. The reset value has it set, and a
-     * bare write of only the on/off fields would clear it, leaving no hardware
-     * safety net for a hung application.
+     * Bit 3 must stay set: it is what makes the chip cut its outputs when the press
+     * outlasts OFFLEVEL. The reset value has it set, and a bare write of only the on/off
+     * fields would clear it, leaving no hardware safety net for a hung application.
+     *
+     * OFFLEVEL is a press-duration limit, not a countdown that survives a release: the
+     * datasheet's auto-off condition is "PEK longer than OFFLEVEL", and entering shutdown
+     * turns off every output except LDO1. So this 10 s is precisely what forces the user
+     * to keep holding, and it is our choice -- the chip resets to 6 s and the vendor uses
+     * 4 s.
      */
     axp173_write_reg(AXP_REG_TIMING, (2u << AXP_PEK_ON_SHIFT) |
                                      AXP_PEK_AUTOOFF |
                                      AXP_PEK_PWROK |
                                      (3u << AXP_PEK_OFF_SHIFT));
 
-    /* PEK status bits latch whatever the enables say, and the IRQ pin only reflects
-     * *enabled* events. The vendor driver for this board zeroes every enable register
-     * and still reads the PEK latch, and its IRQ_STATE macro for GPIO 43 has no
-     * callers, so the pin is not a reliable witness here and nothing gates on it any
-     * more -- see button_read_device(). Enabling the long press anyway costs nothing
-     * and keeps the pin meaningful if a board revision ever wires it.
+    /* Only the PEK long press is worth signalling. REG 42H resets to 0x3B, with the short
+     * press and several rail-monitoring IRQs enabled, and the IRQ pin reflects every
+     * *enabled* pending event -- so leaving those enabled holds the pin low for events
+     * nobody acts on. The status bits latch independently of the masks, which is why
+     * button_read_device() polls the latch instead of the pin; the pin's high level comes
+     * from an external 51K pull-up per section 9.10 and we do not depend on it.
+     * Enabling IRQ23 anyway keeps the pin meaningful for a board that wants it.
      */
     axp173_write_reg(AXP_REG_IRQEN1, 0);
     axp173_write_reg(AXP_REG_IRQEN2, 0);
@@ -213,19 +219,20 @@ unsigned int axp173_input_status(void)
 
 bool axp173_power_key_pressed(void)
 {
-    /* PEK status is IRQ STATUS1 (0x44) bit 0, not STATUS3. This is what the vendor
-     * driver for this exact board does -- AXP173_Class::getLongPressIRQState()
-     * reads 0x44 & 0x01 and clears it by writing 0x01 to 0x44 -- and it is why a
-     * long press used to produce nothing at all: 0x46 holds the battery and charge
-     * events, so the PEK bit we were testing there was never set. */
-    int st = axp173_read_reg(AXP_REG_IRQST1);
+    /* PEK status is IRQ STATUS3, REG 0x46: bit 0 is the long press (IRQ23), bit 1 the
+     * short press (IRQ22). That is the datasheet's own IRQ table and its REG 46H bit
+     * list. REG 44H bit 0 -- which the vendor driver for this board reads -- is marked
+     * reserved, so that driver's PEK predicates never see anything; they have no callers
+     * in the stock app either, which is why the mistake survives in the field.
+     * Writing 1 to a status bit clears it, per the note under REG 46H. */
+    int st = axp173_read_reg(AXP_REG_IRQST3);
 
     if (st < 0)
         return false;
 
     if ((unsigned int)st & AXP_IRQ_PEK_LONG) {
         /* Status bits are write-1-to-clear. */
-        axp173_write_reg(AXP_REG_IRQST1, AXP_IRQ_PEK_LONG);
+        axp173_write_reg(AXP_REG_IRQST3, AXP_IRQ_PEK_LONG);
         return true;
     }
 

@@ -1557,50 +1557,54 @@ obvious from the datasheet tables:
   The current registers use five low bits, the voltage registers four.
 - The power button is the chip's PEK input, and it is readable over I2C. The IRQ
   enables are REG 0x40-0x43 plus 0x4A, and the matching status registers are
-  0x44-0x47 plus 0x4D. **The PEK bits live in REG 0x44**: the vendor driver for this
-  board (`src/bsp/power/AXP173.cpp`) reads `0x44 & 0x01` for the long press and
-  `0x44 & 0x02` for the short press, and clears them by writing 1 to those bits.
-  The datasheet's IRQ table puts them at 0x46 bit0/bit1 instead, enabled by 0x42 bits
-  1 and 0 - reading 0x46 on this hardware never sees a press, which cost us a whole
-  investigation. Trust the shipping driver over the datasheet here.
-  The status bits **latch** - they are not a level - and writing 1 to a bit clears
-  it. The IRQ pin only reflects *enabled* events, and the vendor zeroes every enable
-  register (`initIRQState()` writes 0 to 0x40-0x43 and 0x4A) while still reading the
-  PEK latch, and its `IRQ_STATE` macro on GPIO 43 has no callers anywhere in the app.
-  So the pin is not a witness to a power-key press, and nothing may gate on it.
-  REG 0x36 sets the PEK timings: bits 7:6 the press duration that turns the chip on
-  (128 ms/512 ms/1 s/2 s), bits 5:4 the long-press threshold (1/1.5/2/2.5 s), bit 3
-  "auto power off when the press outlasts the off time", bit 2 the PWROK delay, bits
-  1:0 how long the chip waits before cutting its own output (4/6/8/10 s). Bit 3 is
+  0x44-0x47 plus 0x4D. **The PEK bits are in REG 0x46** (IRQ STATUS3): bit 0 is the
+  long press = IRQ23, bit 1 the short press = IRQ22, enabled by REG 0x42 bits 0 and 1,
+  which reset to `0x3B`. This is straight from the datasheet's IRQ table and its
+  REG 46H bit list.
+  **The trap: REG 0x44 bit 0 is marked reserved**, and that is exactly what the vendor
+  driver for this board tests (`AXP173_Class::getLongPressIRQState()` reads
+  `0x44 & 0x01`). Its PEK predicates have no callers anywhere in the stock app, so the
+  mistake has never been exercised on hardware. Do not treat the vendor driver as
+  authority on AXP173 registers.
+  Status bits **latch** - they are not a level - and writing 1 to a bit clears it (note
+  under REG 46H). The IRQ pin is an open-drain output that reflects *enabled* pending
+  events and is held high by an external 51K pull-up (§9.10); the latch is the
+  authoritative witness, so poll the register rather than gating on the pin.
+  REG 0x36 resets to `0x5D` and sets the PEK timings: bits 7:6 ONLEVEL, the press
+  duration that turns the chip on (128 ms/512 ms/1 s/2 s), bits 5:4 IRQLEVEL, the
+  long-press threshold (1/1.5/2/2.5 s), bit 3 "auto power off when the press outlasts
+  OFFLEVEL", bit 2 the PWROK delay (32/64 ms), bits 1:0 OFFLEVEL (4/6/8/10 s). Bit 3 is
   set at reset; a bare write of only the on/off fields clears it and removes the
-  hardware safety net. **Bits 1:0 are a delay, not a hold requirement**: released
-  after 2.5 s, the board still died 10 s later with our 10 s setting. The vendor
-  chooses `POWEROFF_4S` (`power_mgmt.cpp:34`, `devices.cpp:138`), so a 10 s net is
-  our choice, not the board's. The IRQ output is on GPIO 43, active low.
+  hardware safety net. **OFFLEVEL is a press-duration limit** — §9.2's auto-off
+  condition is "PEK longer than OFFLEVEL" (default 6 s), so the user must hold past it.
+  We set 10 s, the chip resets to 6 s and the vendor uses `POWEROFF_4S`.
   REG 0x31 bit3 is *not* a PEK enable - it is the sleep-mode PWRON short-press
   wakeup flag, and it self-clears after being written.
   This matters: a hardware PEK shutdown kills the board without Rockbox getting a
-  chance to flush the audiobuffer, save settings or close the card, and **the
-  countdown cannot be recalled** - so a `cancel_shutdown()` (tagcache busy) leaves
-  the user with a hard power loss rather than a retry. `button-xtensa.c` polls
-  `axp173_power_key_pressed()` every `HZ/10` ticks - the read costs about 1.6 ms of
-  I2C and this runs at HZ in the tick thread, and the threshold is 1 s so 100 ms of
+  chance to flush the audiobuffer, save settings or close the card, and it cannot be
+  recalled once the press has outlasted OFFLEVEL - so a `cancel_shutdown()` (tagcache
+  busy) leaves the user with a hard power loss rather than a retry. `button-xtensa.c`
+  polls `axp173_power_key_pressed()` every `HZ/10` ticks - the read costs about 1.6 ms
+  of I2C and this runs at HZ in the tick thread, and IRQLEVEL is 1 s so 100 ms of
   granularity is invisible - and on a latch calls `sys_poweroff()`, which queues
   SYS_POWEROFF; the main thread then runs `clean_shutdown()` (stop the recorder,
   bookmark, `system_flush()`), then `shutdown_hw()` (`audiohw_close()`,
   `lcd_shutdown()`), then `power_off()`, the PMU command.
-  `axp173_init()` leaves the long-press threshold at its 1 s reset default, pushes
-  the hardware cutoff to its maximum (10 s) while the software path is being proven,
-  and clears every status register so a press before the application started does not
-  shut the player down on the first poll.
+  `axp173_init()` sets ONLEVEL and IRQLEVEL to 1 s each, leaves bit 3 set, and pushes
+  OFFLEVEL to its maximum 10 s while the software path is being proven; it also clears
+  every status register so a press before the application started does not shut the
+  player down on the first poll.
   Pad 43 is the UART0 TX pad in the IO MUX, so it has to be switched to the GPIO
   function before `GPIO_IN` can see it - it is configured but unread.
-- `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply. The
-  vendor proves that write shuts this board down from its idle auto-off and critical
-  battery paths (`power_shutdown()` -> `powerOFF()`, "never returns"), but not whether
-  it lands on a fresh PEK press - the ten-second deaths we were seeing were REG 0x36's
-  auto-off counter, which is a different mechanism. The vendor never intercepts the
-  power key at all, so hold-to-off on the stock firmware *is* the 10 s hardware path.
+- `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply.
+  §9.2 documents that write as the intended software shutdown - "in the PEK interrupt
+  service routine, the Host writes REG32H[7] to notify AXP173 to enter the shutdown
+  state" - and entering that state drops **every output except LDO1**. DCDC1 is the rail
+  the ESP32-S3 lives on (the vendor's own `prepareToSleep()` comment keeps DCDC1 up for
+  wake), so it does take the SoC with it. The vendor proves the write shuts this board
+  down from its idle auto-off and critical battery paths (`power_shutdown()` ->
+  `powerOFF()`, "never returns"), but not whether it lands when Rockbox gets there a few
+  seconds after the press began rather than inside the PEK handler.
 
 **PCF8563.** Register-compatible with the existing `RTC_E8564` driver, but that
 one is written against the PP asynchronous I2C layer, so `drivers/rtc/rtc_pcf8563.c`

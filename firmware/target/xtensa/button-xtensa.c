@@ -230,27 +230,29 @@ int button_read_device(int *data)
     }
 
 #ifdef HAVE_AXP173
-    /* The PEK power key is the only way to turn the board off, and the chip latches
-     * the press rather than reporting a level: REG 0x44 bit 0 sets when the press
-     * outlasts the long-press threshold (1 s here) and stays set until written back.
+    /* The PEK power key is the only way to turn the board off, and the chip latches the
+     * press rather than reporting a level: REG 0x46 bit 0 (IRQ23, datasheet IRQ table and
+     * REG 46H bit list) sets when the press outlasts the long-press threshold -- 1 s here
+     * -- and stays set until written back. The short press is bit 1 of the same register.
      *
-     * This deliberately does not consult the IRQ pin any more. That pin only reflects
-     * *enabled* events, and the vendor driver for this board zeroes every enable
-     * register, reads the latch directly, and never uses its GPIO 43 macro -- so the
-     * pin was not a witness to anything, and gating on it meant sys_poweroff() was
-     * never reached. A long press therefore did nothing until the chip's own
-     * power-off counter expired, which is the 10-second behaviour this replaces.
+     * Nothing gates on the IRQ pin. Per section 9.10 the pin is an open-drain output that
+     * reflects *enabled* pending events and is pulled high externally through 51K, so
+     * gating on it makes detection depend on both the mask semantics and that resistor.
+     * The status register is the authoritative witness and the read is cheap enough to
+     * take directly.
      *
-     * The read costs about 1.6 ms of I2C, so it is taken once every 100 ms rather than
-     * on every tick: this function runs at HZ in the tick thread. A 100 ms granularity
-     * adds negligible latency to a threshold measured in seconds, and keeps the bus
-     * clear for the codec and the expander.
+     * The read costs about 1.6 ms of I2C, so it is taken once every 100 ms rather than on
+     * every tick: this function runs at HZ in the tick thread. 100 ms of granularity is
+     * invisible against a threshold measured in seconds, and it keeps the bus free for the
+     * codec and the expander.
      *
      * sys_poweroff() is the clean path: it queues SYS_POWEROFF, the main thread runs
      * clean_shutdown() (stop the recorder, bookmark, flush settings and the dircache),
      * then shutdown_hw() (close the codec, shut the panel), and only then reaches our
-     * power_off(), which commands the PMU. A raw hardware PEK shutdown does none of
-     * that, and its counter cannot be recalled once it has started.
+     * power_off(), which writes REG 0x32 bit 7 -- the chip's software shutdown, which drops
+     * every output except LDO1, and DCDC1 is what feeds this SoC. A hardware PEK shutdown
+     * does none of that, and OFFLEVEL is a press-duration limit: nothing short of holding
+     * past it stops the board.
      */
     static unsigned int pek_poll_div;
 
