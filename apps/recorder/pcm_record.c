@@ -37,6 +37,11 @@
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern uint32_t xtensa_pcm_slots[4];
 extern uint32_t xtensa_enc_stamp[5];
+
+/* Written into the encoder stamp slots before the codec runs, so that a slot still
+ * holding it at fault time means the function never ran, while a real pointer means
+ * it ran and the slot was overwritten afterwards. */
+#define XT_ENC_STAMP_MAGIC 0xC0DEC0DEu
 #endif
 #include "logf.h"
 #include "thread.h"
@@ -560,6 +565,15 @@ static void init_rec_buffers(void)
     xtensa_pcm_slots[1] = (uint32_t)(uintptr_t)&pcm_buffer;
     xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
     xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
+
+    /* Poison the stamp slots the encoder is expected to fill. Captures showed the
+     * same garbage in them across two builds whose addresses had moved, and the
+     * call counter holding 2340727405, so the slots were either never written or
+     * written and then clobbered -- and stale DRAM looks identical either way. The
+     * magic tells them apart. */
+    xtensa_enc_stamp[0] = XT_ENC_STAMP_MAGIC;
+    xtensa_enc_stamp[2] = XT_ENC_STAMP_MAGIC;
+    xtensa_enc_stamp[4] = 0;
 #endif
 
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
