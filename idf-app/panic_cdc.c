@@ -56,6 +56,8 @@ extern void xtensa_panic_log(const char *msg);
 extern void xtensa_paniclog_frame(const unsigned long *words, int count,
                                   int exception, int pseudo);
 extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
+extern void xtensa_paniclog_frame_window(uint32_t windowbase,
+                                         uint32_t windowstart, uint32_t a5);
 extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
                                       const unsigned long *sps, int n,
                                       const char *build);
@@ -75,8 +77,9 @@ extern void esp_panic_handler_feed_wdts(void);
 #define RB_PANIC_STEP_MS 100
 
 /* Order of the register array handed to xtensa_paniclog_frame_regs():
- * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size. */
-#define RB_REGS 8
+ * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size, windowbase,
+ * windowstart, a5. */
+#define RB_REGS 11
 
 /* Frames of caller chain to retain. IDF walks until the chain goes insensible;
  * eight is what fits in the report and enough to name the caller whose return
@@ -213,6 +216,29 @@ void esp_panic_handler(panic_info_t *info)
         regs[7] = ci.err_str != NULL ? (unsigned long)ci.size : 0UL;
     }
     xtensa_paniclog_frame_regs(regs, RB_REGS);
+
+    /* The window state, which is not in the frame. The fault's PC equals the
+     * interrupted SP, which is what a window spill or underflow produces when it
+     * walks a register-window chain that does not exist: the handler reads a stack
+     * address as an ancestor's base-save area, stores a0 there, and the eventual
+     * retw executes it. windowstart says how many windows the core thinks are live,
+     * windowbase which one is current, and a5 is the frame pointer the spill and
+     * underflow handlers walk -- if a5 is not a sane stack address, the chain is
+     * broken and the handler's stores go wherever a5 points.
+     *
+     * Caveat, stated so the numbers are read correctly: the exception vectors save
+     * the context without rotating the window, but the C handler is entered with
+     * call8, so the windowbase read here is the faulted context's plus the rotations
+     * since the fault. windowstart however is a bitmask of live windows and is only
+     * changed by entry/spill, so it is comparable as read. */
+    {
+        uint32_t wb = 0, ws = 0;
+
+        __asm__ volatile ("rsr.windowbase %0" : "=r"(wb));
+        __asm__ volatile ("rsr.windowstart %0" : "=r"(ws));
+        xtensa_paniclog_frame_window(wb, ws,
+                                    f != NULL ? (uint32_t)f->a5 : 0);
+    }
 
     /* The caller chain, stepped with IDF's esp_backtrace_get_next_frame: it
      * reads frame(i-1)'s base-save area from the four words below SP (return PC
