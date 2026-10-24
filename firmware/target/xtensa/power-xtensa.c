@@ -15,6 +15,11 @@
  * point, so it reports a delta rather than a state of charge. Voltage is the
  * honest measurement here.
  ****************************************************************************/
+/* The one line in power_off() that reports what the PMU's shutdown register ended on is
+ * worth having permanently; autoconf.h leaves ROCKBOX_HAS_LOGF undefined and logf.h makes
+ * logf() a no-op in any file that does not ask for it. */
+#define LOGF_ENABLE
+
 #include "config.h"
 
 #include "system.h"
@@ -22,6 +27,7 @@
 #include "power.h"
 #include "powermgmt.h"
 #include "tick.h"
+#include "logf.h"
 #include "axp173.h"
 #include "i2c.h"
 #include "xtensa.h"
@@ -95,8 +101,27 @@ void power_off(void)
        rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & ~RWDT_EN_BIT);
     wr(XT_RTCCNTL_BASE + RWDT_WPROTECT, 0);             /* lock */
 
-    /* The PMU drops every rail, including DCDC1, so the SoC loses power too. */
-    axp173_power_off();
+    /* REG 0x32 bit 7 is the chip's software shutdown: it drops every output except
+     * LDO1, and DCDC1 is what feeds this SoC. axp173_power_off() is a read-modify-write
+     * that gives up silently if its read fails, and our I2C path returns an error rather
+     * than waiting when the queue is busy -- so retry, and read the register back to see
+     * whether the bit actually took. Without this the board sat in the halt below until
+     * the chip's own OFFLEVEL counter expired, which is the ten-second delay this replaces.
+     */
+    int tries;
+    for (tries = 0; tries < 5; tries++)
+    {
+        axp173_power_off();
+
+        int r = axp173_read_reg(AXP_REG_SHUTDOWN);
+
+        if (r < 0 || (r & (1 << 7)))
+            break;   /* written, or the chip is gone -- either way the rails are coming down */
+        sleep(HZ / 100);
+    }
+
+    logf("power_off: REG32=%d after %d attempt(s), halting",
+         axp173_read_reg(AXP_REG_SHUTDOWN), tries + 1);
 
     /* In case the PMU does not shut down (no battery, or VBUS holding IPSOUT up),
      * do not spin: the watchdog is off, so this is a real halt. */
