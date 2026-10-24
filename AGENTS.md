@@ -1590,21 +1590,44 @@ obvious from the datasheet tables:
   SYS_POWEROFF; the main thread then runs `clean_shutdown()` (stop the recorder,
   bookmark, `system_flush()`), then `shutdown_hw()` (`audiohw_close()`,
   `lcd_shutdown()`), then `power_off()`, the PMU command.
-  `axp173_init()` sets ONLEVEL and IRQLEVEL to 1 s each, leaves bit 3 set, and pushes
-  OFFLEVEL to its maximum 10 s while the software path is being proven; it also clears
-  every status register so a press before the application started does not shut the
-  player down on the first poll.
+  `axp173_init()` sets ONLEVEL and IRQLEVEL to 1 s each, leaves bit 3 set, and keeps
+  OFFLEVEL at its maximum 10 s as the safety net; it also clears every status register so
+  a press before the application started does not shut the player down on the first poll.
+  `button-xtensa.c` stops polling the PMU permanently once it has requested a shutdown:
+  this is a single polled I2C master with no arbitration, and `power_off()` has to write
+  the shutdown bit while the main thread halts, so a 100 ms reader running concurrently is
+  enough to corrupt that write.
   Pad 43 is the UART0 TX pad in the IO MUX, so it has to be switched to the GPIO
   function before `GPIO_IN` can see it - it is configured but unread.
+- **`clean_shutdown()` silently does nothing while a charger is inserted unless the target
+  defines `HAVE_POWEROFF_WHILE_CHARGING`.** `apps/misc.c:371` wraps the entire body in
+  `#if CONFIG_CHARGING && !defined(HAVE_POWEROFF_WHILE_CHARGING) if (!charger_inserted())`
+  - recorder stop, bookmark, `system_flush()`, `shutdown_hw()`, `power_off()` and the
+  message are all inside it. `button.c:307` and `shortcuts.c:810,818` gate the same way.
+  On this board that meant a power-key press while plugged into a PC produced no shutdown
+  at all: the visible ten-second death was the PMU's own OFFLEVEL hard cut with nothing
+  flushed, and it cost a long investigation because the console is on that same cable, so
+  every test ran with VBUS present. The AXP173 owns the rails and the charge path
+  independently of the SoC, so `meowkits3.h` defines it - as do sansa, iriver, iaudio,
+  gigabeats, fiio, erosq and onda.
+- **`splash(0, ...)` only draws - it does not wait.** `splashf()` in `gui/splash.c:392`
+  sleeps `if (ticks)`, and `clean_shutdown()` passes 0, so "Shutting down..." is wiped by
+  `font_unload_all()` inside `shutdown_hw()` a few tens of milliseconds later. Its absence
+  therefore proves nothing about whether the shutdown ran. `CLEAN_SHUTDOWN_MESSAGE_HOLD`
+  is a target-settable hold in `apps/misc.c`, defaulted to no delay so other targets are
+  unchanged; meowkits3 asks for one second, which stays well inside OFFLEVEL.
 - `power_off()` has to command REG 0x32 bit 7. The SoC cannot cut its own supply.
   §9.2 documents that write as the intended software shutdown - "in the PEK interrupt
   service routine, the Host writes REG32H[7] to notify AXP173 to enter the shutdown
   state" - and entering that state drops **every output except LDO1**. DCDC1 is the rail
   the ESP32-S3 lives on (the vendor's own `prepareToSleep()` comment keeps DCDC1 up for
-  wake), so it does take the SoC with it. The vendor proves the write shuts this board
-  down from its idle auto-off and critical battery paths (`power_shutdown()` ->
-  `powerOFF()`, "never returns"), but not whether it lands when Rockbox gets there a few
-  seconds after the press began rather than inside the PEK handler.
+  wake), so it does take the SoC with it - **measured on this board**: on battery the press
+  now shows the message and cuts power promptly. `axp173_power_off()` is a
+  read-modify-write that returns without writing if its read fails, and our I2C path
+  returns an error rather than waiting when the queue is busy, so `power_off()` retries up
+  to five times and reads REG 0x32 back before halting. With VBUS present the chip's
+  shutdown state may not drop IPSOUT, which is why the halt after it is a real halt rather
+  than a spin.
 
 **PCF8563.** Register-compatible with the existing `RTC_E8564` driver, but that
 one is written against the PP asynchronous I2C layer, so `drivers/rtc/rtc_pcf8563.c`
