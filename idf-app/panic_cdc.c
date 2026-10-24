@@ -50,6 +50,8 @@
  * _logf is what the logf() macro expands to when ROCKBOX_HAS_LOGF is set, which this
  * target does; the signature matches firmware/export/logf.h. */
 extern void xtensa_panic_log(const char *msg);
+extern void xtensa_paniclog_frame(const unsigned long *words, int count,
+                                  int exception, int pseudo);
 extern int xtensa_breadcrumb_back(int back, char *buf, int bufsize);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
@@ -91,6 +93,25 @@ void esp_panic_handler(panic_info_t *info)
     const char *reason = info->reason ? info->reason : "unknown";
 
     esp_panic_handler_feed_wdts();
+
+    /* Retain the frame raw, before anything else. The CDC transport cannot be
+     * relied on here -- the reset closes the host's descriptor and the queued
+     * bytes die with the endpoint -- and the register values are only meaningful
+     * once the layout is settled on the host, which is the whole question raised
+     * by pc resolving to the exception vector. 32 words covers XtExcFrame and the
+     * head of an XtDbFrame; the stack above the frame is valid memory, so reading
+     * past the frame end is harmless. */
+    if (f != NULL)
+    {
+        const unsigned long *raw = (const unsigned long *)f;
+        unsigned long fw[32];
+        int i;
+
+        for (i = 0; i < 32; i++)
+            fw[i] = raw[i];
+        xtensa_paniclog_frame(fw, 32, (int)info->exception,
+                              info->pseudo_excause ? 1 : 0);
+    }
 
     /* Short form into the surviving record: bounded by the record's 96-character
      * message field, and read back after the reset by xtensa_paniclog_text(). */

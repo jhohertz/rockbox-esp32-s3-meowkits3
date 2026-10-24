@@ -233,6 +233,35 @@ struct panic_rtc
     uint32_t word[24];   /* 96 characters, four per word */
 };
 
+/* The exception frame, raw. The first four recorder crashes all reported
+ * pc=40374340, which addr2line resolves to _UserExceptionVector itself
+ * (xtensa_vectors.S:646) -- the vector's address, not a faulting instruction.
+ * EPC1 holds the vector only when a second exception overwrote it, so the frame
+ * we were handed is possibly an XtDbFrame rather than an XtExcFrame, and every
+ * register we decoded from it was read at the wrong offset.
+ *
+ * Rather than guess the layout at fault time, keep the words and decode them on
+ * the host, where both layouts are available. info->exception and
+ * pseudo_excause say which of the two it is.
+ *
+ * The third RTC-slow region; the teardown ring ends at 0x50001128 and the panic
+ * record at 0x5000126c. IDF's own RTC-slow objects (.rtc.force_slow, three in
+ * sleep_modes.c) are placed at the start of the bank, and RTC fast is what this
+ * build uses as heap, so 0x50001400 is unclaimed. Word stores only, as above. */
+#define XT_FRAME_RTC_BASE   0x50001400u
+#define XT_FRAME_RTC_MAGIC  0x47415246u   /* "FRAG" */
+#define XT_FRAME_WORDS      32
+
+struct frame_rtc
+{
+    uint32_t magic;
+    uint32_t seq;
+    uint32_t exception;   /* IDF panic_exception_t */
+    uint32_t pseudo;      /* info->pseudo_excause */
+    uint32_t count;
+    uint32_t word[XT_FRAME_WORDS];
+};
+
 static volatile struct rtc_store *rtc_store =
     (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
 
@@ -383,6 +412,91 @@ void xtensa_panic_log(const char *msg)
     esp_rom_printf("\r\n*PANIC* %s\r\n", rec.msg);
 }
 
+/* Keep the raw exception frame across the reset.
+ *
+ * Called from the panic handler, before anything is sent to the console: the
+ * CDC transport cannot be relied on at fault time because the reset closes the
+ * host's file descriptor and whatever was queued dies with the endpoint. RTC
+ * slow is the only thing that survives, so the frame goes there and is read
+ * back at the next boot, where the reader is reliably open.
+ *
+ * The words are copied verbatim rather than decoded. Which layout they are in is
+ * the question being asked, and deciding it here would be guessing. */
+void xtensa_paniclog_frame(const unsigned long *words, int count,
+                           int exception, int pseudo)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+    int i;
+
+    if (fr->magic != XT_FRAME_RTC_MAGIC)
+    {
+        fr->magic = XT_FRAME_RTC_MAGIC;
+        fr->seq   = 0;
+    }
+
+    fr->seq      = fr->seq + 1;
+    fr->exception = (uint32_t)exception;
+    fr->pseudo    = (uint32_t)pseudo;
+
+    if (count > XT_FRAME_WORDS)
+        count = XT_FRAME_WORDS;
+    fr->count = (uint32_t)count;
+
+    for (i = 0; i < count; i++)
+        fr->word[i] = (uint32_t)words[i];
+}
+
+void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
+                                unsigned long *count)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (fr->magic != XT_FRAME_RTC_MAGIC)
+    {
+        if (exception) *exception = 0;
+        if (pseudo)    *pseudo = 0;
+        if (count)     *count = 0;
+        return;
+    }
+
+    if (exception) *exception = fr->exception;
+    if (pseudo)    *pseudo = fr->pseudo;
+    if (count)     *count = fr->count;
+}
+
+/* Four words per line, line 0 being the frame's first word. Returns 0 when there
+ * is nothing retained or the line is past the stored count. */
+int xtensa_paniclog_frame_words(char *buf, int bufsize, int line)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+    uint32_t base;
+    uint32_t n;
+    int len;
+    int i;
+
+    if (buf == NULL || bufsize <= 0 || line < 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC || fr->count == 0)
+        return 0;
+
+    base = (uint32_t)line * 4u;
+    if (base >= fr->count)
+        return 0;
+
+    n = fr->count - base;
+    if (n > 4)
+        n = 4;
+
+    len = snprintf(buf, bufsize, "w%lu:", (unsigned long)base);
+    for (i = 0; (uint32_t)i < n && len < bufsize - 12; i++)
+        len += snprintf(buf + len, bufsize - len, " %08lx",
+                        (unsigned long)fr->word[base + (uint32_t)i]);
+    return len;
+}
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -503,6 +617,7 @@ void xtensa_crash_report_logf(void)
     char line[64];
     int len;
     int back;
+    unsigned long exc, pseudo, count;
 
     len = xtensa_paniclog_text(line, sizeof line);
     if (len > 0)
@@ -516,13 +631,32 @@ void xtensa_crash_report_logf(void)
          (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
 
     /* Newest first, matching the debug page and the panic handler's own report.
-     * Six rather than three: the recorder's own path is what we are trying to see,
-     * and three entries only ever showed the SD traffic on top of it. Still bounded
-     * -- six lines is roughly 220 bytes, inside the 512-byte ring. */
-    for (back = 0; back < 6; back++)
+     * Four, not six: the frame lines below need the room. The whole report is
+     * panic + reset + 4 trail + frame header + 4 word lines, about 400 bytes,
+     * inside the 512-byte ring that overflowed when this reported forty entries.
+     * The full ring stays in SRAM and on the screen, where it costs nothing. */
+    for (back = 0; back < 4; back++)
     {
         if (xtensa_breadcrumb_back(back, line, sizeof line) == 0)
             break;
         logf("rb trail %s", line);
+    }
+
+    /* The frame, sixteen words in four lines. Sixteen covers both candidate
+     * layouts: XtExcFrame runs exit, pc, ps, a0..a15, sar, exccause, excvaddr
+     * (through index 15), and an XtDbFrame's epc1..epc4 sit in the same early
+     * slots. More than that would push the report past what the ring can hold
+     * alongside the lines above. */
+    xtensa_paniclog_frame_info(&exc, &pseudo, &count);
+    if (count > 0)
+    {
+        logf("rb frame exc %lu pseudo %lu count %lu", exc, pseudo, count);
+        for (back = 0; back < 4; back++)
+        {
+            len = xtensa_paniclog_frame_words(line, sizeof line, back);
+            if (len == 0)
+                break;
+            logf("rb %s", line);
+        }
     }
 }
