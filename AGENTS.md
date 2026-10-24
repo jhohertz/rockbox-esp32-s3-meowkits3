@@ -1575,15 +1575,19 @@ obvious from the datasheet tables:
   long-press threshold (1/1.5/2/2.5 s), bit 3 "auto power off when the press outlasts
   OFFLEVEL", bit 2 the PWROK delay (32/64 ms), bits 1:0 OFFLEVEL (4/6/8/10 s). Bit 3 is
   set at reset; a bare write of only the on/off fields clears it and removes the
-  hardware safety net. **OFFLEVEL is a press-duration limit** — §9.2's auto-off
-  condition is "PEK longer than OFFLEVEL" (default 6 s), so the user must hold past it.
+  hardware safety net.
+  **OFFLEVEL counts from the acknowledgement, not from the press.** §9.2 reads as "PEK
+  longer than OFFLEVEL", which implies the user must hold past it; on this board a 2.5 s
+  press followed by a release still ended in a hard cut ten seconds later whenever the
+  firmware wrote 1 to the PEK status bit, and needed a continuous ten-second hold whenever
+  it did not. Two builds that differed only in which register they acked establish the
+  coupling: acking 0x46 bit 0 arms the countdown, and there is no way to disarm it
+  afterwards. So a shutdown that Rockbox intends to refuse must never be acked.
   We set 10 s, the chip resets to 6 s and the vendor uses `POWEROFF_4S`.
   REG 0x31 bit3 is *not* a PEK enable - it is the sleep-mode PWRON short-press
   wakeup flag, and it self-clears after being written.
   This matters: a hardware PEK shutdown kills the board without Rockbox getting a
-  chance to flush the audiobuffer, save settings or close the card, and it cannot be
-  recalled once the press has outlasted OFFLEVEL - so a `cancel_shutdown()` (tagcache
-  busy) leaves the user with a hard power loss rather than a retry. `button-xtensa.c`
+  chance to flush the audiobuffer, save settings or close the card. `button-xtensa.c`
   polls `axp173_power_key_pressed()` every `HZ/10` ticks - the read costs about 1.6 ms
   of I2C and this runs at HZ in the tick thread, and IRQLEVEL is 1 s so 100 ms of
   granularity is invisible - and on a latch calls `sys_poweroff()`, which queues
@@ -1610,6 +1614,12 @@ obvious from the datasheet tables:
   every test ran with VBUS present. The AXP173 owns the rails and the charge path
   independently of the SoC, so `meowkits3.h` defines it - as do sansa, iriver, iaudio,
   gigabeats, fiio, erosq and onda.
+- **Rockbox refuses a poweroff while in USB mode, and that refusal is correct - the host
+  owns the card.** `button-xtensa.c` accommodates it by not acknowledging the PEK latch
+  while `usb_inserted()` is true, so the countdown is never armed and the press simply
+  waits; because the latch stays set, the poweroff takes effect on extraction. Doing the
+  opposite - acking and then letting Rockbox refuse - was the behaviour that produced a
+  clean-looking refusal followed by an unflushed hard cut ten seconds later.
 - **`splash(0, ...)` only draws - it does not wait.** `splashf()` in `gui/splash.c:392`
   sleeps `if (ticks)`, and `clean_shutdown()` passes 0, so "Shutting down..." is wiped by
   `font_unload_all()` inside `shutdown_hw()` a few tens of milliseconds later. Its absence
