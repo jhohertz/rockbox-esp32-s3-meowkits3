@@ -103,10 +103,15 @@ extern void esp_panic_handler_feed_wdts(void);
  * second fault, and at debug exception level there is no handler left to catch
  * one.
  */
-#define RB_IMG_BASE      0x3c680000u   /* codecbuf, pinned by memory-xtensa.h */
-#define RB_IMG_API_OFF   28u
-#define RB_ENC_READ_OFF  136u
-#define RB_IMG_WORDS     3
+/* Where the image keeps its codec pointer, as recorded by codec_load_ram().
+ *
+ * Hard-coding the header offset here was a mistake: struct lc_header is four
+ * words in this build, so the header's `api` field is at byte 24 of the image,
+ * and reading codecbuf+28 reported 0x000000a8 -- the tail of api_size, not a
+ * pointer. The boot side has the typed struct and knows the address, so it hands
+ * it over and this reads what it is told. .noinit survives the reset, and it is
+ * written on every codec load, so it names whichever image was loaded last. */
+extern uint32_t xtensa_codec_api_slot;
 
 static int img_word_is_readable(uint32_t v)
 {
@@ -276,23 +281,33 @@ void esp_panic_handler(panic_info_t *info)
                                       esp_app_get_description()->version);
     }
 
-    /* What the loaded image was holding at the instant of the fault: the address
-     * of its codec pointer, the pointer itself, and the enc_pcmbuf_read slot it
-     * dereferences. */
+    /* What the loaded image held at the instant of the fault: the address of its
+     * codec pointer, that pointer, and eight words of the API struct covering
+     * offsets 120..148 -- memcpy, memchr, logf, qsort, then enc_pcmbuf_read,
+     * enc_pcmbuf_advance, enc_encbuf_get_buffer, enc_encbuf_finish_buffer. The
+     * whole block rather than only the slot that faulted, because "one field was
+     * written" and "the region was" are different bugs and only the block says
+     * which. Both pointers are range-checked before dereference: at debug
+     * exception level a fault here has no handler left, and losing the record
+     * would be worse than not reading it. */
     {
-        unsigned long handover[RB_IMG_WORDS] = { 0, 0, 0 };
-        uint32_t slot_addr = *(volatile uint32_t *)(RB_IMG_BASE + RB_IMG_API_OFF);
+        unsigned long handover[10] = { 0 };
+        uint32_t slot_addr = xtensa_codec_api_slot;
+        int i;
 
         handover[0] = slot_addr;
-        if (img_word_is_readable(slot_addr))
+        if (slot_addr != 0 && img_word_is_readable(slot_addr))
         {
             uint32_t api = *(volatile uint32_t *)slot_addr;
 
             handover[1] = api;
-            if (img_word_is_readable(api))
-                handover[2] = *(volatile uint32_t *)(api + RB_ENC_READ_OFF);
+            if (api != 0 && img_word_is_readable(api))
+            {
+                for (i = 0; i < 8; i++)
+                    handover[2 + i] = *(volatile uint32_t *)(api + 120 + i * 4);
+            }
         }
-        xtensa_paniclog_api_handover(handover, RB_IMG_WORDS);
+        xtensa_paniclog_api_handover(handover, 10);
     }
 
     /* Short form in the text record, bounded by its 96-character field, so the
