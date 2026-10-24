@@ -10,8 +10,6 @@
 static unsigned char out_reg;
 static unsigned char config_reg;
 
-static unsigned i2c_rd(unsigned reg) { return *(volatile unsigned *)reg; }
-
 static int read_reg(unsigned char reg, unsigned char *value)
 {
     return i2c_readmem(PCA9557_ADDR, reg, value, 1) == 1;

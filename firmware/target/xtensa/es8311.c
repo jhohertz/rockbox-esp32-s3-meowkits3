@@ -156,7 +156,7 @@ void es8311_dump(const char *tag)
     int dac31 = read_reg(0x31), dac32 = read_reg(0x32);
 
     printf("ES8311 %s: w=%d f=%d | chip=%02x clk=%02x %02x %02x %02x %02x "
-           "%02x %02x %02x | sdp=%02x %02x | sys=%02x %02x %02x | "
+           "%02x %02x %02x | sdp=%02x %02x | sys=%02x %02x %02x %02x | "
            "dac31=%02x dac32=%02x\n",
            tag, es8311_writes, es8311_write_fails,
            chip & 0xff, clk1 & 0xff, clk2 & 0xff, clk3 & 0xff, clk4 & 0xff,
