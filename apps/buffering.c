@@ -20,7 +20,6 @@
 #include "config.h"
 #include <string.h>
 #include "system.h"
-#include "stdio.h"     /* TEMPORARY: only for buffering_probe's printf */
 #include "storage.h"
 #include "thread.h"
 #include "kernel.h"
@@ -118,23 +117,6 @@ static size_t high_watermark = 0; /* High watermark for rebuffer */
 static struct lld_head handle_list; /* buffer-order handle list */
 static struct lld_head mru_cache;   /* MRU-ordered list of handles */
 static int num_handles;             /* number of handles in the lists */
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-/* TEMPORARY: playback-chain diagnostics, printed from the button probe alongside
- * the audio and codec counters. Remove with them. */
-volatile unsigned long xt_buf_loop_n;
-volatile long xt_buf_last_ev;
-volatile int xt_buf_filling;
-/* Which side of the hand-off is silent. bufget/prep climbing with startfill at 0
- * would mean the codec asks but never has to wait; startfill climbing with the
- * thread never seeing it would be a queue-routing fault; all three at zero with
- * pcminsert climbing means the codec is blocked downstream on a full PCM buffer
- * and never reached the file at all. */
-volatile unsigned long xt_bufget_n;
-volatile unsigned long xt_prep_n;
-volatile unsigned long xt_startfill_n;
-volatile unsigned long xt_pcminsert_n;
-#endif
 static int base_handle_id;
 
 /* Main lock for adding / removing handles */
@@ -1330,13 +1312,7 @@ off_t bufftell(int handle_id)
 static struct memory_handle *prep_bufdata(int handle_id, size_t *size,
                                           bool guardbuf_limit)
 {
-    struct memory_handle *h;
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-    xt_prep_n++;
-#endif
-
-    h = find_handle(handle_id);
+    struct memory_handle *h = find_handle(handle_id);
     if (!h)
         return NULL;
 
@@ -1373,9 +1349,6 @@ static struct memory_handle *prep_bufdata(int handle_id, size_t *size,
                 request = 100;
                 /* Data (still) isn't ready; ping buffering thread */
                 LOGFQUEUE("buffering >| Q_START_FILL %d",handle_id);
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-                xt_startfill_n++;
-#endif
                 queue_send(&buffering_queue, Q_START_FILL, handle_id);
             }
 
@@ -1455,13 +1428,8 @@ off_t bufstripsize(int handle_id, off_t size)
 */
 ssize_t bufgetdata(int handle_id, size_t size, void **data)
 {
-    struct memory_handle *h;
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-    xt_bufget_n++;
-#endif
-
-    h = prep_bufdata(handle_id, &size, true);
+    struct memory_handle *h =
+        prep_bufdata(handle_id, &size, true);
     if (!h)
         return ERR_HANDLE_NOT_FOUND;
 
@@ -1627,17 +1595,6 @@ static void NORETURN_ATTR buffering_thread(void)
             queue_wait(&buffering_queue, &ev);
         }
 
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-        /* TEMPORARY: the codec is proven to be blocked inside run_proc, and the
-         * filesystem lock is idle, so nothing is reading the card. This says
-         * whether the buffering thread is even awake and what it was last told to
-         * do. handles=0 means playback never registered the file; filling=0 with
-         * handles present means it was never asked to start. */
-        xt_buf_loop_n++;
-        xt_buf_last_ev = (long)ev.id;
-        xt_buf_filling = filling;
-#endif
-
         switch (ev.id)
         {
             case Q_START_FILL:
@@ -1791,16 +1748,3 @@ void buffering_get_debugdata(struct buffering_debug *dbgdata)
     dbgdata->useful_data = dc.useful;
     dbgdata->watermark = BUF_WATERMARK;
 }
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-/* TEMPORARY: snapshot of the buffering layer as the codec thread sees it.
- * Lives here because num_handles is file-static and the whole question is
- * whether a handle was ever registered for the track being played. */
-void buffering_probe(void)
-{
-    printf("BUFFER: handles=%d filling=%d loop=%lu last_ev=%ld\n",
-           num_handles, xt_buf_filling, xt_buf_loop_n, xt_buf_last_ev);
-    printf("BUFREQ: bufget=%lu prep=%lu startfill=%lu pcminsert=%lu\n",
-           xt_bufget_n, xt_prep_n, xt_startfill_n, xt_pcminsert_n);
-}
-#endif

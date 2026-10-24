@@ -46,19 +46,6 @@ struct mrsw_lock
 };
 
 void mrsw_init(struct mrsw_lock *mrsw);
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-/* TEMPORARY bring-up: read the lock's state without being its owner. Returns
- * mrsw->count (>0 readers, <0 writer, 0 free), the owner's name, and the number
- * of waiters. */
-int mrsw_debug_state(const struct mrsw_lock *mrsw, char *owner_name, int sz,
-                     int *waiters);
-/* TEMPORARY bring-up: render the last lock transitions into out. */
-int mrsw_debug_trace(char *out, int sz);
-/* TEMPORARY bring-up: who owns the lock, what they are blocked on, and who is
- * queued behind them. */
-int mrsw_debug_report(const struct mrsw_lock *mrsw, char *out, int sz);
-#endif
 void mrsw_read_acquire(struct mrsw_lock *mrsw);
 void mrsw_read_release(struct mrsw_lock *mrsw);
 void mrsw_write_acquire(struct mrsw_lock *mrsw);

@@ -30,7 +30,6 @@
 
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
-extern int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
 extern void xtensa_paniclog_set_reset(unsigned reason);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
@@ -86,31 +85,6 @@ static void fill_stack_canary(void)
     w[0] = 0xdeadbeefu;
 }
 
-/* TEMPORARY diagnostic: take the level-4 cache-error path out of the picture.
- *
- * IDF's esp_cache_err_int_init() routes three sources to INUM 25
- * (ETS_MEMACCESS_ERR_INUM): the illegal-access source plus one access-error
- * source per core. Level 4 is not serviceable from C -- xtensa_vectors.S jumps
- * straight into the panic handler -- so the report carries a cause string
- * decoded from the cache status register and a backtrace of whatever the core
- * happened to be doing when the interrupt arrived. Measured here, both cores
- * were in waiti and the fault address registers stayed zero for this cause.
- *
- * Clearing INTENABLE bit 25 removes that path but leaves the *sources* enabled,
- * so the status bits still latch and the core-1 poller still sees them. If the
- * fault is a CPU access, the core takes its own MemmoryManagement exception
- * (EXCCAUSE 7) instead, which the exception handler reports with a real EPC1
- * and EXCVADDR. If nothing is reported and the system keeps running, the
- * interrupt was the only consequence of the fault at all. */
-static void mask_cache_error_int(void)
-{
-    uint32_t ie;
-
-    asm volatile ("rsr %0, intenable" : "=r"(ie));
-    ie &= ~(1u << 25);                  /* ETS_MEMACCESS_ERR_INUM */
-    asm volatile ("wsr %0, intenable" :: "r"(ie));
-}
-
 static void rockbox_task(void *arg)
 {
     (void)arg;
@@ -120,7 +94,6 @@ static void rockbox_task(void *arg)
     rb_thread_set_thread0_task((void *)xTaskGetCurrentTaskHandle());
 
     fill_stack_canary();
-    mask_cache_error_int();
 
     ESP_LOGI(TAG, "entering rockbox main()");
     main();
@@ -146,46 +119,11 @@ void app_main(void)
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
     xtensa_paniclog_dump();
-    /* The RTC-slow ring survives the reset that clears internal DRAM, and it is where the
-     * audio counters are recorded (usbAud: isochronous frames received and the endpoint's
-     * remaining transfer count; audR/audA: OUT-event storm and sink state). Console output
-     * over USB-Serial-JTAG stops the moment the app hands the pads to the OTG core, so this
-     * has to be printed here, first, rather than over the CDC transport later -- and reading
-     * it over CDC requires writing to the console, which is what wedges the device.
-     */
-    {
-        extern int xtensa_breadcrumb_rtc_window(char *buf, int bufsize, int start, int count);
-        char rtc[256];
-        int start;
-        int any = 0;
-        for (start = 0; start < 32; start += 8)
-        {
-            int n = xtensa_breadcrumb_rtc_window(rtc, sizeof rtc, start, 8);
-            if (n <= 0)
-                break;
-            if (!any)
-            {
-                printf("rtc breadcrumbs:\n");
-                any = 1;
-            }
-            printf("%s\n", rtc);
-        }
-        if (!any)
-            printf("rtc breadcrumbs: none\n");
-    }
-    /* No ring dump here: xtensa_paniclog_dump() above already prints the retained
-     * breadcrumbs ("panic breadcrumbs (40):") as the first thing app_main does, and did so
-     * before this was added. A second dump doubled the output on the console. */
-    /* The reset reason lives in the RTC domain, so it survives the reset that clears
-     * internal DRAM -- which the breadcrumb trail does not. After a crash on this board
-     * the trail came back holding only the new boot's entries, so the trail cannot say
-     * what killed the previous boot; the reset reason can. It also goes into the trail,
-     * so it is readable over the CDC transport once the device has re-enumerated,
-     * without needing the boot console.
-     *
-     * Telling ESP_RST_PANIC from ESP_RST_TASK_WDT or ESP_RST_BROWNOUT is the first
-     * question about the unplug crash: a hang that ends in a watchdog reset is a
-     * different bug from one that ends in a panic, and they point at different code. */
+    /* The reset reason lives in the RTC domain, so it survives the reset that
+     * clears internal DRAM -- which the breadcrumb trail does not. Telling
+     * ESP_RST_PANIC from ESP_RST_TASK_WDT or ESP_RST_BROWNOUT is the first
+     * question about any crash: a hang that ends in a watchdog reset is a
+     * different bug from one that ends in a panic. */
     {
         esp_reset_reason_t why = esp_reset_reason();
 
@@ -208,7 +146,6 @@ void app_main(void)
      * at startup the failure is a missing symbol at link time rather than a
      * silent no-show. */
     static StaticTask_t rockbox_tcb;
-
 
     TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
         rockbox_task, "rockbox", ROCKBOX_STACK_WORDS, NULL,

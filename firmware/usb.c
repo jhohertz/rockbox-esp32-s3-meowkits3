@@ -286,19 +286,7 @@ static inline void usb_slave_mode(bool on)
     else
     {
         /* Entered exclusive mode */
-#if defined(CPU_XTENSA)
-        /* This is the variant that compiles for us: the other usb_slave_mode() further
-         * down sits in the branch guarded by !HAVE_USBSTACK, which is why an earlier
-         * attempt to mark the remount produced no markers at all.
-         * the esp32s3 detach crash now happens after the controller teardown completes,
-         * so this is the live suspect: it hands work to the storage thread, which is
-         * mid-handshake at this moment. */
-        xtensa_breadcrumb_rtc("dMnt", 0, 0);
-#endif
         rc = disk_mount_all();
-#if defined(CPU_XTENSA)
-        xtensa_breadcrumb_rtc("dMnD", rc, 0);
-#endif
         if(rc <= 0) /* no partition */
             panicf("mount: %d",rc);
     }
@@ -912,18 +900,7 @@ void usb_request_exclusive_storage(void)
 void usb_release_exclusive_storage(void)
 {
     int bccount;
-#if defined(CPU_XTENSA)
-    /* The esp32s3 unplug crash now happens *after* the controller teardown completes: the
-     * RTC ring runs dSdi, dAbr, dSdw, dSdl, dPcg, dIrq, usbRel, usbEnd and only then
-     * resets with reason 6. So the spin is downstream of the driver. Charge mode never
-     * reaches this function and still crashes, which is what makes the entry note worth
-     * having: if rExs is absent in a charge-mode crash, this path is not the one. */
-    xtensa_breadcrumb_rtc("rExs", exclusive_storage_enabled, 0);
-#endif
     if(!exclusive_storage_requested) {
-#if defined(CPU_XTENSA)
-        xtensa_breadcrumb_rtc("rExN", 0, 0);
-#endif
         return;
     }
     exclusive_storage_requested = false;
@@ -935,13 +912,7 @@ void usb_release_exclusive_storage(void)
     exclusive_storage_enabled = false;
 
     /* Tell all threads that we are back in business */
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb_rtc("bCst", 0, 0);
-#endif
     bccount = queue_broadcast(SYS_USB_DISCONNECTED, 0) - 1;
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb_rtc("bCnD", (unsigned long)bccount, 0);
-#endif
 #ifdef DEBUG
     DEBUGF("USB extracted. Broadcast to %d threads...\n", bccount);
 #else

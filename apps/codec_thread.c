@@ -37,7 +37,6 @@
 /* Define LOGF_ENABLE to enable logf output in this file */
 /*#define LOGF_ENABLE*/
 #include "logf.h"
-#include <stdio.h>   /* TEMPORARY bring-up logging */
 
 /* macros to enable logf for queues
    logging on SYS_TIMEOUT can be disabled */
@@ -228,16 +227,6 @@ static void codec_pcmbuf_insert_callback(
         const void *ch1, const void *ch2, int count)
 {
     struct dsp_buffer src;
-
-#if defined(CPU_XTENSA) && !defined(SIMULATOR)
-    /* TEMPORARY: declared in apps/buffering.c alongside the other playback
-     * counters. If this climbs while bufget stays at zero, the codec is producing
-     * audio and blocking on a full PCM buffer rather than waiting for file data,
-     * which is the opposite direction of fault. */
-    extern volatile unsigned long xt_pcminsert_n;
-    xt_pcminsert_n++;
-#endif
-
     src.remcount  = count;
     src.pin[0]    = ch1;
     src.pin[1]    = ch2;
@@ -472,13 +461,9 @@ static void load_codec(const struct codec_load_info *ev_data)
     struct codec_load_info data = *ev_data;
     bool const encoder = type_is_encoder(data.afmt);
 
-    printf("load_codec: afmt=%d enc=%d hid=%d codec_type=%d\n",
-           (int)data.afmt, (int)encoder, data.hid, (int)codec_type);
-
     if (codec_type != AFMT_UNKNOWN)
     {
         /* Must have unloaded it first */
-        printf("load_codec: a codec is ALREADY LOADED, returning\n");
         logf("a codec is already loaded");
         if (data.hid >= 0)
             bufclose(data.hid);
@@ -506,12 +491,8 @@ static void load_codec(const struct codec_load_info *ev_data)
     {
         /* Either not a valid handle or the buffer method failed */
         const char *codec_fn = get_codec_filename(data.afmt);
-        printf("load_codec: codec_fn=%s\n", codec_fn ? codec_fn : "(null)");
         if (codec_fn)
-        {
             status = codec_load_file(codec_fn, &ci);
-            printf("load_codec: codec_load_file -> %d\n", status);
-        }
     }
 
     /* Types must agree */
