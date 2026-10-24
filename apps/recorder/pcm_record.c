@@ -42,7 +42,6 @@
 #include "audio_thread.h"
 #include "core_alloc.h"
 #include "talk.h"
-#include <stdio.h> /* TEMPORARY: pcm ring grant diagnostic in on_init_recording */
 
 /* Macros to enable logf for queues
    logging on SYS_TIMEOUT can be disabled */
@@ -1422,10 +1421,6 @@ static void on_init_recording(void)
     if (rec_buffer_size < PCM_BUF_SIZE)
         panicf("%s(): ring needs %d, arena granted %d\n", __func__,
                (int)PCM_BUF_SIZE, (int)rec_buffer_size);
-    /* TEMPORARY: the grant size is the number that decides PCM_NUM_CHUNKS for
-       this target, so keep it visible while the arena is still being sized. */
-    printf("pcm ring: need %d KiB, granted %d KiB\n",
-           (int)PCM_BUF_SIZE/1024, (int)rec_buffer_size/1024);
     rec_buffer = core_get_data(pcmrec_handle);
     init_rec_buffers();
     init_state();
