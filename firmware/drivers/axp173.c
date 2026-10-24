@@ -136,11 +136,12 @@ void axp173_init(void)
                                      AXP_PEK_PWROK |
                                      (3u << AXP_PEK_OFF_SHIFT));
 
-    /* Only the PEK long press is worth an interrupt. The IRQ pin goes low when
-     * *any* enabled event is latched, so leaving the ACIN, VBUS, battery and
-     * temperature IRQs enabled - they are enabled by default - would make the
-     * pin low for events nobody acts on and defeat the cheap GPIO check that
-     * gates the I2C read.
+    /* PEK status bits latch whatever the enables say, and the IRQ pin only reflects
+     * *enabled* events. The vendor driver for this board zeroes every enable register
+     * and still reads the PEK latch, and its IRQ_STATE macro for GPIO 43 has no
+     * callers, so the pin is not a reliable witness here and nothing gates on it any
+     * more -- see button_read_device(). Enabling the long press anyway costs nothing
+     * and keeps the pin meaningful if a board revision ever wires it.
      */
     axp173_write_reg(AXP_REG_IRQEN1, 0);
     axp173_write_reg(AXP_REG_IRQEN2, 0);
@@ -212,14 +213,19 @@ unsigned int axp173_input_status(void)
 
 bool axp173_power_key_pressed(void)
 {
-    int st = axp173_read_reg(AXP_REG_IRQST3);
+    /* PEK status is IRQ STATUS1 (0x44) bit 0, not STATUS3. This is what the vendor
+     * driver for this exact board does -- AXP173_Class::getLongPressIRQState()
+     * reads 0x44 & 0x01 and clears it by writing 0x01 to 0x44 -- and it is why a
+     * long press used to produce nothing at all: 0x46 holds the battery and charge
+     * events, so the PEK bit we were testing there was never set. */
+    int st = axp173_read_reg(AXP_REG_IRQST1);
 
     if (st < 0)
         return false;
 
     if ((unsigned int)st & AXP_IRQ_PEK_LONG) {
         /* Status bits are write-1-to-clear. */
-        axp173_write_reg(AXP_REG_IRQST3, AXP_IRQ_PEK_LONG);
+        axp173_write_reg(AXP_REG_IRQST1, AXP_IRQ_PEK_LONG);
         return true;
     }
 

@@ -55,9 +55,9 @@ void button_init_device(void)
     }
 
 #ifdef HAVE_AXP173
-    /* Pad 43 defaults to UART0 TX in the IO MUX, so it has to be switched to the
-     * GPIO function before it can be read. The IRQ line is active low, so it
-     * needs a pull-up.
+    /* Pad 43 is the AXP173 IRQ output. It is configured because the line is cheap to
+     * set up and a future board may route PEK events to it, but nothing reads it:
+     * see the poll in button_read_device() for why the pin cannot be trusted here.
      */
     io_mux_select_gpio(PIN_PMU_IRQ);
     gpio_input_enable(PIN_PMU_IRQ, 1);
@@ -230,17 +230,36 @@ int button_read_device(int *data)
     }
 
 #ifdef HAVE_AXP173
-    /* The PEK power key is the only way to turn the board off, and the chip
-     * latches the press rather than reporting a level. Reading the IRQ pin first
-     * keeps this off the I2C bus unless something actually happened.
+    /* The PEK power key is the only way to turn the board off, and the chip latches
+     * the press rather than reporting a level: REG 0x44 bit 0 sets when the press
+     * outlasts the long-press threshold (1 s here) and stays set until written back.
      *
-     * sys_poweroff() is the clean path: it runs the shutdown sequence (flush the
-     * audiobuffer, save settings, close the card) and only then reaches
-     * power_off(), which commands the PMU. A raw hardware PEK shutdown does none
-     * of that.
+     * This deliberately does not consult the IRQ pin any more. That pin only reflects
+     * *enabled* events, and the vendor driver for this board zeroes every enable
+     * register, reads the latch directly, and never uses its GPIO 43 macro -- so the
+     * pin was not a witness to anything, and gating on it meant sys_poweroff() was
+     * never reached. A long press therefore did nothing until the chip's own
+     * power-off counter expired, which is the 10-second behaviour this replaces.
+     *
+     * The read costs about 1.6 ms of I2C, so it is taken once every 100 ms rather than
+     * on every tick: this function runs at HZ in the tick thread. A 100 ms granularity
+     * adds negligible latency to a threshold measured in seconds, and keeps the bus
+     * clear for the codec and the expander.
+     *
+     * sys_poweroff() is the clean path: it queues SYS_POWEROFF, the main thread runs
+     * clean_shutdown() (stop the recorder, bookmark, flush settings and the dircache),
+     * then shutdown_hw() (close the codec, shut the panel), and only then reaches our
+     * power_off(), which commands the PMU. A raw hardware PEK shutdown does none of
+     * that, and its counter cannot be recalled once it has started.
      */
-    if (!gpio_read_pin(PIN_PMU_IRQ) && axp173_power_key_pressed())
-        sys_poweroff();
+    static unsigned int pek_poll_div;
+
+    if (++pek_poll_div >= (HZ / 10))
+    {
+        pek_poll_div = 0;
+        if (axp173_power_key_pressed())
+            sys_poweroff();
+    }
 #endif
 
     return b;
