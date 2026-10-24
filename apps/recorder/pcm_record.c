@@ -36,6 +36,7 @@
 #define LOGF_ENABLE
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern uint32_t xtensa_pcm_slots[4];
+extern uint32_t xtensa_enc_stamp[4];
 #endif
 #include "logf.h"
 #include "thread.h"
@@ -1847,9 +1848,12 @@ static int enc_pcmbuf_read(void *buffer, int count)
     if (pcmrd_trace > 0)
     {
         pcmrd_trace--;
-        /* Destination and byte count of the copy about to happen. If the
-           destination is not inside the arena this write is what corrupts the
-           frame whose return address the fault then executes. */
+        /* Destination and byte count of the copy about to happen, in a slot the
+           button and SD paths cannot evict. If this destination plus this length
+           reaches codec_stack (0x3fc......), the copy is what destroyed the return
+           address the fault then executed. */
+        xtensa_enc_stamp[2] = (uint32_t)(uintptr_t)buffer;
+        xtensa_enc_stamp[3] = (uint32_t)size;
         xtensa_breadcrumb("ENCR", (unsigned long)buffer, (unsigned long)size);
     }
 #endif
@@ -1985,6 +1989,8 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
         /* The chunk handed to the encoder, and the ring geometry it came from.
            The arena is PSRAM, so a pointer outside 0x3c...... means the ring
            maths sent the encoder somewhere it should never have been. */
+        xtensa_enc_stamp[0] = (uint32_t)(uintptr_t)data;
+        xtensa_enc_stamp[1] = (uint32_t)need;
         xtensa_breadcrumb("ENCB", (unsigned long)data, (unsigned long)need);
     }
 

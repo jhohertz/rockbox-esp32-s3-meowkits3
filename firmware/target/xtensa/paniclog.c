@@ -126,6 +126,19 @@ uint32_t xtensa_codec_api_slot __attribute__((section(".noinit")));
  * reset, and both writers run before the codec image is entered. */
 uint32_t xtensa_pcm_slots[4] __attribute__((section(".noinit"), aligned(4)));
 
+/* The encoder's last buffer request and the last PCM copy, as values rather than
+ * addresses: [0] chunk handed to the codec, [1] slots requested, [2] destination
+ * the copy wrote, [3] bytes it wrote.
+ *
+ * These are dedicated slots, not breadcrumb entries. The breadcrumb ring is 40
+ * slots and the button and SD paths stamp it constantly -- one capture showed
+ * 23,133 entries -- so an encoder stamp written moments before a fault had already
+ * been pushed out of the ring by the time the next boot read it. A last-value slot
+ * cannot be evicted, and the only question left is what the copy actually wrote
+ * into. .noinit survives the reset, so nothing needs to happen in the panic path
+ * for these to be reportable. */
+uint32_t xtensa_enc_stamp[4] __attribute__((section(".noinit"), aligned(4)));
+
 void xtensa_build_id_stamp(const char *id)
 {
     int i;
@@ -901,6 +914,23 @@ int xtensa_paniclog_pcm_text(char *buf, int bufsize)
                     (unsigned long)bt->pcm[2], (unsigned long)bt->pcm[3]);
 }
 
+/* The last encoder buffer request and the last PCM copy, straight out of .noinit.
+ * Written by pcm_record.c, so the report reads them without the panic handler
+ * having to do anything. */
+int xtensa_paniclog_enc_text(char *buf, int bufsize)
+{
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (xtensa_enc_stamp[2] == 0 && xtensa_enc_stamp[0] == 0)
+        return 0;   /* nothing stamped yet */
+
+    return snprintf(buf, bufsize, "encb %08lx/%lu encr %08lx/%lu",
+                    (unsigned long)xtensa_enc_stamp[0],
+                    (unsigned long)xtensa_enc_stamp[1],
+                    (unsigned long)xtensa_enc_stamp[2],
+                    (unsigned long)xtensa_enc_stamp[3]);
+}
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -1062,9 +1092,9 @@ void xtensa_crash_report_logf(void)
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, one backtrace line, two handover lines, the PCM slots, two
-     * trail entries and the build line come to roughly 430 bytes; the cache line
-     * only appears when the latch reported something. */
+     * interrupted SP, one backtrace line, two handover lines, the PCM slots, the
+     * encoder copy stamp and the build line come to roughly 400 bytes; the cache
+     * line only appears when the latch reported something. */
     for (back = 0; back < 1; back++)
     {
         len = xtensa_paniclog_backtrace_text(line, sizeof line, back);
@@ -1089,18 +1119,14 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
-    /* The two most recent trail entries. The encoder path stamps the buffer it
-     * hands the codec and the destination the PCM copy writes into here rather
-     * than through the console, because CDC cannot survive the crash that follows
-     * -- the ring resets with the chip. Newest first, same order as the debug
-     * page. */
-    for (back = 0; back < 2; back++)
-    {
-        len = xtensa_breadcrumb_back(back, line, sizeof line);
-        if (len == 0)
-            break;
+    /* The last buffer handed to the encoder and the last PCM copy, from dedicated
+     * .noinit slots. The trail ring is the wrong place for these: 40 slots against
+     * a button and SD path that stamps it continuously means the encoder's entry is
+     * gone before the next boot reads it. This is the value that says whether the
+     * copy wrote into codec_stack. */
+    len = xtensa_paniclog_enc_text(line, sizeof line);
+    if (len > 0)
         logf("rb %s", line);
-    }
 
     /* Which image is reporting, and which one crashed. They differ whenever a
      * flash happened without the chip restarting -- the reset pulse cannot reach
