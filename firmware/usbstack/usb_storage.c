@@ -452,28 +452,6 @@ static int usb_storage_get_config_descriptor(unsigned char *dest,int max_packet_
 static int usb_handle = 0;
 #endif
 
-#ifdef USB_STATIC_ALLOC
-/* File scope rather than function scope so that a target can offer this same
- * internal-SRAM, DMA-capable region to another class driver while mass storage is
- * not the active profile -- see usb_audio_target_rx_buffer(). The USB profiles are
- * mutually exclusive, so the region is idle whenever a different class is
- * streaming, and on a target whose DMA master cannot reach the core allocator's
- * pool that is the difference between audio and silence. */
-unsigned char usb_storage_transfer_buffer[ALLOCATE_BUFFER_SIZE]
-    USB_DEVBSS_ATTR __attribute__((aligned(32)));
-#endif
-
-/* NULL when the buffer comes out of core_alloc(): that pool may be memory the DMA
- * master cannot reach, and it is not ours to hand out to another driver. */
-void *usb_storage_transfer_buffer_get(void)
-{
-#ifdef USB_STATIC_ALLOC
-    return (void *)usb_storage_transfer_buffer;
-#else
-    return NULL;
-#endif
-}
-
 /* Sets up the buffers and primes the rx endpoint for the first command.
  * The buffers are allocated only once Rockbox has handed the storage over:
  * the host configures the device before every thread has acknowledged the
@@ -489,7 +467,9 @@ static void start_receiving_commands(void)
         USB_DEVBSS_ATTR __attribute__((aligned(32)));
     cbw_buffer = (void *)_cbw_buffer;
 
-    tb.transfer_buffer = (void *)usb_storage_transfer_buffer;
+    static unsigned char _transfer_buffer[ALLOCATE_BUFFER_SIZE]
+        USB_DEVBSS_ATTR __attribute__((aligned(32)));
+    tb.transfer_buffer = (void *)_transfer_buffer;
 #ifdef USB_USE_RAMDISK
     static unsigned char _ramdisk_buffer[RAMDISK_SIZE*SECTOR_SIZE];
     ramdisk_buffer = _ramdisk_buffer;
