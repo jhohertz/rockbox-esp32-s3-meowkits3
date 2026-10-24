@@ -35,13 +35,8 @@
  * through breadcrumbs into .noinit instead, which survives. */
 #define LOGF_ENABLE
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+extern void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
 extern uint32_t xtensa_pcm_slots[4];
-extern uint32_t xtensa_enc_stamp[5];
-
-/* Written into the encoder stamp slots before the codec runs, so that a slot still
- * holding it at fault time means the function never ran, while a real pointer means
- * it ran and the slot was overwritten afterwards. */
-#define XT_ENC_STAMP_MAGIC 0xC0DEC0DEu
 #endif
 #include "logf.h"
 #include "thread.h"
@@ -566,14 +561,9 @@ static void init_rec_buffers(void)
     xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
     xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
 
-    /* Poison the stamp slots the encoder is expected to fill. Captures showed the
-     * same garbage in them across two builds whose addresses had moved, and the
-     * call counter holding 2340727405, so the slots were either never written or
-     * written and then clobbered -- and stale DRAM looks identical either way. The
-     * magic tells them apart. */
-    xtensa_enc_stamp[0] = XT_ENC_STAMP_MAGIC;
-    xtensa_enc_stamp[2] = XT_ENC_STAMP_MAGIC;
-    xtensa_enc_stamp[4] = 0;
+    /* A boundary in the uncached trail, so the report can tell this session's
+     * entries from a previous boot's. */
+    xtensa_breadcrumb_rtc("RREC", 0, 0);
 #endif
 
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
@@ -1862,16 +1852,11 @@ static int enc_pcmbuf_read(void *buffer, int count)
     if (pcmrd_trace > 0)
     {
         pcmrd_trace--;
-        /* Destination and byte count of the copy about to happen, in a slot the
-           button and SD paths cannot evict. If this destination plus this length
-           reaches codec_stack (0x3fc......), the copy is what destroyed the return
-           address the fault then executed. */
-        xtensa_enc_stamp[2] = (uint32_t)(uintptr_t)buffer;
-        xtensa_enc_stamp[3] = (uint32_t)size;
-        /* A count, so a zero in the report means enc_read was never entered at
-           all, as distinct from its stamps being lost. */
-        xtensa_enc_stamp[4]++;
-        xtensa_breadcrumb("ENCR", (unsigned long)buffer, (unsigned long)size);
+        /* Destination and byte count of the copy about to happen, written to RTC
+           slow because a store to cached DRAM does not survive the panic. If this
+           destination plus this length reaches codec_stack (0x3fc......), the copy
+           is what destroyed the return address. */
+        xtensa_breadcrumb_rtc("ENCR", (unsigned long)buffer, (unsigned long)size);
     }
 #endif
 
@@ -2006,8 +1991,7 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
         /* The chunk handed to the encoder, and the ring geometry it came from.
            The arena is PSRAM, so a pointer outside 0x3c...... means the ring
            maths sent the encoder somewhere it should never have been. */
-        xtensa_enc_stamp[0] = (uint32_t)(uintptr_t)data;
-        xtensa_enc_stamp[1] = (uint32_t)need;
+        xtensa_breadcrumb_rtc("ENCB", (unsigned long)data, (unsigned long)need);
         xtensa_breadcrumb("ENCB", (unsigned long)data, (unsigned long)need);
     }
 

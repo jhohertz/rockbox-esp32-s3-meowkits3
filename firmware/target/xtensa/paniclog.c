@@ -126,21 +126,6 @@ uint32_t xtensa_codec_api_slot __attribute__((section(".noinit")));
  * reset, and both writers run before the codec image is entered. */
 uint32_t xtensa_pcm_slots[4] __attribute__((section(".noinit"), aligned(4)));
 
-/* The encoder's last buffer request and last PCM copy, as values: [0] chunk
- * handed to the codec, [1] slots requested, [2] destination the copy wrote,
- * [3] bytes it wrote, [4] how many times enc_pcmbuf_read has been entered.
- *
- * These live in .noinit, which is *cached* DRAM, and that matters: a store here
- * stays in the D-cache until something evicts the line, and a panic resets the
- * chip with the cache invalidated, so the store never reaches memory. That is
- * why the first capture of this showed the same garbage in every crash -- the
- * values were written microseconds before the fault and lost with the cache, and
- * only appeared unwritten because pcm_slots, written seconds earlier at init,
- * had been evicted and written back normally. So the panic handler reads these
- * while the caches are still intact and copies them into RTC, which is not
- * cached. The slots are the encoder's mailbox; RTC is what survives. */
-uint32_t xtensa_enc_stamp[5] __attribute__((section(".noinit"), aligned(4)));
-
 void xtensa_build_id_stamp(const char *id)
 {
     int i;
@@ -402,6 +387,46 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 
     return snprintf(buf, bufsize, "%s a=%08lx b=%08lx\n",
                     tag, (unsigned long)slot->a, (unsigned long)slot->b);
+}
+
+/* Newest-first reader for the RTC trail, for the boot report. The trail is written
+ * by xtensa_breadcrumb_rtc(), which is the only breadcrumb medium that survives a
+ * panic: RTC slow is not cached, so a store made microseconds before the fault is
+ * still there on the next boot, unlike .noinit in cached DRAM -- and unlike the
+ * 40-slot .noinit breadcrumb ring, which the button and SD paths cycle through
+ * thousands of times (one capture reported 23,133 entries), evicting whatever the
+ * encoder wrote. Only the codec path stamps this ring while recording, so the
+ * newest entries are the ones that matter. */
+int xtensa_paniclog_rtc_back(int back, char *buf, int bufsize)
+{
+    volatile struct rtc_store *s =
+        (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
+    const volatile struct rtc_slot *slot;
+    char tag[5];
+    uint32_t code;
+    uint32_t n;
+    int i;
+
+    if (buf == NULL || bufsize <= 0 || back < 0)
+        return 0;
+    if (s->magic != XT_RTC_SLOW_MAGIC || s->next == 0)
+        return 0;
+
+    n = s->next < XT_RTC_SLOTS ? s->next : XT_RTC_SLOTS;
+    if ((uint32_t)back >= n)
+        return 0;
+
+    /* next only increases and slots are written by absolute index, so the newest
+     * entry is next-1 however many times the ring has wrapped. */
+    slot = &s->slot[(s->next - 1 - (uint32_t)back) % XT_RTC_SLOTS];
+
+    code = slot->tag;
+    for (i = 0; i < 4; i++)
+        tag[i] = (char)((code >> (8 * i)) & 0xff);
+    tag[4] = '\0';
+
+    return snprintf(buf, bufsize, "%s %08lx %08lx", tag,
+                    (unsigned long)slot->a, (unsigned long)slot->b);
 }
 
 /* The head line carries the RTC count as well as the reset reason: after a
@@ -765,11 +790,6 @@ struct bt_rtc
        pcm_ridx, enc_buffer. */
     uint32_t pcm[4];
     uint32_t pcm_magic;
-    /* The encoder's own stamps, read out of .noinit while the caches were still
-       coherent: chunk pointer, slots requested, copy destination, copy length,
-       and the enc_read call count. */
-    uint32_t enc[5];
-    uint32_t enc_magic;
 };
 
 void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sps,
@@ -943,24 +963,6 @@ void xtensa_paniclog_pcm_slots(const unsigned long *words, int n)
     bt->pcm_magic = XT_BT_RTC_MAGIC;
 }
 
-/* Copy the encoder stamps the handler read out of .noinit. RTC slow is not
- * cached, so this is the only way a value written moments before a fault can
- * reach the next boot. */
-void xtensa_paniclog_enc_stamp(const unsigned long *words, int n)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-    int i;
-
-    if (words == NULL || n < 1)
-        return;
-    if (n > 5)
-        n = 5;
-
-    for (i = 0; i < n; i++)
-        bt->enc[i] = (uint32_t)words[i];
-    bt->enc_magic = XT_BT_RTC_MAGIC;
-}
-
 /* One line: the copy routine, the PCM ring base, the read index and the encode
  * ring base. pcm_copyfn is the interesting one -- it is a function pointer in
  * .bss set to memcpy, and executing it is what a "fetch at a DRAM address" fault
@@ -977,25 +979,6 @@ int xtensa_paniclog_pcm_text(char *buf, int bufsize)
     return snprintf(buf, bufsize, "pcm fn %08lx buf %08lx ridx %08lx enc %08lx",
                     (unsigned long)bt->pcm[0], (unsigned long)bt->pcm[1],
                     (unsigned long)bt->pcm[2], (unsigned long)bt->pcm[3]);
-}
-
-/* The last buffer handed to the encoder and the last PCM copy, as the panic
- * handler found them. The count is what distinguishes "the encoder never ran"
- * from "its stamps were lost with the cache": a zero count means enc_read was
- * never entered at all. */
-int xtensa_paniclog_enc_text(char *buf, int bufsize)
-{
-    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
-
-    if (buf == NULL || bufsize <= 0)
-        return 0;
-    if (bt->magic != XT_BT_RTC_MAGIC || bt->enc_magic != XT_BT_RTC_MAGIC)
-        return 0;
-
-    return snprintf(buf, bufsize, "encb %08lx/%lu encr %08lx/%lu n%lu",
-                    (unsigned long)bt->enc[0], (unsigned long)bt->enc[1],
-                    (unsigned long)bt->enc[2], (unsigned long)bt->enc[3],
-                    (unsigned long)bt->enc[4]);
 }
 
 void xtensa_paniclog_dump(void)
@@ -1156,45 +1139,37 @@ void xtensa_crash_report_logf(void)
     (void)pseudo;
     xtensa_paniclog_frame_info(&exc, &pseudo, &count);
 
-    /* The caller chain: five raw PCs per line, three lines, so fifteen of the
-     * sixteen kept. Six was not enough -- the exception handler runs on the
-     * faulting thread's own stack, so its frames occupy the first few slots and
-     * the interrupted thread's frames only appear above them.
-     *
-     * The whole thing is bounded on purpose: usb_serial_send() has a 512-byte
+    /* The whole thing is bounded on purpose: usb_serial_send() has a 512-byte
      * ring drained by transfers the host reads, and a payload that overruns it
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, the window state, one backtrace line, the encoder callbacks,
-     * the PCM slots, the encoder copy stamp and the build line come to roughly 430
-     * bytes; the cache line only appears when the latch reported something. */
-    for (back = 0; back < 1; back++)
-    {
-        len = xtensa_paniclog_backtrace_text(line, sizeof line, back);
-        if (len == 0)
-            break;
-        logf("rb %s", line);
-    }
-
-    /* The encoder callbacks as the fault found them. The pointer chain is omitted:
-     * three captures have shown slot and pointer unchanged, so only the four
-     * callback words carry information. */
-    len = xtensa_paniclog_api_handover_text(line, sizeof line, 1);
-    if (len > 0)
-        logf("rb %s", line);
-
-    /* The pcm_record statics the encoder path dereferences, read live at fault. */
+     * interrupted SP, the window state, the PCM slots, three RTC trail entries and
+     * the build line come to roughly 420 bytes; the cache line only appears when
+     * the latch reported something.
+     *
+     * The backtrace walk is no longer reported. It reads a register-window chain
+     * through sp-16/sp-12, and DRAM survives a warm reset, so the slots can belong
+     * to the previous boot's stack: a capture whose encoder stamps proved the codec
+     * never reached enc_read still showed the exact return address of codec_run's
+     * call on that slot. The RTC trail below is written by the code itself and
+     * cannot be stale. */
     len = xtensa_paniclog_pcm_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
 
-    /* The last buffer handed to the encoder and the last PCM copy, read by the
-     * panic handler out of .noinit and carried in RTC. The count on the end says
-     * whether enc_read ever ran. */
-    len = xtensa_paniclog_enc_text(line, sizeof line);
-    if (len > 0)
-        logf("rb %s", line);
+    /* The uncached trail, newest first. CMD is the codec image's first call into
+     * the firmware, ENCB the buffer handed to the encoder, ENCR the PCM copy's
+     * destination and length, RREC the recording-buffer initialisation. Presence or
+     * absence of each is the answer to "how far did it get", and RTC slow is the
+     * only medium where presence or absence means anything at all. */
+    for (back = 0; back < 3; back++)
+    {
+        len = xtensa_paniclog_rtc_back(back, line, sizeof line);
+        if (len == 0)
+            break;
+        logf("rb rtc %s", line);
+    }
 
     /* Which image is reporting, and which one crashed. They differ whenever a
      * flash happened without the chip restarting -- the reset pulse cannot reach
