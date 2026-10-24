@@ -31,7 +31,6 @@
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern void xtensa_paniclog_set_reset(unsigned reason);
-extern void xtensa_paniclog_cdc_dump(void);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -108,18 +107,6 @@ static void rockbox_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
-static void crash_report_task(void *arg)
-{
-    (void)arg;
-    /* OTG attaches about a second after boot and Rockbox's own init runs after
-     * that; eight seconds is comfortably past both without being long enough to
-     * matter. If CDC is not the configured function, usb_serial_send() drops the
-     * data instead of blocking, so guessing wrong costs nothing. */
-    vTaskDelay(pdMS_TO_TICKS(8000));
-    xtensa_paniclog_cdc_dump();
-    vTaskDelete(NULL);
-}
-
 void app_main(void)
 {
     /* IDF's console is USB-Serial-JTAG and the pads move to the OTG core about 865 ms
@@ -167,11 +154,4 @@ void app_main(void)
     if (handle == NULL)
         ESP_LOGE(TAG, "could not create the rockbox task (%d KB stack)",
                  ROCKBOX_STACK_BYTES / 1024);
-
-    /* The crash record for the host, once. Same priority as the Rockbox task and
-     * self-deleting, so it cannot starve anything; its stack comes from the heap
-     * rather than from the static region, which has no room left in it. */
-    if (xTaskCreatePinnedToCore(crash_report_task, "rbcrash", 768, NULL,
-                                ROCKBOX_TASK_PRIORITY, NULL, 0) != pdPASS)
-        ESP_LOGE(TAG, "could not create the crash report task");
 }
