@@ -846,7 +846,14 @@ int xtensa_paniclog_api_handover_text(char *buf, int bufsize, int line)
         return snprintf(buf, bufsize, "api slot %08lx ptr %08lx",
                         (unsigned long)bt->api[0], (unsigned long)bt->api[1]);
 
-    len = snprintf(buf, bufsize, "api w%d:", 120 + (line - 1) * 4);
+    /* One line, four words: offsets 136..148 of struct codec_api --
+     * enc_pcmbuf_read, enc_pcmbuf_advance, enc_encbuf_get_buffer and
+     * enc_encbuf_finish_buffer, which are the slots the image calls through. The
+     * handler used to capture offsets 120..148, which put memcmp, memchr, logf and
+     * qsort on the line: always healthy, and nothing to do with the fault. The
+     * eight words plus a second backtrace line were also what pushed this report
+     * past the 512-byte CDC ring, which is why the trail and build lines vanished. */
+    len = snprintf(buf, bufsize, "api enc:");
     for (i = 0; i < 4; i++)
     {
         uint32_t v = bt->api[2 + (line - 1) * 4 + i];
@@ -1056,7 +1063,7 @@ void xtensa_crash_report_logf(void)
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
      * interrupted SP, one backtrace line, two handover lines, the PCM slots, two
-     * trail entries and the build line come to roughly 460 bytes; the cache line
+     * trail entries and the build line come to roughly 430 bytes; the cache line
      * only appears when the latch reported something. */
     for (back = 0; back < 1; back++)
     {
@@ -1066,9 +1073,9 @@ void xtensa_crash_report_logf(void)
         logf("rb %s", line);
     }
 
-    /* The handover as the fault found it: line 0 is the pointer chain, line 1 the
-       API words that carry the encoder callbacks. The codec-load trace printed the
-       same fields healthy, so a difference here is the whole answer. */
+    /* The handover as the fault found it. Line 0 is the pointer chain, line 1 the
+       four encoder callbacks; the codec-load trace printed the same fields healthy,
+       so a difference here is the whole answer. */
     for (back = 0; back < 2; back++)
     {
         len = xtensa_paniclog_api_handover_text(line, sizeof line, back);
