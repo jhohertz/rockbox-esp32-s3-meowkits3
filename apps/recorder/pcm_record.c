@@ -548,6 +548,19 @@ static void init_rec_buffers(void)
 
     /* PCMBUF */
     pcm_buffer = CACHEALIGN_UP(buf); /* Line align */
+
+#ifdef CODEC_LOAD_API_TRACE
+    /* Recorded here as well as in enc_encbuf_get_buffer(): this runs before the
+     * codec is entered, so a fault-time read of zero means the slots were
+     * destroyed rather than never written. Without the early stamp, all-zero
+     * output was ambiguous between "get_buffer never ran" and "the stamp was
+     * broken" -- and it was the latter kind of ambiguity that cost a build. */
+    xtensa_pcm_slots[0] = (uint32_t)(uintptr_t)&pcm_copyfn;
+    xtensa_pcm_slots[1] = (uint32_t)(uintptr_t)&pcm_buffer;
+    xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
+    xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
+#endif
+
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
     buf = pcm_buffer + PCM_BUF_SIZE;
 

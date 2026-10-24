@@ -284,16 +284,17 @@ void esp_panic_handler(panic_info_t *info)
     }
 
     /* What the loaded image held at the instant of the fault: the address of its
-     * codec pointer, that pointer, and eight words of the API struct covering
-     * offsets 120..148 -- memcpy, memchr, logf, qsort, then enc_pcmbuf_read,
-     * enc_pcmbuf_advance, enc_encbuf_get_buffer, enc_encbuf_finish_buffer. The
-     * whole block rather than only the slot that faulted, because "one field was
-     * written" and "the region was" are different bugs and only the block says
-     * which. Both pointers are range-checked before dereference: at debug
+     * codec pointer, that pointer, and four words of the API struct at offsets
+     * 136..148 -- enc_pcmbuf_read, enc_pcmbuf_advance, enc_encbuf_get_buffer,
+     * enc_encbuf_finish_buffer. Those four are the slots the image calls. An
+     * earlier version read offsets 120..133 as well (memcmp, memchr, logf, qsort),
+     * which were always healthy and said nothing about the fault, and printing
+     * eight words instead of four is what pushed the boot report past the CDC
+     * ring. Both pointers are range-checked before dereference: at debug
      * exception level a fault here has no handler left, and losing the record
      * would be worse than not reading it. */
     {
-        unsigned long handover[10] = { 0 };
+        unsigned long handover[6] = { 0 };
         uint32_t slot_addr = xtensa_codec_api_slot;
         int i;
 
@@ -305,11 +306,11 @@ void esp_panic_handler(panic_info_t *info)
             handover[1] = api;
             if (api != 0 && img_word_is_readable(api))
             {
-                for (i = 0; i < 8; i++)
-                    handover[2 + i] = *(volatile uint32_t *)(api + 120 + i * 4);
+                for (i = 0; i < 4; i++)
+                    handover[2 + i] = *(volatile uint32_t *)(api + 136 + i * 4);
             }
         }
-        xtensa_paniclog_api_handover(handover, 10);
+        xtensa_paniclog_api_handover(handover, 6);
     }
 
     /* The pcm_record statics, read live through the addresses the recorder
