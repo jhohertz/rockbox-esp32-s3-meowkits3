@@ -249,7 +249,9 @@ struct panic_rtc
  * sleep_modes.c) are placed at the start of the bank, and RTC fast is what this
  * build uses as heap, so 0x50001400 is unclaimed. Word stores only, as above. */
 #define XT_FRAME_RTC_BASE   0x50001400u
-#define XT_FRAME_RTC_MAGIC  0x47415246u   /* "FRAG" */
+#define XT_FRAME_RTC_MAGIC  0x47473252u   /* "R2GR": bumped from "FRAG", whose struct had no
+                             * register slots. Anything under the old magic is stale and reads
+                             * as nothing rather than as shifted words. */
 #define XT_FRAME_WORDS      32
 
 struct frame_rtc
@@ -260,7 +262,23 @@ struct frame_rtc
     uint32_t pseudo;      /* info->pseudo_excause */
     uint32_t count;
     uint32_t word[XT_FRAME_WORDS];
+    /* Read from the registers rather than the frame, and only when PS.INTLEVEL
+     * says they are legal. On a double exception the ISA shifts the original
+     * EPC1 down to EPC2, so epc2 is the faulting instruction and depc the address
+     * that doubled -- neither appears in any frame the handler can see. */
+    uint32_t have_regs;   /* magic above, set once the slots are written */
+    uint32_t ps;
+    uint32_t epc1;
+    uint32_t epc2;
+    uint32_t epc3;
+    uint32_t epc4;
+    uint32_t depc;
+    uint32_t cache_vaddr; /* the access the cache refused */
+    uint32_t cache_size;  /* and how wide it was */
+    uint32_t regs_magic;
 };
+
+#define XT_REGS_RTC_MAGIC 0x47524732u   /* "2GR" */
 
 static volatile struct rtc_store *rtc_store =
     (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
@@ -497,6 +515,75 @@ int xtensa_paniclog_frame_words(char *buf, int bufsize, int line)
     return len;
 }
 
+/* Store ps, epc1..epc4, depc and the cache-error detail. regs[] is the fixed
+ * order documented in idf-app/panic_cdc.c: ps, epc1, epc2, epc3, epc4, depc,
+ * cache_vaddr, cache_size. Words that could not be read legally are zero and
+ * the line says so, rather than presenting a zero as if it were a real value. */
+void xtensa_paniclog_frame_regs(const unsigned long *regs, int count)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (regs == NULL || count < 1)
+        return;
+    if (fr->magic != XT_FRAME_RTC_MAGIC)
+    {
+        /* Nothing has been retained yet; the register slots travel with the
+         * frame, so without one there is nothing to correlate them against. */
+        fr->magic = XT_FRAME_RTC_MAGIC;
+        fr->seq = 0;
+        fr->count = 0;
+    }
+
+    fr->ps = (uint32_t)regs[0];
+    if (count > 1) fr->epc1 = (uint32_t)regs[1];
+    if (count > 2) fr->epc2 = (uint32_t)regs[2];
+    if (count > 3) fr->epc3 = (uint32_t)regs[3];
+    if (count > 4) fr->epc4 = (uint32_t)regs[4];
+    if (count > 5) fr->depc = (uint32_t)regs[5];
+    if (count > 6) fr->cache_vaddr = (uint32_t)regs[6];
+    if (count > 7) fr->cache_size = (uint32_t)regs[7];
+    fr->regs_magic = XT_REGS_RTC_MAGIC;
+}
+
+/* One line with the register slots. Returns 0 when nothing was stored. Slots that
+ * could not be read at the exception level are printed as ----- so an absent
+ * value cannot be mistaken for a legitimate address of 0. */
+int xtensa_paniclog_frame_regs_text(char *buf, int bufsize)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC || fr->regs_magic != XT_REGS_RTC_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize,
+                    "ps %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
+                    (unsigned long)fr->ps, (unsigned long)fr->epc1,
+                    (unsigned long)fr->epc2, (unsigned long)fr->epc3,
+                    (unsigned long)fr->epc4, (unsigned long)fr->depc);
+}
+
+int xtensa_paniclog_frame_cache(char *buf, int bufsize)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC || fr->regs_magic != XT_REGS_RTC_MAGIC)
+        return 0;
+    /* Zero means the latch reported nothing, not an access at address 0. */
+    if (fr->cache_vaddr == 0)
+        return 0;
+
+    return snprintf(buf, bufsize, "cache vaddr %08lx size %lu",
+                    (unsigned long)fr->cache_vaddr,
+                    (unsigned long)fr->cache_size);
+}
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -614,7 +701,7 @@ void xtensa_paniclog_dump(void)
  */
 void xtensa_crash_report_logf(void)
 {
-    char line[64];
+    char line[96];
     int len;
     int back;
     unsigned long exc, pseudo, count;
@@ -630,23 +717,20 @@ void xtensa_crash_report_logf(void)
          xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count(),
          (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
 
-    /* Newest first, matching the debug page and the panic handler's own report.
-     * Four, not six: the frame lines below need the room. The whole report is
-     * panic + reset + 4 trail + frame header + 4 word lines, about 400 bytes,
-     * inside the 512-byte ring that overflowed when this reported forty entries.
-     * The full ring stays in SRAM and on the screen, where it costs nothing. */
-    for (back = 0; back < 4; back++)
-    {
-        if (xtensa_breadcrumb_back(back, line, sizeof line) == 0)
-            break;
-        logf("rb trail %s", line);
-    }
+    /* The register slots first, because they are the only thing that can name
+     * the faulting instruction: on a double exception the original EPC1 was
+     * shifted to EPC2 and the frame the handler sees belongs to the debug
+     * context. The frame words follow for context. Both together are roughly 430
+     * bytes, inside the 512-byte ring that overflowed when this reported forty
+     * trail entries; the trail itself stays on the debug page and in SRAM. */
+    len = xtensa_paniclog_frame_regs_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
 
-    /* The frame, sixteen words in four lines. Sixteen covers both candidate
-     * layouts: XtExcFrame runs exit, pc, ps, a0..a15, sar, exccause, excvaddr
-     * (through index 15), and an XtDbFrame's epc1..epc4 sit in the same early
-     * slots. More than that would push the report past what the ring can hold
-     * alongside the lines above. */
+    len = xtensa_paniclog_frame_cache(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
+
     xtensa_paniclog_frame_info(&exc, &pseudo, &count);
     if (count > 0)
     {
