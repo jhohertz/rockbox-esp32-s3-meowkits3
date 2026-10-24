@@ -349,7 +349,6 @@ bool dbg_ports(void);
 bool dbg_hw_info(void);
 #endif
 
-
 #if defined(CPU_XTENSA)
 /* Target hook: put a panic message on the console and into retained memory.
  * panicf() draws the text on the LCD and then aborts, and IDF's abort banner
@@ -365,12 +364,6 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
  * watchdog or a panic performs. Use it for the steps that can end in a hang. */
 void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
 void xtensa_paniclog_stamp_boot(unsigned long seq);
-/* Read the retained trail back, oldest first, formatted as "tag aaaa bbbb" lines.
- * xtensa_paniclog_dump() prints it on the boot console, but that console is
- * USB-Serial-JTAG and the pads may be owned by the OTG core at exactly the moment the
- * trail matters -- so a target with a USB path can fetch it instead. Returns the number
- * of bytes written, and writes at most `slots` of the most recent entries. */
-int xtensa_breadcrumb_window(char *buf, int bufsize, int start, int count);
 #endif
 
 #endif /* __SYSTEM_H__ */

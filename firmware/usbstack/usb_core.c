@@ -475,26 +475,10 @@ void usb_core_init(void)
 
 void usb_core_exit(void)
 {
-#if defined(CPU_XTENSA)
-    /* Bracketed for the esp32s3 unplug crash: a task-watchdog reset with no panic
-     * message and no usbRel means something between the cable event and the pad
-     * release busy-waits. These two notes say which side of usb_core_do_set_config()
-     * (the class releases) the hang is on. Written to RTC slow because a watchdog reset
-     * clears the .noinit SRAM ring. */
-    xtensa_breadcrumb_rtc("cSet0", usb_state, 0);
-#endif
     usb_core_do_set_config(0);
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb_rtc("cCls0", usb_state, 0);
-#endif
     if(initialized) {
         usb_drv_exit();
         initialized = false;
-#if defined(CPU_XTENSA)
-        /* The controller is gone once this returns; anything that hangs from here on is
-         * above the driver. */
-        xtensa_breadcrumb_rtc("dRet", usb_state, 0);
-#endif
     }
     usb_state = DEFAULT;
 #ifdef HAVE_USB_CHARGING_ENABLE
