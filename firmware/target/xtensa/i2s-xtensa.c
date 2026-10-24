@@ -1135,9 +1135,6 @@ static void sink_init(void)
      * 10ms delays to do it, belongs to the recording session that needs it and
      * nowhere else. It now happens in pcm_rec_dma_start(). */
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
-
-    xt_arena_dump("at boot");
-
 }
 
 struct pcm_sink builtin_pcm_sink = {

@@ -93,6 +93,27 @@ reservations below `codecbuf`. The real idle figure at that point was 25,284 byt
 the current build measures **26,636**, and §3 shows every byte of where the rest
 went.
 
+### The buflib arena is 4 MiB of PSRAM, and recording fits in it
+
+`core_allocator_init()` maps the core context over `audiobuffer..audiobufend`, and
+those two linker symbols measure exactly what they say in the linked image:
+`0x3c1612e0` and `0x3c5612e0`, i.e. **4 MiB**, in the PSRAM part of the Ext_RAM
+window. `init_rec_buffers()` (`apps/recorder/pcm_record.c`) carves one maximum
+allocation into `|PCMBUF|STREAMBUF|FILENAME|ENCBUF|`, which for this target is
+512 KiB + 64 KiB + 276 B before the encoder ring gets anything. Even with dircache
+and the tagcache buffers committed first the grant is far above that, so the
+encoder ring is not the degenerate zero-length case.
+
+The guard in `on_init_recording()` is still weaker than the layout needs: it tests
+`rec_buffer_size < PCM_BUF_SIZE`, which passes when the grant is *exactly* the ring
+size and leaves `enc_buflen` 0 and `stream_buffer`/`fname_buf`/`enc_buffer` pointing
+past the allocation. Nothing observed is in that state, but the check does not
+exclude it.
+
+`xt_arena_dump()` walked the allocator to answer that question and has been removed;
+the two numbers above are the answer, and the walk was only ever reachable through a
+console this profile does not have.
+
 ### DRAM is now close enough to the edge to need a guard
 
 A 1 KiB margin means the next internal-SRAM static, or any IDF bump that grows
@@ -430,7 +451,6 @@ needs it:
 | the USB Audio debug page | the screen | `Filled`, `Min`/`Max`, `Frames dropped`, samples used per frame |
 | `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state, **the retained panic text and reset reason** |
 | the panic screen itself | the screen | held for 20 s or until a key is pressed — see `system_exception_wait()` |
-| `xt_arena_dump("at boot")` | boot console, if a terminal was open before the power cycle | who holds the buflib arena |
 | `xtensa_paniclog_dump()` | boot console, first thing `app_main` does | previous boot's SRAM trail, reset reason, RTC trail, panic text |
 | `xt_usb_irqs` -> the `usbIRQ` trail entry | same dump | whether the OTG core interrupts at all |
 | `dscr_streak` | not printed; it drives `tx_recover()` | whether a descriptor error is a transient or a storm |
@@ -453,19 +473,11 @@ rides on the speaker's 3-4 kHz resonance. Practical rig notes: start playback be
 recording or PipeWire kills the capture stream, and `pw-record` has no `--format` flag.
 
 
+```sh
 # every codec must link at the firmware's codecbuf or apps/codecs.c rejects it
 FW=$($BIN/xtensa-esp32s3-elf-nm rockbox.elf | awk '$3=="codecbuf"{print $1}')
 for c in $(find lib/rbcodec/codecs -name '*.codec'); do
   o=$($BIN/xtensa-esp32s3-elf-readelf -l "$c" | awk '/LOAD/{print $3; exit}')
   [ "$o" != "0x$FW" ] && echo "MISMATCH $c $o"
-done
-
-# Name every arena allocation from an xt_arena_dump() log: buflib stores no
-# owner names, but it does store the ops pointer, and every caller passes its own
-# file-static struct buflib_callbacks, which carries a symbol. dircache is the
-# exception -- it passes &dircache_runinfo.ops, a field, so resolve it to the
-# nearest symbol *below* the pointer.
-for p in $(grep -ao 'ops=0x[0-9a-f]*' LOG | sed 's/ops=//' | sort -u); do
-  printf "%s " "$p"; $BIN/xtensa-esp32s3-elf-addr2line -e rockbox.elf -f $p | tail -1
 done
 ```

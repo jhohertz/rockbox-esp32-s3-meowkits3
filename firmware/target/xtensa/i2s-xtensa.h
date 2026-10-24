@@ -218,7 +218,6 @@ struct gdma_desc {
 
 void i2s_init(void);
 
-void xt_arena_dump(const char *why);        /* debug-xtensa.c: boot arena snapshot */
 #ifdef HAVE_RECORDING
 bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
 #endif
