@@ -27,6 +27,11 @@
 #include "string-extra.h"
 #include "pcm_record.h"
 #include "codecs.h"
+#ifdef CODEC_LOAD_API_TRACE
+/* logf() compiles away unless LOGF_ENABLE is set before logf.h is read. The
+ * codec API trace in this file is the only reason it is on here. */
+#define LOGF_ENABLE
+#endif
 #include "logf.h"
 #include "thread.h"
 #include "storage.h"
@@ -1812,6 +1817,24 @@ static int enc_pcmbuf_read(void *buffer, int count)
     size_t avail = pcmbuf_used();
     size_t size = count*PCM_SAMP_SIZE;
 
+    /* The encoder writes through `buffer`, which is the pointer it obtained from
+     * enc_encbuf_get_buffer() plus its own header offset, and it writes `size`
+     * bytes. If that pointer is inside the recording arena the write can only
+     * wrap within it; if it is a stack address then this copy is what corrupts
+     * the frames we see the fault in. Limited to the first calls of a session --
+     * the fault happens on the first one, and this is a per-frame path. */
+#ifdef CODEC_LOAD_API_TRACE
+    static int pcmrd_trace = 2;
+
+    if (pcmrd_trace > 0)
+    {
+        pcmrd_trace--;
+        logf("encrd buf %p count %d size %u ridx %u avail %u",
+             buffer, count, (unsigned)size, (unsigned)pcm_ridx,
+             (unsigned)avail);
+    }
+#endif
+
     if (count > 0 && avail >= size)
     {
         size_t endidx = pcm_ridx + size;
@@ -1929,6 +1952,22 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
 
     struct enc_chunk_data *data =
         encbuf_get_write_ptr(enc_widx, need, &enc_widx);
+
+    /* What the encoder is being handed to write into, and the geometry the
+       pointer came from. The arena is PSRAM, so a pointer outside 0x3c......
+       means the ring maths put the encoder's buffer somewhere it should never
+       have been. */
+#ifdef CODEC_LOAD_API_TRACE
+    static int encbuf_trace = 2;
+
+    if (encbuf_trace > 0)
+    {
+        encbuf_trace--;
+        logf("encbuf ptr %p need %u widx %u ridx %u buflen %u base %p",
+             (void *)data, (unsigned)need, (unsigned)enc_widx,
+             (unsigned)enc_ridx, (unsigned)enc_buflen, (void *)enc_buffer);
+    }
+#endif
 
     if (state == REC_STATE_IDLE)
         data->hdr.pre = 1;
