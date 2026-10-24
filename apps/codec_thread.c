@@ -39,10 +39,8 @@
 #include "logf.h"
 
 #ifdef CODEC_LOAD_API_TRACE
-/* Declared rather than included: firmware/target/xtensa is not on the apps include
- * path. These exist only while the recording crash is being chased, and the define
- * is a target opt-in in config/meowkits3.h, so no other target sees them. */
-extern void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
+/* Declared in firmware/export/system.h; the define is a target opt-in in
+ * config/meowkits3.h, so no other target stamps anything. */
 #endif
 
 /* macros to enable logf for queues
@@ -381,7 +379,7 @@ static long codec_get_command_callback(intptr_t *param)
      * call. Stamped into RTC slow rather than the .noinit breadcrumb ring because a
      * store to cached DRAM made moments before a fault is lost when the panic resets
      * the chip with the cache invalidated -- that cost a whole build. */
-    xtensa_breadcrumb_rtc("CMD", 0, 0);
+    xtensa_api_mark(XT_API_CMD, 0, 0);
 #endif
 
     yield();

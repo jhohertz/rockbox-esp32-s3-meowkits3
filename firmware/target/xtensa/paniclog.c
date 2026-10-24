@@ -389,44 +389,99 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
                     tag, (unsigned long)slot->a, (unsigned long)slot->b);
 }
 
-/* Newest-first reader for the RTC trail, for the boot report. The trail is written
- * by xtensa_breadcrumb_rtc(), which is the only breadcrumb medium that survives a
- * panic: RTC slow is not cached, so a store made microseconds before the fault is
- * still there on the next boot, unlike .noinit in cached DRAM -- and unlike the
- * 40-slot .noinit breadcrumb ring, which the button and SD paths cycle through
- * thousands of times (one capture reported 23,133 entries), evicting whatever the
- * encoder wrote. Only the codec path stamps this ring while recording, so the
- * newest entries are the ones that matter. */
-int xtensa_paniclog_rtc_back(int back, char *buf, int bufsize)
+/* The codec's own progress ring, in RTC slow at an offset nothing else uses.
+ *
+ * The shared breadcrumb ring above is 24 slots written by the USB and watchdog
+ * diagnostics as well: wRet is stamped once per tick, so codec entries were pushed
+ * out within milliseconds and the boot report showed uClk/uIn register dumps instead
+ * of the encoder path. Separation, not size, is the fix -- 24 more slots stamped the
+ * same way would evict just as fast.
+ *
+ * 0x50001800 sits above the four existing records (teardown ring 0x50001000, panic
+ * 0x50001200, exception frame 0x50001400 ending 0x500014cc, backtrace 0x50001600
+ * ending 0x500016dc) and inside the 8 KiB bank. Word stores only: RTC slow accepts
+ * nothing narrower on this chip. */
+#define XT_API_RTC_BASE   0x50001800u
+#define XT_API_RTC_MAGIC  0x49415052u   /* "RPAI" */
+#define XT_API_SLOTS      16
+
+struct api_slot
 {
-    volatile struct rtc_store *s =
-        (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
-    const volatile struct rtc_slot *slot;
-    char tag[5];
-    uint32_t code;
+    uint32_t id;
+    uint32_t a;
+    uint32_t b;
+};
+
+struct api_store
+{
+    uint32_t magic;
+    uint32_t next;
+    struct api_slot slot[XT_API_SLOTS];
+};
+
+static volatile struct api_store *api_store =
+    (volatile struct api_store *)XT_API_RTC_BASE;
+
+void xtensa_api_mark(enum xtensa_api_mark_id id, unsigned long a, unsigned long b)
+{
+    volatile struct api_store *s = api_store;
+    uint32_t i;
+
+    if ((int)id < XT_API_RREC || (int)id > XT_API_FIN)
+        return;
+
+    if (s->magic != XT_API_RTC_MAGIC)
+    {
+        /* First power-on, or the bank holds something else: start the ring fresh
+           rather than mixing a stale sequence with this one. */
+        s->magic = XT_API_RTC_MAGIC;
+        s->next  = 0;
+    }
+
+    i = s->next % XT_API_SLOTS;
+    s->slot[i].id = (uint32_t)id;
+    s->slot[i].a  = (uint32_t)a;
+    s->slot[i].b  = (uint32_t)b;
+    s->next++;
+}
+
+static const char *api_mark_name(uint32_t id)
+{
+    switch ((enum xtensa_api_mark_id)id)
+    {
+        case XT_API_RREC: return "rrec";
+        case XT_API_CMD:  return "cmd";
+        case XT_API_ENCB: return "enkb";
+        case XT_API_ENCR: return "encr";
+        case XT_API_ADV:  return "adv";
+        case XT_API_FIN:  return "fin";
+    }
+    return "?";
+}
+
+/* Newest first, for the boot report. Returns 0 when the ring is empty or back is
+ * past what it holds, so the caller can stop rather than print absent entries. */
+int xtensa_api_mark_back(int back, char *buf, int bufsize)
+{
+    volatile struct api_store *s = api_store;
+    const volatile struct api_slot *slot;
     uint32_t n;
-    int i;
 
     if (buf == NULL || bufsize <= 0 || back < 0)
         return 0;
-    if (s->magic != XT_RTC_SLOW_MAGIC || s->next == 0)
+    if (s->magic != XT_API_RTC_MAGIC || s->next == 0)
         return 0;
 
-    n = s->next < XT_RTC_SLOTS ? s->next : XT_RTC_SLOTS;
+    n = s->next < XT_API_SLOTS ? s->next : XT_API_SLOTS;
     if ((uint32_t)back >= n)
         return 0;
 
-    /* next only increases and slots are written by absolute index, so the newest
-     * entry is next-1 however many times the ring has wrapped. */
-    slot = &s->slot[(s->next - 1 - (uint32_t)back) % XT_RTC_SLOTS];
+    slot = &s->slot[(s->next - 1 - (uint32_t)back) % XT_API_SLOTS];
 
-    code = slot->tag;
-    for (i = 0; i < 4; i++)
-        tag[i] = (char)((code >> (8 * i)) & 0xff);
-    tag[4] = '\0';
-
-    return snprintf(buf, bufsize, "%s %08lx %08lx", tag,
-                    (unsigned long)slot->a, (unsigned long)slot->b);
+    return snprintf(buf, bufsize, "%s %08lx %08lx n%lu",
+                    api_mark_name(slot->id),
+                    (unsigned long)slot->a, (unsigned long)slot->b,
+                    (unsigned long)s->next);
 }
 
 /* The head line carries the RTC count as well as the reset reason: after a
@@ -1144,7 +1199,7 @@ void xtensa_crash_report_logf(void)
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, the window state, the PCM slots, three RTC trail entries and
+     * interrupted SP, the window state, the PCM slots, four codec-path marks and
      * the build line come to roughly 420 bytes; the cache line only appears when
      * the latch reported something.
      *
@@ -1158,17 +1213,17 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
-    /* The uncached trail, newest first. CMD is the codec image's first call into
-     * the firmware, ENCB the buffer handed to the encoder, ENCR the PCM copy's
-     * destination and length, RREC the recording-buffer initialisation. Presence or
-     * absence of each is the answer to "how far did it get", and RTC slow is the
-     * only medium where presence or absence means anything at all. */
-    for (back = 0; back < 3; back++)
+    /* The codec's own progress, newest first, from a ring nothing else writes. This
+     * is the measurement that answers "how far did codec_run get": cmd means the
+     * image reached its run loop, enkb and encr mean it got a buffer and started the
+     * PCM copy, and encr's pair is the destination and length that decide whether the
+     * copy destroyed its own frame. */
+    for (back = 0; back < 4; back++)
     {
-        len = xtensa_paniclog_rtc_back(back, line, sizeof line);
+        len = xtensa_api_mark_back(back, line, sizeof line);
         if (len == 0)
             break;
-        logf("rb rtc %s", line);
+        logf("rb %s", line);
     }
 
     /* Which image is reporting, and which one crashed. They differ whenever a
