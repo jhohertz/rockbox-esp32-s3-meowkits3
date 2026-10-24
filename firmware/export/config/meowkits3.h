@@ -266,6 +266,13 @@
 #define BATTERY_CAPACITY_MAX     1400
 #define BATTERY_CAPACITY_INC     0
 
+/* Hold Rockbox's own "Shutting down..." message on screen while the flush work runs.
+ * splash(0, ...) only draws, and shutdown_hw() unloads the fonts a few tens of
+ * milliseconds later, so on this board the message is a blink. Expressed in ticks --
+ * HZ is 100 here -- and deliberately shorter than the PMU's OFFLEVEL so the hold cannot
+ * eat the safety net. */
+#define CLEAN_SHUTDOWN_MESSAGE_HOLD 100 /* 1 s */
+
 
 /* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA

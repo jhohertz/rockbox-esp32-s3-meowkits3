@@ -417,6 +417,18 @@ static bool clean_shutdown(enum shutdown_type sd_type,
                                 str(LANG_SHUTTINGDOWN));
         }
 
+        /* splash() with a zero timeout only draws -- see splashf() in gui/splash.c,
+         * which waits `if (ticks)`. On a flash-based target the message is therefore
+         * gone before anyone can read it, because shutdown_hw() calls font_unload_all()
+         * a few tens of milliseconds later. A target that wants its own shutdown message
+         * legible asks for a hold here; the default is no delay, as every target has
+         * always had. This is a hold on the message Rockbox already shows, not an extra
+         * screen, and the flush work below runs while it is up.
+         */
+#ifdef CLEAN_SHUTDOWN_MESSAGE_HOLD
+        sleep(CLEAN_SHUTDOWN_MESSAGE_HOLD);
+#endif
+
 #ifdef HAVE_DISK_STORAGE
         if (batt_safe) /* do not save on critical battery */
 #endif
