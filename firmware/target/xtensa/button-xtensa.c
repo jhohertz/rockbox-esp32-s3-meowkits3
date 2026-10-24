@@ -16,6 +16,9 @@
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"
+#ifdef HAVE_USBSTACK
+#include "usb.h"           /* usb_inserted(): Rockbox declines a poweroff in USB mode */
+#endif
 #endif
 #ifdef HAVE_TOUCHSCREEN
 #include "i2c-async.h"
@@ -259,6 +262,17 @@ int button_read_device(int *data)
      * I2C master with no arbitration, and power_off() has to write the PMU's shutdown bit
      * while the main thread halts; a 100 ms reader running concurrently is enough to
      * corrupt that write, which is what let the chip sit on until OFFLEVEL expired.
+     *
+     * A press is also ignored while USB is inserted, because Rockbox refuses a poweroff in
+     * USB mode and the refusal has to be honoured -- the session is the card's owner. What
+     * makes that safe is that the poll then does not acknowledge the latch: writing 1 to
+     * 0x46 bit 0 is what starts the chip's OFFLEVEL countdown, so an unacknowledged press
+     * leaves the chip alone rather than hard-killing the board ten seconds later with
+     * nothing flushed. Two builds of this file proved the coupling: the one that acked cut
+     * ten seconds after a 2.5 s press, the one that read a reserved register and so never
+     * acked needed a continuous ten-second hold instead. Since the countdown cannot be
+     * recalled once started, the press is left latched and takes effect on extraction --
+     * deferred, not dropped.
      */
     static unsigned int pek_poll_div;
     static bool shutdown_requested;
@@ -269,6 +283,10 @@ int button_read_device(int *data)
     if (++pek_poll_div >= (HZ / 10))
     {
         pek_poll_div = 0;
+#ifdef HAVE_USBSTACK
+        if (usb_inserted())
+            return b;   /* refused: leave the latch alone so nothing gets armed */
+#endif
         if (axp173_power_key_pressed())
         {
             shutdown_requested = true;
