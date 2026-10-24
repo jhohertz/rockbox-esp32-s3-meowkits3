@@ -268,7 +268,7 @@ Largest DRAM objects in the linked image:
 | 8,192 | `_transfer_buffer` (`usb_storage.c`) | DWC DMA | **No** -- the core's AHB master cannot reach PSRAM, hence `USB_STATIC_ALLOC` for ESP32S3 in `usb_storage.c:450`. 2 x 4 KB; the default 64 KB per direction overflowed the region by 152,968 B |
 | 1,024 | `send_buffer` / `receive_buffer` (`usb_serial.c`) | DWC DMA | **No** -- same master |
 | 4,096 | `cache_buffer` | SDHOST IDMAC destination | **No**, and it was halved: `fs_defines.h` sizes it from `MEMORYSIZE` (16 = flash size, not DMA-capable RAM), so 64 entries became 32. esp32s3 declares no `SOC_SDMMC_PSRAM_DMA_CAPABLE` |
-| 4,096 | `dma_buf` | **moved to PSRAM** | TX DMA staging, 4 slots x 1024 B. GDMA can reach PSRAM for buffers (`SOC_AHB_GDMA_SUPPORT_PSRAM`, and the 20-bit window applies only to the descriptor address register), so this one moved; `desc[]` stayed, 128 B, because descriptors cannot |
+| 8,192 | `dma_buf` | **moved to PSRAM** | TX DMA staging, 4 slots x 2048 B. The slot is `MIX_FRAME_SAMPLES * 4` times the mixer's rate multiplier keyed on `HW_SAMPR_MAX`, so it holds a 96 kHz frame; arm length is the frame size for the rate in effect, 1024 B at <=48 kHz. GDMA can reach PSRAM for buffers (`SOC_AHB_GDMA_SUPPORT_PSRAM`, and the 20-bit window applies only to the descriptor address register), so this one moved; `desc[]` stayed, 128 B, because descriptors cannot |
 | 8,192 | `storage_thread_stack` | default | Thread stack |
 | 8,192 | `audio_stack` | default | Thread stack |
 | 6,144 | `playlist_stack` | default | Thread stack |
@@ -408,9 +408,13 @@ reading the built config produced a whole theory about tick occupancy delaying t
 What follows from the corrected table: nothing runs above level 2, so raising USB to 3 preempts
 nothing, and `CONFIG_FREERTOS_HZ` cannot delay the transport at all -- the tick chains with the
 audio GDMA pass at level 1, and IDF chains same-level handlers instead of nesting them. The only
-thing that can hold a USB completion out is a region with interrupts disabled:
-`esp_cpu_enter_critical()`, Rockbox's own `disable_irq_save()`, or IDF's flash/cache-disable
-window. `esp_cpu_enter_critical()` remains the unmeasured suspect for the ~1% frame loss.
+thing that can hold a USB completion out is a region with interrupts disabled, and
+`disable_irq_save()` here is `set_irq_level(DISABLE_INTERRUPTS)`: `PS.INTLEVEL = 15`, which
+denies even a level-2 handler. That is where the ~1.8% frame loss lived -- `i2c_async_queue()`
+ran this target's polling `__i2c_async_submit()` inside that mask, so each touch poll switched
+USB off for ~1.6 ms. `I2C_ASYNC_SUBMIT_UNMASKED` defers the submit until the mask is released
+and the loss is gone (`Filled` at the gate, nothing audible). `esp_cpu_enter_critical()` is no
+longer a suspect: it was never reached on the audio path.
 
 The display is the only console the audio profile has. With the cable attached, OTG passes to
 our firmware about a second after boot, so the USB-Serial-JTAG console that carries the
