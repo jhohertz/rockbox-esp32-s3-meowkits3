@@ -44,6 +44,7 @@ idf_component_register(
         esp_timer
         sdmmc
         log
+        esp_app_format
     # Rockbox's statics go to PSRAM, not to the 337 KB of internal DRAM IDF
     # gives the image. See rockbox_memory.lf for what stays behind, and why.
     LDFRAGMENTS rockbox_memory.lf

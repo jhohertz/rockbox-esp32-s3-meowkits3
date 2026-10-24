@@ -97,6 +97,43 @@ static struct breadcrumb bc[BC_SLOTS] __attribute__((section(".noinit"), aligned
 static uint32_t bc_magic __attribute__((section(".noinit")));
 static uint32_t bc_next  __attribute__((section(".noinit")));
 
+/* Which image is running this boot, stamped by idf-app/main/rockbox_app.c from
+ * esp_app_get_description()->version before Rockbox's init starts.
+ *
+ * It exists because a flash cannot be confirmed by observation: the post-flash
+ * reset pulse travels over D+/D-, and once the previously running image has
+ * handed those pads to the DWC core the chip never sees the pulse. Anything read
+ * immediately after a flash therefore belongs to the old image, and the only way
+ * to tell the two apart is to have the running build say so. The panic handler
+ * stores the build id of the image that faulted, so a report can show both. */
+static char rb_build_now[24] __attribute__((section(".noinit"), aligned(4)));
+
+void xtensa_build_id_stamp(const char *id)
+{
+    int i;
+
+    if (id == NULL)
+        return;
+
+    for (i = 0; i < 23 && id[i] != '\0'; i++)
+        rb_build_now[i] = id[i];
+    rb_build_now[i] = '\0';
+}
+
+const char *xtensa_build_id_running(void)
+{
+    /* .noinit is uninitialised on the first ever boot, so an unstamped buffer
+       reads as noise rather than as an empty string. A stamp is printable and
+       starts with a digit or a letter; anything else means it never ran. */
+    char c = rb_build_now[0];
+
+    if (c < '0' || (c > '9' && c < 'A') || (c > 'Z' && c < 'a') || c > 'z')
+        return NULL;
+
+    rb_build_now[23] = '\0';
+    return rb_build_now;
+}
+
 void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
 {
     struct breadcrumb *e;
@@ -584,6 +621,152 @@ int xtensa_paniclog_frame_cache(char *buf, int bufsize)
                     (unsigned long)fr->cache_size);
 }
 
+/* ---------------------------------------------------------------------------
+ * The frame's caller chain, in RTC slow.
+ *
+ * The frame dump says what the CPU was doing; it cannot say who put it there.
+ * IDF prints exactly that in its panic handler, but printing needs a transport
+ * and this context has none, so the walk is taken here and stored instead.
+ *
+ * It is IDF's walk, not a reconstruction of one. esp_backtrace_get_next_frame
+ * (IRAM, 0x40375808 in this image) reads frame(i-1)'s base-save area from the
+ * four words below SP: the return PC at sp-16 and the caller's SP at sp-12.
+ * Those words exist for every exception because xtensa_vectors.S defines
+ * XT_DEBUG_BACKTRACE unconditionally -- checked in the linked image, which
+ * carries `s32e a0, a5, -16` and `s32e a1, a5, -12` at 0x40374000 -- and the
+ * seeding is IDF's too, {pc = f->pc, sp = f->a1, next_pc = f->a0} from
+ * panic_arch.c:337.
+ *
+ * The care taken here is about what happens when the chain is wrong, which is
+ * the case we are looking for. Reading through a bad SP faults, and a fault
+ * inside the panic handler is a third exception with no handler left: the chip
+ * stops, and with it the store. So each SP is validated with IDF's
+ * esp_stack_ptr_is_sane *before* the step that reads below it, and every frame
+ * is committed before the next one is attempted. A walk that dies part-way
+ * leaves the part that succeeded, and `count` says how far it got.
+ *
+ * PCs are stored after esp_cpu_process_stack_pc, which folds the windowed ABI's
+ * top-two-bit window increment back into the address space and steps off the
+ * return address. That is why 0x8002e4bc in the frame is a real ROM address
+ * (0x4002e4b9) and not the garbage it looks like.
+ *
+ * 0x50001600 is past the frame record (which ends at 0x500014bc) and inside the
+ * 8 KB RTC-slow bank, which runs to 0x50002000. Word stores only, as everywhere
+ * else in this bank.
+ * --------------------------------------------------------------------------- */
+#define XT_BT_RTC_BASE   0x50001600u
+#define XT_BT_RTC_MAGIC  0x43544252u   /* "RBTC" */
+#define XT_BT_FRAMES     8
+#define XT_BT_ID_WORDS   6             /* 24 characters of build id, including NUL */
+
+struct bt_rtc
+{
+    uint32_t magic;
+    uint32_t count;
+    uint32_t pc[XT_BT_FRAMES];
+    uint32_t sp[XT_BT_FRAMES];
+    /* Which image this crash belongs to. The boot report otherwise prints the
+       version of the image that is *asking*, and after a flash those are two
+       different builds -- a distinction that has already been confused once,
+       because a post-flash reset cannot reach this board while Rockbox owns the
+       USB pads. */
+    uint32_t crash_id[XT_BT_ID_WORDS];
+    uint32_t bt_magic;
+};
+
+void xtensa_paniclog_backtrace(const unsigned long *pcs, const unsigned long *sps,
+                               int n, const char *build)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    int i;
+
+    if (pcs == NULL || sps == NULL || n < 1)
+        return;
+    if (n > XT_BT_FRAMES)
+        n = XT_BT_FRAMES;
+
+    if (bt->magic != XT_BT_RTC_MAGIC)
+        bt->count = 0;
+    bt->magic = XT_BT_RTC_MAGIC;
+
+    if (build != NULL)
+    {
+        char id[XT_BT_ID_WORDS * 4];
+        int j;
+
+        memset(id, 0, sizeof id);
+        for (j = 0; j < (int)sizeof id - 1 && build[j]; j++)
+            id[j] = build[j];
+        for (j = 0; j < XT_BT_ID_WORDS; j++)
+            bt->crash_id[j] = *(uint32_t *)&id[j * 4];
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        bt->pc[i] = (uint32_t)pcs[i];
+        bt->sp[i] = (uint32_t)sps[i];
+        /* Commit per frame: if the next read faults, this one is already kept. */
+        bt->count = (uint32_t)(i + 1);
+    }
+    bt->bt_magic = XT_BT_RTC_MAGIC;
+}
+
+/* Two frames per line, oldest first, so line 0 is the faulting frame. A frame
+ * pair prints as pc:sp; nothing prints for a slot beyond the count, which keeps
+ * a short walk from looking like a zero address. */
+int xtensa_paniclog_backtrace_text(char *buf, int bufsize, int line)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    uint32_t base;
+    uint32_t n;
+    int len;
+    int i;
+
+    if (buf == NULL || bufsize <= 0 || line < 0)
+        return 0;
+    if (bt->magic != XT_BT_RTC_MAGIC || bt->bt_magic != XT_BT_RTC_MAGIC ||
+        bt->count == 0)
+        return 0;
+
+    base = (uint32_t)line * 2u;
+    if (base >= bt->count)
+        return 0;
+
+    len = snprintf(buf, bufsize, "bt%d:", line);
+
+    n = bt->count - base;
+    if (n > 2)
+        n = 2;
+
+    for (i = 0; (uint32_t)i < n && len < bufsize - 20; i++)
+        len += snprintf(buf + len, bufsize - len, " %08lx:%08lx",
+                        (unsigned long)bt->pc[base + (uint32_t)i],
+                        (unsigned long)bt->sp[base + (uint32_t)i]);
+    return len;
+}
+
+/* The build id of the crash, as stored by the handler. Returns 0 when absent. */
+int xtensa_paniclog_crash_build(char *buf, int bufsize)
+{
+    volatile struct bt_rtc *bt = (volatile struct bt_rtc *)XT_BT_RTC_BASE;
+    char id[XT_BT_ID_WORDS * 4];
+    int j;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (bt->magic != XT_BT_RTC_MAGIC || bt->bt_magic != XT_BT_RTC_MAGIC)
+        return 0;
+
+    for (j = 0; j < XT_BT_ID_WORDS; j++)
+        *(uint32_t *)&id[j * 4] = bt->crash_id[j];
+    id[sizeof id - 1] = '\0';
+
+    if (id[0] == '\0')
+        return 0;
+
+    return snprintf(buf, bufsize, "crashed %s", id);
+}
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -734,13 +917,43 @@ void xtensa_crash_report_logf(void)
     xtensa_paniclog_frame_info(&exc, &pseudo, &count);
     if (count > 0)
     {
-        logf("rb frame exc %lu pseudo %lu count %lu", exc, pseudo, count);
-        for (back = 0; back < 4; back++)
-        {
-            len = xtensa_paniclog_frame_words(line, sizeof line, back);
-            if (len == 0)
-                break;
+        /* Only the frame's first four words: exit, pc, ps and a0. The rest of
+         * the 32-word dump is register state that the caller chain below
+         * interprets better, and keeping all of it pushed this report past the
+         * 512-byte CDC ring the last time it was widened. */
+        len = xtensa_paniclog_frame_words(line, sizeof line, 0);
+        if (len > 0)
             logf("rb %s", line);
-        }
+    }
+
+    /* The caller chain, two frames per line, three lines (six frames). The whole
+     * thing is bounded on purpose: usb_serial_send() has a 512-byte ring drained
+     * by transfers the host reads, and a payload that overruns it does not just
+     * lose characters -- the ring cannot advance while a transfer is outstanding,
+     * which is how an earlier version of this report put the board into a reboot
+     * loop. Panic text, reset line, register line, frame line, three backtrace
+     * lines and the build line come to roughly 420 bytes. */
+    for (back = 0; back < 3; back++)
+    {
+        len = xtensa_paniclog_backtrace_text(line, sizeof line, back);
+        if (len == 0)
+            break;
+        logf("rb %s", line);
+    }
+
+    /* Which image is reporting, and which one crashed. They differ whenever a
+     * flash happened without the chip restarting -- the reset pulse cannot reach
+     * a board whose pads the running image gave to the DWC core -- and a backtrace
+     * resolved against the wrong build is worse than no backtrace at all. */
+    {
+        const char *now = xtensa_build_id_running();
+        int clen = xtensa_paniclog_crash_build(line, sizeof line);
+
+        if (clen > 0 && now != NULL && strcmp(line + 8, now) == 0)
+            logf("rb build %s (same)", now);
+        else if (clen > 0)
+            logf("rb build now %s, %s", now ? now : "?", line);
+        else if (now != NULL)
+            logf("rb build now %s", now);
     }
 }

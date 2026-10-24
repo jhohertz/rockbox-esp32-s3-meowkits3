@@ -124,6 +124,8 @@ target_include_directories(rockbox.elf PRIVATE
     "${_idf_path}/components/esp_rom/include"
     "${_idf_path}/components/esp_rom/esp32s3/include"
     "${_idf_path}/components/soc/esp32s3/include"
+    "${_idf_path}/components/esp_hw_support/include"
+    "${_idf_path}/components/esp_app_format/include"
     "${_idf_path}/components/xtensa/esp32s3/include"
     "${_idf_path}/components/xtensa/include"
     "${CMAKE_BINARY_DIR}/config")
