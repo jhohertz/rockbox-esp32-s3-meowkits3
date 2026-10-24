@@ -17,14 +17,7 @@
  * KIND, either express or implied.
  *
  ****************************************************************************/
-/* TEMPORARY diagnostic: this build has ROCKBOX_HAS_LOGF undefined in autoconf.h, and
- * logf.h turns logf() into a no-op in any file that does not define LOGF_ENABLE. Remove
- * along with XT_SHUTDOWN_PROBE. */
-#define LOGF_ENABLE
-#define XT_SHUTDOWN_PROBE 1
-
 #include <stdlib.h>
-#include "logf.h"          /* TEMPORARY: for XT_SHUTDOWN_PROBE only */
 #include <ctype.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -368,10 +361,6 @@ static bool clean_shutdown(enum shutdown_type sd_type,
 {
     long msg_id = -1;
 
-#ifdef XT_SHUTDOWN_PROBE
-    logf("probe: clean_shutdown entered, type=%d", (int)sd_type);
-#endif
-
     if (!global_settings.show_shutdown_message && get_sleep_timer_active())
         talk_disable(true);
 
@@ -401,9 +390,6 @@ static bool clean_shutdown(enum shutdown_type sd_type,
 #ifdef HAVE_TAGCACHE
             if (!tagcache_prepare_shutdown())
             {
-#ifdef XT_SHUTDOWN_PROBE
-                logf("probe: tagcache busy -- cancelling shutdown");
-#endif
                 cancel_shutdown();
                 splash(HZ, ID2P(LANG_TAGCACHE_BUSY));
                 FOR_NB_SCREENS(i)
@@ -485,13 +471,6 @@ static bool clean_shutdown(enum shutdown_type sd_type,
 
         shutdown_hw(sd_type);
     }
-
-#ifdef XT_SHUTDOWN_PROBE
-    /* Reaching here means shutdown proceeded; shutdown_hw() ends in power_off(), which
-     * does not return, so getting this line means power_off() came back or was skipped.
-     */
-    logf("probe: clean_shutdown fell through to return false");
-#endif
     return false;
 }
 
@@ -668,11 +647,6 @@ static void lo_unplug_change(bool inserted)
 
 long default_event_handler_ex(long event, void (*callback)(void *), void *parameter)
 {
-#ifdef XT_SHUTDOWN_PROBE
-    if (event & SYS_EVENT)
-        logf("probe: UI thread dispatched event 0x%lx", (unsigned long)event);
-#endif
-
 #if CONFIG_PLATFORM & (PLATFORM_ANDROID)
     static bool resume = false;
 #endif
