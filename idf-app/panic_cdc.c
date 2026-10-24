@@ -44,6 +44,10 @@
 #include "esp_private/panic_internal.h"
 #include "esp_private/cache_err_int.h"
 #include "xtensa_context.h"
+#include "esp_debug_helpers.h"
+#include "esp_memory_utils.h"
+#include "esp_cpu_utils.h"
+#include "esp_app_desc.h"
 #include "panic_funcs.h"
 #include "esp_rom_sys.h"
 
@@ -53,6 +57,9 @@ extern void xtensa_panic_log(const char *msg);
 extern void xtensa_paniclog_frame(const unsigned long *words, int count,
                                   int exception, int pseudo);
 extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
+extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
+                                      const unsigned long *sps, int n,
+                                      const char *build);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -66,6 +73,11 @@ extern void esp_panic_handler_feed_wdts(void);
 /* Order of the register array handed to xtensa_paniclog_frame_regs():
  * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size. */
 #define RB_REGS 8
+
+/* Frames of caller chain to retain. IDF walks until the chain goes insensible;
+ * eight is what fits in the report and enough to name the caller whose return
+ * address was hijacked. */
+#define RB_BT_FRAMES 8
 
 /* EPC and DEPC are only readable at their own exception levels: reading EPC1 at
  * level 1 is a DISASTER exception, which would manufacture a third fault and
@@ -158,6 +170,65 @@ void esp_panic_handler(panic_info_t *info)
         regs[7] = ci.err_str != NULL ? (unsigned long)ci.size : 0UL;
     }
     xtensa_paniclog_frame_regs(regs, RB_REGS);
+
+    /* The caller chain, walked with IDF's own primitives rather than a private
+     * reconstruction: esp_backtrace_get_next_frame reads frame(i-1)'s base-save
+     * area from the four words below SP (return PC at sp-16, caller SP at sp-12),
+     * which the exception vectors fill for every frame because XT_DEBUG_BACKTRACE
+     * is unconditional in xtensa_vectors.S.
+     *
+     * This runs after the frame and register slots are already durable on purpose.
+     * Reading through a wrong SP faults, and a fault in here is a third exception
+     * with no handler left, so the whole record would be lost to the walk. Each SP
+     * is therefore checked before the step that reads below it -- IDF checks after,
+     * which is fine when the only cost is a printed line -- and paniclog.c commits
+     * each frame before attempting the next.
+     *
+     * PCs go through esp_cpu_process_stack_pc, which folds the windowed ABI's
+     * window-increment bits back into the address space. Without it a return
+     * address like 0x8002e4bc looks like garbage and is really 0x4002e4b9 in ROM.
+     */
+    {
+        unsigned long pcs[RB_BT_FRAMES];
+        unsigned long sps[RB_BT_FRAMES];
+        esp_backtrace_frame_t bf;
+        int n = 0;
+
+        if (f != NULL)
+        {
+            bf.pc       = (uint32_t)f->pc;
+            bf.sp       = (uint32_t)f->a1;
+            bf.next_pc  = (uint32_t)f->a0;
+            bf.exc_frame = f;
+
+            if (esp_stack_ptr_is_sane(bf.sp))
+            {
+                pcs[n] = esp_cpu_process_stack_pc(bf.pc);
+                sps[n] = bf.sp;
+                n++;
+
+                while (n < RB_BT_FRAMES && bf.next_pc != 0)
+                {
+                    if (!esp_stack_ptr_is_sane(bf.sp))
+                        break;
+                    if (!esp_backtrace_get_next_frame(&bf))
+                        break;
+
+                    pcs[n] = esp_cpu_process_stack_pc(bf.pc);
+                    sps[n] = bf.sp;
+                    n++;
+                }
+            }
+        }
+
+        /* The build id of the image that faulted, not of the one that will print
+         * this: a flash cannot confirm itself because the post-flash reset pulse
+         * never reaches a chip whose pads the old image already gave to the DWC
+         * core. */
+        if (n > 0)
+            xtensa_paniclog_backtrace(pcs, sps, n,
+                                      esp_app_get_description()->version);
+    }
 
     /* Short form in the text record, bounded by its 96-character field, so the
      * fault is identifiable from the debug page as well as the serial report. */

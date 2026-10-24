@@ -373,6 +373,25 @@ PSRAM `.bss`), transferred only 1024 of the 2048 bytes, and reported the whole
 frame consumed. High-rate local playback has therefore never worked on this
 target even though `HW_SAMPR_CAPS` advertises it.
 
+## Flashing cannot be confirmed by observation
+
+The board has no UART bridge; the host reaches it through the SoC's own
+USB-Serial-JTAG, and Rockbox moves those same pads (GPIO19/20) to the DWC OTG core
+about 865 ms into `app_main`. `usb_init_device()` clears the RTC mux override at
+boot so every boot starts with the pins on USJ, which is why the JTAG unit always
+enumerates for the first second. It does not help after a flash: esptool's
+`--after hard_reset` pulse travels over D+/D-, and the *running* image already owns
+those lines, so the chip never sees it and keeps executing whatever was loaded
+before. `Hash of data verified` proves the write, not that the new image ran.
+
+That has quietly invalidated observations more than once. The workflow is: hold
+BOOT to enter download mode, flash, then power-cycle. And the firmware now answers
+the question directly — `app_main` stamps `esp_app_get_description()->version` into
+`.noinit`, the panic handler stores the build id of the image that faulted into RTC
+slow, and the boot report prints both on the `rb build` line. A backtrace resolved
+against the wrong build is worse than no backtrace, which is the reason the line
+exists.
+
 ## Verifying
 
 ```sh
@@ -452,6 +471,8 @@ needs it:
 | `dbg_hw_info()` | the screen | core id, cache line, MMU pages mapped, PSRAM responding, DWC2 clock state, **the retained panic text and reset reason** |
 | the panic screen itself | the screen | held for 20 s or until a key is pressed — see `system_exception_wait()` |
 | `xtensa_paniclog_dump()` | boot console, first thing `app_main` does | previous boot's SRAM trail, reset reason, RTC trail, panic text |
+| the `rb bt` lines in the boot report | CDC, next boot | the faulting frame's caller chain, walked with IDF's `esp_backtrace_get_next_frame`; resolve each pc with addr2line against the `rb build` line |
+| the `rb build` line | CDC, next boot | which image is reporting and which one crashed — see §Flashing |
 | `xt_usb_irqs` -> the `usbIRQ` trail entry | same dump | whether the OTG core interrupts at all |
 | `dscr_streak` | not printed; it drives `tx_recover()` | whether a descriptor error is a transient or a storm |
 
