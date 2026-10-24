@@ -314,6 +314,28 @@ int codec_run_proc(void)
     }
 
     logf("Codec: entering run state");
+
+    /* Third sample of the same slots, immediately before the image is entered.
+     * codec_run calls get_command (offset 60) and enc_encbuf_get_buffer (144)
+     * before it reaches enc_pcmbuf_read (136), so if the slot is still good
+     * here the damage happens inside the image's own run -- from a write through
+     * one of the callbacks it was given. If it is already wrong here, whatever
+     * ran between codec_load_ram and this point is the writer. */
+#ifdef CODEC_LOAD_API_TRACE
+    {
+        /* A local rather than inline dereferences: `(void)(*c_hdr->api)->field`
+           casts before the member access, which the compiler rejects. The field
+           itself is `struct codec_api **`, so one dereference gives the pointer
+           the image was handed. */
+        struct codec_api *ap = *c_hdr->api;
+
+        logf("ci before run: ptr %p enc_read %p enc_adv %p get_buf %p fin_buf %p",
+             (void *)ap, (void *)ap->enc_pcmbuf_read,
+             (void *)ap->enc_pcmbuf_advance, (void *)ap->enc_encbuf_get_buffer,
+             (void *)ap->enc_encbuf_finish_buffer);
+    }
+#endif
+
     return c_hdr->run_proc();
 }
 
