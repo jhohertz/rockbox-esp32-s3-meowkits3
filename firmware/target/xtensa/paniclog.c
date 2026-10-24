@@ -422,6 +422,32 @@ struct api_store
 static volatile struct api_store *api_store =
     (volatile struct api_store *)XT_API_RTC_BASE;
 
+/* Below the ring: the last chunk handed to the encoder and the last PCM copy, in
+ * fixed slots. A ring shows recency, but the codec stamps cmd/enkb/encr/adv once per
+ * chunk, so by the time of a fault on the second iteration the ring's newest four
+ * entries were cmd and adv from the loop -- enkb and encr sit between them and are
+ * pushed out. Fixed last-value slots cannot be evicted, and the values they hold are
+ * the whole question: where the copy wrote, and how far.
+ *
+ * Each carries the ring sequence at the time it was written, so a report can tell
+ * whether the copy belongs to the iteration that faulted or an earlier one. */
+struct api_last
+{
+    uint32_t magic;
+    uint32_t encb_ptr;
+    uint32_t encb_need;
+    uint32_t encb_seq;
+    uint32_t encr_dst;
+    uint32_t encr_len;
+    uint32_t encr_seq;
+};
+
+#define XT_API_LAST_BASE  0x500018D0u   /* past the ring, inside the bank */
+#define XT_API_LAST_MAGIC 0x4C535452u   /* "RSTL" */
+
+static volatile struct api_last *api_last =
+    (volatile struct api_last *)XT_API_LAST_BASE;
+
 void xtensa_api_mark(enum xtensa_api_mark_id id, unsigned long a, unsigned long b)
 {
     volatile struct api_store *s = api_store;
@@ -443,6 +469,40 @@ void xtensa_api_mark(enum xtensa_api_mark_id id, unsigned long a, unsigned long 
     s->slot[i].a  = (uint32_t)a;
     s->slot[i].b  = (uint32_t)b;
     s->next++;
+
+    /* ENCB and ENCR also land in fixed last-value slots. The ring shows recency, but
+     * the codec stamps cmd/enkb/encr/adv once per chunk, so a fault in the second
+     * iteration leaves a ring whose newest four entries are cmd and adv -- enkb and
+     * encr sit between them and are pushed out. These cannot be evicted, and they
+     * carry the sequence they were written at so the report can tell which iteration
+     * they belong to. */
+    if (id == XT_API_ENCB || id == XT_API_ENCR)
+    {
+        volatile struct api_last *l = api_last;
+        uint32_t seq = s->next;
+
+        if (l->magic != XT_API_LAST_MAGIC)
+        {
+            l->magic     = XT_API_LAST_MAGIC;
+            l->encb_ptr  = 0;
+            l->encb_seq  = 0;
+            l->encr_dst  = 0;
+            l->encr_seq  = 0;
+        }
+
+        if (id == XT_API_ENCB)
+        {
+            l->encb_ptr  = (uint32_t)a;
+            l->encb_need = (uint32_t)b;
+            l->encb_seq  = seq;
+        }
+        else
+        {
+            l->encr_dst = (uint32_t)a;
+            l->encr_len = (uint32_t)b;
+            l->encr_seq = seq;
+        }
+    }
 }
 
 static const char *api_mark_name(uint32_t id)
@@ -1036,6 +1096,24 @@ int xtensa_paniclog_pcm_text(char *buf, int bufsize)
                     (unsigned long)bt->pcm[2], (unsigned long)bt->pcm[3]);
 }
 
+/* One line: the last chunk handed to the encoder and the last PCM copy, with the
+ * ring sequence each was written at. */
+int xtensa_paniclog_api_last_text(char *buf, int bufsize)
+{
+    volatile struct api_last *l = api_last;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (l->magic != XT_API_LAST_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize, "last b=%08lx/%lu s%lu r=%08lx/%lu s%lu",
+                    (unsigned long)l->encb_ptr, (unsigned long)l->encb_need,
+                    (unsigned long)l->encb_seq,
+                    (unsigned long)l->encr_dst, (unsigned long)l->encr_len,
+                    (unsigned long)l->encr_seq);
+}
+
 void xtensa_paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
@@ -1199,9 +1277,9 @@ void xtensa_crash_report_logf(void)
      * does not just lose characters -- the ring cannot advance while a transfer
      * is outstanding, which is how an earlier version of this report put the
      * board into a reboot loop. Panic text, reset line, register line with the
-     * interrupted SP, the window state, the PCM slots, four codec-path marks and
-     * the build line come to roughly 420 bytes; the cache line only appears when
-     * the latch reported something.
+     * interrupted SP, the window state, the PCM slots, three codec marks, the last
+     * chunk and copy, and the build line come to roughly 450 bytes; the cache line
+     * only appears when the latch reported something.
      *
      * The backtrace walk is no longer reported. It reads a register-window chain
      * through sp-16/sp-12, and DRAM survives a warm reset, so the slots can belong
@@ -1213,18 +1291,25 @@ void xtensa_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
-    /* The codec's own progress, newest first, from a ring nothing else writes. This
-     * is the measurement that answers "how far did codec_run get": cmd means the
-     * image reached its run loop, enkb and encr mean it got a buffer and started the
-     * PCM copy, and encr's pair is the destination and length that decide whether the
-     * copy destroyed its own frame. */
-    for (back = 0; back < 4; back++)
+    /* The codec's own progress, newest first. The loop stamps cmd/enkb/encr/adv once
+     * per chunk, so four entries only cover one and a half iterations; what matters
+     * is whether enkb and encr appear at all in the iteration that faulted, which the
+     * fixed last-value slots below answer directly. */
+    for (back = 0; back < 3; back++)
     {
         len = xtensa_api_mark_back(back, line, sizeof line);
         if (len == 0)
             break;
         logf("rb %s", line);
     }
+
+    /* The last chunk and the last copy, from slots nothing can evict. If encr's
+       destination plus its length reaches codec_stack (0x3fca......), the copy wrote
+       over the frame whose return address the fault then executed. If encr's sequence
+       is well behind the ring's, the fault happened before this iteration's copy. */
+    len = xtensa_paniclog_api_last_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
 
     /* Which image is reporting, and which one crashed. They differ whenever a
      * flash happened without the chip restarting -- the reset pulse cannot reach
