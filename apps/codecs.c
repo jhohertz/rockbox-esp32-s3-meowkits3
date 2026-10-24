@@ -182,6 +182,7 @@ static struct codec_header *c_hdr = NULL;
 static int codec_load_ram(struct codec_api *api)
 {
     struct lc_header *hdr;
+    int ret;
 
     c_hdr = lc_get_header(curr_handle);
     hdr   = c_hdr ? &c_hdr->lc_hdr : NULL;
@@ -242,7 +243,22 @@ static int codec_load_ram(struct codec_api *api)
 #endif
 
     logf("Codec: calling entrypoint");
-    return c_hdr->entry_point(CODEC_LOAD);
+    ret = c_hdr->entry_point(CODEC_LOAD);
+
+    /* The same slots again. `enc_read` valid before the entry call and wrong
+     * after it means the codec's own CODEC_LOAD handling wrote through the API
+     * struct -- which is what the fault looks like: run_proc loads offset 136
+     * and executes it, and the value there is a codec_stack address even though
+     * it was 0x4202e23c seconds earlier. Unchanged after the entry call moves
+     * the suspect to whatever runs between this and run_proc(). */
+#ifdef CODEC_LOAD_API_TRACE
+    logf("ci after entry ret %d: enc_read %p enc_adv %p get_buf %p fin_buf %p",
+         ret, (void *)api->enc_pcmbuf_read, (void *)api->enc_pcmbuf_advance,
+         (void *)api->enc_encbuf_get_buffer,
+         (void *)api->enc_encbuf_finish_buffer);
+#endif
+
+    return ret;
 }
 
 #if defined(HAVE_CODEC_BUFFERING)
@@ -271,6 +287,14 @@ int codec_load_file(const char *plugin, struct codec_api *api)
     char path[MAX_PATH];
 
     codec_get_full_path(path, plugin);
+
+    /* Which image is being loaded. The encoders are separate files from the
+     * decoders (wav_enc.c, mp3_enc.c, wavpack_enc.c, aiff_enc.c) and all of them
+     * link at the same addresses, so a fault pc cannot be attributed to an image
+     * without this -- 0x42600046 means different instructions in each. */
+#ifdef CODEC_LOAD_API_TRACE
+    logf("codec load %s", path);
+#endif
 
     curr_handle = lc_open(path, codecbuf, CODEC_SIZE);
 
