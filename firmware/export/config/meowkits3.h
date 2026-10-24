@@ -392,18 +392,20 @@
  * and the CDC OUT packet. That caps this at 320: 512 bytes would need 176 RX words, which
  * the split cannot pay for, so raising it is not an option on this silicon.
  *
- * 384 carries Rockbox's 44.1 kHz (176 bytes a frame), 48 kHz (192), 64 kHz (256), 88.2 kHz
- * (353) and 96 kHz (384) -- the ceiling of HW_SAMPR_CAPS below. The limit is not the packet
- * but the RX FIFO: 120 words = 480 bytes, which is one 384-byte packet plus one 64-byte
- * control packet. That is 1.25 packets of tolerance, which is enough when nothing else is
- * moving on the bus and thin when mass storage is flooding -- so 96 kHz alongside a file
- * transfer is expected to crackle, and 96 kHz alone is the case that matters.
+ * 320 carries Rockbox's 44.1 kHz (176 bytes a frame), 48 kHz (192) and 64 kHz (256). There
+ * is no 80 kHz entry to carry: hw_freq_sampr[] is 192/176/96/88/64/48/44/32/24/22/16/12/11/8,
+ * so 64 kHz is the ceiling this packet can hold. The class default of 1023 could never be
+ * armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE at all.
  *
- * The class default of 1023 could never be armed here, which is why usb_audio.c exposes
- * USB_AUDIO_BUFFER_SIZE at all. Rates above 96 kHz are unreachable at full speed anyway:
- * a 192 kHz frame is 768 bytes and the bus carries one packet per millisecond.
+ * HW_SAMPR_CAPS is SAMPR_CAP_ALL_96, so hw_freq_sampr still contains 88.2 kHz (353 bytes a
+ * frame) and 96 kHz (384) -- both over this packet size, and a frame that does not fit is
+ * dropped silently. USB_AUDIO_MAX_PACKET_BYTES below is what stops the descriptor from
+ * offering them; without it the host is free to request 96 kHz, as the CDC log showed. The
+ * aligned alternative is HW_SAMPR_CAPS itself, which is how every other target expresses
+ * "the hardware cannot carry these rates" -- but that knob feeds local playback and
+ * recording as well, so it costs 88.2/96 kHz off the player, not just off the DAC.
  */
-#define USB_AUDIO_BUFFER_SIZE 384
+#define USB_AUDIO_BUFFER_SIZE 320
 
 /* Advertise only the sample rates whose per-frame payload (2 channels x 16-bit = 4 bytes)
  * fits the armed packet. The class default of 0 advertises all of hw_freq_sampr, as every
