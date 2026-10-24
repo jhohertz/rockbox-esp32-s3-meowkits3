@@ -261,6 +261,15 @@
 #define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE)
 #define HAVE_AXP173
 
+/* The AXP173 owns the rails and the charge path independently of the SoC, so powering
+ * off while VBUS is present is meaningful: the chip drops its outputs and keeps
+ * charging. Without this define, apps/misc.c:371 skips the whole of clean_shutdown()
+ * whenever charger_inserted() is true -- no recorder stop, no bookmark, no settings or
+ * dircache flush, no panel shutdown, and no REG 0x32 bit 7 -- so a power-key press while
+ * plugged in does nothing at all until the chip's own OFFLEVEL counter hard-kills the
+ * board with nothing flushed. button.c:307 and shortcuts.c:810 gate the same way. */
+#define HAVE_POWEROFF_WHILE_CHARGING
+
 #define BATTERY_CAPACITY_DEFAULT 1400 /* mAh, per the board's cell */
 #define BATTERY_CAPACITY_MIN     1400
 #define BATTERY_CAPACITY_MAX     1400
