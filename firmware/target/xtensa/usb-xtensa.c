@@ -155,8 +155,20 @@ const struct usb_dw_config usb_dw_config = {
      * with this core (audio GDMA, I2C, the flash cache path) see less arbitration. If a
      * GDMA or I2C regression ever appears on this board, this field is the first thing to
      * put back to HBSTLEN_SINGLE.
+     *
+     * It is raised to INCR16 to test the mass-storage/DAC case: with MSC flooding bulk
+     * reads, the isochronous OUT packet waits on ISR service, and the RX FIFO is 120 words
+     * = 480 bytes, only about 1.5 packets of tolerance at 48 kHz. A longer burst drains
+     * each FIFO read in fewer AHB transactions, which is the quantity that decides whether
+     * a packet overflows while storage is being serviced. INCR16 is 16 beats of 4 bytes =
+     * one full-speed packet, so it is also the largest burst that means anything here.
+     * Judge it by the debug menu's "Frames dropped" count (apps/debug_menu.c:2582, from
+     * usb_audio_get_frames_dropped()) with MSC flooded, before and after -- not by the
+     * arithmetic. If it does not help, the value to fall back to is INCR4, which is what
+     * the vendor's own stack programs; if it helps but disturbs audio GDMA or I2C, INCR8
+     * is the middle step that as3525, s5l8702 and stm32h7 use.
      */
-    .ahb_burst_len = HBSTLEN_INCR4,
+    .ahb_burst_len = HBSTLEN_INCR16,
     /* Rx FIFO thresholding stays off, as on x1000 and stm32h7: Synopsys recommends
      * disabling it because it misbehaves under certain error conditions. */
     .ahb_threshold = 0,
