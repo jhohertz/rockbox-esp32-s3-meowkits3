@@ -167,7 +167,7 @@ bool dbg_ports(void)
 {
     return false;
 }
-/* TEMPORARY: who actually holds the buflib arena.
+/* Who actually holds the buflib arena.
  *
  * The numbers that have driven every memory decision on this target -- "the
  * arena granted 910 KiB", "the file buffer is 932 KiB" -- are all second-hand:

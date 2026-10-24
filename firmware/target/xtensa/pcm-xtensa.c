@@ -41,7 +41,7 @@
 #include "semaphore.h"
 #include "panic.h"
 
-#include <stdio.h>   /* TEMPORARY: only for rx_probe's printf */
+#include <stdio.h>   /* boot and error reporting */
 
 #include "driver/i2s_common.h"
 #include "driver/i2s_std.h"
@@ -81,30 +81,11 @@ static long rx_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 static const char rx_thread_name[] = "i2srx";
 static unsigned int rx_thread_id;
 
-/* TEMPORARY: the capture chain in one line. irq is now "reads that returned
- * data", err is "reads that failed", bytes is the running total handed to the
- * recorder.
- *
- *   irq climbing, bytes climbing -> the path works; look downstream (encoder)
- *   irq static, err climbing     -> the channel is not delivering; check role,
- *                                    sample rate and whether the pads arrived
- *   irq static, err static       -> no clocks reaching the ADC at all
- *   bytes < requested at stop    -> the recorder gave up before the DMA filled
- */
+/* Reads that returned data and reads that failed. Both feed the retry rule in
+ * i2s_rx_thread(): a session that has produced nothing yet is retried rather
+ * than reported as a finished capture. */
 static volatile unsigned long rx_irq_count;
 static volatile unsigned long rx_err_count;
-static volatile unsigned long rx_bytes;
-static unsigned long rx_requested;
-static unsigned handoffs;
-
-static void rx_probe(const char *where)
-{
-    printf("RX %s: reads=%lu errs=%lu bytes=%lu/%lu left=%lu run=%d wanted=%d "
-           "locked=%d started=%d idle=%d\n",
-           where, rx_irq_count, rx_err_count, rx_bytes, rx_requested,
-           (unsigned long)rec_left,
-           rx_running, rx_wanted, rec_locked, rx_thread_started, rx_thread_idle);
-}
 
 /* The recorder is driven by callbacks, not by a blocking reader, so a small
  * thread converts one into the other: read a chunk, advance the destination, and
@@ -150,31 +131,6 @@ static void i2s_rx_thread(void)
             rx_irq_count++;
             rec_ptr += got;
             rec_left -= got;
-            rx_bytes += got;
-
-            /* TEMPORARY: is there any signal at all? A dead VU means either the
-               ADC is streaming silence or the peak tap is never read, and from
-               outside those two look identical. Measuring the largest magnitude
-               sample in the chunk says which: peak=0 is a capture problem, a
-               healthy peak means the data is fine and the meter is what is
-               broken. */
-            if (rx_irq_count <= 4u)
-            {
-                const int16_t *s = (const int16_t *)(rec_ptr - got);
-                size_t n = got / sizeof(int16_t);
-                long peak = 0;
-
-                for (size_t k = 0; k < n; k++)
-                {
-                    long v = s[k];
-                    if (v < 0)
-                        v = -v;
-                    if (v > peak)
-                        peak = v;
-                }
-                printf("RX level: peak=%ld / 32767 over %lu samples\n",
-                       peak, (unsigned long)n);
-            }
 
             /* pcm_rec_lock() masks the recording completion, not the transfer --
              * imx233 does it by disabling the DMA channel interrupt, and this
@@ -191,11 +147,6 @@ static void i2s_rx_thread(void)
                 bool again;
 
                 again = pcm_rec_dma_complete_callback(PCM_DMAST_OK, &addr, &size);
-
-                if (handoffs < 4u)
-                    printf("RX handoff %u: again=%d addr=%p size=%lu\n", handoffs,
-                           again, addr, (unsigned long)size);
-                handoffs++;
 
                 if (!again)
                 {
@@ -221,7 +172,6 @@ static void i2s_rx_thread(void)
 
         rx_running = rx_wanted;
         rx_thread_idle = true;
-        rx_probe("at end of run");
     }
 }
 
@@ -384,13 +334,6 @@ void pcm_rec_dma_close(void)
      * its clocks however the session ended. */
     i2s_rx_pads_release();
 
-    /* TEMPORARY: the recording buffer is allocated with core_alloc_maximum(),
-     * which takes everything the arena has left, and is released by
-     * on_close_recording() -> core_free(pcmrec_handle). If that release ever
-     * fails to happen -- an exit path that skips the close, an error return that
-     * misses it -- the arena never comes back and the next playback cannot fit
-     * its pcmbuf. This dump is the delta that shows whether it did. */
-    xt_arena_dump("after recording close");
 }
 
 void pcm_rec_dma_start(void *addr, size_t size)
@@ -403,10 +346,8 @@ void pcm_rec_dma_start(void *addr, size_t size)
 
     rec_ptr = (unsigned char *)addr;
     rec_left = size;
-    rx_requested = size;
     rx_irq_count = 0;
     rx_err_count = 0;
-    rx_bytes = 0;
 
     /* Bring the ADC up for this session, at the rate the bus is already running.
      * It used to be reset and clock-programmed from sink_init(), i.e. on every
@@ -422,12 +363,9 @@ void pcm_rec_dma_start(void *addr, size_t size)
 
     /* The receiver cannot clock anything out of pads it does not own, so take
      * them before enabling the channel. */
-    i2s_tx_gdma_peek("before pads_take");
     i2s_rx_pads_take();
-    i2s_tx_gdma_peek("after pads_take");
 
     esp_err_t e = i2s_channel_enable(rx_chan);
-    i2s_tx_gdma_peek("after chan_enable");
     if (e != ESP_OK)
         printf("RX i2s_channel_enable failed: %d\n", (int)e);
     else
@@ -438,7 +376,6 @@ void pcm_rec_dma_start(void *addr, size_t size)
     semaphore_release(&rx_sem);
 
     pcm_rec_dma_status_callback(PCM_DMAST_STARTED);
-    rx_probe("at start");
 }
 
 void pcm_rec_dma_stop(void)
@@ -483,26 +420,13 @@ void pcm_rec_dma_stop(void)
 
     if (rx_thread_idle && rx_chan && rx_chan_enabled)
     {
-        i2s_tx_gdma_peek("before chan_disable");
         i2s_channel_disable(rx_chan);
-        i2s_tx_gdma_peek("after chan_disable");
         rx_chan_enabled = false;
     }
 
     rx_running = false;
-    rx_probe("at stop");
     i2s_rx_pads_release();
 
-    /* TEMPORARY: read the TRANSMIT path the instant the recording session lets go
-       of the bus. Every dump we have ever taken of GDMA is either at boot or at a
-       playback stop that this bug never lets happen, so the state of the block in
-       between has never actually been observed -- the 0x3ff reading was inferred
-       from one old capture, not re-measured. If link and ena read 0x3ff here, the
-       session teardown is still gating or resetting the block and the reference
-       count theory was wrong in detail rather than in kind; if they read sane
-       values, the transmitter survived the session intact and the fault is
-       somewhere else entirely. */
-    i2s_audio_probe();
 }
 
 const void *pcm_rec_dma_get_peak_buffer(void)
