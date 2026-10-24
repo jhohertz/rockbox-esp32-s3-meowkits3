@@ -32,6 +32,17 @@
 #include "esp_rom_sys.h"
 #include "tick.h"
 
+/* Opt this file into logf output. logf.h compiles logf() away in any file that
+ * does not ask for it, and the crash report below is the only message this file
+ * emits -- there is no per-tick flooding here, which is the failure mode the
+ * comment in button_read_device() documents. logf() is used rather than a
+ * hand-rolled pump because Rockbox already routes it to the USB CDC console
+ * (firmware/logf.c flushes its ring through usb_serial_send()) under
+ * USB_ENABLE_SERIAL, and it flushes once per message, so a payload is bounded by
+ * the call site instead of by a loop. */
+#define LOGF_ENABLE
+#include "logf.h"
+
 #define PANICLOG_MAGIC 0x434e504cu   /* "LNPL" */
 
 struct panic_record
@@ -467,61 +478,48 @@ void xtensa_paniclog_dump(void)
  * trail was wide enough to name it.
  */
 
-/* Send everything that survived the reset over the USB CDC console.
+/* Send the surviving crash record over the CDC console, through logf().
  *
- * The hardware-info screen shows six trail rows because that is what fits on a
- * 320x240 panel; a host can have the whole ring, the teardown trail and the panic
- * record without anyone navigating a debug menu.
+ * The hardware-info screen used to be the only readout, and this build does not
+ * expose that menu, so a host has to be able to fetch it. Each logf() call is one
+ * message: it appends to logfbuffer and flushes through usb_serial_send(), which
+ * queues at most TRANSIT_BUFFER_SIZE (32) bytes per transfer and lets the driver's
+ * completion handler pick up the rest. Four short messages therefore total well
+ * under 200 bytes, inside the 512-byte ring, and nothing loops on the endpoint.
  *
- * Nothing calls this right now. It was wired to a one-shot task at boot and that
- * combination put the board into a reboot loop; the caller is removed, the
- * function is kept, and the CDC report goes back in only once the fault is
- * identified. Note that this is the only caller of usb_serial_send() anywhere in
- * the tree -- Rockbox has no serial console output on any target -- so a fault
- * here is the first IN transfer the CDC endpoint has ever attempted, not a race
- * introduced by a second producer.
+ * The previous version of this function pushed all forty trail entries in a loop,
+ * roughly 1.4 KB, with no guarantee that anyone had the port open. The ring cannot
+ * advance while a transfer is outstanding, so it hammered an endpoint that was
+ * still holding the first chunk and the board reboot-looped. That is why the depth
+ * here is three and the payload is bounded: the trail's full ring stays on the
+ * screen and in SRAM, where it costs nothing.
  *
- * usb_serial_send() is used rather than printf: it fills the stack's transmit ring
- * and returns, and drops the data if the CDC function is not the one currently
- * configured, so a device plugged into a host that asked for MSC instead of a
- * serial port simply stays quiet.
+ * Call this from thread context. It is called once, from the button tick, which is
+ * tick_task_thread -- ordinary thread context, the same place every other logf()
+ * caller runs, so there is no second producer racing the filesystem's messages.
  */
-void xtensa_paniclog_cdc_dump(void)
+void xtensa_crash_report_logf(void)
 {
-    /* Declared rather than included: firmware/usbstack is not on the include path
-     * for the firmware library. The signature matches usbstack/usb_serial.h. */
-    extern void usb_serial_send(const unsigned char *data, int length);
     char line[64];
     int len;
     int back;
 
-    len = snprintf(line, sizeof line,
-                   "\r\nrb crash report: reset %lu, trail %lu, rtc %lu\r\n",
-                   xtensa_paniclog_reset_reason(),
-                   (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0),
-                   xtensa_paniclog_rtc_count());
-    if (len > 0)
-        usb_serial_send((const unsigned char *)line, len);
-
     len = xtensa_paniclog_text(line, sizeof line);
     if (len > 0)
-    {
-        usb_serial_send((const unsigned char *)"  panic: ", strlen("  panic: "));
-        usb_serial_send((const unsigned char *)line, len);
-        usb_serial_send((const unsigned char *)"\r\n", 2);
-    }
+        logf("rb panic: %s", line);
+    else
+        logf("rb panic: none, reset %lu, rtc %lu",
+             xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count());
 
-    /* Newest first, so this matches what panic_cdc.c writes at fault time and what
-     * the debug page shows. The three readouts of the same ring should agree. */
-    usb_serial_send((const unsigned char *)"  trail, newest first:\r\n",
-                    strlen("  trail, newest first:\r\n"));
-    for (back = 0; back < BC_SLOTS; back++)
+    logf("rb reset %lu rtc %lu trail %lu",
+         xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count(),
+         (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
+
+    /* Newest first, matching the debug page and the panic handler's own report. */
+    for (back = 0; back < 3; back++)
     {
-        len = xtensa_breadcrumb_back(back, line, sizeof line);
-        if (len == 0)
+        if (xtensa_breadcrumb_back(back, line, sizeof line) == 0)
             break;
-        usb_serial_send((const unsigned char *)"  ", 2);
-        usb_serial_send((const unsigned char *)line, len);
-        usb_serial_send((const unsigned char *)"\r\n", 2);
+        logf("rb trail %s", line);
     }
 }

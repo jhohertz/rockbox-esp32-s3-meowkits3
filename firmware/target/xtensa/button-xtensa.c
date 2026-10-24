@@ -10,6 +10,7 @@
 
 #include "system.h"
 #include "button.h"
+#include "tick.h"     /* current_tick and HZ: the report below is timed in ticks */
 #include "gpio-xtensa.h"
 #ifdef HAVE_AXP173
 #include "axp173.h"
@@ -198,6 +199,35 @@ int button_read_device(int *data)
         }
     }
 #endif
+
+    /* One-shot crash report for the host.
+     *
+     * button_read_device() runs in tick_task_thread at HZ -- ordinary thread
+     * context, the same place the filesystem's logf() calls happen -- which is what
+     * keeps the CDC transport single-producer. The previous version of this report
+     * ran from an IDF task and pushed 1.4 KB in a loop; the board reboot-looped.
+     *
+     * Three seconds is a deliberate wait, not a random one: USB attaches about a
+     * second after boot and CDC has to be configured before anything is queued.
+     * Sending earlier is harmless -- usb_serial_send() drops the data when the
+     * serial function is not active -- but useless, and a useless send reads exactly
+     * like a silent console.
+     */
+    {
+        static long report_at;
+        static bool reported;
+
+        if (!reported)
+        {
+            if (report_at == 0)
+                report_at = current_tick + HZ * 3;
+            else if (current_tick >= report_at)
+            {
+                reported = true;
+                xtensa_crash_report_logf();
+            }
+        }
+    }
 
 #ifdef HAVE_AXP173
     /* The PEK power key is the only way to turn the board off, and the chip
