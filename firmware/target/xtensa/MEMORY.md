@@ -463,6 +463,53 @@ The practical consequence: the fault is earlier than the encoder path. `codec_ru
 `get_command` (offset 60) before `get_buf` (144) and `enc_read` (136); nothing has yet
 reached 144 or 136, so the fault is on the first call or in the recorder's own entry.
 
+## A codec is a separate executable that calls the API by struct offset
+
+`struct codec_api` is not a name table -- codec images load a pointer to the
+firmware's `ci` and index it numerically. `lib/rbcodec/codecs/codecs.h` grows the
+struct conditionally, so anything in `config.h` that changes those conditionals moves
+every field after it. For this target, measured from the firmware's DWARF:
+
+| offset | field |
+|---|---|
+| 60 | `get_command` |
+| 128 | `logf` (present because `ROCKBOX_HAS_LOGF` is set) |
+| 132 | `qsort` |
+| 136 | `enc_pcmbuf_read` |
+| 140 | `enc_pcmbuf_advance` |
+| 144 | `enc_encbuf_get_buffer` |
+| 148 | `enc_encbuf_finish_buffer` |
+| | `sizeof(struct codec_api)` = 172 |
+
+`firmware/export/config/meowkits3.h:667` gained `#define ROCKBOX_HAS_LOGF 1` in
+`f475d50293` (the unconditional USB console), which inserted the `logf` word at 128 and
+shifted the whole encoder block by one. The codecs packaged in `rockbox.zip` were from
+before that commit -- all 43 of them differed from the build directory -- so
+`wav_enc.codec` on the card called:
+
+| it intends | offset it uses | what the firmware has there |
+|---|---|---|
+| `enc_encbuf_get_buffer` | 140 | `enc_pcmbuf_advance` |
+| `enc_pcmbuf_read` | 132 | **`qsort`** |
+| `enc_pcmbuf_advance` | 136 | `enc_pcmbuf_read` |
+
+That is the recording crash. Playback was unaffected because its slots (`36`, `40`,
+`60`) sit before `logf`, which is why the same card played files fine and died only on
+record -- and why the symptoms looked like a firmware bug rather than a packaging one.
+
+Two things that made it hard to see:
+
+- **The loader only rejects a too-large API struct.** `apps/codecs.c:217` compares
+  `c_hdr->api_size > sizeof(struct codec_api)`, so a codec missing a field has a
+  *smaller* `api_size` and loads happily, calling `qsort` as its PCM read. A one-sided
+  check cannot detect a shift.
+- **`make` does not rebuild the zip.** The card is populated only from `rockbox.zip`,
+  which is a separate goal (`make zip`). A stale zip therefore survives any number of
+  firmware rebuilds, and the codec on the card can disagree with the running firmware.
+  After any change that touches `struct codec_api` -- or any `config.h` define it
+  depends on -- run `make zip` and re-extract, or the mismatch is on the card, not in
+  the tree.
+
 ## Verifying
 
 ```sh
