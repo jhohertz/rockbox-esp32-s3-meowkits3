@@ -50,12 +50,16 @@ static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
 /* ------------------------------------------------------------------ *
  * Breadcrumbs
  *
- * IDF 5.5 offers no hook into its panic path (no panic_handler_register, and
- * the only weak symbols in panic.c are the reset-reason hints), and on this
- * device the handler re-enters and reboots before printing anything -- both
- * crashes in the session that produced this left nothing but
- * "Panic handler entered multiple times". A record written AT panic time
- * therefore cannot be relied on.
+ * IDF's panic entry is not a registration point: esp_panic_handler() is a strong
+ * symbol in esp_system/panic.c, in an object the link pulls anyway for the watchdog
+ * helpers it also defines. Taking it over needs an object of the executable plus
+ * -Wl,--allow-multiple-definition, which idf-app/panic_cdc.c does; both crashes in
+ * the session that produced this file happened before that existed and left nothing
+ * but "Panic handler entered multiple times".
+ *
+ * Breadcrumbs complement rather than duplicate that: they are written while
+ * everything is healthy, so they record a fault the panic entry cannot see -- a
+ * watchdog reset, a bus hang, or a handler that re-enters before reaching it.
  *
  * Breadcrumbs invert that: they are written while everything is healthy, at
  * each step that could be the last one, and read on the next boot. A .noinit
@@ -433,8 +437,9 @@ void xtensa_paniclog_dump(void)
 
 /* Proven on hardware the first time it was used: a crash during WAV resume
  * ended the trail at "placed", and the next boot printed it. Two things that
- * result settled, both of which the register dump could not give us because IDF
- * 5.5 has no panic hook and the handler re-enters before printing anything:
+ * result settled, both of which the register dump could not give us at the time
+ * because IDF's panic entry had not yet been taken over and the handler re-entered
+ * before printing anything:
  *
  *   - .noinit internal SRAM does survive panic_restart() (RTC_SW_CPU_RST), so a
  *     write-while-healthy trail is a usable crash record on this target;
@@ -461,3 +466,55 @@ void xtensa_paniclog_dump(void)
  * become the fault being observed. This one survived three crashes before the
  * trail was wide enough to name it.
  */
+
+/* Send everything that survived the reset over the USB CDC console.
+ *
+ * The hardware-info screen shows six trail rows because that is what fits on a
+ * 320x240 panel; a host can have the whole ring, the teardown trail and the panic
+ * record without anyone navigating a debug menu. This runs in a task of its own,
+ * seconds after boot, on the assumption that enumeration is done by then.
+ *
+ * usb_serial_send() is used rather than printf: it fills the stack's transmit ring
+ * and returns, and drops the data if the CDC function is not the one currently
+ * configured, so a device plugged into a host that asked for MSC instead of a
+ * serial port simply stays quiet.
+ */
+void xtensa_paniclog_cdc_dump(void)
+{
+    /* Declared rather than included: firmware/usbstack is not on the include path
+     * for the firmware library. The signature matches usbstack/usb_serial.h. */
+    extern void usb_serial_send(const unsigned char *data, int length);
+    char line[64];
+    int len;
+    int back;
+
+    len = snprintf(line, sizeof line,
+                   "\r\nrb crash report: reset %lu, trail %lu, rtc %lu\r\n",
+                   xtensa_paniclog_reset_reason(),
+                   (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0),
+                   xtensa_paniclog_rtc_count());
+    if (len > 0)
+        usb_serial_send((const unsigned char *)line, len);
+
+    len = xtensa_paniclog_text(line, sizeof line);
+    if (len > 0)
+    {
+        usb_serial_send((const unsigned char *)"  panic: ", strlen("  panic: "));
+        usb_serial_send((const unsigned char *)line, len);
+        usb_serial_send((const unsigned char *)"\r\n", 2);
+    }
+
+    /* Newest first, so this matches what panic_cdc.c writes at fault time and what
+     * the debug page shows. The three readouts of the same ring should agree. */
+    usb_serial_send((const unsigned char *)"  trail, newest first:\r\n",
+                    strlen("  trail, newest first:\r\n"));
+    for (back = 0; back < BC_SLOTS; back++)
+    {
+        len = xtensa_breadcrumb_back(back, line, sizeof line);
+        if (len == 0)
+            break;
+        usb_serial_send((const unsigned char *)"  ", 2);
+        usb_serial_send((const unsigned char *)line, len);
+        usb_serial_send((const unsigned char *)"\r\n", 2);
+    }
+}

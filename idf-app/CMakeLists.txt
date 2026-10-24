@@ -90,3 +90,40 @@ target_link_libraries(rockbox.elf PRIVATE "-Wl,--end-group")
 # real implementation in firmware/target/xtensa/usb-xtensa.c. __real_usb_enable is
 # the ROM address and is deliberately never called.
 target_link_options(rockbox.elf PRIVATE "-Wl,--wrap=usb_enable")
+
+# ---- taking over IDF's panic entry ----
+#
+# A hardware exception on this board went to IDF's handler, printed to UART0 (which
+# Rockbox owns, so nothing arrived) and reset. The fault address was lost, because IDF
+# keeps the exception frame on the stack and stores only a reset-reason hint.
+#
+# idf-app/panic_cdc.c defines esp_panic_handler(), which IDF also defines -- strongly,
+# in esp_system/panic.c, in an object that the link pulls anyway for the watchdog
+# helpers it contains. Two things make ours the one that survives:
+#
+#   * it is added as a source of the executable, so ld reads the object before any
+#     archive. A file inside the main component would land in libmain.a, which sits
+#     after libesp_system.a on the line and would lose.
+#   * --allow-multiple-definition stops the duplicate from being an error, and ld
+#     keeps the definition it saw first: ours.
+#
+# Checked after every link, not assumed: rockbox.elf must contain the string
+# "*rb-panic*". If it does not, IDF's copy won and the override is dead code.
+#
+# The includes are spelled out because an executable target does not inherit the
+# include directories of IDF's components; only the three headers this file needs.
+idf_build_get_property(_idf_path IDF_PATH)
+
+target_sources(rockbox.elf PRIVATE "${CMAKE_CURRENT_LIST_DIR}/panic_cdc.c")
+target_include_directories(rockbox.elf PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${_idf_path}/components/esp_system/include"
+    "${_idf_path}/components/esp_system/port/include/port"
+    "${_idf_path}/components/esp_common/include"
+    "${_idf_path}/components/esp_rom/include"
+    "${_idf_path}/components/esp_rom/esp32s3/include"
+    "${_idf_path}/components/soc/esp32s3/include"
+    "${_idf_path}/components/xtensa/esp32s3/include"
+    "${_idf_path}/components/xtensa/include"
+    "${CMAKE_BINARY_DIR}/config")
+target_link_options(rockbox.elf PRIVATE "-Wl,--allow-multiple-definition")
