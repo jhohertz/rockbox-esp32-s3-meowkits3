@@ -27,10 +27,12 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"   /* esp_reset_reason */
+#include "esp_app_desc.h" /* esp_app_get_description: the build id of this image */
 
 extern void xtensa_paniclog_dump(void);
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 extern void xtensa_paniclog_set_reset(unsigned reason);
+extern void xtensa_build_id_stamp(const char *id);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
  * header, and pulling its headers in here would drag the whole apps tree into
@@ -116,6 +118,13 @@ void app_main(void)
      * own output arrives). Unbuffered stdout makes the early dumps land.
      */
     setvbuf(stdout, NULL, _IONBF, 0);
+    /* Record which image this boot is, before anything can overwrite it. A flash
+     * cannot be confirmed by watching the board: the post-flash reset pulse goes
+     * over D+/D-, which the running image has already handed to the DWC core, so
+     * the chip never sees it and keeps running whatever was loaded before. The
+     * crash report prints this alongside the build id the panic handler stored, so
+     * "the flashed image" and "the image that crashed" are two separate facts. */
+    xtensa_build_id_stamp(esp_app_get_description()->version);
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
     xtensa_paniclog_dump();

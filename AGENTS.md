@@ -3297,6 +3297,14 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- **A flash cannot be confirmed by watching the board.** The ESP32-S3 has no UART
+  bridge: the host talks to the SoC's USB-Serial-JTAG on GPIO19/20, and Rockbox
+  hands those pads to the DWC OTG core ~865 ms into `app_main`. esptool's
+  `--after hard_reset` pulse travels over D+/D-, which the already-running image is
+  driving, so the chip never sees it and keeps running the previous image —
+  `Hash of data verified` proves the write, nothing more. Hold BOOT for download
+  mode, flash, then power-cycle, and read the `rb build` line to confirm which
+  image is reporting. See `firmware/target/xtensa/MEMORY.md`.
 - Anything the DMA writes back must be `volatile`. A descriptor's owner bit changes
   through a store the compiler cannot see, so an empty spin loop on it gets folded into
   a single test and the driver never notices the buffer being handed back. Check the
