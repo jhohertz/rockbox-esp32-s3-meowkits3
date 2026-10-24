@@ -543,19 +543,23 @@ Reducing PTX to 8 to buy RX for audio broke mass storage exactly that way — en
 fine because EP0 uses NPTX. RX is now computed from the hardware FIFO count rather than
 `USB_NUM_ENDPOINTS - 1`, which is what freed the words without touching PTX.
 
-An isochronous packet has to fit inside the RX budget plus EP0's and the CDC OUT packet, so
-`USB_AUDIO_BUFFER_SIZE` is 320 and rates whose per-frame payload exceeds that (88.2 kHz at
-353 B, 96 kHz at 384) are not advertised, via usb_audio.c's `USB_AUDIO_MAX_PACKET_BYTES`.
-96 kHz is reachable without giving bulk its 16 words back: the 16-word requirement only
-exists when mass storage is in the profile, so a mode-dependent split (`PTX 4`, `RX 168`
-when storage is absent) would cover it. Not yet done.
+An isochronous packet has to fit inside the RX budget plus a control packet, and the RX
+budget cannot be enlarged: `usb.c:246` enables the storage driver on every insertion,
+whatever `usb_mode` says, so a 64-byte bulk IN packet is always in the composition and
+always needs a 16-word FIFO. 96 kHz was reached by taking the last 64 bytes from the
+control allowance in the guard rather than from bulk — `USB_AUDIO_BUFFER_SIZE` 384 against
+480 bytes of RX, i.e. 1.25 packets of tolerance. That is fine on an idle bus and thin under
+a storage flood, which is the combination that was never expected to work. Rates above that
+stay unadvertised via usb_audio.c's `USB_AUDIO_MAX_PACKET_BYTES`.
 
 Audio ring: NR_BUFFERS 48 slots at REAL_DSP_BUF_SIZE = 1280 = 61,440 bytes from the 4 MB
-audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE = 640 and lives in a
-dedicated `xt_audio_rx_buf` at `0x3fcd2080`; mass storage keeps its own 8 KiB `_transfer_buffer`
+audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE (640 at the 320-byte
+packet, 768 at 384) and lives in a dedicated `xt_audio_rx_buf` at `0x3fcd2080`; mass storage keeps its own 8 KiB `_transfer_buffer`
 at `0x3fcd2760`. These used to be the same memory, on the assumption that the USB profiles are
 mutually exclusive — they are not (see AGENTS.md), and sharing meant the isochronous DMA
-overwrote the head of every 4 KiB sector chunk while the DAC ran.
+overwrote the head of every 4 KiB sector chunk while the DAC ran. Verified on hardware
+(2026-10-24): 152 MB written to the card and read back during continuous playback, sha256
+matching on readback; recording unaffected.
 
 Internal SRAM has far more room than it looked like: the static region ends at `_heap_start`
 (`0x3fcda5c0` after this change, `0x3fcda360` before) and the data view runs to `0x3fcf0000`,
