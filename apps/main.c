@@ -271,10 +271,6 @@ int main(void)
     validate_start_directory_init();
     /* no calls INIT_ATTR functions after this point anymore!
      * see definition of INIT_ATTR in config.h */
-    /* TEMPORARY: the UI entry point. Everything before this is init; reaching
-       here means Rockbox got to its own event loop and the screen should be
-       showing the main menu. */
-    printf("rockbox: entering root_menu\n");
     CHART(">root_menu");
     root_menu();
 }
@@ -326,12 +322,10 @@ int show_logo_boot( void )
 #ifdef HAVE_DIRCACHE
 static int INIT_ATTR init_dircache(bool preinit)
 {
-    /* The bisect that used to sit here established the fact worth keeping:
-     * with dircache disabled the crash in the file_internal WRITER lock's wait
-     * queue went away entirely, and the play request reached load_codec for the
-     * first time. So dircache's participation in that lock is a real defect,
-     * not a red herring. It is back on because a card cache off to keep the
-     * player alive is not a fix. */
+    /* Dircache takes part in the file_internal writer lock, and a bug in that
+     * lock's wait queue was exposed only with the cache on. Disabling the cache
+     * here would hide a defect rather than fix it, so it stays enabled and the
+     * lock is correct instead. See firmware/target/xtensa/MEMORY.md. */
 
     if (preinit)
         dircache_init(MAX(global_status.dircache_size, 0));
