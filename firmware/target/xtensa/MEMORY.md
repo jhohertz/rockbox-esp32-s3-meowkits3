@@ -532,17 +532,36 @@ $BIN/xtensa-esp32s3-elf-nm --print-size --size-sort rockbox.elf \
 
 ## USB DAC numbers, measured rather than derived (2026-10-23)
 
-Device FIFO RAM is 200 words (GHWCFG3[31:16]), not the 256 the header implies, and the
-split is fixed by asserts in usb-xtensa.c: NPTX 16, PTX 8 x 6 dedicated IN FIFOs, RX 136
-words = 544 bytes. An isochronous packet must fit inside that RX budget plus EP0's and the
-CDC OUT packet, which is why USB_AUDIO_BUFFER_SIZE is 320 and cannot be raised -- 512 needs
-176 RX words. Rates whose per-frame payload exceeds 320 (88.2 kHz at 353 B, 96 kHz at 384)
-are not advertised, via usb_audio.c's USB_AUDIO_MAX_PACKET_BYTES.
+Device FIFO RAM is 200 words (GHWCFG3[31:16]), not the 256 the header implies, and there are
+**4** dedicated IN FIFOs (GHWCFG4), not the 6 that `USB_NUM_ENDPOINTS` suggests. The split in
+`usb-xtensa.c` is NPTX 16, PTX 16 x 4, RX 120 words = 480 bytes.
+
+PTX has to be at least 16 words: `usb_dw_handle_dtxfifo()` pushes whole packets, computing
+`words = (fifospace/maxpktwords)*maxpktwords`, so a 32-byte FIFO and a 64-byte full-speed
+bulk packet give `words = 0`, the handler breaks, and the IN transfer never completes.
+Reducing PTX to 8 to buy RX for audio broke mass storage exactly that way — enumeration was
+fine because EP0 uses NPTX. RX is now computed from the hardware FIFO count rather than
+`USB_NUM_ENDPOINTS - 1`, which is what freed the words without touching PTX.
+
+An isochronous packet has to fit inside the RX budget plus EP0's and the CDC OUT packet, so
+`USB_AUDIO_BUFFER_SIZE` is 320 and rates whose per-frame payload exceeds that (88.2 kHz at
+353 B, 96 kHz at 384) are not advertised, via usb_audio.c's `USB_AUDIO_MAX_PACKET_BYTES`.
+96 kHz is reachable without giving bulk its 16 words back: the 16-word requirement only
+exists when mass storage is in the profile, so a mode-dependent split (`PTX 4`, `RX 168`
+when storage is absent) would cover it. Not yet done.
 
 Audio ring: NR_BUFFERS 48 slots at REAL_DSP_BUF_SIZE = 1280 = 61,440 bytes from the 4 MB
-audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE = 640, borrowed from the
-storage transfer buffer (1024 bytes), which is why usb_audio_target_rx_buffer() asserts on
-the size. The restart gate / controller setpoint is MINIMUM_BUFFERS_QUEUED 22, because the
+audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE = 640 and lives in a
+dedicated `xt_audio_rx_buf` at `0x3fcd2080`; mass storage keeps its own 8 KiB `_transfer_buffer`
+at `0x3fcd2760`. These used to be the same memory, on the assumption that the USB profiles are
+mutually exclusive — they are not (see AGENTS.md), and sharing meant the isochronous DMA
+overwrote the head of every 4 KiB sector chunk while the DAC ran.
+
+Internal SRAM has far more room than it looked like: the static region ends at `_heap_start`
+(`0x3fcda5c0` after this change, `0x3fcda360` before) and the data view runs to `0x3fcf0000`,
+so about 90 KiB sits above the firmware's `.bss`, unused by Rockbox because its own allocator
+is in PSRAM. The earlier note that internal SRAM had "roughly a kilobyte of margin" was
+wrong, and it is what caused the sharing. The restart gate / controller setpoint is MINIMUM_BUFFERS_QUEUED 22, because the
 queue measures 22.5-23.5 with a gate of 24 -- see USB-AUDIO-RESEARCH.md section 9.
 
 Interrupt levels on esp32s3, read from the config that this app actually builds with rather
