@@ -543,18 +543,30 @@ Reducing PTX to 8 to buy RX for audio broke mass storage exactly that way — en
 fine because EP0 uses NPTX. RX is now computed from the hardware FIFO count rather than
 `USB_NUM_ENDPOINTS - 1`, which is what freed the words without touching PTX.
 
-An isochronous packet has to fit inside the RX budget plus a control packet, and the RX
-budget cannot be enlarged: `usb.c:246` enables the storage driver on every insertion,
-whatever `usb_mode` says, so a 64-byte bulk IN packet is always in the composition and
-always needs a 16-word FIFO. 96 kHz was reached by taking the last 64 bytes from the
-control allowance in the guard rather than from bulk — `USB_AUDIO_BUFFER_SIZE` 384 against
-480 bytes of RX, i.e. 1.25 packets of tolerance. That is fine on an idle bus and thin under
-a storage flood, which is the combination that was never expected to work. Rates above that
-stay unadvertised via usb_audio.c's `USB_AUDIO_MAX_PACKET_BYTES`.
+An isochronous packet has to fit inside the RX budget plus EP0's and the CDC OUT packet, so
+`USB_AUDIO_BUFFER_SIZE` is 320 and rates whose per-frame payload exceeds that (88.2 kHz at
+353 B, 96 kHz at 384) are not advertised, via usb_audio.c's `USB_AUDIO_MAX_PACKET_BYTES`.
+
+The route to 96 kHz is **not** a mode-dependent FIFO split. `usb.c:246` enables the
+mass-storage driver on every insertion regardless of `usb_mode`, so a 64-byte bulk IN packet
+is always in the composition and its FIFO must always hold a whole one; there is no mode in
+which PTX can be traded for RX words.
+
+**A 384-byte packet was tried on 2026-10-24 and killed the DAC.** Only
+`USB_AUDIO_BUFFER_SIZE` (320 -> 384) and the guard's control allowance (two reserved control
+packets -> one, so 480 bytes of RX held one packet plus one instead of plus two) changed. The
+host enumerated an audio interface and streamed into it; nothing came out, and the USB DAC
+debug page showed no sign of life. The mechanism was not identified: the descriptor's flexible
+`tSamFreq[][3]` array is sized for `HW_FREQ_44+1` = 5 entries and the filtered count is 5, so
+it did not overflow; `REAL_BUF_SIZE` stays a multiple of 32, so both ping-pong halves are
+cache-line aligned; the target hook is asked for 768 bytes and has 768; and an OUT endpoint
+needs no dedicated TX FIFO, so allocation could not have failed. Reverted rather than left
+half-understood. Before 96 kHz is attempted again, something has to demonstrate that the
+endpoint receives packets at all.
 
 Audio ring: NR_BUFFERS 48 slots at REAL_DSP_BUF_SIZE = 1280 = 61,440 bytes from the 4 MB
-audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE (640 at the 320-byte
-packet, 768 at 384) and lives in a dedicated `xt_audio_rx_buf` at `0x3fcd2080`; mass storage keeps its own 8 KiB `_transfer_buffer`
+audiobuffer arena. The ping-pong receive span is 2 * REAL_BUF_SIZE = 640 and lives in a
+dedicated `xt_audio_rx_buf` at `0x3fcd2080`; mass storage keeps its own 8 KiB `_transfer_buffer`
 at `0x3fcd2760`. These used to be the same memory, on the assumption that the USB profiles are
 mutually exclusive — they are not (see AGENTS.md), and sharing meant the isochronous DMA
 overwrote the head of every 4 KiB sector chunk while the DAC ran. Verified on hardware

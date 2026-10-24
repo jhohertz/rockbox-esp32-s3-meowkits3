@@ -3310,8 +3310,14 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   returns a dedicated static; internal SRAM has ~90 KiB above `_heap_start` that Rockbox
   never uses because its allocator is in PSRAM, so a class buffer is cheap. Verified by
   writing and reading back 152 MB during continuous playback with matching sha256.
-  A consequence of storage always being on: the bulk IN endpoint always needs a 16-word TX
-  FIFO, so RX words cannot be bought by shrinking PTX.
+  A consequence of storage always being enabled: bulk always needs a 16-word IN FIFO, so
+  RX words cannot be bought by shrinking PTX.
+- **Raising the isochronous packet to carry 96 kHz broke the DAC, and the reason is not
+  known.** `USB_AUDIO_BUFFER_SIZE` 320 -> 384, with the RX guard relaxed from one packet
+  plus two control packets to one plus one, produced a device the host enumerated as an
+  audio interface and streamed into with no sound and no activity on the USB DAC debug
+  page. Reverted (f2a3c8126b). Do not retry until something shows the endpoint receiving
+  packets at all.
 - **A bulk IN endpoint needs a 16-word TX FIFO, and the driver will not tell you.**
   `usb_dw_handle_dtxfifo()` pushes whole packets: `words = (fifospace/maxpktwords) *
   maxpktwords`, so a 32-byte FIFO with a 64-byte full-speed packet computes 0 and breaks,
