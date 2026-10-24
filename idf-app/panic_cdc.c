@@ -1,39 +1,41 @@
 /*
- * panic_cdc.c -- report a hardware exception through Rockbox's logf().
+ * panic_cdc.c -- retain a hardware exception's state across the reset.
  *
  * Rockbox's panic() draws on the LCD and then holds the glass. A hardware
  * exception never reaches it: it goes to IDF's xt_unhandled_exception(), which
  * prints to UART0 -- a port this board gives to Rockbox, so nobody sees it -- and
  * then resets, because CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT is set with
  * CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=0. IDF keeps the exception frame on
- * the stack and stores nothing durable except the reset-reason hint, so the fault
- * address was simply lost. Coredump is disabled
- * (CONFIG_ESP_COREDUMP_ENABLE_TO_NONE), which confirms nothing else is retained.
+ * the stack and stores nothing durable except the reset-reason hint
+ * (CONFIG_ESP_COREDUMP_ENABLE_TO_NONE confirms nothing else is retained), so the
+ * fault address was simply lost.
  *
  * esp_panic_handler() is the earliest point at which IDF has re-enabled the flash
- * cache, so code linked here can execute, and it is handed a filled panic_info_t
- * whose ->frame is the XtExcFrame -- the whole register set, not just info->addr.
- * Hooking xt_unhandled_exception() instead would run with the cache still off and
- * fault on the first instruction.
+ * cache, so code linked here can execute; hooking xt_unhandled_exception() instead
+ * would run with the cache off and fault on its first instruction. IDF hands us a
+ * filled panic_info_t whose ->frame is the exception frame.
  *
- * IDF defines this function strongly in esp_system/panic.c, and that object is
- * pulled into the link anyway for the watchdog helpers it also defines, so this
- * definition is a duplicate. It wins because it is an object file of the
- * executable, which ld reads before any archive, together with
- * -Wl,--allow-multiple-definition in idf-app/CMakeLists.txt. That is checked, not
- * assumed: the linked image must contain RB_PANIC_TAG and esp_panic_handler must
- * resolve into .flash.text, not to IDF's IRAM copy at 0x4037c1xx.
+ * IDF defines this function strongly in esp_system/panic.c, in an object the link
+ * pulls anyway for the watchdog helpers it also defines, so this is a duplicate
+ * definition. It wins because it is an object file of the executable, which ld
+ * reads before any archive, together with -Wl,--allow-multiple-definition from
+ * idf-app/CMakeLists.txt. Checked, not assumed: esp_panic_handler must resolve into
+ * .flash.text, not to IDF's IRAM helpers at 0x4037c1xx.
  *
- * The transport is logf(), not a hand-rolled CDC pump. logf() is a Rockbox
- * facility that already routes to the USB CDC console under USB_ENABLE_SERIAL
- * (firmware/logf.c flushes its ring through usb_serial_send()), and it flushes once
- * per message: usb_serial_send() queues at most TRANSIT_BUFFER_SIZE (32) bytes and
- * lets the driver's completion handler drain the rest. The previous version of this
- * file wrote 64-byte chunks in a loop straight into usb_serial_send(); with a 512
- * byte ring that cannot advance while a transfer is outstanding, it hammered the
- * endpoint. Interrupts are still enabled in IDF's panic path -- there is no
- * disable_interrupts in port/panic_handler.c or port/arch/xtensa/panic_arch.c -- so
- * the level-2 USB interrupt runs while this executes and moves the bytes.
+ * Nothing is written to the console here. The recorder's retained frame carries
+ * PS.INTLEVEL = 4, which is debug exception level: _DoubleExceptionVector does
+ * `break 1,4` (xtensa_vectors.S:586-593) and IDF then reaches this handler from
+ * that context. At level 4 every interrupt is masked, including the level-2 USB
+ * interrupt, so a CDC write cannot drain no matter how it is queued -- an earlier
+ * version of this file wrote logf lines here and none of them ever arrived. The
+ * only channel that works from this context is RTC slow, so everything goes there
+ * and is printed by xtensa_crash_report_logf() at the next boot. Dropping the
+ * console writes also removes a suspect: a fault inside our own handler would
+ * itself promote to a double exception.
+ *
+ * The hold is two seconds rather than eight. In this context it is not a courtesy
+ * to the host -- there is nothing the host could receive -- it is two seconds of
+ * interrupts masked on a board that was mid-audio.
  */
 
 #include <stdio.h>
@@ -46,66 +48,71 @@
 #include "esp_rom_sys.h"
 
 /* Rockbox, declared here rather than included: this file is compiled by IDF, which
- * does not carry Rockbox's include paths. This is the same seam rockbox_app.c uses.
- * _logf is what the logf() macro expands to when ROCKBOX_HAS_LOGF is set, which this
- * target does; the signature matches firmware/export/logf.h. */
+ * does not carry Rockbox's include paths. Same seam rockbox_app.c uses. */
 extern void xtensa_panic_log(const char *msg);
 extern void xtensa_paniclog_frame(const unsigned long *words, int count,
                                   int exception, int pseudo);
-extern int xtensa_breadcrumb_back(int back, char *buf, int bufsize);
+extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
-extern void _logf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 /* Distinctive enough to grep for in the linked image, so a silent loss to the
  * archive copy of the symbol is visible before the board is flashed. */
 #define RB_PANIC_TAG "*rb-panic*"
 
-/* IDF arms the RTC watchdog for ten seconds before calling the handler. Feeding it
- * once a second lets the hold outlast that without the chip being cut off mid-read.
- * The hold exists so the host has time to drain its tty: nothing here can tell
- * whether anyone has the port open. */
-#define RB_PANIC_HOLD_MS 8000
+#define RB_PANIC_HOLD_MS 2000
 #define RB_PANIC_STEP_MS 100
 
-/* Three, not twelve. The CDC ring is 512 bytes and every message is queued into it
- * whether or not the host is reading; the full ring is reported at boot by
- * xtensa_crash_report_logf() and shown on the debug page. */
-#define RB_PANIC_TRAIL 3
+/* Order of the register array handed to xtensa_paniclog_frame_regs():
+ * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size. */
+#define RB_REGS 8
+
+/* EPC and DEPC are only readable at their own exception levels: reading EPC1 at
+ * level 1 is a DISASTER exception, which would manufacture a third fault and
+ * destroy the state being read. So PS is read first -- that is legal at any level
+ * -- and the rest is only touched at level 4, where the retained frame says we
+ * are. If a future crash reaches this handler at level 1, the register line is
+ * simply absent, and its absence is itself the answer. */
+static unsigned long xt_psr(int level)
+{
+    unsigned long v = 0;
+
+    switch (level)
+    {
+        case 1: __asm__ __volatile__ ("rsr.epc1 %0" : "=r"(v)); break;
+        case 2: __asm__ __volatile__ ("rsr.epc2 %0" : "=r"(v)); break;
+        case 3: __asm__ __volatile__ ("rsr.epc3 %0" : "=r"(v)); break;
+        case 4: __asm__ __volatile__ ("rsr.epc4 %0" : "=r"(v)); break;
+        default: break;
+    }
+    return v;
+}
 
 void esp_panic_handler(panic_info_t *info)
 {
     const XtExcFrame *f = (const XtExcFrame *)info->frame;
-    char line[80];
-    int back;
+    char line[96];
+    unsigned long regs[RB_REGS];
     int waited = 0;
-    /* info->addr is frame->pc, but IDF leaves it NULL on the cache-error path --
-     * panic_soc_fill_info() overrides the reason with "Cache error" and does not
-     * fill addr -- which is why the first four recorder reports printed
-     * pc=00000000 and named nothing. The frame is the reliable source, and
-     * XtExcFrame carries pc at offset 4 (xtensa_context.h: XT_STK_EXIT, XT_STK_PC,
-     * XT_STK_PS, ...), so prefer it and fall back to info->addr only if there is
-     * no frame at all. */
+    int i;
+    /* info->addr is frame->pc, but IDF leaves it NULL on the cache-error path,
+     * which is why the first reports printed pc=00000000. The frame is the
+     * reliable source: XtExcFrame carries pc at offset 4. */
     unsigned long pc = f ? (unsigned long)f->pc
                          : (unsigned long)(info->addr ? info->addr : 0);
     unsigned long excv = f ? (unsigned long)f->excvaddr : 0UL;
     unsigned long cause = f ? (unsigned long)f->exccause : 0UL;
     const char *reason = info->reason ? info->reason : "unknown";
+    unsigned long ps;
 
     esp_panic_handler_feed_wdts();
 
-    /* Retain the frame raw, before anything else. The CDC transport cannot be
-     * relied on here -- the reset closes the host's descriptor and the queued
-     * bytes die with the endpoint -- and the register values are only meaningful
-     * once the layout is settled on the host, which is the whole question raised
-     * by pc resolving to the exception vector. 32 words covers XtExcFrame and the
-     * head of an XtDbFrame; the stack above the frame is valid memory, so reading
-     * past the frame end is harmless. */
+    /* The frame verbatim, before anything else. Its layout is the open question,
+     * so no attempt is made to interpret it here; the host has both layouts. */
     if (f != NULL)
     {
         const unsigned long *raw = (const unsigned long *)f;
         unsigned long fw[32];
-        int i;
 
         for (i = 0; i < 32; i++)
             fw[i] = raw[i];
@@ -113,36 +120,33 @@ void esp_panic_handler(panic_info_t *info)
                               info->pseudo_excause ? 1 : 0);
     }
 
-    /* Short form into the surviving record: bounded by the record's 96-character
-     * message field, and read back after the reset by xtensa_paniclog_text(). */
-    snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
-             RB_PANIC_TAG, reason, pc, excv, cause);
-    xtensa_panic_log(line);
-
-    /* One message per line, each well inside the ring. The PC alone is enough to
-     * resolve the fault against rockbox.elf with addr2line. */
-    _logf("%s core %d %s pc=%08lx excv=%08lx cause=%lu",
-          RB_PANIC_TAG, info->core, reason, pc, excv, cause);
-    if (f)
+    __asm__ __volatile__ ("rsr.ps %0" : "=r"(ps));
+    regs[0] = ps;
+    if ((ps & 0xfu) >= 4u)
     {
-        _logf("  ps=%08lx sar=%08lx a0=%08lx sp=%08lx",
-              (unsigned long)f->ps, (unsigned long)f->sar,
-              (unsigned long)f->a0, (unsigned long)f->a1);
-        _logf("  a12=%08lx a13=%08lx a14=%08lx a15=%08lx",
-              (unsigned long)f->a12, (unsigned long)f->a13,
-              (unsigned long)f->a14, (unsigned long)f->a15);
+        regs[1] = xt_psr(1);
+        regs[2] = xt_psr(2);
+        regs[3] = xt_psr(3);
+        regs[4] = xt_psr(4);
+        /* DEPC holds the address that doubled, and on a double exception the ISA
+         * has already shifted the original EPC1 down to EPC2 -- which is the
+         * faulting instruction this handler's own frame cannot show. */
+        __asm__ __volatile__ ("rsr.depc %0" : "=r"(regs[5]));
+    }
+    else
+    {
+        for (i = 1; i < 6; i++)
+            regs[i] = 0;
     }
 
-    /* A "Cache error" reason is IDF's override, not the architecture's: the real
-     * detail lives in the cache-error interrupt latch, which panic_arch reads the
-     * same way. vaddr and size say which access the cache refused, and that is the
-     * difference between a wild pointer and an unmapped MMU entry.
-     *
-     * There is no esp_cache_err_has_active_err() on esp32s3 -- that one is riscv
-     * and c-series only -- so the guard is the info itself: on this SoC
-     * esp_cache_err_get_panic_info() reads EXTMEM_CACHE_ILG_INT_ST and then the ACS
-     * latch, and leaves err_str NULL when neither reports anything (esp32s3/
-     * cache_err_int.c:131-146). */
+    /* The cache-error latch, which is what "Cache error" as a reason means: IDF
+     * overrides the reason in panic_soc_fill_info() and the refused address and
+     * size live here instead. There is no esp_cache_err_has_active_err() on
+     * esp32s3 -- riscv and c-series only -- so the guard is the returned info:
+     * esp_cache_err_get_panic_info() leaves err_str NULL when neither the
+     * illegal-access status nor the ACS latch reports anything (esp32s3/
+     * cache_err_int.c:131-146). err_str is not stored: it points into ROM, and
+     * the string is meaningless after the reset. */
     {
         esp_cache_err_info_t ci;
 
@@ -150,20 +154,18 @@ void esp_panic_handler(panic_info_t *info)
         ci.vaddr = 0;
         ci.size = 0;
         esp_cache_err_get_panic_info(&ci);
-        if (ci.err_str != NULL)
-            _logf("  cache: %s vaddr=%08lx size=%lu",
-                  ci.err_str, (unsigned long)ci.vaddr, (unsigned long)ci.size);
+        regs[6] = ci.err_str != NULL ? (unsigned long)ci.vaddr : 0UL;
+        regs[7] = ci.err_str != NULL ? (unsigned long)ci.size : 0UL;
     }
+    xtensa_paniclog_frame_regs(regs, RB_REGS);
 
-    for (back = 0; back < RB_PANIC_TRAIL; back++)
-    {
-        if (xtensa_breadcrumb_back(back, line, sizeof line) == 0)
-            break;
-        _logf("  trail %s", line);
-    }
+    /* Short form in the text record, bounded by its 96-character field, so the
+     * fault is identifiable from the debug page as well as the serial report. */
+    snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
+             RB_PANIC_TAG, reason, pc, excv, cause);
+    xtensa_panic_log(line);
 
-    /* Hold so the host has time to drain, and so the screen keeps the last frame
-     * instead of vanishing into a reboot. Any key ends it early. */
+    /* Two seconds, feeding the RTC watchdog IDF armed for ten. */
     while (waited < RB_PANIC_HOLD_MS)
     {
         if (button_hw_any_pressed())
@@ -174,6 +176,5 @@ void esp_panic_handler(panic_info_t *info)
             esp_panic_handler_feed_wdts();
     }
 
-    /* IDF's own reset path. The RTC watchdog is still armed at this point. */
     panic_restart();
 }
