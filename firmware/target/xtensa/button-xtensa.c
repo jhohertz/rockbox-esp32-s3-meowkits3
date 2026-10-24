@@ -5,6 +5,12 @@
  * bus. Rockbox's common button code does the debouncing and repeat handling, so
  * this file only reports the raw levels and the touch state.
  ****************************************************************************/
+/* TEMPORARY: the probe below needs logf() to actually emit. This build has
+ * ROCKBOX_HAS_LOGF undefined in autoconf.h, and logf.h replaces logf() with a no-op in
+ * any file that does not define LOGF_ENABLE -- which is why the filetypes and vt lines we
+ * do see come from files that define it. Remove with XT_AXP_PROBE. */
+#define LOGF_ENABLE
+
 #include "config.h"
 #include "xtensa.h"
 
@@ -14,6 +20,7 @@
 #include "gpio-xtensa.h"
 #ifdef HAVE_AXP173
 #include "axp173.h"
+#include "logf.h"
 #include "powermgmt.h"
 #endif
 #ifdef HAVE_TOUCHSCREEN
@@ -103,6 +110,47 @@ int button_hw_any_pressed(void)
             return 1;
     return 0;
 }
+
+#ifdef HAVE_AXP173
+/* TEMPORARY DIAGNOSTIC -- remove once the PEK path is understood.
+ * XT_AXP_PROBE dumps the PMU's IRQ state on the console so the register question is
+ * answered by the chip instead of by the datasheet or the vendor driver. It logs the
+ * enables and timings once at start, then the three status registers plus the IRQ pin
+ * whenever any of them changes, so the stream stays short.
+ *
+ * It costs three extra I2C reads per 100 ms, which is audio-grade noise: this build is
+ * for the measurement, not for listening.
+ */
+#define XT_AXP_PROBE 1
+#ifdef XT_AXP_PROBE
+static void xt_axp_probe(bool pin)
+{
+    static int st1, st3, st4, en3, tim;
+    static bool started;
+    int a = axp173_read_reg(AXP_REG_IRQST1);
+    int b = axp173_read_reg(AXP_REG_IRQST3);
+    int c = axp173_read_reg(AXP_REG_IRQST4);
+
+    if (!started)
+    {
+        started = true;
+        en3 = axp173_read_reg(AXP_REG_IRQEN3);
+        tim = axp173_read_reg(AXP_REG_TIMING);
+        logf("axp probe start: en42=%d tim36=%d st44=%d st46=%d st47=%d pin=%d",
+             en3, tim, a, b, c, pin);
+        st1 = a; st3 = b; st4 = c;
+        return;
+    }
+
+    if (a != st1 || b != st3 || c != st4)
+    {
+        logf("axp state: 44=%d 46=%d 47=%d en42=%d tim36=%d pin=%d",
+             a, b, c, en3, tim, pin);
+        st1 = a; st3 = b; st4 = c;
+    }
+}
+#endif
+#endif /* HAVE_AXP173 */
 
 int button_read_device(int *data)
 {
@@ -258,9 +306,19 @@ int button_read_device(int *data)
 
     if (++pek_poll_div >= (HZ / 10))
     {
+        bool pin = !gpio_read_pin(PIN_PMU_IRQ);
+
         pek_poll_div = 0;
+#ifdef XT_AXP_PROBE
+        xt_axp_probe(pin);
+#endif
         if (axp173_power_key_pressed())
+        {
+#ifdef XT_AXP_PROBE
+            logf("axp probe: PEK latch seen, calling sys_poweroff (pin=%d)", pin);
+#endif
             sys_poweroff();
+        }
     }
 #endif
 
