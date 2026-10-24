@@ -25,7 +25,6 @@
 #include "es8311.h"
 #include "es7210.h"
 #include "axp173.h"
-#include "buflib.h"      /* xt_arena_dump: walking buflib_mempool's block chain */
 #include <stdio.h>
 
 static inline uint32_t rd(uint32_t reg)
@@ -202,103 +201,4 @@ bool dbg_hw_info(void)
 bool dbg_ports(void)
 {
     return false;
-}
-/* Who actually holds the buflib arena.
- *
- * The numbers that have driven every memory decision on this target -- "the
- * arena granted 910 KiB", "the file buffer is 932 KiB" -- are all second-hand:
- * they are whatever core_alloc_maximum() happened to have left, and nothing has
- * ever printed who took the rest. The 4 MB audiobuffer is down to under 1 MiB
- * available by the time playback or recording asks for its buffer, and a
- * playback EOM panic (audio_reset_buffer_noalloc(): EOM (1149612 > 932248)) is
- * the consequence. Guessing at the cause has already cost a session; this just
- * walks the allocator.
- *
- * buflib_mempool lays the arena out as a chain of blocks from buf_start to
- * alloc_end, each stepped by abs(block[BUFLIB_IDX_LEN].val), with a negative
- * length marking a free block. Lengths are in units of union buflib_data, not
- * bytes. The ops pointer is the only owner identification available -- buflib
- * keeps no names -- but it separates pinned (buflib_ops_locked: fonts, dircache,
- * the recording ring) from movable allocations, and size alone names most of the
- * rest against the constants in meowkits3.h.
- *
- * The walk is bounded and stops on a zero length: if the arena is ever corrupted
- * the last thing we want is for the diagnostic to walk off the end of it. */
-void xt_arena_dump(const char *why)
-{
-    extern struct buflib_context core_ctx;
-
-    union buflib_data *b   = core_ctx.buf_start;
-    union buflib_data *end = core_ctx.alloc_end;
-    size_t used = 0, freed = 0;
-    int nalloc = 0, nfree = 0, nsmall = 0;
-    size_t smallbytes = 0;
-    int guard = 0;
-
-    /* An empty arena has alloc_end == buf_start -- buflib_init sets both to the
-       base and allocations advance alloc_end from there. Treating equality as
-       "uninitialised" was wrong and hid the whole dump on the first try. */
-    if (!b || !end || end < b)
-    {
-        printf("ARENA %s: unusable context (start=%p end=%p)\n", why,
-               (void *)b, (void *)end);
-        return;
-    }
-
-    printf("ARENA %s: %p..%p = %d KiB\n", why, (void *)b, (void *)end,
-           (int)(((char *)end - (char *)b) / 1024));
-
-    while (b < end && ++guard < 8192)
-    {
-        long len = b[BUFLIB_IDX_LEN].val;
-
-        if (len == 0)
-            break;
-
-        size_t bytes = (size_t)(len < 0 ? -len : len) * sizeof(union buflib_data);
-
-        if (len < 0)
-        {
-            freed += bytes;
-            nfree++;
-        }
-        else
-        {
-            struct buflib_callbacks *ops = b[BUFLIB_IDX_OPS].ops;
-            unsigned pin = b[BUFLIB_IDX_PIN].pincount;
-
-            used += bytes;
-            nalloc++;
-
-            /* Only the significant ones individually; the tail is summarised so
-               the dump stays readable on a serial console.
-
-               The ops pointer is printed verbatim because it is the only thing
-               that actually names the owner: every caller passes its own file
-               static `struct buflib_callbacks`, and those objects carry symbols
-               in rockbox.elf, so the pointer resolves offline through nm to the
-               allocating module. Sizes alone only identify the ones that happen
-               to be round. */
-            if (bytes >= 8192)
-                printf("  ARENA  +%-9d B @ %p  ops=%p %-6s pin=%u\n", (int)bytes,
-                       (void *)b, (void *)ops,
-                       ops == &buflib_ops_locked ? "locked" :
-                       ops ? "dyn" : "movable", pin);
-            else
-            {
-                smallbytes += bytes;
-                nsmall++;
-            }
-        }
-
-        b += (size_t)(len < 0 ? -len : len);
-    }
-
-    if (nsmall)
-        printf("  ARENA  +%-9d B in %d allocations under 8 KiB\n",
-               (int)smallbytes, nsmall);
-
-    printf("ARENA %s: used=%d KiB in %d allocs, free=%d KiB in %d runs%s\n",
-           why, (int)(used / 1024), nalloc, (int)(freed / 1024), nfree,
-           guard >= 8192 ? " [WALK TRUNCATED]" : "");
 }
