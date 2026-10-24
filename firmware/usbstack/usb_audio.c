@@ -316,7 +316,21 @@ static const struct usb_descriptor_header* const usb_descriptors_list[] =
 static int usb_interface; /* first interface */
 static int usb_as_playback_intf_alt; /* playback streaming interface alternate setting */
 
-static int as_playback_freq_idx; /* audio playback streaming frequency index (in hw_freq_sampr) */
+/* Audio playback streaming frequency index (in hw_freq_sampr).
+ *
+ * It has to start at the target's default rate rather than at 0. hw_freq_sampr is in
+ * *descending* order (HW_FREQ_192 is index 0), so an uninitialised 0 means the highest
+ * rate the target declares -- 96 kHz on esp32s3 -- and usb_audio_start_playback() calls
+ * mixer_set_frequency() with it before the host has asked for anything. The correct rate
+ * only arrives with SET_CUR, which re-runs mixer_set_frequency(); until then the mixer
+ * and the I2S port are running faster than the stream, which is audible as garbled or
+ * stretched playback that snaps correct the moment the request lands. That window is
+ * milliseconds on most targets, but on a composite device the request is queued behind
+ * mass-storage enumeration on the same control endpoint, and it was measured in seconds.
+ *
+ * HW_FREQ_DEFAULT is the same choice the target already makes for its own output path
+ * (audiohw-xtensa.c:28), so the two cannot disagree at startup. */
+static int as_playback_freq_idx = HW_FREQ_DEFAULT;
 
 /* size of each buffer: must be smaller than 1023 (max isochronous packet size).
  *
