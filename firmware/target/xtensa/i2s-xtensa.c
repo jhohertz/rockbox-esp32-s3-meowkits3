@@ -151,9 +151,10 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  *
  * Ring geometry, measured rather than estimated.
  *
- * Four slots of XT_TX_SLOT each = 23ms of runway. This is the geometry the audio
- * was judged best on, and it independently matches the board's reference firmware
- * (dma_buf_count = 4).
+ * Four slots, each armed with one mixer frame: ~21ms of runway at 48 kHz, and the
+ * same four frames at any rate because the arm length follows the mixer's scaling.
+ * This is the geometry the audio was judged best on, and it independently matches
+ * the board's reference firmware (dma_buf_count = 4).
  *
  * Two facts decide depth:
  *
@@ -178,14 +179,26 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 
 static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
 /* GDMA requires a 4-byte aligned buffer address */
-/* One mixer frame: MIX_FRAME_SAMPLES * 4 = 1024 bytes, the size the core actually
- * hands over (measured constant across thousands of handovers). The slot was
- * previously twice this; the upper half was never written and never transferred,
- * and that dead 4KB overflowed dram0_0_seg -- a region tight enough that two int
- * diagnostic counters overflowed it by exactly 8 bytes. The static assert in
- * write_desc() bounds the slot to what it enforces, so a larger handover can
- * never silently overrun; it fails the build instead. */
-#define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4)
+/* pcm_mixer.c scales its frame by a rate multiplier: MIX_FRAME_SAMPLES * 4 bytes
+ * up to 48 kHz, twice that above 48 kHz up to 96, four times above 96. The slot
+ * has to be capacity for the largest frame the target's caps can ask for, which
+ * is why HW_SAMPR_MAX feeds the same expression the mixer uses.
+ *
+ * The slot used to be MIX_FRAME_SAMPLES * 4 only, and fill() copied pend_size into
+ * it with no bound. At 96 kHz every handover wrote 2048 bytes into a 1024-byte
+ * slot -- 1 KB past it into the next slot, and past the array on the last one, into
+ * whatever follows in PSRAM .bss -- while arm() transferred 1024 of the 2048 and
+ * the mixer was told the whole frame had been played. Every other 256-frame chunk
+ * vanished at the correct tempo, on top of the corruption. That is what "96 kHz
+ * doesn't work well" was.
+ *
+ * Capacity is not arm length: what gets transferred is tx_frame_len, below. The
+ * slot was also twice its frame size once, for no reason -- the upper half was
+ * never written and never transferred, and that dead 4KB overflowed dram0_0_seg,
+ * a region tight enough that two int diagnostic counters overflowed it by exactly
+ * 8 bytes. */
+#define XT_MIX_MULT(rate) ((rate) > SAMPR_96 ? 4 : ((rate) > SAMPR_48 ? 2 : 1))
+#define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4 * XT_MIX_MULT(HW_SAMPR_MAX))
 
 /* The ring's *buffer* lives in PSRAM; the descriptors above stay in internal
  * DRAM. That split is what the hardware actually allows, and it is easy to get
@@ -245,7 +258,11 @@ static volatile int done_slot;
 /* Rockbox's own convention for a completion arriving inside the play lock
  * (as3525's play_callback_pending): record it, replay it on unlock. */
 static volatile int cb_pending;
-/* Length of the last real frame, so an armed silence slot matches the timing. */
+/* Arm length for the rate in effect: exactly one mixer frame, from the same
+ * multiplier pcm_mixer.c uses, and set by i2s_set_frequency(). Never learned from
+ * a handover -- a value taken from the first short frame would stop padding at
+ * precisely the moment padding is needed. The silence path uses it too, so an idle
+ * ring advances the clock at the same pace as a fed one. */
 static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
 /* DSCR_ERR entries with no intervening DONE. Two in a row means the engine is
  * hitting a slot the CPU owns, and restarting onto it again is a storm -- the
@@ -495,6 +512,10 @@ void i2s_set_frequency(unsigned long rate)
     i2s_hal_std_set_tx_slot(&tx_hal, false, &slot);
     i2s_hal_std_enable_tx_channel(&tx_hal);
 
+    /* Above 48 kHz the mixer hands twice as many bytes per frame, so one slot has
+     * to carry twice as much. This is the only place the rate is known, and pcm.c
+     * calls it before any buffer is handed down. */
+    tx_frame_len = MIX_FRAME_SAMPLES * 4 * XT_MIX_MULT(rate);
 
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
@@ -572,7 +593,7 @@ static void fill_silence(int i)
 {
     /* Must match what fill() arms, for the same reason: a short slot completes early
      * and hands refill() a consumed-buffer event the DAC has not earned yet. */
-    unsigned long len = XT_TX_SLOT;
+    unsigned long len = tx_frame_len;
 
     memset(dma_buf[i], 0, len);
     discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
@@ -625,8 +646,11 @@ static void fill(int i, const void *src, unsigned long len)
 {
     unsigned long arm_len;
 
-    if (len)
-        tx_frame_len = len;
+    /* Hard bound. With XT_TX_SLOT derived from HW_SAMPR_MAX it cannot bite while
+     * the assert below holds; if the two ever diverge, the loss is audible rather
+     * than a write past the ring. */
+    if (len > XT_TX_SLOT)
+        len = XT_TX_SLOT;
 
     memcpy(dma_buf[i], (const void *)src, len);
 
@@ -648,15 +672,15 @@ static void fill(int i, const void *src, unsigned long len)
      * covered by the same clamp: this makes fill_silence()'s invariant -- every slot
      * is owned AND full -- hold on the data path too, not just the no-buffer path.
      *
-     * The reference is XT_TX_SLOT, deliberately not a value learned from what the
-     * mixer handed us: one slot IS one mixer frame at the rates this ring can hold,
-     * and a target that ratchets down to the first short frame would stop padding at
-     * exactly the moment it was needed -- which is how this paragraph's first draft
-     * was wrong. Above 48 kHz pcm_mixer.c doubles mix_frame_size to 2048 while the
-     * slot stays MIX_FRAME_SAMPLES*4, so the memcpy above would already have run past
-     * the buffer; high rates are an older and separate problem than this clamp.
+     * The reference is tx_frame_len, the mixer frame size for the rate in effect,
+     * deliberately not a value learned from what the mixer handed us: a target that
+     * ratchets down to the first short frame would stop padding at exactly the moment
+     * it was needed -- which is how this paragraph's first draft was wrong. Sizing
+     * the slot from HW_SAMPR_MAX is what lets this hold at 96 kHz as well as 48.
      */
-    arm_len = XT_TX_SLOT;
+    arm_len = tx_frame_len;
+    if (len > arm_len)
+        arm_len = len;    /* cannot happen while tx_frame_len tracks the mixer */
 
     if (len < arm_len)
         memset((unsigned char *)dma_buf[i] + len, 0, arm_len - len);
@@ -1014,12 +1038,11 @@ static void stop_tx(void)
  * owner bit says it owns it, so the half it is about to need must already be armed
  * when the current one finishes - which is why every write advances cur. */
 /* GDMA's size field is 12 bits, so one descriptor carries at most 4095 bytes.
- * The mixer's largest frame is MIX_FRAME_SAMPLES samples times 4 bytes times the
- * high-rate multiplier, and the multiplier only reaches 2 here because
- * HW_SAMPR_CAPS caps at 96 kHz. That is 2048 bytes, comfortably under the limit.
- * If the cap ever rises, the ring needs chained descriptors rather than one per
- * half, not a silent truncation. */
-_Static_assert(MIX_FRAME_SAMPLES * 4 * 2 <= GDMA_MAX_DESC_LEN,
+ * XT_TX_SLOT is the mixer's largest frame for the rates HW_SAMPR_CAPS allows, and
+ * SAMPR_CAP_ALL_96 makes that 2048 bytes -- comfortably under the limit. Raising
+ * the cap past 96 kHz takes the multiplier to 4, fails here, and means the ring
+ * needs chained descriptors rather than a silent truncation. */
+_Static_assert(XT_TX_SLOT <= GDMA_MAX_DESC_LEN,
                "the mixer's largest frame exceeds one GDMA descriptor");
 
 

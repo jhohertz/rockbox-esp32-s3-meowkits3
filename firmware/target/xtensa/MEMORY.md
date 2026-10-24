@@ -325,6 +325,33 @@ and now `file` are the ones that have moved.
 
 ---
 
+## The mixer's rate multiplier, and the TX slot it must match
+
+`pcm_mixer.c:mixer_set_frequency()` scales its frame by the sample rate:
+`mix_frame_size = multiplier * MIX_FRAME_SAMPLES * 4`, with multiplier 1 up to
+48 kHz, 2 above 48 kHz up to 96, and 4 above 96. So a 96 kHz handover is 2048
+bytes and a 192 kHz one is 4096.
+
+The transmit ring has to be capacity for the largest frame the target's
+`HW_SAMPR_CAPS` can ask for, and arm length for the rate in effect. Both are
+derived from the same multiplier (`XT_MIX_MULT`) in `i2s-xtensa.c`:
+
+| `HW_SAMPR_CAPS` | `HW_SAMPR_MAX` | slot | armed |
+|---|---|---|---|
+| `SAMPR_CAP_ALL_48` and below | 48 kHz | 1024 B | 1024 B |
+| `SAMPR_CAP_ALL_96` (this target) | 96 kHz | 2048 B | 1024 B at <=48 kHz, 2048 B above |
+| above 96 kHz | 192 kHz | 4096 B | fails the `_Static_assert` — one GDMA descriptor holds 4095 |
+
+`dma_buf` is therefore 4 x 2048 = 8 KB in PSRAM, up 4 KB from the earlier ring.
+Internal DRAM is unaffected: the descriptors stay 4 x 32 B.
+
+Before this, the slot was `MIX_FRAME_SAMPLES * 4` unconditionally and `fill()`
+copied `pend_size` into it unbounded. At 96 kHz every handover wrote 1 KB past its
+slot (into the next, and past the array on the last, into whatever follows in
+PSRAM `.bss`), transferred only 1024 of the 2048 bytes, and reported the whole
+frame consumed. High-rate local playback has therefore never worked on this
+target even though `HW_SAMPR_CAPS` advertises it.
+
 ## Verifying
 
 ```sh
