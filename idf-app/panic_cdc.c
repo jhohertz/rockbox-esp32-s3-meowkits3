@@ -61,7 +61,9 @@ extern void xtensa_paniclog_backtrace(const unsigned long *pcs,
                                       const char *build);
 extern void xtensa_paniclog_api_handover(const unsigned long *words, int n);
 extern void xtensa_paniclog_pcm_slots(const unsigned long *words, int n);
+extern void xtensa_paniclog_enc_stamp(const unsigned long *words, int n);
 extern uint32_t xtensa_pcm_slots[4];
+extern uint32_t xtensa_enc_stamp[5];
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -330,6 +332,21 @@ void esp_panic_handler(panic_info_t *info)
                 pcmw[i] = *(volatile uint32_t *)addr;
         }
         xtensa_paniclog_pcm_slots(pcmw, 4);
+    }
+
+    /* The encoder's own stamps. Read here rather than reported straight from
+     * .noinit: .noinit is cached DRAM, and a store written moments before the
+     * fault is still in the D-cache when the chip resets, so the value is simply
+     * lost -- which is what made the first capture show identical garbage in
+     * every crash. The handler runs with the caches intact, and RTC slow is not
+     * cached, so carrying the words through here is what makes them survive. */
+    {
+        unsigned long encw[5] = { 0, 0, 0, 0, 0 };
+        int i;
+
+        for (i = 0; i < 5; i++)
+            encw[i] = xtensa_enc_stamp[i];
+        xtensa_paniclog_enc_stamp(encw, 5);
     }
 
     /* Short form in the text record, bounded by its 96-character field, so the
