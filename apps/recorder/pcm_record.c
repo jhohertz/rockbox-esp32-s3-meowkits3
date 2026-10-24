@@ -35,7 +35,6 @@
  * through breadcrumbs into .noinit instead, which survives. */
 #define LOGF_ENABLE
 extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
-extern void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
 extern uint32_t xtensa_pcm_slots[4];
 #endif
 #include "logf.h"
@@ -561,9 +560,9 @@ static void init_rec_buffers(void)
     xtensa_pcm_slots[2] = (uint32_t)(uintptr_t)&pcm_ridx;
     xtensa_pcm_slots[3] = (uint32_t)(uintptr_t)&enc_buffer;
 
-    /* A boundary in the uncached trail, so the report can tell this session's
-     * entries from a previous boot's. */
-    xtensa_breadcrumb_rtc("RREC", 0, 0);
+    /* A boundary in the codec's own progress ring, so the report can tell this
+     * session's marks from a previous boot's. */
+    xtensa_api_mark(XT_API_RREC, 0, 0);
 #endif
 
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
@@ -1856,7 +1855,7 @@ static int enc_pcmbuf_read(void *buffer, int count)
            slow because a store to cached DRAM does not survive the panic. If this
            destination plus this length reaches codec_stack (0x3fc......), the copy
            is what destroyed the return address. */
-        xtensa_breadcrumb_rtc("ENCR", (unsigned long)buffer, (unsigned long)size);
+        xtensa_api_mark(XT_API_ENCR, (unsigned long)buffer, (unsigned long)size);
     }
 #endif
 
@@ -1904,6 +1903,12 @@ static int enc_pcmbuf_read(void *buffer, int count)
 /* Advance PCM buffer by count samples */
 static int enc_pcmbuf_advance(int count)
 {
+#ifdef CODEC_LOAD_API_TRACE
+    /* If enkb and encr appear but no adv, the copy completed and the fault is in
+     * the advance or in whatever the codec does next. */
+    xtensa_api_mark(XT_API_ADV, (unsigned long)count, (unsigned long)pcm_ridx);
+#endif
+
     if (count <= 0)
         return 0;
 
@@ -1991,7 +1996,7 @@ static struct enc_chunk_data * enc_encbuf_get_buffer(size_t need)
         /* The chunk handed to the encoder, and the ring geometry it came from.
            The arena is PSRAM, so a pointer outside 0x3c...... means the ring
            maths sent the encoder somewhere it should never have been. */
-        xtensa_breadcrumb_rtc("ENCB", (unsigned long)data, (unsigned long)need);
+        xtensa_api_mark(XT_API_ENCB, (unsigned long)data, (unsigned long)need);
         xtensa_breadcrumb("ENCB", (unsigned long)data, (unsigned long)need);
     }
 
