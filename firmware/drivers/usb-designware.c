@@ -1510,20 +1510,10 @@ static void usb_dw_init(void)
     /* Soft reconnect */
     udelay(3000);
     DWC_DCTL &= ~SDIS;
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb("usbConn", DWC_DCTL, DWC_GINTSTS);
-#endif
 }
 
 static void usb_dw_exit(void)
 {
-#if defined(CPU_XTENSA)
-    /* Steps of the driver teardown, each noted before it runs. usb_dw_target_disable_clocks()
-     * writes usbRel at its end, so the last note here that appears says which register write
-     * the extraction got to before the watchdog. */
-    xtensa_breadcrumb_rtc("dSdis", DWC_DCTL, DWC_GINTMSK);
-#endif
-
 #if defined(CPU_XTENSA)
     /*
      * Abort every armed endpoint before asking the core to disconnect.
@@ -1532,10 +1522,7 @@ static void usb_dw_exit(void)
      * teardown path calls it -- only three ARM drivers invoke it from their own code. On
      * esp32s3 that is fatal: the CDC OUT endpoint re-arms itself indefinitely, so at
      * extraction at least one endpoint is always active, the soft disconnect never
-     * completes, and the core then stops answering register reads. Measured: the ring
-     * records dSdis, dSdw, dSdl, dPcg and dIrq (GINTSTS still readable at that point) and
-     * then the board resets with usbRel absent -- the core went unreachable during the pad
-     * release, which is the behaviour of a core stuck in disconnect-in-progress.
+     * completes, and the core then stops answering register reads.
      *
      * Guarded so no other target's teardown changes.
      */
@@ -1547,29 +1534,19 @@ static void usb_dw_exit(void)
                     usb_dw_abort_endpoint(ep, dir);
                     DWC_EPCTL(ep, dir) |= SETD0PIDEF;
                 }
-    xtensa_breadcrumb_rtc("dAbrt", usb_endpoints, DWC_DAINT);
 #endif
     /* Soft disconnect */
     DWC_DCTL = SDIS;
-#if defined(CPU_XTENSA)
-    /* Splitting the gap between dSdis and dPcg: the only two statements there are the
-     * soft-disconnect write and a 10us delay. If this note appears, the write completed
-     * and the delay is what never returns; if it does not, the write itself stalls the
-     * bus, which is what a gated or wedged core does. */
-    xtensa_breadcrumb_rtc("dSdw", DWC_DCTL, DWC_GRSTCTL);
-    udelay(10);
-    xtensa_breadcrumb_rtc("dSdl", DWC_DCTL, DWC_DSTS);
-#endif
     udelay(10);
 
 #if defined(CPU_XTENSA)
     /*
-     * The PHY clock is deliberately left running on esp32s3. Measured, gating it is where
-     * the extraction dies: the ring records dSdis (exit entered), dSdw (soft disconnect
-     * written, GRSTCTL showing AHB idle) and dSdl (the 10us delay returned), then the
-     * watchdog resets the board with dPcg never written -- so the very next core register
-     * access after PCGCCTL=1 stalls the bus. It is not a fair test of whether the write or
-     * the read wedges: either way the core is unreachable once the PHY clock is gone.
+     * The PHY clock is deliberately left running on esp32s3. Measured, gating it is
+     * where the extraction dies: the soft disconnect completes and the delay after it
+     * returns, and the very next core register access after PCGCCTL=1 stalls the bus,
+     * so the watchdog resets the board before the teardown finishes. It is not a fair
+     * test of whether the write or the read wedges: either way the core is unreachable
+     * once the PHY clock is gone.
      *
      * DWC2 must not have its PHY clock gated while an endpoint is still active, and on this
      * board one always is: the CDC OUT endpoint re-arms itself and re-delivers its stale
@@ -1582,15 +1559,9 @@ static void usb_dw_exit(void)
 #else
     DWC_PCGCCTL = 1; /* Stop Phy clock */
 #endif
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb_rtc("dPcg", DWC_DCTL, DWC_PCGCCTL);
-#endif
 
     /* Disable IRQs */
     usb_dw_target_disable_irq();
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb_rtc("dIrq", DWC_GINTSTS, DWC_DCTL);
-#endif
 
     /* Disable clocks */
     usb_dw_target_disable_clocks();

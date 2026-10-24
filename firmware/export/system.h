@@ -371,6 +371,11 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
 /* Same idea, but the ring lives in RTC slow memory and therefore survives the reset a
  * watchdog or a panic performs. Use it for the steps that can end in a hang. */
 void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
+/* Read the SRAM trail back one entry at a time, newest first, for a caller that has
+ * no console: the screen. Hardware exceptions go to IDF's handler and reset without
+ * ever reaching Rockbox's panic(), so the trail is what survives them. Returns 0
+ * when there is nothing at that index. */
+int xtensa_breadcrumb_back(int back, char *buf, int bufsize);
 void xtensa_paniclog_stamp_boot(unsigned long seq);
 #endif
 
