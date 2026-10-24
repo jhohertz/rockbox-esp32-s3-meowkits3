@@ -363,6 +363,10 @@ void xtensa_paniclog_dump(void);
  * ever written -- zero means the dead boot never reached the steps that stamp it. */
 int xtensa_paniclog_text(char *buf, int bufsize);
 unsigned long xtensa_paniclog_reset_reason(void);
+/* Write the surviving crash record -- reset reason, panic text, the whole trail --
+ * to the USB CDC console. The debug page shows six trail rows; this gives a host the
+ * full ring without anyone navigating. */
+void xtensa_paniclog_cdc_dump(void);
 unsigned long xtensa_paniclog_rtc_count(void);
 /* Record a step that might be the last one. Read back by
  * xtensa_paniclog_dump() on the next boot; see paniclog.c for why this exists
