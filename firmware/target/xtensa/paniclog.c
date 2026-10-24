@@ -471,8 +471,15 @@ void xtensa_paniclog_dump(void)
  *
  * The hardware-info screen shows six trail rows because that is what fits on a
  * 320x240 panel; a host can have the whole ring, the teardown trail and the panic
- * record without anyone navigating a debug menu. This runs in a task of its own,
- * seconds after boot, on the assumption that enumeration is done by then.
+ * record without anyone navigating a debug menu.
+ *
+ * Nothing calls this right now. It was wired to a one-shot task at boot and that
+ * combination put the board into a reboot loop; the caller is removed, the
+ * function is kept, and the CDC report goes back in only once the fault is
+ * identified. Note that this is the only caller of usb_serial_send() anywhere in
+ * the tree -- Rockbox has no serial console output on any target -- so a fault
+ * here is the first IN transfer the CDC endpoint has ever attempted, not a race
+ * introduced by a second producer.
  *
  * usb_serial_send() is used rather than printf: it fills the stack's transmit ring
  * and returns, and drops the data if the CDC function is not the one currently
