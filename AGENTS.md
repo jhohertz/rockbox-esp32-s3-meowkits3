@@ -3298,16 +3298,20 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
 - **USB classes on this target are not mutually exclusive, so no DMA buffer may be
-  shared between them.** `usb.c:252` enables the audio class alongside mass storage
-  whenever `global_settings.usb_audio` is 1 or 3, and with HID switched off in the UI the
-  composition fits the hardware exactly (CDC 3 + MSC 2 + audio 2 = 7 endpoints, 4 IN FIFOs).
-  The audio RX buffer was borrowed from `usb_storage`'s 8 KiB transfer buffer on the
-  assumption that only one class ever ran; it does not. Storage uses that buffer as
-  `cur_cmd.data[0]` for every SCSI read and write, so the isochronous DMA overwrote the head
-  of every 4 KiB sector chunk while the DAC played — corrupting files written to the card,
-  the data read back from it, and the PCM in the other direction. `usb_audio_target_rx_buffer()`
-  now returns a dedicated 640-byte static; internal SRAM has ~90 KiB above `_heap_start` that
-  Rockbox never uses because its allocator is in PSRAM, so a class buffer is cheap.
+  shared between them.** `usb.c:246` enables the mass-storage driver on every insertion,
+  whatever `usb_mode` says, and `usb.c:252` enables the audio class alongside it whenever
+  `global_settings.usb_audio` is 1 or 3; with HID switched off in the UI the composition
+  fits the hardware exactly (CDC 3 + MSC 2 + audio 2 = 7 endpoints, 4 IN FIFOs). The audio
+  RX buffer was borrowed from `usb_storage`'s 8 KiB transfer buffer on the assumption that
+  only one class ever ran; it does not. Storage uses that buffer as `cur_cmd.data[0]` for
+  every SCSI read and write, so the isochronous DMA overwrote the head of every 4 KiB
+  sector chunk while the DAC played — corrupting files written to the card, the data read
+  back from it, and the PCM in the other direction. `usb_audio_target_rx_buffer()` now
+  returns a dedicated static; internal SRAM has ~90 KiB above `_heap_start` that Rockbox
+  never uses because its allocator is in PSRAM, so a class buffer is cheap. Verified by
+  writing and reading back 152 MB during continuous playback with matching sha256.
+  A consequence of storage always being on: the bulk IN endpoint always needs a 16-word TX
+  FIFO, so RX words cannot be bought by shrinking PTX.
 - **A bulk IN endpoint needs a 16-word TX FIFO, and the driver will not tell you.**
   `usb_dw_handle_dtxfifo()` pushes whole packets: `words = (fifospace/maxpktwords) *
   maxpktwords`, so a 32-byte FIFO with a 64-byte full-speed packet computes 0 and breaks,

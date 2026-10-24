@@ -98,20 +98,26 @@
  * to 8 to buy RX room; the guard that used to reject it, `PTX_FIFOSZ >= 64 / 4`, was
  * rewritten as `>= 16 / 4` -- the CDC notification payload -- so the build said nothing.
  *
- * Going back to 16 costs audio nothing, because the RX side no longer pays for six
- * FIFOs: 200 - 16 - 4*16 = 120 words = 480 bytes, against the 88 words = 352 bytes that
- * the old six-FIFO reservation left when this value was 16. The audio bug 1df51c1468 was
- * fixing -- an isochronous OUT packet of 320 bytes with nowhere to land -- stays fixed
- * with 480 bytes, which is one ISO packet plus two 64-byte control packets and 32 words
- * to spare. */
+ * Going back to 16 is not optional either: usb.c:246 enables the storage driver on every
+ * insertion regardless of usb_mode, so a 64-byte bulk IN packet is always part of the
+ * composition and always needs a FIFO that can hold a whole one. There is no mode in which
+ * PTX can be traded away for RX words.
+ *
+ * RX is therefore 200 - 16 - 4*16 = 120 words = 480 bytes, and the guard below takes the
+ * last 64 bytes from the control allowance rather than from bulk: an isochronous packet plus
+ * one control packet has to fit, because the ISO endpoint's period is 1 ms and that is the
+ * window in which the ISR drains the FIFO. At 96 kHz (384 bytes) that leaves 1.25 packets of
+ * tolerance -- adequate on a bus that is otherwise idle, thin while mass storage is
+ * flooding, which is the combination nobody expects to work. At 44.1 and 48 kHz the same
+ * FIFO holds two packets and a half. */
 #define PTX_FIFOSZ      16
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
                          PTX_FIFOSZ * XT_PTX_FIFOS)
 
 _Static_assert(PTX_FIFOSZ >= 64 / 4,
                "a dedicated IN FIFO cannot hold one full-speed packet");
-_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4),
-               "RX FIFO cannot hold an isochronous packet plus the two control packets");
+_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + (64 / 4),
+               "RX FIFO cannot hold an isochronous packet plus one control packet");
 _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * XT_PTX_FIFOS + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
                "device FIFO split exceeds the core's measured FIFO RAM");
