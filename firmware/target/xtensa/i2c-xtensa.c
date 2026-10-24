@@ -124,7 +124,6 @@
 static int ncmd;
 static int ntx;
 
-
 static void begin_list(void)
 {
     ncmd = 0;
@@ -269,7 +268,6 @@ static int forced_status;
 static volatile int cb_done;
 static volatile int cb_status;
 
-
 /*
  * The transaction is polled to completion in the calling thread.
  *
@@ -299,17 +297,7 @@ static int wait_complete(void)
     return I2C_STATUS_TIMEOUT;
 }
 
-/* Count edges on the two lines while a transaction runs. At 100 kHz an 11-bit
- * transaction (start + 8 address bits + ack) is about 110 us, so a tight register
- * loop samples it densely enough to count transitions rather than just the two
- * end levels.
- */
-
 static void set_timing(unsigned freq);
-
-/* Temporary bring-up probe: sweep the bus frequency and report, for each, the
- * interrupt flags and the bits actually sampled on SDA at rising SCL edges.
- */
 void __i2c_async_submit(int bus, i2c_descriptor *desc)
 {
     bool ok;
@@ -429,7 +417,6 @@ static void set_timing(unsigned freq)
 void i2c_init(void)
 {
     static bool async_ready;
-
 
     gpio_write(SYSTEM_PERIP_CLK_EN0, gpio_read(SYSTEM_PERIP_CLK_EN0) | I2C_EXT0_CLK_EN);
     /* ESP-IDF resets the peripheral before configuring it. */

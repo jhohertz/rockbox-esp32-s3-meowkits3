@@ -71,10 +71,6 @@ static void set_duty(unsigned duty)
 
 bool backlight_hw_init(void)
 {
-    printf("BL gate before init: perip_clk_en0=%08lx bit11=%d\n",
-           (unsigned long)rd(XT_PERIP_CLK_EN0),
-           (rd(XT_PERIP_CLK_EN0) >> 11) & 1u);
-
     ledc_timer_config_t timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .timer_num       = (ledc_timer_t)BL_TIMER,
@@ -116,12 +112,6 @@ bool backlight_hw_init(void)
 
 void backlight_hw_on(void)
 {
-    /* Driven by the LCD/backlight timeout and by every UI wake. The two faults
-     * captured so far were both preceded by dense "BL at hw_on" traffic during
-     * rapid file cycling, and the panel's CS and reset live on the PCA9557 I2C
-     * expander -- so this shares a bus with the codec. */
-    xtensa_breadcrumb("blon", 0, 0);
-
     /* Wake the panel before light is applied, otherwise the backlight comes up
      * onto a panel that is still coming out of sleep and the first frame is lost.
      */
@@ -142,8 +132,6 @@ void backlight_hw_on(void)
 
 void backlight_hw_off(void)
 {
-    xtensa_breadcrumb("bloff", 0, 0);
-
     set_duty(0);
     lcd_enable(false);
 }

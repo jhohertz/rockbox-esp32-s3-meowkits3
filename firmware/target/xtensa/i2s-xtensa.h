@@ -218,11 +218,7 @@ struct gdma_desc {
 
 void i2s_init(void);
 
-/* TEMPORARY: playback-chain diagnostic, remove with the counters in
- * i2s-xtensa.c. */
-void i2s_audio_probe(void);
-void i2s_tx_gdma_peek(const char *where);   /* TEMPORARY */
-void xt_arena_dump(const char *why);        /* TEMPORARY: debug-xtensa.c */
+void xt_arena_dump(const char *why);        /* debug-xtensa.c: boot arena snapshot */
 #ifdef HAVE_RECORDING
 bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
 #endif

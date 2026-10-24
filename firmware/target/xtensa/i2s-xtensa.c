@@ -69,20 +69,6 @@
  * the proof, the measurements, and the one variant that was never tried: ride
  * i2s_channel_write() without touching GDMA and accept IDF's buffer granularity. */
 
-/* Silence the periodic CHAIN/arena dumps while testing whether the probe is
- * what stalls the writer. See the note in i2s_probe_tick(). */
-#define TX_PROBE_QUIET
-
-/* Leave undefined for normal builds. The stop-path probe was localised as a
- * crash suspect by the .noinit breadcrumb trail; see sink_stop(). */
-/* #define TX_STOP_PROBE */
-
-/* Full CHAIN dumps at event sites (16th play, boot snapshot). Off by default:
- * the dump is ~900 bytes, holds the stdout lock for ~100ms, and calling it from
- * a teardown path was the crash the breadcrumb trail localised. The tick task
- * still emits the compact i2s_dma_line() every 2s with this off, so quiet does
- * not mean blind. */
-/* #define TX_PROBE_FULL */
 
 #include <esp_rom_gpio.h>
 #include <esp_clk_tree.h>
@@ -130,10 +116,9 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
  * decide whether a half is free, and without the qualifier that test can be hoisted.
  *
  * cur is volatile: refill() calls write_desc() from inside the ISR and sink_play()
- * calls it from thread context without taking the lock, and the probe reads it from
- * a third context. Without the qualifier the compiler may cache it across those
- * boundaries. An earlier note here claimed the interrupt mask made it safe, but
- * sink_play takes no lock at all. */
+ * calls it from thread context without taking the lock. Without the qualifier the
+ * compiler may cache it across those boundaries. An earlier note here claimed the
+ * interrupt mask made it safe, but sink_play takes no lock at all. */
 /* aligned(32), not aligned(4): the struct type asks for a cache line each, but a
  * variable attribute overrides a type attribute, and leaving this at 4 put the
  * array on a 16-byte boundary so the two descriptors still straddled shared
@@ -242,9 +227,9 @@ static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT]
 static volatile const void *pend_addr;
 static volatile size_t pend_size;
 static volatile int pend_valid;
-/* Guards a hardware interrupt mask, and is read from the probe while the mixer
- * holds it, so it must not be cached in a register across the read-modify-write
- * of GDMA_TX_INT_ENA. */
+/* Guards a hardware interrupt mask, which the mixer holds while the completion
+ * interrupt is running, so it must not be cached in a register across the
+ * read-modify-write of GDMA_TX_INT_ENA. */
 static volatile int locked;
 static bool playing;
 /* Descriptors armed and awaiting transmission. The ISR decrements it as each one
@@ -268,21 +253,6 @@ static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
  * hitting a slot the CPU owns, and restarting onto it again is a storm -- the
  * interrupt-watchdog panic measured at first play with a free-running ring. */
 static volatile int dscr_streak;
-/* Splits err by when it happens. The gate experiment showed errors per switch are
- * the same with and without it (38/10/10/28 vs 7/52/10/16), so the source is the
- * transition itself, not a handler restarting a stopped transport. err_startup
- * counts DSCR_ERR entries raised before the current session's first completion:
- * those mean the walk was started over a ring that was not ready. err_late is the
- * remainder -- errors during steady playback, i.e. a refill that lost the race. */
-static volatile int err_startup;
-static volatile int irq_at_start;
-/* Direct session count. Inferring sessions from (refill - irq) proved
- * unreliable: eighteen manual track switches produced only two observed
- * prerolls, so err-per-switch could not be computed and err-per-frame was
- * dominated by how many transitions happened. This counts start_tx() itself,
- * making err/session an exact ratio. It also answers the side question the
- * discrepancy raised: whether a track change stops and restarts the sink at all. */
-static volatile int xt_tx_sessions;
 
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
@@ -303,9 +273,7 @@ static void gdma_tx_isr(void *arg)
        lock, lock_acquire_generic() sees it claimed from interrupt context and
        aborts the process -- measured backtrace: gdma_tx_isr -> printf ->
        _vfprintf_r -> __retarget_lock_acquire_recursive -> lock_acquire_generic
-       -> abort. gdma_irq() already counts entries in xt_dma_irq_n, which
-       i2s_audio_probe() reports from thread context, so nothing is lost by
-       keeping quiet. */
+       -> abort. */
     gdma_irq();
 }
 
@@ -322,147 +290,7 @@ static unsigned long rx_rate;
 #endif
 
 
-/* One counter per link in the playback chain, so "it does not play" becomes a statement
- * about where the chain stops rather than which link is suspected. Printed by the periodic
- * probe and by the debug readout below, both of which are known to emit.
- *
- * init  : sink_init() ran, so i2s_init() and audiohw_preinit() ran
- * play  : the PCM layer handed us a buffer to transmit
- * stop  : the PCM layer told us to stop
- * irq   : the GDMA out_eof interrupt actually fired and we refilled
- * lastsz: size of the most recent play() buffer, to show the mixer's frame shape
- */
-volatile unsigned long xt_sink_init_n;
-volatile unsigned long xt_sink_play_n;
-volatile unsigned long xt_sink_stop_n;
-volatile unsigned long xt_sink_irq_n;
-volatile unsigned long xt_sink_last_size;
-/* TEMPORARY: refill() path trace -- see the comment on refill(). */
-volatile unsigned long xt_refill_n;
-volatile int xt_dscr_err_n;
-volatile int xt_refill_branch;
-/* What write_desc() actually did, rather than what its caller implies it did.
- * Every attempt to reconstruct the stall from side effects has produced a
- * contradiction, so record the action itself: which slot was armed, the dw0
- * value written, and how many times the routine ran. */
-volatile int  xt_wd_n;
-volatile int  xt_wd_last_idx = -1;
-volatile unsigned long xt_wd_last_dw0;
-volatile int  xt_wd_idx_hist[4] = { -1, -1, -1, -1 };
-volatile unsigned long xt_wd_dw0_hist[4];
 
-/* The whole playback chain as one aligned readout, the way the scheduler was finally
- * diagnosed -- every stage's own view of what it is doing, sampled at the same instant and
- * emitted as a single printf so no other thread can land between two stages. The answer is
- * the seam where two adjacent stages disagree, never one counter on its own:
- *
- *   insert climbing, pcmbuf used climbing, mixer cb static
- *        -> the mixer is not being driven at all
- *   mixer cb climbing, next non-zero, sink play static
- *        -> buffers are being mixed but pcm_play_data() is not starting the DMA
- *   core more=(nil)
- *        -> pcm_play_stop_int() has latched the chain off; nothing can resume it
- *   sink play climbing, dma irq static
- *        -> the ring is fed but the transmitter is not completing
- *
- * locked, int_ena and int_raw are included because sink_lock() masks out_eof and
- * sink_unlock() unmasks it only when the count returns to zero. If the play lock
- * is ever left held the consumer is muted for good: int_raw keeps the pending
- * bit, int_ena has it clear, and the PCM buffer fills with nothing able to drain
- * it -- which is what a stalled consumer looks like from upstream.
- *
- * pcmbuf used/free is the pressure quantity: it is what should decide whether
- * there is anything to hand down. Clock and reset state are included because a
- * peripheral held in reset reads back zero and is otherwise indistinguishable
- * from a wrong base address.
- *
- * Hardware flags are printed DECODED. Two separate misreads cost most of a day
- * here: out_eof was taken for bit 0 when the BIT() define says bit 1, and the
- * GDMA FIFO status bits were read as full when bits 0/2/4 are full and 1/3/5 are
- * empty -- both from parsing the comment block instead of the defines. Nothing
- * below asks the reader to know a bit position.
- */
-void i2s_audio_probe(void)
-{
-    extern volatile unsigned long xt_codec_run_n;
-    extern volatile int xt_codec_in_run;
-    extern volatile unsigned long xt_pcminsert_n, xt_bufget_n, xt_startfill_n;
-    extern volatile unsigned long xt_mix_cb_n;
-    extern size_t pcm_mixer_probe_next(void);
-    extern int pcm_mixer_probe_index(void);
-    extern size_t pcmbuf_free(void);
-    extern size_t pcmbuf_get_bufsize(void);
-    extern int pcmbuf_used_descs(void);
-    extern int pcmbuf_descs(void);
-    extern volatile pcm_play_callback_type pcm_callback_for_more;
-    extern enum pcm_dma_status
-        (* volatile pcm_play_status_callback)(enum pcm_dma_status);
-
-    size_t bufsz = pcmbuf_get_bufsize();
-    size_t used = bufsz - pcmbuf_free();
-    uint32_t f_pll160 = 0, f_xtal = 0;
-    unsigned int gs = rd(GDMA_TX_STATE);
-    unsigned int fs = rd(GDMA_TX_FIFO_STATUS);
-
-    /* The DMA writes descriptor results back through the bus, not through our
-     * D-cache, so the cached line for the ring can still hold what we wrote
-     * rather than what the engine left. Drop it first: without this the owner
-     * bits printed below describe the CPU's memory, not the hardware's, and can
-     * contradict every other reading on this line. */
-    discard_dcache_range((const void *)desc, sizeof(desc));
-
-    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_PLL_F160M,
-                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_pll160);
-    esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_XTAL,
-                                 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &f_xtal);
-
-    printf("CHAIN: codec run=%lu in=%d | insert=%lu bufget=%lu startfill=%lu\n"
-           "CHAIN: pcmbuf used=%lu/%lu descs=%d/%d | mixer cb=%lu next=%lu idx=%d\n"
-           "CHAIN: core playing=%d more=%p status=%p | sink play=%lu stop=%lu\n"
-           "CHAIN: dma irq=%lu refill=%lu branch=%d queued=%d locked=%d ena=%08x\n"
-           "CHAIN: fifo L1 f%d/e%d L2 f%d/e%d L3 f%d/e%d | raw eof=%d dscr=%d tot=%d\n"
-           "CHAIN: gdma out=%d dscr=%d park=%d | err=%d | link=%08x own=%d%d%d%d len=%d,%d,%d,%d\n"
-           "CHAIN: wd n=%d lastidx=%d wrote=%08x hist=%d,%d,%d,%d pre=%08x\n"
-           "CHAIN: i2s idle=%d started=%d | clk sel=%d active=%d en=%d | pll160=%lu xtal=%lu\n",
-           xt_codec_run_n, xt_codec_in_run,
-           xt_pcminsert_n, xt_bufget_n, xt_startfill_n,
-           (unsigned long)used, (unsigned long)bufsz,
-           pcmbuf_used_descs(), pcmbuf_descs(),
-           xt_mix_cb_n, (unsigned long)pcm_mixer_probe_next(),
-           pcm_mixer_probe_index(),
-           pcm_playing, (void *)pcm_callback_for_more,
-           (void *)pcm_play_status_callback,
-           xt_sink_play_n, xt_sink_stop_n,
-           xt_sink_irq_n, xt_refill_n, xt_refill_branch, queued, locked,
-           (unsigned)rd(GDMA_TX_INT_ENA),
-           /* GDMA_OUTFIFO_FULL_Ln = BIT(0/2/4), EMPTY_Ln = BIT(1/3/5) */
-           (int)((fs >> 0) & 1), (int)((fs >> 1) & 1),
-           (int)((fs >> 2) & 1), (int)((fs >> 3) & 1),
-           (int)((fs >> 4) & 1), (int)((fs >> 5) & 1),
-           /* GDMA_OUT_EOF = BIT(1), DSCR_ERR = BIT(2), TOTAL_EOF = BIT(3) */
-           (int)((rd(GDMA_TX_INT_RAW) >> 1) & 1),
-           (int)((rd(GDMA_TX_INT_RAW) >> 2) & 1),
-           (int)((rd(GDMA_TX_INT_RAW) >> 3) & 1),
-           /* GDMA_OUT_STATE = 3 bits at 20, OUT_DSCR_STATE = 2 bits at 18 */
-           (int)((gs >> 20) & 0x7), (int)((gs >> 18) & 3),
-           (int)((rd(GDMA_TX_LINK) >> 23) & 1),
-           xt_dscr_err_n, (unsigned)rd(GDMA_TX_LINK),
-           (int)((desc[0].dw0 >> 31) & 1), (int)((desc[1].dw0 >> 31) & 1),
-           (int)((desc[2].dw0 >> 31) & 1), (int)((desc[3].dw0 >> 31) & 1),
-           (int)((desc[0].dw0 >> 12) & 0xfff), (int)((desc[1].dw0 >> 12) & 0xfff),
-           (int)((desc[2].dw0 >> 12) & 0xfff), (int)((desc[3].dw0 >> 12) & 0xfff),
-           xt_wd_n, xt_wd_last_idx, (unsigned)xt_wd_last_dw0,
-           xt_wd_idx_hist[0], xt_wd_idx_hist[1],
-           xt_wd_idx_hist[2], xt_wd_idx_hist[3],
-           (unsigned)(xt_wd_n > 0 && xt_wd_n <= 4
-                          ? xt_wd_dw0_hist[xt_wd_n - 1] : 0),
-           (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
-           (rd(I2S_TX_CONF) & TX_CONF_START) ? 1 : 0,
-           (int)((rd(I2S_TX_CLKM_CONF) >> 27) & 3),
-           (rd(I2S_TX_CLKM_CONF) & CLKM_CONF_CLK_ACTIVE) ? 1 : 0,
-           (rd(I2S_TX_CLKM_CONF) & CLKM_CONF_CLK_EN) ? 1 : 0,
-           (unsigned long)f_pll160, (unsigned long)f_xtal);
-}
 
 
 /* Best rational approximation of freq_error / exp_freq with denominator < max.
@@ -553,10 +381,8 @@ static void arm(int i, unsigned long len)
      *  - next = &desc[(i+1) % XT_TX_RING], which is what this line sets: a forward ring,
      *    the same chain gdma_init() builds, kept live so the engine walks the slots and the
      *    owner bit gates each one. Tried as a change when clicks at frame boundaries were
-     *    being chased; it produced no improvement, and the CHAIN probe captured no non-zero
-     *    gdma counters during playback, so that experiment was inconclusive rather than a
-     *    refutation of the ring. The observability gap it exposed was fixed by
-     *     i2s_probe_tick(), which samples while audio is actually running. */
+     *    being chased; it produced no improvement, so that experiment was inconclusive
+     *    rather than a refutation of the ring. */
     desc[i].next   = (uint32_t)(unsigned long)&desc[(i + 1) % XT_TX_RING];
     /* len 0 keeps the slot owned by the DMA with nothing to move: the engine
      * takes it, transfers nothing, and moves on. That is what makes an empty
@@ -567,24 +393,7 @@ static void arm(int i, unsigned long len)
 /* Place one frame into slot i and hand it to the DMA. len 0 leaves the slot
  * owned with nothing to move, which is what keeps the ring fully owned between
  * hand-offs. */
-/* TEMPORARY: sample-width capture. fill() runs inside gdma_tx_isr and may not
- * print, so it stores the frame head here and i2s_probe_tick() prints it from
- * thread context. ready is set last and cleared by the printer, so a frame
- * captured mid-print is simply reported next time round. */
-static struct {
-    volatile int ready;
-    volatile int n;
-    volatile int nonzero;
-    volatile unsigned long len;
-    volatile unsigned long filln;
-    unsigned short data[128];
-} xt_width;
 
-/* Baseline A/B counters. fill() runs in ISR context, so this only accumulates;
- * the print lives in i2s_probe_tick() (thread context). Sampling every 16th
- * call keeps the ISR cost bounded -- a full 1024-byte scan on every frame would
- * itself become the dropout we are trying to observe. */
-static volatile unsigned long bl_n, bl_zero, bl_sum;
 
 /* Arm a slot with silence. auto-writeback means the engine walks the ring
  * whether or not we have data, so an empty slot still has to be owned and filled;
@@ -684,71 +493,6 @@ static void fill(int i, const void *src, unsigned long len)
 
     if (len < arm_len)
         memset((unsigned char *)dma_buf[i] + len, 0, arm_len - len);
-
-    {
-        static unsigned long bl_ctr;
-        if (++bl_ctr >= 16)
-        {
-            const unsigned char *bb = (const unsigned char *)src;
-            unsigned long nz = 0, j;
-
-            bl_ctr = 0;
-            for (j = 0; j < len; j++)
-                nz += (bb[j] != 0);
-            bl_n++; bl_sum += nz;
-            if (nz == 0) bl_zero++;
-        }
-    }
-
-    /* What width is actually on the wire? The mixer frame is
-     * MIX_FRAME_SAMPLES*4 = 1024 bytes, which reads as 32-bit samples, but
-     * i2s_init() configures I2S_DATA_BIT_WIDTH_16BIT in
-     * I2S_SLOT_BIT_WIDTH_16BIT slots. If both are true the DAC is fed the low half
-     * of every 32-bit sample as a separate channel: near zero and harmless when
-     * quiet, garbage when loud. That is amplitude-dependent distortion with a
-     * compressed character, which is what it sounds like.
-     *
-     * This is in fill(), not sink_play(), and that took four attempts to get
-     * right. In Rockbox's buffered model ops.play() fires ONCE per playback to arm
-     * the initial buffer; every later frame arrives through the pcm_play_data
-     * callback, which lands here. A probe in sink_play() therefore samples one
-     * frame per session -- which is exactly why it printed nothing across 18k
-     * frames while the counter never reached its threshold.
-     *
-     * It may not PRINT, though. fill() is reached from refill() inside
-     * gdma_tx_isr, and the comment at the top of that handler says outright that
-     * nothing may print there: printf takes the newlib stdout lock and aborts.
-     * Putting it here froze the device about 1.2 s in, at the sample point, which
-     * was the probe and not the audio. So the ISR only copies; i2s_probe_tick()
-     * prints it from thread context. */
-    {
-        const unsigned short *w = (const unsigned short *)src;
-        static unsigned long fill_n;
-        int i2, nonzero = 0;
-        int n = 128;
-
-        if ((unsigned long)n > len / 2)
-            n = (int)(len / 2);
-
-        fill_n++;
-        if (!xt_width.ready && fill_n >= 200 && n > 0)
-        {
-            for (i2 = 0; i2 < n; i2++)
-            {
-                if (w[i2] != 0)
-                    nonzero++;
-            }
-
-            for (i2 = 0; i2 < n; i2++)
-                xt_width.data[i2] = w[i2];
-
-            xt_width.n = n;
-            xt_width.nonzero = nonzero;
-            xt_width.len = len;
-            xt_width.filln = fill_n;
-            xt_width.ready = 1;     /* last: the printer reads this first */
-        }
-    }
 
     /* Take the line from memory before modifying it, then push it back. The
      * engine wrote the owner bit clear through the bus, and our cached copy of
@@ -977,8 +721,6 @@ static void start_tx(void)
     wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DSCR_ERR);
 
     i2s_ll_tx_start(tx_hal.dev);
-    xt_tx_sessions++;
-    irq_at_start = xt_sink_irq_n;
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
@@ -988,8 +730,7 @@ static void stop_tx(void)
 {
     /* Stopping leaves every descriptor CPU-owned with length zero while
      * GDMA_INT_DSCR_ERR is still armed, so this is the moment the ring is most
-     * fragile. Stamped so the trail says whether a crash follows a stop. */
-    xtensa_breadcrumb("txstop", xt_sink_stop_n, xt_sink_play_n);
+     * fragile. */
 
     /* Mask the descriptor-error interrupt before the ring is emptied on purpose.
      *
@@ -1051,7 +792,6 @@ static void refill(void)
     const void *addr;
     size_t size;
 
-    xt_refill_n++;
 
     /* Report the consumed buffer before anything else. This is the order every
      * working sink driver uses -- see firmware/target/arm/imx233/pcm-imx233.c,
@@ -1063,7 +803,6 @@ static void refill(void)
 
     if (pend_valid)
     {
-        xt_refill_branch = 1;
         return;     /* ops.play already handed us the next buffer */
     }
 
@@ -1072,11 +811,9 @@ static void refill(void)
      * slot empty and the engine walks past it. */
     if (!pcm_play_dma_complete_callback(PCM_DMAST_OK, &addr, &size))
     {
-        xt_refill_branch = 2;
         return;
     }
 
-    xt_refill_branch = 3;
     pend_addr = addr;
     pend_size = size;
     pend_valid = 1;
@@ -1084,34 +821,10 @@ static void refill(void)
 
 /* Runs on the interrupted thread's stack, so it has to stay small. The handler in
  * vectors.S has already saved a0 and a12-a15; this is the C part of the frame. */
-/* TEMPORARY: how long the transmit path is torn down for.
- *
- * The design stops the outlink on every completion, runs the mixer through
- * pcm_play_dma_status_callback(), memcpy's the next frame in, and restarts the
- * walk -- 172 times a second at 1024-byte frames. The only thing between a
- * stopped outlink and silence at the DAC is the I2S FIFO, so the question that
- * decides whether this is the click is simply how long that window is, and how
- * much of it belongs to the mixer rather than the copy.
- *
- * Measured in core cycles because that needs no assumptions; i2s_probe_tick()
- * converts. Nothing prints here -- see the note on gdma_tx_isr(). */
-static volatile unsigned long xt_isr_n;
-static volatile unsigned long xt_isr_cyc_max;      /* entry -> exit */
-static volatile unsigned long xt_isr_refill_max;   /* entry -> after refill() */
-static volatile unsigned long xt_isr_cyc_sum;
-/* Never reset. The per-window max is read by the tick thread as four separate
- * volatile reads while the ISR keeps updating them, so a long sample landing
- * between the read and the reset is lost and max under-reports -- which is how
- * it came to print max=10us against avg=16us. A monotonic worst case cannot be
- * lost that way, so the number that actually matters ("is it ever large?") is
- * race-free. The windowed max only biases low, never high. */
-static volatile unsigned long xt_isr_cyc_worst;
 
 void ICODE_ATTR gdma_irq(void)
 {
     unsigned int st = rd(GDMA_TX_INT_ST);
-    unsigned long t0 = esp_cpu_get_cycle_count();
-    unsigned long trefill = t0;
 
     /* DSCR_ERR is handled BEFORE DONE, and the order is the bug this fixes.
      *
@@ -1141,12 +854,6 @@ void ICODE_ATTR gdma_irq(void)
            leave the ring alone and only restart the walk -- which is what this
            comment has always said, and what the code did not do: it wrote
            link.stop, guaranteeing the deadlock described above. Now it starts. */
-        xt_dscr_err_n++;
-
-        /* Before or after this session's first completion? */
-        if (xt_sink_irq_n == irq_at_start)
-            err_startup++;
-
         /* The storm guard. One DSCR_ERR is a transient and restarting is right.
          * Two in a row with no DONE between means the engine is sitting on a slot
          * the CPU owns, so restarting onto it just errors again -- and the handler
@@ -1201,9 +908,6 @@ void ICODE_ATTR gdma_irq(void)
          * before the engine wraps back onto it, which is what the runway
          * measured above buys. */
 
-        /* A completion can only mean audio was played: a slot the CPU owns is not
-         * taken by the engine, so it never completes. */
-        xt_sink_irq_n++;
         if (queued > 0)
             queued--;
 
@@ -1240,12 +944,10 @@ void ICODE_ATTR gdma_irq(void)
             else
                 fill_silence(slot);
 
-            trefill = esp_cpu_get_cycle_count();
             goto done_exit;
         }
 
         refill();
-        trefill = esp_cpu_get_cycle_count();
 
         if (pend_valid)
         {
@@ -1267,19 +969,6 @@ done_exit:
     /* Clear only what fired. int_clr is write-to-clear. */
     wr(GDMA_TX_INT_CLR, st);
 
-    {
-        unsigned long d = esp_cpu_get_cycle_count() - t0;
-
-        xt_isr_n++;
-        xt_isr_cyc_sum += d;
-        if (d > xt_isr_cyc_max)
-            xt_isr_cyc_max = d;
-        if (d > xt_isr_cyc_worst)
-            xt_isr_cyc_worst = d;
-        d = trefill - t0;
-        if (d > xt_isr_refill_max)
-            xt_isr_refill_max = d;
-    }
 }
 
 /* Mask the event rather than the slot, so a completion that happens while the mixer
@@ -1335,74 +1024,22 @@ static void sink_unlock(void)
 
     if (locked == 0)
     {
-        /* TEMPORARY: event-driven, so it cannot sample the wrong moment the way
-           a dump taken inside sink_play() did -- the mixer holds this lock across
-           mixer_start_pcm(), so any snapshot in that call is inside the locked
-           region by construction. If "SINK: first play" prints and this never
-           does, the play lock is never released: GDMA_INT_DONE stays masked for
-           the rest of the session and the codec blocks waiting for pcmbuf to
-           drain while the mixer blocks waiting for the codec.
-
-           Gated for the same reason as the first-play dump: usb_audio.c reaches
-           this pcm_play_unlock() with interrupts disabled, and the printf would
-           stop the core instead of reporting. The register write below is the
-           functional part and stays unconditional. */
-#ifdef SINK_FIRST_PLAY_PROBE
-        static bool unlocked_once = false;
-        if (!unlocked_once)
-        {
-            unlocked_once = true;
-            printf("SINK: play lock released (first unlock to zero)\n");
-        }
-#endif
+        /* Re-enabling the completion event is the whole job here. Nothing may
+           print: usb_audio.c reaches this unlock with interrupts disabled, and a
+           printf on this core stops the player rather than reporting anything. */
         wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
     }
 }
 
 static void sink_play(const void *addr, size_t size)
 {
-    xt_sink_play_n++;
-
-    /* Coarse trail of codec activity. Every 32nd frame, because at 172/s a
-     * per-frame stamp would turn a 16-slot ring into the last 93ms and wash out
-     * the image-placement entries that identified the last crash. What this
-     * answers is the question the "placed" trail could not: did the codec ever
-     * hand down a frame before it died, or did it fault on entry? */
-    if ((xt_sink_play_n & 31) == 0)
-        xtensa_breadcrumb("play", xt_sink_play_n, (unsigned long)size);
-
-    xt_sink_last_size = size;
-
-
-    /* The first-frame dump used to be unconditional here. It is now gated for a
-       concrete reason: usb_audio.c calls mixer_channel_play_data() inside
+    /* Nothing here may print. usb_audio.c calls mixer_channel_play_data() inside
        disable_irq_save() (usb_audio.c:1380-1396), and a USB-DAC session is exactly
        a first frame. printf() takes the newlib stdout lock and needs the console to
        drain; with interrupts off on this core it never can. Every Rockbox thread is
        pinned to the same core (thread-idf.c), so the whole player stops -- no tick
        task, no buttons, no backlight, no USB -- and the task watchdog never fires
-       because it is itself an interrupt. That is the USB-DAC lock-up.
-       Define SINK_FIRST_PLAY_PROBE to bring the dump back for ordinary playback,
-       where interrupts are enabled and it is merely verbose. */
-#ifdef SINK_FIRST_PLAY_PROBE
-    if (xt_sink_play_n == 1)
-    {
-        printf("SINK: first play addr=%p size=%lu\n", addr,
-               (unsigned long)size);
-
-        /* TEMPORARY: playback allocates its file buffer around here, and this is
-           where the EOM panic fires. Dumping at the first frame shows what is
-           left at the moment the decision gets made, rather than after it has
-           already failed. */
-        xt_arena_dump("at playback start");
-    }
-#endif
-
-    /* The sample-width probe lives in fill(), not here. sink_play() is
-     * ops.play(), which the pcm core calls once per playback to arm the initial
-     * buffer; every later frame comes through pcm_play_data into refill() and
-     * then fill(). Sampling here sees one frame per session, and it is the silent
-     * head of the track. */
+       because it is itself an interrupt. That is the USB-DAC lock-up. */
 
     if (!playing)
     {
@@ -1431,47 +1068,10 @@ static void sink_play(const void *addr, size_t size)
         queued++;
     }
 
-    /* TEMPORARY: dump from thread context once the engine has had many
-       completions, so dma irq, gdma out and the descriptor lengths are live.
-       Not on the first play: the mixer still holds the play lock there, so a
-       masked OUT_DONE and started=0 are both correct and say nothing. And never
-       from the ISR -- a printf there takes the newlib stdout lock and aborts. */
-#ifdef TX_PROBE_FULL
-    if (xt_sink_play_n == 16)
-    {
-        printf("CHAIN: at 16th play --\n");
-        i2s_audio_probe();
-    }
-#endif
 }
 
 static void sink_stop(void)
 {
-    xt_sink_stop_n++;
-
-    /* Session boundaries are rare and meaningful: a stop in the trail means the
-     * core ran out of data rather than the transport dying mid-stream. */
-    xtensa_breadcrumb("stop", xt_sink_stop_n, xt_sink_play_n);
-
-
-
-    /* TEMPORARY: read the transmit path out as the session ends, before stop_tx()
-       and the descriptor handback below erase the evidence. A playback that never
-       completed shows up here as sink play>0 with dma irq=0 and gdma out=0, which
-       is the engine refusing to take a descriptor -- a different fault entirely
-       from a codec or a data problem. Thread context, so printf is safe. */
-#ifdef TX_STOP_PROBE
-    /* Off by default. The breadcrumb trail localised a crash to the window
-     * between sink_stop()'s "stop" stamp and stop_tx()'s "txstop" stamp, and
-     * i2s_audio_probe() is the only non-trivial thing in it: register reads,
-     * two esp_clk_tree_src_get_freq_hz() calls and a 40-argument printf. The
-     * pcmbuf helpers it calls are pure integer arithmetic, so the suspect is the
-     * probe itself -- temporary instrumentation that had no business being in
-     * the shipping teardown path. Define TX_STOP_PROBE to put it back while
-     * debugging; it is still reachable from sink_play() and the tick probe. */
-    i2s_audio_probe();
-#endif
-
     playing = false;
     queued = 0;
     stop_tx();
@@ -1508,291 +1108,8 @@ static void sink_set_freq(uint16_t freq)
 {
     i2s_set_frequency(hw_freq_sampr[freq]);
 }
-/* TEMPORARY: periodic CHAIN sample.
- *
- * i2s_audio_probe() was only ever called from event sites -- sink_play, sink_stop,
- * pcm close -- so every snapshot in the logs describes the transmitter at some
- * moment other than steady playback. That made a per-frame property like slot
- * occupancy unmeasurable: the ring experiment compared one event snapshot against
- * another and called the difference a verdict, twice, and neither was one.
- *
- * This samples while audio is actually running. It runs from tick_task_thread
- * (the tick tasks are NOT run in the interrupt on this core -- see the note in
- * apps/main.c), so printf is legal here; the ISR must never reach this path.
- * Every 200 ticks at HZ=100 is two seconds, which is often enough to see drift
- * and rare enough not to drown the console. */
-/* Compact transmit status: register reads and one short printf, nothing else.
- *
- * This exists because TX_PROBE_QUIET silenced the whole probe, which threw away
- * the one number the DSCR_ERR storm guard is there to watch -- err, i.e. how many
- * times the engine found a descriptor the CPU still owns. The guard makes those
- * survivable (24 over ~11400 frames), so without err we cannot tell whether that
- * rate is stable or climbing.
- *
- * Deliberately NOT the full CHAIN dump: that holds the newlib stdout lock for
- * ~100ms pushing ~900 bytes over USB-serial, and it calls
- * esp_clk_tree_src_get_freq_hz() and the pcmbuf helpers. A heavy probe on a hot
- * path has already proved to be the fault being observed twice -- once as ~117ms
- * stalls in the writer, once as the crash localised by the breadcrumb trail. This
- * line is ~90 bytes and touches no locks the audio path takes.
- */
-static void i2s_dma_line(void)
-{
-    char ow[XT_TX_RING + 2];
-    char ln[XT_TX_RING * 6 + 2];
-    int i, o = 0, l = 0;
-
-    /* The DMA writes descriptor results back through the bus, not through our
-     * D-cache, so drop the cached line first or the owner bits describe the
-     * CPU's memory rather than the hardware's. */
-    discard_dcache_range((const void *)desc, sizeof(desc));
-
-    for (i = 0; i < XT_TX_RING; i++)
-    {
-        ow[o++] = (char)('0' + (int)((desc[i].dw0 >> 31) & 1));
-        l += snprintf(ln + l, sizeof(ln) - l, "%d,",
-                      (int)((desc[i].dw0 >> 12) & 0xfff));
-    }
-    ow[o] = '\0';
-
-    /* How long the completion handler actually runs.
-     *
-     * This is the measurement that decides whether the codec-reload err bursts are
-     * instruction-fetch stalls: the handler and everything it calls sit in the
-     * PSRAM instruction window (ICODE_ATTR has no .icode region here, see AGENTS.md),
-     * so a codec load that memsets ~700KB of PSRAM and then invalidates every
-     * instruction line can make the handler's own fetches miss on a saturated MSPI
-     * bus. If the handler's worst case inside those bursts reaches tens of
-     * milliseconds, it exceeds the ring's 23ms runway and the engine wraps onto a
-     * slot nobody rearmed -- which is exactly the err signature.
-     *
-     * xt_isr_cyc_worst is monotonic and race-free by construction (see its
-     * declaration). The windowed max is NOT: reading it and resetting it races the
-     * handler, which is the trap that once printed max=10us against avg=16us. So the
-     * honest fields are the worst ever seen, and whether that worst grew in this
-     * window -- growth attributes the sample to the interval without needing a
-     * racy max.
-     *
-     * Cycles to microseconds is a divide, not a multiply-then-divide: cycles *
-     * 1000000 overflows 32 bits at any interesting length, which is how a 5804us
-     * gap once printed as 6us. */
-    static unsigned long last_worst;
-    static unsigned long cycles_per_us;
-    unsigned long w = xt_isr_cyc_worst;
-    unsigned long n = xt_isr_n;
-    unsigned long avg_cyc = n ? xt_isr_cyc_sum / n : 0;
-
-    if (cycles_per_us == 0)
-        cycles_per_us = (unsigned long)(esp_clk_cpu_freq() / 1000000);
-    if (cycles_per_us == 0)
-        cycles_per_us = 1;
-
-    xt_isr_n = 0;
-    xt_isr_cyc_sum = 0;
-
-    printf("DMA: err=%d startup=%d sess=%d err/sess=%d | irq=%lu "
-           "refill=%lu br=%d q=%d lk=%d play=%d | "
-           "isr n=%lu avg=%lus worst=%lus grew=%lus | "
-           "ena=%08x link=%08x own=%s len=%s | fifo f%d/e%d\n",
-           xt_dscr_err_n, err_startup, xt_tx_sessions,
-           xt_tx_sessions ? xt_dscr_err_n / xt_tx_sessions : 0,
-           xt_sink_irq_n, xt_refill_n,
-           xt_refill_branch,
-           queued, locked, playing,
-           n, avg_cyc / cycles_per_us,
-           w / cycles_per_us,
-           (w > last_worst ? w - last_worst : 0) / cycles_per_us,
-           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK),
-           ow, ln,
-           (int)((rd(GDMA_TX_FIFO_STATUS) >> 0) & 1),
-           (int)((rd(GDMA_TX_FIFO_STATUS) >> 1) & 1));
-
-    last_worst = w;
-}
-
-static void i2s_probe_tick(void)
-{
-    static int div;
-
-
-    /* Baseline payload census readout (thread context). Compare against the
-     * IDF writer's "payload:" line: if the hand-rolled path shows the same
-     * ~all-zero fraction, the mixer's silence is normal and TX was never the
-     * fault; if it shows ~0%, the IDF path is causing it. */
-    if (bl_n)
-    {
-        static unsigned long last_n;
-        static int cdiv;
-
-        /* Throttled to every 10s. As written it printed whenever bl_n moved --
-         * roughly ten times a second, because the census samples every 16th
-         * frame at 172/s. Each line is ~70 bytes, which at 115200 baud is ~6ms of
-         * blocking UART per line inside the tick task: 60ms of every second spent
-         * printing a diagnostic about audio timing. A trend over 10s says the same
-         * thing as a trend over 100ms. */
-        if (++cdiv >= 1000 && bl_n != last_n)
-        {
-            cdiv = 0;
-            printf("BLcensus: %lu frames sampled, mean-nonzero=%lu, all-zero=%lu (%lu%%)\n",
-                   bl_n, bl_sum / bl_n, bl_zero, bl_zero * 100 / bl_n);
-            last_n = bl_n;
-        }
-    }
-
-#ifdef TX_PROBE_QUIET
-    /* Instrumentation is the suspect, so it has to be switchable without
-     * deleting it.
-     *
-     * The writer's own measurement came back with gap mean=5804us (exactly the
-     * nominal frame time) but recurring ~117ms stalls every few seconds, and
-     * 117ms is what this function's CHAIN dump costs to push over USB-serial.
-     * The dump holds the newlib stdout lock for that whole time; the writer's
-     * pull path goes through pcm_play_dma_complete_callback() into the mixer,
-     * which logs, so the writer blocks behind the probe that is supposed to be
-     * watching it. starve=0 during those stalls is consistent, not reassuring:
-     * IDF's auto_clear_after_cb zeroes each completed descriptor, so a stalled
-     * writer shows up as the DMA faithfully clocking silence, not an empty FIFO.
-     *
-     * If the halting disappears with this off, the bug was never in the
-     * transmit path.
-     *
-     * It turned out the halting was never the writer at all, and the dump itself
-     * was a hazard -- but quiet must not mean blind. err is the metric the
-     * DSCR_ERR storm guard exists to watch, so the compact register-only line
-     * stays on every 2s while playing, and only the full dump is silenced. */
-    if (!pcm_playing)
-    {
-        div = 0;
-        return;
-    }
-
-    if (++div >= 200)            /* 200 ticks at 100 Hz = every 2s */
-    {
-        div = 0;
-        i2s_dma_line();
-    }
-    return;
-#endif
-
-    if (!pcm_playing)
-    {
-        div = 0;
-        return;
-    }
-
-#ifdef XT_PANIC_SELFTEST
-    /* Diagnostic bisection, not a feature. The open question is why IDF's panic
-     * handler re-enters and aborts on every crash here, printing nothing but
-     * "Panic handler entered multiple times". Two causes fit and they need
-     * opposite fixes:
-     *
-     *   - the handler or its console path is broken in general. Then hooking the
-     *     exception vector buys nothing, because a hand-written recorder still has
-     *     to get its output somewhere across a reboot.
-     *   - our crashes corrupt something the handler depends on (stack, or a frame
-     *     that ended up in PSRAM). Then a trap from a clean thread context dumps
-     *     properly, and a vector hook is exactly the right move.
-     *
-     * __builtin_trap() emits an illegal instruction from ordinary thread context
-     * with a valid stack -- the same exception path, minus whatever a real crash
-     * may have already broken. Build with -DXT_PANIC_SELFTEST, play something for
-     * ~6 s, and read the dump. Compile-time guarded so it cannot ship.
-     *
-     * Separate counter on purpose: div resets every 200 ticks to drive the probe,
-     * so a threshold above 200 on div would never fire.
-     */
-    {
-        static int selftest_ticks;
-        if (++selftest_ticks == 600)
-        {
-            printf("SELFTEST: trapping now (clean thread context)\n");
-            __builtin_trap();
-        }
-    }
-#endif
-
-    if (++div < 200)
-        return;
-
-    div = 0;
-
-    /* How long the transport is down, in microseconds. The frame itself is 1024
-     * bytes = 5.8 ms at 44.1k stereo 16-bit, and the outlink is stopped for this
-     * whole window, so the FIFO has to cover it. Compare the two and the click
-     * either is explained or is not. Counters reset each interval so the report is
-     * a fresh worst case, not a monotonic mark that only ever shows one old sample. */
-    if (xt_isr_n > 0)
-    {
-        int hz = esp_clk_cpu_freq();
-        unsigned long n = xt_isr_n, mx = xt_isr_cyc_max;
-        unsigned long rm = xt_isr_refill_max, avg = xt_isr_cyc_sum / n;
-
-        xt_isr_n = 0; xt_isr_cyc_max = 0; xt_isr_refill_max = 0;
-        xt_isr_cyc_sum = 0;
-
-        printf("ISR: %lu in window  avg=%luus  max=%luus  worst=%luus"
-               "  (refill part max=%luus)  [%d MHz]\n",
-               n,
-               hz ? avg * 1000000UL / (unsigned long)hz : 0,
-               hz ? mx * 1000000UL / (unsigned long)hz : 0,
-               hz ? xt_isr_cyc_worst * 1000000UL / (unsigned long)hz : 0,
-               hz ? rm * 1000000UL / (unsigned long)hz : 0,
-               hz / 1000000);
-    }
-
-    /* Sample-width verdict, captured in gdma_tx_isr context by fill() and printed
-     * here where printing is legal. */
-    if (xt_width.ready)
-    {
-        int k, nz_even = 0, nz_odd = 0;
-
-        printf("SINK bytes: fill #%lu, len=%lu, first %d half-words"
-               " (%d nonzero):\n  ", xt_width.filln, xt_width.len,
-               xt_width.n, xt_width.nonzero);
-        for (k = 0; k < xt_width.n; k++)
-        {
-            printf("%04x ", xt_width.data[k]);
-            if (xt_width.data[k] != 0x0000 && xt_width.data[k] != 0xffff)
-            {
-                if (k & 1)
-                    nz_odd++;
-                else
-                    nz_even++;
-            }
-            if ((k & 7) == 7 && k + 1 < xt_width.n)
-                printf("\n  ");
-        }
-        printf("\nSINK width test: active even-half=%d odd-half=%d of %d"
-               "  => %s\n",
-               nz_even, nz_odd, xt_width.n / 2,
-               xt_width.nonzero == 0
-                   ? "HEAD IS SILENCE"
-                   : (nz_even > 3 * nz_odd || nz_odd > 3 * nz_even)
-                       ? "32-BIT samples: one half of each pair is quiet"
-                       : "16-bit PCM: both halves carry signal");
-        xt_width.ready = 0;
-    }
-
-    i2s_audio_probe();
-
-    /* xt_stack_report() is stood down. It has produced two artefacts in a row:
-     * first scanning for DEADBEEF, a fill xTaskCreateStatic overwrites; then with
-     * the loop inverted, so it counted the run of fill from the top and reported
-     * that as usage -- which is why all eleven threads showed an identical
-     * used=320, a property of the buffer layout and not of any thread.
-     *
-     * Nothing now indicates a stack problem. The reports that motivated this were
-     * the canary check reading FreeRTOS's own initial context frame at the bottom
-     * of the buffer and concluding the canary had been consumed. With that
-     * debunked there is no evidence left to size stacks against, and I have made
-     * the measurement wrong twice, so it is not worth a third attempt until a raw
-     * word dump establishes where the frame and the fill actually are. */
-}
-
 static void sink_init(void)
 {
-    xt_sink_init_n++;
-
 #ifdef HAVE_RECORDING
     /* Bring up IDF's receive channel BEFORE the transmitter is configured.
      *
@@ -1819,18 +1136,8 @@ static void sink_init(void)
      * nowhere else. It now happens in pcm_rec_dma_start(). */
     sink_set_freq(builtin_pcm_sink.caps.default_freq);
 
-    /* TEMPORARY: the boot baseline. Every later arena dump is read as a delta
-       from this picture of who holds what. */
     xt_arena_dump("at boot");
 
-    /* Snapshot the transmit path the instant initialisation completes. Compared
-     * against the same dump later, this says whether the configuration was ever
-     * there at all or was taken away afterwards. */
-    printf("AUDHW -- immediately after sink_init --\n");
-    i2s_audio_probe();
-
-    /* Periodic playback sample; see i2s_probe_tick(). */
-    tick_add_task(i2s_probe_tick);
 }
 
 struct pcm_sink builtin_pcm_sink = {
@@ -1851,14 +1158,3 @@ struct pcm_sink builtin_pcm_sink = {
     },
 };
 
-/* TEMPORARY: two registers, on demand, from the recording path. i2s_audio_probe()
- * prints a whole wall of state and is only reachable at boot and at a playback
- * stop that this bug never lets happen, so narrowing it to the two numbers that
- * actually changed -- GDMA_TX_INT_ENA going 0x06 -> 0x00 and GDMA_TX_LINK's
- * address field going 0x0cf700 -> 0x000000 -- and calling it either side of each
- * IDF call in the session lifecycle is what names the offender. */
-void i2s_tx_gdma_peek(const char *where)
-{
-    printf("GDMA %-22s ena=%08x link=%08x\n", where,
-           (unsigned)rd(GDMA_TX_INT_ENA), (unsigned)rd(GDMA_TX_LINK));
-}

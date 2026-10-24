@@ -46,101 +46,6 @@
  * keeps them in .bss. */
 static StaticTask_t tcb_pool[MAXTHREADS];
 
-/* TEMPORARY bring-up: the OS half of "why is this thread not running".
- *
- * Rockbox marks a thread blocked only when it goes through block_thread(),
- * which sets thread->blocker. A Rockbox thread that calls into IDF and waits on
- * an IDF semaphore, queue or event is Blocked as far as FreeRTOS is concerned
- * and completely unblocked as far as Rockbox is concerned -- so the Rockbox-side
- * readout prints the two identically, and they need opposite fixes. This keeps
- * just enough of a registry, indexed by the same slot the TCB pool uses, to ask
- * FreeRTOS the same question about the same thread.
- *
- * The handles are recorded here rather than recovered from tcb_pool because a
- * slot is reused after vTaskDelete(), and eTaskGetState() on a deleted TCB is
- * not a thing that can be done safely. */
-/* TEMPORARY bring-up: count the times the kernel switches out a context whose
- * recorded task is not the one actually executing. That is the two-notions-of-
- * running-thread gap made visible rather than inferred, and it is what let the
- * mis-adoption above go unnoticed. */
-volatile unsigned long os_ctx_task_mismatch;
-static const char *os_mismatch_ctx;
-static const char *os_mismatch_real;
-
-static TaskHandle_t os_task[MAXTHREADS];
-static TaskHandle_t os_task0;
-
-/* eTaskGetState() returns an enum with no name table, and the whole point is
- * readability under a serial console at the moment things are going wrong. */
-static const char *os_state_name(eTaskState st)
-{
-    switch (st)
-    {
-    case eReady:     return "Ready";
-    case eRunning:   return "Running";
-    case eBlocked:   return "BLOCKED";
-    case eSuspended: return "Suspended";
-    case eDeleted:   return "Deleted";
-    default:         return "?";
-    }
-}
-
-/* Render every Rockbox-owned task as name=OSstate.
- *
- * A thread reading `run` on the Rockbox side and `BLOCKED` here is sitting
- * inside a driver, not stranded awaiting its gate -- which is the distinction
- * that has been unresolvable so far. */
-int rb_thread_os_states(char *out, int sz)
-{
-    int pos = 0;
-    int i;
-
-    if (sz <= 0)
-        return 0;
-    out[0] = '\0';
-
-    /* Names are read from the live handle rather than cached alongside it.
-     * Slots are reused after vTaskDelete(), and a cached const char * survives
-     * that, so the first version of this printed one thread name twice and
-     * omitted another -- precisely the kind of artefact that reads like a
-     * finding. Only the handle is stored, and only while it is valid. */
-    /* Slot index and handle printed as well: if one name appears twice it
-     * matters enormously whether that is two different slots (two live tasks
-     * with the same name, i.e. a leaked task whose Rockbox thread is gone) or
-     * the same slot printed twice (this file being wrong). Do not guess which. */
-    if (os_task0 != NULL)
-        pos += snprintf(out + pos, sz - pos, "t0:%s=%s/%p ",
-                        pcTaskGetName(os_task0),
-                        os_state_name(eTaskGetState(os_task0)),
-                        (void *)os_task0);
-
-    for (i = 0; i < MAXTHREADS && pos < sz - 48; i++)
-    {
-        if (os_task[i] == NULL)
-            continue;
-        pos += snprintf(out + pos, sz - pos, "s%d:%s=%s/%p ", i,
-                        pcTaskGetName(os_task[i]),
-                        os_state_name(eTaskGetState(os_task[i])),
-                        (void *)os_task[i]);
-    }
-
-    /* Printed last so it is easy to ignore when zero and impossible to miss
-     * when it is not. */
-    if (os_ctx_task_mismatch)
-        snprintf(out + pos, sz - pos, "| MISMATCH %lu ctx=%s real=%s",
-                 os_ctx_task_mismatch,
-                 os_mismatch_ctx ? os_mismatch_ctx : "?",
-                 os_mismatch_real ? os_mismatch_real : "?");
-    return pos;
-}
-
-/* The body every Rockbox thread runs on: wait for the scheduler to hand over
- * the gate, run the thread's function, then exit through Rockbox's own
- * thread_exit() so the slot is torn down by the code that knows how. */
-/* rb_thread_ref is declared in asm/xtensa/thread.h: it carries what the task
-   needs by value, so this file never has to know the kernel's thread_entry
-   layout. thread-internal.h is not on the target include path, and reaching for
-   it would couple the OS binding to kernel internals. */
 
 static void rb_task_body(void *arg)
 {
@@ -187,10 +92,6 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
         vSemaphoreDelete((SemaphoreHandle_t)ctx->gate);
         ctx->task = NULL;
         ctx->gate = NULL;
-        /* The handle in the registry is now a dangling pointer; drop it before
-         * anything can ask its state. */
-        if (slot < MAXTHREADS)
-            os_task[slot] = NULL;
     }
 
     ctx->gate = (void *)xSemaphoreCreateBinary();
@@ -235,11 +136,6 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
 
     /* So a switch to this thread can find its own gate from the task handle. */
     vTaskSetThreadLocalStoragePointer((TaskHandle_t)ctx->task, 0, ctx);
-
-    if (slot < MAXTHREADS)
-    {
-        os_task[slot] = (TaskHandle_t)ctx->task;
-    }
 }
 
 /* Thread 0 is not created here: it is the task rockbox_app.c started Rockbox's
@@ -262,13 +158,6 @@ void rb_thread_set_thread0_task(void *handle)
 
 void rb_thread_adopt_self(struct regs *ctx)
 {
-    if (ctx->task != NULL && (TaskHandle_t)ctx->task != xTaskGetCurrentTaskHandle())
-    {
-        os_ctx_task_mismatch++;
-        os_mismatch_ctx = pcTaskGetName((TaskHandle_t)ctx->task);
-        os_mismatch_real = pcTaskGetName(NULL);
-    }
-
     if (ctx->gate != NULL)
         return;
 
@@ -278,7 +167,6 @@ void rb_thread_adopt_self(struct regs *ctx)
 
     ctx->gate = (void *)xSemaphoreCreateBinary();
     ctx->task = (void *)os_thread0_handle;
-    os_task0 = os_thread0_handle;
 
     if (ctx->gate == NULL)
         panicf("thread gate: no memory for thread 0");

@@ -91,16 +91,15 @@ void touchscreen_enable_device(bool en)
 int button_read_device(int *data)
 {
     /* This function is the hot path: the common button code calls it every button
-     * tick, at HZ. Until a moment ago it carried the bring-up diagnostics -- the
-     * filesystem-lock state, thread dumps, scheduler state, the playback-chain
-     * probe (twice, from a bad merge) and buffering_probe -- on every call. That
-     * is well over a kilobyte of console output per tick, roughly a hundred
+     * tick, at HZ. It used to carry the bring-up diagnostics -- filesystem-lock
+     * state, thread dumps, scheduler state, the playback chain -- on every call.
+     * That is well over a kilobyte of console output per tick, roughly a hundred
      * milliseconds of blocking UART at 115200 baud, emitted by the very thread
      * that services the buttons.
      *
      * It is why input felt laggy and erratic and why the player appeared to lock
-     * up with no panic and no fault: 98% of the session log was this probe
-     * printing itself. The comment on the block claimed "this path is rare".
+     * up with no panic and no fault: 98% of the session log was those diagnostics
+     * printing themselves. The comment on the block claimed "this path is rare".
      *
      * The deadlock it was written to chase is long since found and fixed -- the
      * ES8311 was being addressed with a spurious leading register byte, so the

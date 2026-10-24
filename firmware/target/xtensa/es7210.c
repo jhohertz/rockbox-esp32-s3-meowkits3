@@ -30,7 +30,6 @@
 #include "settings.h"
 
 #include "es7210.h"
-#include <stdio.h> /* TEMPORARY: register readback probe in es7210_init */
 
 #define REG_RESET          0x00
 #define REG_CLOCK_OFF      0x01
@@ -209,25 +208,6 @@ bool es7210_init(unsigned long rate)
     reg_update(REG_MIC2_GAIN, GAIN_MASK, gain_code(global_settings.rec_mic_gain));
 
     reg_write(REG_ADC_AUTOMUTE, 0x00);
-
-    /* TEMPORARY: read the chip back. Writing a register and reading it are two
-       different claims -- the ES7210 has been accepting every other write
-       happily, so if REG11 or the gain bytes come back wrong the write is being
-       dropped or overwritten, and if they come back right then the low level is
-       analogue (bias, input select, the mic itself) and no further register work
-       will help. */
-    {
-        unsigned char r11 = 0, r43 = 0, r44 = 0, r41 = 0, r40 = 0;
-
-        reg_read(REG_SDP_IF1, &r11);
-        reg_read(REG_MIC1_GAIN, &r43);
-        reg_read(REG_MIC2_GAIN, &r44);
-        reg_read(REG_MIC12_BIAS, &r41);
-        reg_read(REG_ANALOG, &r40);
-        printf("ES7210 readback: REG11=%02x (want 60) REG43=%02x REG44=%02x "
-               "(want 1e/1e) BIAS41=%02x ANALOG40=%02x gain=%d\n",
-               r11, r43, r44, r41, r40, global_settings.rec_mic_gain);
-    }
 
     return true;
 }
