@@ -621,27 +621,17 @@ static uint32_t xt_attach_tick;
  * So the host's PCM would be transferred into memory the master cannot write,
  * which shows up as a device that enumerates, streams, and says nothing.
  *
- * Internal SRAM has roughly a kilobyte of margin, so a dedicated static is not
- * available. The mass-storage transfer buffer is: it is already allocated (8 KiB
- * of .bss, sized 2 * max(USB_READ_BUFFER_SIZE, USB_WRITE_BUFFER_SIZE)), it is
- * already DMA-reachable, and the CDC+HID+MSC and CDC+HID+Audio profiles are
- * mutually exclusive -- usb.c disables the storage driver in charge-only mode --
- * so the region is idle whenever audio is running. Borrowing it costs no memory.
+ * Internal SRAM has room for a dedicated static: the firmware's .data/.bss region
+ * ends where the IDF heap begins, with roughly 90 KiB of that unused (Rockbox's own
+ * allocator lives in PSRAM), so 640 bytes costs nothing.
+ *
+ * It has to be dedicated rather than borrowed. The mass-storage class uses its
+ * transfer buffer for the head of every SCSI read and write, and usb.c enables the
+ * audio class alongside storage whenever usb_audio is 1 or 3 -- so sharing one region
+ * meant the isochronous DMA overwrote the first 640 bytes of every 4 KiB sector chunk
+ * while the DAC ran, corrupting files written to the card, the data read back from it,
+ * and the PCM in the other direction.
  */
-#define XT_STORAGE_XFER_SIZE \
-    (2 * (USB_READ_BUFFER_SIZE > USB_WRITE_BUFFER_SIZE ? \
-          USB_READ_BUFFER_SIZE : USB_WRITE_BUFFER_SIZE))
-
-_Static_assert(XT_STORAGE_XFER_SIZE >= 1024,
-               "the storage transfer buffer must hold the audio rx buffer (1023 -> 1024)");
-
-/* With ping-pong receive buffers the class asks for two packet spans in one call, so the
- * borrowed region has to hold both or the hook declines and the class falls back to
- * core_alloc() -- which on this target is the pool the DWC DMA cannot reach. */
-/* What one isochronous receive span has to hold: the arm size, doubled when the class
- * ping-pongs two buffers. The borrowed region has to cover it or the hook declines and the
- * class falls back to core_alloc() -- which on this target is the pool the DWC DMA cannot
- * reach, so the audio endpoint would DMA into memory it cannot see. */
 #ifdef USB_AUDIO_RX_ARM_SIZE
 #define XT_AUDIO_RX_ARM USB_AUDIO_RX_ARM_SIZE
 #else
@@ -653,29 +643,24 @@ _Static_assert(XT_STORAGE_XFER_SIZE >= 1024,
 #define XT_AUDIO_RX_SPAN XT_AUDIO_RX_ARM
 #endif
 
-_Static_assert(XT_STORAGE_XFER_SIZE >= XT_AUDIO_RX_SPAN,
-               "the borrowed storage buffer cannot hold the audio receive span");
-
-extern void *usb_storage_transfer_buffer_get(void);
-
-/* The buffer the isochronous OUT endpoint DMAs into, handed out by
- * usb_audio_target_rx_buffer() below and remembered so the cache-maintenance hook knows
- * which buffer is the audio one. The class asks for one span, or two when it ping-pongs
- * them, and splits that region itself; this base covers both halves.
+/* The buffer the isochronous OUT endpoint DMAs into. The class asks for one span, or
+ * two when it ping-pongs them, and splits that region itself; this covers both halves.
+ * USB_DEVBSS_ATTR puts it in the DMA-reachable static region, cache-line aligned so the
+ * discard below rounds to whole lines.
  */
+static unsigned char xt_audio_rx_buf[XT_AUDIO_RX_SPAN]
+    USB_DEVBSS_ATTR __attribute__((aligned(32)));
+
+/* Remembered so the cache-maintenance hook knows which buffer is the audio one. */
 static void *xt_audio_rx_addr;
 
 unsigned char *usb_audio_target_rx_buffer(size_t size)
 {
-    void *buf = usb_storage_transfer_buffer_get();
-
-    /* NULL means storage took its buffer from core_alloc(), i.e. from the very
-     * pool that is unusable for DMA here; there is nothing safe to lend. */
-    if (!buf || size > XT_STORAGE_XFER_SIZE)
+    if (size > sizeof(xt_audio_rx_buf))
         return NULL;
 
-    xt_audio_rx_addr = buf;
-    return (unsigned char *)buf;
+    xt_audio_rx_addr = xt_audio_rx_buf;
+    return xt_audio_rx_buf;
 }
 #endif /* USB_ENABLE_AUDIO */
 

@@ -530,7 +530,7 @@ Mapping the board against what Rockbox already has:
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done in `target/xtensa/psram-xtensa.c`, run from `crt0.S` before `mmu_init()`; neither the ROM nor ESP-IDF's bootloader does it |
-| USB-OTG | `usbstack` | Rockbox's own stack now compiles against the DWC core and is **runtime-inert**: `usb_enable()` is a no-op and the pads stay on USB-Serial-JTAG. The core answers only when *both* clock gates are on (`usb_clk_en` PERIP_CLK_EN0 bit 23 for the wrap/PHY, `usb_device_clk_en` PERIP_CLK_EN1 bit 10 for the DWC) and *both* reset bits are cleared -- with one gate, every register reads 0 without faulting. Measured: id `0x4f54400a` rev 10, **7 device endpoints, 4 dedicated IN FIFOs, 200 words of FIFO RAM**, FS PHY selectable via `GUSBCFG.fsintf`. `SOC_DPORT_USB_BASE` is referenced by IDF's esp32s3 `usb_reg.h` but never defined there -- that file is legacy |
+| USB-OTG | `usbstack` | **Operational.** CDC console, mass storage and the DAC class all work, driven by Rockbox's own stack over the DWC core. The core answers only when *both* clock gates are on (`usb_clk_en` PERIP_CLK_EN0 bit 23 for the wrap/PHY, `usb_device_clk_en` PERIP_CLK_EN1 bit 10 for the DWC) and *both* reset bits are cleared — with one gate, every register reads 0 without faulting. Measured: id `0x4f54400a` rev 10, **7 device endpoints, 4 dedicated IN FIFOs (GHWCFG4, not the 6 `USB_NUM_ENDPOINTS` suggests), 200 words of FIFO RAM**, FS PHY selectable via `GUSBCFG.fsintf`. FIFO split is NPTX 16 / PTX 16 x 4 / RX 120 words, and `ahb_burst_len` is INCR16 — INCR4 made the DAC crackle under a storage flood. `SOC_DPORT_USB_BASE` is referenced by IDF's esp32s3 `usb_reg.h` but never defined there — that file is legacy |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
 
 ### Display power states
@@ -3297,6 +3297,22 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   and a Makefile**, producing a misconfigured build directory rather than an error.
 - Style: the tree is consistent. Do not introduce a new arch dispatch idiom —
   follow `#if defined(CPU_*)` as used in `firmware/asm/`.
+- **USB classes on this target are not mutually exclusive, so no DMA buffer may be
+  shared between them.** `usb.c:252` enables the audio class alongside mass storage
+  whenever `global_settings.usb_audio` is 1 or 3, and with HID switched off in the UI the
+  composition fits the hardware exactly (CDC 3 + MSC 2 + audio 2 = 7 endpoints, 4 IN FIFOs).
+  The audio RX buffer was borrowed from `usb_storage`'s 8 KiB transfer buffer on the
+  assumption that only one class ever ran; it does not. Storage uses that buffer as
+  `cur_cmd.data[0]` for every SCSI read and write, so the isochronous DMA overwrote the head
+  of every 4 KiB sector chunk while the DAC played — corrupting files written to the card,
+  the data read back from it, and the PCM in the other direction. `usb_audio_target_rx_buffer()`
+  now returns a dedicated 640-byte static; internal SRAM has ~90 KiB above `_heap_start` that
+  Rockbox never uses because its allocator is in PSRAM, so a class buffer is cheap.
+- **A bulk IN endpoint needs a 16-word TX FIFO, and the driver will not tell you.**
+  `usb_dw_handle_dtxfifo()` pushes whole packets: `words = (fifospace/maxpktwords) *
+  maxpktwords`, so a 32-byte FIFO with a 64-byte full-speed packet computes 0 and breaks,
+  leaving the transfer stuck. Enumeration still succeeds because EP0 uses NPTX, so the
+  symptom is a device that mounts and then never answers a read.
 - **A codec image calls the firmware's API by struct offset, so the zip is part of
   the ABI.** Codec images index `struct codec_api` numerically, and the struct grows
   conditionally on `config.h` defines. Enabling `ROCKBOX_HAS_LOGF` inserted a word at
@@ -3304,9 +3320,10 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   132/136/140/144 to 136/140/144/148 — the stale codecs then called `qsort` as their
   PCM read, which is what put execution at a stack address. `apps/codecs.c:217` only
   rejects a codec whose `api_size` is *larger* than the firmware's, so a shifted-down
-  struct loads silently. `make` does not rebuild `rockbox.zip`; after any change that
-  touches `struct codec_api` or a define it depends on, run `make zip` and re-extract
-  the card, because the card is populated only from the zip.
+  struct loads silently. `make` does not rebuild `rockbox.zip`; after any firmware change
+  run `make zip` and re-extract the card, because the card is populated only from the zip and
+  a stale zip ships a firmware image and codec set that disagree with HEAD. `make zip` also
+  needs the IDF environment sourced, or it fails with `idf.py: not found`.
 - **A `.noinit` stamp is not durable on a crashing path.** `.noinit` is cached DRAM,
   and a panic resets the chip with the D-cache invalidated and unwritten, so a store
   made moments before a fault is lost and the next boot reads stale DRAM — eight
