@@ -46,7 +46,6 @@
 #include "xtensa_context.h"
 #include "esp_debug_helpers.h"
 #include "esp_memory_utils.h"
-#include "esp_cpu_utils.h"
 #include "esp_app_desc.h"
 #include "panic_funcs.h"
 #include "esp_rom_sys.h"
@@ -77,7 +76,10 @@ extern void esp_panic_handler_feed_wdts(void);
 /* Frames of caller chain to retain. IDF walks until the chain goes insensible;
  * eight is what fits in the report and enough to name the caller whose return
  * address was hijacked. */
-#define RB_BT_FRAMES 8
+/* Frames of caller chain to retain. The exception handler runs on the faulting
+ * thread's own stack, so its frames occupy the first several slots; anything
+ * shorter never reaches the thread that actually faulted. */
+#define RB_BT_FRAMES 16
 
 /* EPC and DEPC are only readable at their own exception levels: reading EPC1 at
  * level 1 is a DISASTER exception, which would manufacture a third fault and
@@ -171,27 +173,39 @@ void esp_panic_handler(panic_info_t *info)
     }
     xtensa_paniclog_frame_regs(regs, RB_REGS);
 
-    /* The caller chain, walked with IDF's own primitives rather than a private
-     * reconstruction: esp_backtrace_get_next_frame reads frame(i-1)'s base-save
-     * area from the four words below SP (return PC at sp-16, caller SP at sp-12),
-     * which the exception vectors fill for every frame because XT_DEBUG_BACKTRACE
-     * is unconditional in xtensa_vectors.S.
+    /* The caller chain, stepped with IDF's esp_backtrace_get_next_frame: it
+     * reads frame(i-1)'s base-save area from the four words below SP (return PC
+     * at sp-16, caller SP at sp-12), which the exception vectors fill for every
+     * frame because XT_DEBUG_BACKTRACE is unconditional in xtensa_vectors.S.
      *
-     * This runs after the frame and register slots are already durable on purpose.
-     * Reading through a wrong SP faults, and a fault in here is a third exception
-     * with no handler left, so the whole record would be lost to the walk. Each SP
-     * is therefore checked before the step that reads below it -- IDF checks after,
-     * which is fine when the only cost is a printed line -- and paniclog.c commits
-     * each frame before attempting the next.
+     * Two deliberate departures from how IDF uses it.
      *
-     * PCs go through esp_cpu_process_stack_pc, which folds the windowed ABI's
-     * window-increment bits back into the address space. Without it a return
-     * address like 0x8002e4bc looks like garbage and is really 0x4002e4b9 in ROM.
+     * Its return value is ignored. It reports false when the frame it just read
+     * has an insensible SP or a non-executable PC, which is right for a
+     * human-readable trace and wrong here: the first such frame is the
+     * interesting one, and stopping at it hides it. Termination is therefore only
+     * about safety -- each SP is validated with esp_stack_ptr_is_sane before the
+     * step that reads below it, because a read through a bad SP faults and a fault
+     * inside this handler is a third exception with no handler left, which would
+     * take the whole record with it.
+     *
+     * PCs are stored unprocessed. esp_cpu_process_stack_pc folds the windowed
+     * ABI's window-increment bits and steps off the return address, which turns a
+     * slot holding a literal-pool address into something that looks like code.
+     * The raw value is what lets the host tell a genuine return address from a
+     * data slot -- the first version of this walk printed processed PCs and
+     * showed 0x42600043, which resolved inside a codec's literal pool and looked
+     * like a frame until the raw slot (0x42600046) said otherwise.
+     *
+     * Each frame is committed before the next is attempted, and the frame and
+     * register slots are stored first, so a walk that dies part-way keeps what it
+     * already had.
      */
     {
         unsigned long pcs[RB_BT_FRAMES];
         unsigned long sps[RB_BT_FRAMES];
         esp_backtrace_frame_t bf;
+        unsigned long prev_sp = 0;
         int n = 0;
 
         if (f != NULL)
@@ -201,23 +215,23 @@ void esp_panic_handler(panic_info_t *info)
             bf.next_pc  = (uint32_t)f->a0;
             bf.exc_frame = f;
 
-            if (esp_stack_ptr_is_sane(bf.sp))
+            pcs[n] = bf.pc;
+            sps[n] = bf.sp;
+            n++;
+
+            while (n < RB_BT_FRAMES && bf.next_pc != 0)
             {
-                pcs[n] = esp_cpu_process_stack_pc(bf.pc);
+                /* A repeated SP means the base-save area points back at the same
+                   frame; without this the walk spins to the cap. */
+                if (!esp_stack_ptr_is_sane(bf.sp) || bf.sp == prev_sp)
+                    break;
+                prev_sp = bf.sp;
+
+                esp_backtrace_get_next_frame(&bf);
+
+                pcs[n] = bf.pc;
                 sps[n] = bf.sp;
                 n++;
-
-                while (n < RB_BT_FRAMES && bf.next_pc != 0)
-                {
-                    if (!esp_stack_ptr_is_sane(bf.sp))
-                        break;
-                    if (!esp_backtrace_get_next_frame(&bf))
-                        break;
-
-                    pcs[n] = esp_cpu_process_stack_pc(bf.pc);
-                    sps[n] = bf.sp;
-                    n++;
-                }
             }
         }
 
