@@ -1081,11 +1081,6 @@ void ICODE_ATTR gdma_irq(void)
          * idle re-arm below and the playing path act on it. */
         int slot = done_slot;
 
-        /* Teardown guard. sink_stop() clears playing and then hands every
-         * descriptor back to the CPU; a completion that arrives during that window
-         * must not arm anything, or the handler would write into slots the stop
-         * sequence is clearing. This is the race the completion mask used to paper
-         * over, handled at the point where the state is actually known. */
         /* Session guard. sink_stop() clears `playing` before stop_tx() replaces the
          * ring with silence, so a completion that arrives in that window belongs to
          * the idle walk rather than to a session: it re-arms silence and does not
@@ -1095,12 +1090,18 @@ void ICODE_ATTR gdma_irq(void)
         if (!playing)
         {
             cb_pending = 0;
-            /* The ring is free-running from sink_init() and stays running across
-             * sessions, so a completion here is the idle walk retiring a silence
-             * slot. Re-arm it: leaving it CPU-owned means the engine wraps back onto
-             * it one lap later under auto-writeback, raises out_dscr_err, and this
-             * handler then refuses to restart the walk because nothing is playing --
-             * the interface would go dark about 23 ms after every start. */
+
+            /* Advance the walk position exactly as the playing path does. Omitting
+             * this was a regression: the handler re-armed the slot it had already
+             * recorded while the engine had moved on, so the slot that genuinely
+             * retired stayed CPU-owned. One lap later the engine walked onto it,
+             * raised out_dscr_err, and the error branch declined to restart because
+             * nothing was playing. Measured on the board as ~50 errors and ~16
+             * recoveries per session -- against err 21 / rec 5 before the idle ring
+             * existed -- and each tx_recover() discards a lap of audio, which is the
+             * clunk that came with it. */
+            done_slot = (slot + 1) % XT_TX_RING;
+            dscr_streak = 0;    /* a DONE proves the walk is healthy again */
             fill_silence(slot);
             goto done_exit;
         }

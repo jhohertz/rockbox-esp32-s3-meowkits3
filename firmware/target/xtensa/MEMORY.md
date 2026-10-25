@@ -713,12 +713,17 @@ from `i2s_set_frequency()`.
 **Contract for anyone else that calls `tx_flush()`**: follow it with `idle_tx()`.
 `tx_flush()` stops the GDMA channel and resets the I2S port; if nothing restarts
 the walk, the ring is dead and nothing re-arms it. Related: the DONE branch re-arms
-the slot it retires while `playing` is false, because a silent free-running ring
-otherwise survives one lap -- four slots, ~23 ms at 44.1 kHz -- then walks onto a
-CPU-owned descriptor, raises `out_dscr_err`, and the error branch declines to
-restart since nothing is playing. `sink_stop()` no longer hands the descriptors
-back for the same reason; an emptied ring is what the old teardown bursts were
-anchored on.
+the slot it retires while `playing` is false **and advances `done_slot` exactly as
+the playing path does**. An earlier version of that branch re-armed without
+advancing, so every idle completion re-armed a slot the engine had already passed
+and left the genuinely-retired one CPU-owned; measured on the board as ~50 errors
+and ~16 `tx_recover()` calls per session, against `err 21 / rec 5` before the idle
+ring existed, and each recovery discards a lap of audio (~23 ms) -- which is what a
+clunk is. A silent free-running ring otherwise survives one lap -- four slots,
+~23 ms at 44.1 kHz -- then walks onto a CPU-owned descriptor, raises
+`out_dscr_err`, and the error branch declines to restart since nothing is playing.
+`sink_stop()` no longer hands the descriptors back for the same reason; an emptied
+ring is what the old teardown bursts were anchored on.
 
 `stat_silence` counts only silence the *core could not supply* -- `playing` is set
 before `start_tx()`, so preroll silence still counts, and the idle ring's ~86
