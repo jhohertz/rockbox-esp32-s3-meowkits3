@@ -199,19 +199,51 @@ mis-mapping.
 Doc: replace the five `Ab*` "not available" entries — that also fixes the
 "not available or Short Right + Long Right" line on manual p.35.
 
-### S5 — Key lock
+### S5 — Key lock: landed as a held two-button combo
 
-Two options, decide once S2 lands:
+Your framing was the useful one: the old players had a physical rocker that
+blocked everything but the unlock, and here that has to be a gesture which is
+hard to hit by accident. `BUTTON_A|BUTTON_B|BUTTON_REPEAT` with pre-button
+`BUTTON_A|BUTTON_B`, in both the standard and WPS contexts.
 
-- Combo: `BUTTON_A|BUTTON_B` tap in std context → `ACTION_STD_KEYLOCK`
-  (precedents: `BUTTON_HOME|BUTTON_SELECT` in `keymap-clip.c:91`,
-  `BUTTON_USER|BUTTON_POWER` in `keymap-3ds.c:56`). Note the collision with
-  S4's reset in WPS — different contexts, so acceptable, but check the ordering.
-- Skin region: `%T(...,lock)` → `ACTION_TOUCH_SOFTLOCK`, visible and tappable.
+What the measurement settled:
 
-Doing both is reasonable: combo when the keys are handy, region when the screen
-is. Key lock also matters for pocket operation on a touch panel, since a locked
-panel is the difference between accidental track skips and nothing.
+- **There is no keylock subsystem in this tree.** No `firmware/keylock.c`, no
+  `CONFIG_KEYLOCK`, nothing in `settings_list.c` under that name. It is the soft
+  lock in `apps/action.c`, live because we do not define `HAS_BUTTON_HOLD`.
+  While locked, `do_softlock()` filters everything except the gesture matching
+  `unlock_combo` — exactly "prevents anything but unlock".
+- **Touch alone was unsafe.** Under default settings `do_key_lock()` calls
+  `button_enable_touch(false)`, so a lock produced by a skin region would switch
+  the panel off and leave `unlock_combo` holding a touch code no stick press can
+  match. Unrecoverable until reboot. That is why a button gesture is not a
+  nicety here.
+- **Without a mapping, autolock was dead code.** `action_autosoftlock_init()`
+  arms it only if `unlock_combo != BUTTON_NONE`, and finds that combo by
+  searching the WPS and STD contexts for `ACTION_STD_KEYLOCK`. So the "Advanced
+  Key Lock" submenu — which we do build, since it is gated on `!HAS_BUTTON_HOLD`
+  rather than on `hold_button` — could never engage. Mapping the gesture is what
+  makes locking-on-backlight-time-out usable, which is the pocket case.
+- **Held, not tapped.** In the WPS the tap is already A-B reset, and a lock
+  should need intent. Unlock is the same gesture; the press that precedes it
+  does whatever the context uses the tap for, which is harmless (in the WPS it
+  resets A-B markers).
+- **`%T(...,lock)` is a different thing.** `ACTION_TOUCH_SOFTLOCK` only toggles
+  the skin's own `touchscreen_locked` flag, hiding that theme's other regions
+  while keeping the lock region tappable. It is a per-theme panel lock,
+  reversible by construction, unrelated to soft lock. It stays with the theme
+  packs (S6).
+
+Manual: `\ActionStdKeylock` now reads *Long (A + B)*, and the WPS key-lock row —
+which hard-codes keys per pad rather than using that macro — gained
+`ESP32S3_PAD`. The pitch row gained the same option, since our touch grid does
+provide that gesture.
+
+Files: `apps/keymaps/keymap-meowkits3.c`, `manual/platform/keymap-meowkits3.tex`,
+`manual/rockbox_interface/wps.tex`. Status: **landed, needs hardware test** —
+lock in the WPS, confirm stick and touch are both ignored and the screen says
+locked, unlock with the same gesture, then try autolock via Settings ->
+Advanced Key Lock.
 
 ### S6 — Shuffle, repeat mode and the visible affordances: deferred to theme packs
 
@@ -367,7 +399,8 @@ Keep it everywhere.
    `keymap-touchscreen.c`. Verify the touch keypad on hardware instead.
 5. **S6** theme touch regions — **deferred**: cabbiev2 stays untouched, and
    `%T` regions come with the theme packs instead.
-6. **S5** key lock, **S8** recording, **S9** settings reset — each only if it
+6. **S5** key lock — **landed** as A + B held, std and WPS contexts. **S8**
+   recording and **S9** settings reset — each only if it
    maps to an action Rockbox already has. S2 is parked; short PEK stays unused
    rather than becoming a new action.
 7. **S10** plugin audit as its own multi-part effort.
