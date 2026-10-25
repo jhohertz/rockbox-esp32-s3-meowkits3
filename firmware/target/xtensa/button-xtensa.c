@@ -17,7 +17,7 @@
 #include "axp173.h"
 #include "powermgmt.h"
 #ifdef HAVE_USBSTACK
-#include "usb.h"           /* usb_inserted(): Rockbox declines a poweroff in USB mode */
+#include "usb.h"           /* usb_host_session(): Rockbox declines a poweroff in a session */
 #endif
 #endif
 #ifdef HAVE_TOUCHSCREEN
@@ -255,41 +255,61 @@ int button_read_device(int *data)
      * then shutdown_hw() (close the codec, shut the panel), and only then reaches our
      * power_off(), which writes REG 0x32 bit 7 -- the chip's software shutdown, which drops
      * every output except LDO1, and DCDC1 is what feeds this SoC. A hardware PEK shutdown
-     * does none of that, and OFFLEVEL is a press-duration limit: nothing short of holding
-     * past it stops the board.
+     * does none of that, so anything that would leave the board to the chip's own auto-off
+     * is worth avoiding.
      *
      * The poll stops permanently once it has requested a shutdown. This is a single polled
      * I2C master with no arbitration, and power_off() has to write the PMU's shutdown bit
      * while the main thread halts; a 100 ms reader running concurrently is enough to
      * corrupt that write, which is what let the chip sit on until OFFLEVEL expired.
      *
-     * A press during a USB session is discarded outright, because Rockbox refuses a
-     * poweroff in USB mode and that refusal is correct: the host owns the card. The PMU is
-     * made to agree -- while usb_inserted() the poll disables the PEK auto-off (REG 36H
-     * bit 3) and then clears both PEK status bits, so holding the key in MSC mode does
-     * nothing at all, now or later.
+     * A press during a host session is discarded outright. handle_usb_events()
+     * (apps/gui/usb_screen.c) loops until SYS_USB_DISCONNECTED and ignores every other
+     * event, so a SYS_POWEROFF posted while the USB screen is up is never dispatched: the
+     * shutdown is refused, correctly, because in MSC mode the host owns the card and a
+     * forced cut would corrupt the disk. The PMU is made to agree -- the poll disables the
+     * PEK auto-off (REG 36H bit 3), clears the latched press and never calls sys_poweroff(),
+     * so holding the key during a session does nothing at all, now or later.
+     *
+     * The predicate is usb_host_session(), not usb_inserted(): the latter is also true for
+     * USB_POWERED, where the cable only charges and the ordinary UI is still running. There
+     * a shutdown is honoured, the card belongs to nobody, and being able to power off while
+     * charging is worth having.
      *
      * The order matters. Clearing the latch is what starts the OFFLEVEL countdown: two
      * builds of this file that differed only in whether they wrote 1 to 0x46 bit 0 showed
      * the one that acked cutting ten seconds after a 2.5 s press, and the one that never
      * acked needing a continuous ten-second hold. Since that countdown cannot be recalled,
      * bit 3 is cleared first so there is no countdown to start. The cost is that a hung
-     * application has no hardware kill while the cable is in; VBUS powers the board and the
-     * host can unplug it, and the veto is lifted on extraction. REG 32H bit 7 is a separate
+     * application has no hardware kill during a session; VBUS powers the board, the host can
+     * unplug it, and the veto is lifted when the session ends. REG 32H bit 7 is a separate
      * mechanism, so the clean shutdown path is unaffected.
      */
     static unsigned int pek_poll_div;
     static bool shutdown_requested;
+    static long shutdown_request_tick;
     static bool auto_off = true;    /* as programmed by axp173_init() */
 
     if (shutdown_requested)
-        return b;
+    {
+        /* clean_shutdown() can refuse: if tagcache_prepare_shutdown() fails while the
+           database is committing, apps/misc.c calls cancel_shutdown() and returns false.
+           Nothing announces that -- cancel_shutdown() only clears the power thread's
+           force-off timer -- so stopping permanently here would leave the key dead until
+           reboot. A shutdown that really runs reaches power_off() within a couple of
+           seconds; still running half a minute later means it was refused, so arm the key
+           again. */
+        if (TIME_AFTER(current_tick, shutdown_request_tick + 30 * HZ))
+            shutdown_requested = false;
+        else
+            return b;
+    }
 
     if (++pek_poll_div >= (HZ / 10))
     {
         pek_poll_div = 0;
 #ifdef HAVE_USBSTACK
-        if (usb_inserted())
+        if (usb_host_session())
         {
             if (auto_off)
             {
@@ -308,6 +328,7 @@ int button_read_device(int *data)
         if (axp173_power_key_pressed())
         {
             shutdown_requested = true;
+            shutdown_request_tick = current_tick;
             sys_poweroff();
         }
     }

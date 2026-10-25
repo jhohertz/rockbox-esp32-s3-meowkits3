@@ -206,6 +206,10 @@ int usb_wait_for_disconnect_w_tmo(struct event_queue *q, int ticks);
 /* check whether USB is plugged, note that this is the official value which has
  * been reported to the thread */
 bool usb_inserted(void);
+/* check whether a host session is live, i.e. the USB screen owns the main thread and
+ * events other than SYS_USB_DISCONNECTED are ignored. usb_inserted() is broader: it is
+ * also true when the cable merely powers the device. */
+bool usb_host_session(void);
 /* check whether USB is plugged, note that this is the raw hardware value */
 int usb_detect(void);
 #ifdef USB_STATUS_BY_EVENT

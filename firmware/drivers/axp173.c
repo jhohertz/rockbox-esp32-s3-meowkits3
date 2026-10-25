@@ -224,7 +224,8 @@ bool axp173_power_key_pressed(void)
      * list. REG 44H bit 0 -- which the vendor driver for this board reads -- is marked
      * reserved, so that driver's PEK predicates never see anything; they have no callers
      * in the stock app either, which is why the mistake survives in the field.
-     * Writing 1 to a status bit clears it, per the note under REG 46H. */
+     * Only the long press is enabled in IRQEN3, so only bit 0 can latch; writing 1 to a
+     * status bit clears it, per the note under REG 46H. */
     int st = axp173_read_reg(AXP_REG_IRQST3);
 
     if (st < 0)
@@ -260,9 +261,10 @@ bool axp173_power_key_cancel(void)
     if (!bits)
         return false;
 
-    /* Write-1-to-clear, so this writes back only the bits that were set. Both PEK bits are
-       cleared: a short press during a USB session would otherwise sit latched with nothing
-       acting on it, holding the IRQ pin low forever. */
+    /* Write-1-to-clear, so this writes back only the bits that were set. Only the long
+       press can latch today -- axp173_init() enables just AXP_IRQ_PEK_LONG in IRQEN3 --
+       but both PEK bits are cleared so that a widened IRQ mask elsewhere cannot leave a
+       press pending that nothing acts on. */
     axp173_write_reg(AXP_REG_IRQST3, (unsigned char)bits);
     return true;
 }

@@ -1614,16 +1614,28 @@ obvious from the datasheet tables:
   every test ran with VBUS present. The AXP173 owns the rails and the charge path
   independently of the SoC, so `meowkits3.h` defines it - as do sansa, iriver, iaudio,
   gigabeats, fiio, erosq and onda.
-- **Rockbox refuses a poweroff while in USB mode, and that refusal is correct - the host
-  owns the card. The PMU is made to agree, so a key hold in MSC mode does nothing at all.**
-  While `usb_inserted()` is true, `button-xtensa.c` disables the PEK auto-off (REG 36H bit 3)
-  and then clears both PEK status bits, and never calls `sys_poweroff()`. Bit 3 goes first:
-  clearing the latch is what starts the OFFLEVEL countdown, so with the auto-off disabled
-  there is no countdown to start. The press is discarded rather than deferred - nothing is
-  left pending, so extraction does not trigger a delayed shutdown either. REG 32H bit 7 is
-  a separate mechanism, so the clean shutdown path still works with bit 3 clear; the cost is
-  that a hung application has no hardware kill while the cable is in, and the veto is lifted
-  on extraction.
+- **Rockbox refuses a poweroff during an enumerated USB session, and that refusal is
+  correct - the host owns the card. The PMU is made to agree, so the key does nothing at all
+  during a session.** `handle_usb_events()` (apps/gui/usb_screen.c) loops until
+  `SYS_USB_DISCONNECTED` and ignores every other event, so a `SYS_POWEROFF` posted while the
+  USB screen is up is never dispatched. `button-xtensa.c` therefore disables the PEK auto-off
+  (REG 36H bit 3), clears the latched press and never calls `sys_poweroff()`. Bit 3 goes
+  first: clearing the latch is what starts the OFFLEVEL countdown, so with the auto-off
+  already disabled there is nothing to arm. REG 32H bit 7 is a separate mechanism, so the
+  clean shutdown path works with bit 3 clear.
+  The predicate is `usb_host_session()`, a small accessor added in `firmware/usb.c`
+  (`usb_state == USB_INSERTED`), **not** `usb_inserted()`: the latter is also true for
+  `USB_POWERED`, where the cable only charges, the ordinary UI is running, the shutdown is
+  honoured, and no card is owned - so powering off while charging still works. The refusal
+  covers every enumerated class, not only MSC, because the USB screen swallows the event in
+  all of them; narrowing to MSC would leave a DAC or serial session acking and then being
+  refused, which is the unclean ten-second cut again.
+- **A cancelled shutdown used to leave the power key dead until reboot.** `clean_shutdown()`
+  calls `cancel_shutdown()` and returns false when `tagcache_prepare_shutdown()` fails
+  mid-commit (apps/misc.c:393-399), and `cancel_shutdown()` publishes nothing a target can
+  read - it only clears the power thread's force-off timer. The PEK poll now remembers the
+  request tick and re-arms itself if the device is still running 30 s later; a shutdown that
+  actually runs reaches `power_off()` in a couple of seconds.
 - **`splash(0, ...)` only draws - it does not wait.** `splashf()` in `gui/splash.c:392`
   sleeps `if (ticks)`, and `clean_shutdown()` passes 0, so "Shutting down..." is wiped by
   `font_unload_all()` inside `shutdown_hw()` a few tens of milliseconds later. Its absence
