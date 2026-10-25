@@ -79,9 +79,9 @@ matching change to `manual/platform/keymap-meowkits3.tex`, which currently says
 
 ### S1 — Keyboard: stick context and discoverability  *(highest value)*
 
-**Status: mapping half landed** (`button_context_keyboard` in
+**Status: done.** Mapping landed (`button_context_keyboard` in
 `apps/keymaps/keymap-meowkits3.c`, wired for `CONTEXT_KEYBOARD` and
-`CONTEXT_MORSE_INPUT`). The hint half is still open and needs the seam.
+`CONTEXT_MORSE_INPUT`). The hint half is **not being done** — see below.
 
 Two separate problems.
 
@@ -116,12 +116,18 @@ for the point-mode layout (`keyboard.c:688`); line mode draws a picker and an
 edit line and **never names the keys**. That is not a target bug — every
 stick-only target has the same problem.
 
-Fix needs a seam in a core file, and it must default to upstream behaviour:
-an `#ifndef HAVE_KBD_HINT` (or a weak no-op `kbd_draw_hint()`) that our target
-implements to draw one line under the edit field naming Done / Abort / Backspace.
-Keep it additive: no change to layout math for targets that do not define it.
-Worth checking first whether the existing title line can carry the hint instead,
-which would need no seam at all.
+**Decision: do not fix — there is nothing to integrate.** `gui_dynbutton` and
+`apps/gui/dynamic_menu.c` are absent from this version entirely, so there is no
+soft-key label facility to call. The `LANG_KBD_OK` / `LANG_KBD_DELETE` /
+`LANG_KBD_CANCEL` labels exist but are drawn only as touchable regions on the
+point-mode path, and point mode is itself gated behind the 480x640 requirement
+we do not meet. `keyboard.c` includes `talk.h` but never calls the voice UI, so
+there is no spoken-hint feature either. Adding a hint line would mean inventing
+a core feature for one target. The manual documents the gestures, and they
+deliberately mirror the touch grid's tap-select / hold-done convention so the
+two input paths agree.
+
+Files: `apps/keymaps/keymap-meowkits3.c` only.
 
 Files: `apps/keymaps/keymap-meowkits3.c`, `apps/recorder/keyboard.c` (seam),
 `firmware/target/xtensa/*` if the hint is target-drawn.
@@ -161,9 +167,9 @@ Files: `apps/keymaps/keymap-meowkits3.c`, theme file.
 Doc: replace `ActionBmView`/`ActionBmJump` "not available", document create and
 list.
 
-### S4 — A-B repeat via A-modifier combos
+### S4 — A-B repeat via A-modifier combos  *(done)*
 
-`ab_repeat_buttons` is enabled but unreachable. Following the c200/gigabeat
+`ab_repeat_buttons` was enabled but unreachable. Following the c200/gigabeat
 precedent (`BUTTON_A|BUTTON_LEFT` with prereq `BUTTON_A`):
 
 - WPS: `BUTTON_A|BUTTON_LEFT` (prereq A) → `ACTION_WPS_ABSETA_PREVDIR`
@@ -306,10 +312,10 @@ Keep it everywhere.
 
 ## Order of work
 
-1. **S1** keyboard stick mapping — pure `keymap-meowkits3.c`, no core edit,
-   immediate usability win; then the hint seam as a separate commit.
-2. **S4** A-B combos — closes the most visible advertised-but-unusable gap and
-   fixes manual p.35.
+1. **S1** keyboard stick mapping — **done**, verified on hardware. The hint
+   line is dropped as an invention rather than deferred.
+2. **S4** A-B combos — **done**, closes the most visible advertised-but-unusable
+   gap and fixes manual p.35.
 3. **S3** bookmarks — same modifier pattern, same file.
 4. **S7** USB HID stick layer, preceded by reading the descriptor assembly.
 5. **S6** theme touch regions (shuffle, repmode, lock, bookmarks).
