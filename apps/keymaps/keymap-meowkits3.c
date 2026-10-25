@@ -168,6 +168,45 @@ static const struct button_mapping stick_context_settings_lr_inc[] = {
     LAST_ITEM_IN_LIST
 }; /* stick_context_settings_lr_inc */
 
+/* The line-mode keyboard. This target has no keyboard context of its own, so
+ * before this the stick did nothing at all in that screen: keymap-touchscreen.c
+ * maps ACTION_KBD_* onto the 3x3 grid, and those cells drive actions rather
+ * than characters, so at 320x240 neither the stick nor the panel could type.
+ *
+ * The gestures copy the semantics of keymap-touchscreen.c's keyboard table, in
+ * particular the distinction it relies on: select is a *tap* and done is a
+ * *hold* of the same control (BUTTON_CENTER vs BUTTON_CENTER|BUTTON_REPEAT at
+ * lines 265-266). Up/down move between rows, left/right move along a row.
+ *
+ * Deliberately absent: cursor gestures. keyboard.c:713-725 already rewrites
+ * ACTION_KBD_LEFT/RIGHT into cursor movement whenever the keyboard is in
+ * line-edit or morse mode, so LEFT and RIGHT serve both jobs on their own. A
+ * separate hold-based cursor mapping would be redundant, and because the
+ * dispatcher returns the first match it would also shadow the row move.
+ */
+static const struct button_mapping button_context_keyboard[] = {
+    { ACTION_KBD_UP,           BUTTON_UP,                   BUTTON_NONE },
+    { ACTION_KBD_UP,           BUTTON_UP|BUTTON_REPEAT,     BUTTON_NONE },
+    { ACTION_KBD_DOWN,         BUTTON_DOWN,                 BUTTON_NONE },
+    { ACTION_KBD_DOWN,         BUTTON_DOWN|BUTTON_REPEAT,   BUTTON_NONE },
+
+    { ACTION_KBD_LEFT,         BUTTON_LEFT,                 BUTTON_NONE },
+    { ACTION_KBD_LEFT,         BUTTON_LEFT|BUTTON_REPEAT,   BUTTON_NONE },
+    { ACTION_KBD_RIGHT,        BUTTON_RIGHT,                BUTTON_NONE },
+    { ACTION_KBD_RIGHT,        BUTTON_RIGHT|BUTTON_REPEAT,  BUTTON_NONE },
+
+    { ACTION_KBD_SELECT,       BUTTON_A|BUTTON_REL,         BUTTON_A },
+    { ACTION_KBD_DONE,         BUTTON_A|BUTTON_REPEAT,      BUTTON_A },
+    { ACTION_KBD_ABORT,        BUTTON_B|BUTTON_REL,         BUTTON_B },
+    { ACTION_KBD_BACKSPACE,    BUTTON_B|BUTTON_REPEAT,      BUTTON_B },
+    /* Both face buttons together flips between the character sets. This is the
+     * ipod convention for a two-key gesture (keymap-ipod.c:61 uses
+     * SELECT|PLAY for the tree hotkey). */
+    { ACTION_KBD_PAGE_FLIP,    BUTTON_A|BUTTON_B,           BUTTON_NONE },
+
+    LAST_ITEM_IN_LIST
+}; /* button_context_keyboard */
+
 const struct button_mapping* target_get_context_mapping(int context)
 {
     switch (context & ~CONTEXT_LOCKED)
@@ -189,6 +228,12 @@ const struct button_mapping* target_get_context_mapping(int context)
         case CONTEXT_SETTINGS_EQ:
         case CONTEXT_SETTINGS_COLOURCHOOSER:
             return stick_context_settings_lr_inc;
+        /* keymap-touchscreen.c's keyboard list chains here via
+         * LAST_ITEM_IN_LIST__NEXTLIST, so this is reached for the keyboard and
+         * for the morse input screen. */
+        case CONTEXT_KEYBOARD:
+        case CONTEXT_MORSE_INPUT:
+            return button_context_keyboard;
         case CONTEXT_TREE:
         case CONTEXT_LIST:
         case CONTEXT_MAINMENU:
