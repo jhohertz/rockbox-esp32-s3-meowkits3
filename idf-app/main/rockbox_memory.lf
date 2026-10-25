@@ -99,6 +99,27 @@ entries:
     # roughly 5472, so without a donor like this the panic handler cannot be moved
     # into IRAM at all -- see firmware/target/xtensa/MEMORY.md for the budget.
     file (rb_psram)
+    # system.o -- the cpu_boost() bookkeeping: the CPU_BOOST_LOGGING ring
+    # (cpu_boost_calls[64][MAX_PATH] = 16,640 bytes) plus boost_counter, cpu_idle,
+    # cpu_boost_first, cpu_boost_calls_count and cpu_boost_track_message. Enabling
+    # HAVE_ADJUSTABLE_CPU_FREQ turns the ring on through system.h:43-46 (it also
+    # needs ROCKBOX_HAS_LOGF and NUM_CORES == 1, both true here), and dram0_0_seg
+    # had 1,020 bytes free, so the ring is what makes the seam unaffordable rather
+    # than the clock change itself.
+    #
+    # It meets both halves of the rule above: no thread stack and no DMA
+    # destination -- it is a text log plus five words of bookkeeping, read only by
+    # Debug -> CPU frequency's boost log.
+    #
+    # What makes moving zero-initialised bookkeeping legal at all is that
+    # .ext_ram.bss is not merely NOLOAD but explicitly cleared: IDF's init_bss() in
+    # cpu_start.c:449 covers only _bss_start.._bss_end (dram0), and the PSRAM range
+    # is memset by esp_psram_bss_init() (esp_psram.c:767, called from
+    # cpu_start.c:771), which is present in this image. Without that, boost_counter
+    # would start random and ++boost_counter == 1 would never fire. Note this only
+    # covers .bss: cpu_frequency is .data and stays in internal DRAM, so udelay()
+    # does not start reading a clock word out of PSRAM on every call.
+    system (rb_psram)
     # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
     # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
     # buffers are already in .ext_ram.bss by their own section attribute, which

@@ -14,6 +14,24 @@ CONFIG_IDF_TARGET="esp32s3"
 # leaving this unset is a compile error rather than a silent 1.5x timing skew.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
+# ---- power management: enabled, but only as the door to esp_pm_configure() ----
+# Rockbox's set_cpu_frequency() is implemented as esp_pm_configure() (see
+# firmware/target/xtensa/system-xtensa.c), and that function returns
+# ESP_ERR_NOT_SUPPORTED unless PM_ENABLE is set. It is the only supported way to ask
+# IDF for a core frequency, because IDF owns dbias and the clock tree.
+#
+# Dynamic frequency scaling itself stays inert: every configure call passes
+# max == min, so the clock is exactly what Rockbox's boost counter asked for and
+# nothing else can move it. That is also what keeps udelay() honest -- it counts core
+# cycles against cpu_frequency, which set_cpu_frequency() now owns.
+#
+# Automatic light sleep needs FREERTOS_USE_TICKLESS_IDLE, which depends on this. It is
+# deliberately not enabled yet: sleeping needs locks held by the audio path, and that
+# is a separate change with a hardware question attached -- whether the MSPI MMU table
+# survives a sleep. See the power-management section of firmware/target/xtensa/MEMORY.md
+# for the whole ladder.
+CONFIG_PM_ENABLE=y
+
 # ---- flash ----
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
