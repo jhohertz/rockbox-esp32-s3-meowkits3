@@ -84,6 +84,19 @@ static const struct button_mapping button_context_wps[]  = {
      * right cells in keymap-touchscreen.c. */
     { ACTION_WPS_SKIPNEXT,    BUTTON_RIGHT|BUTTON_REL,      BUTTON_RIGHT },
     { ACTION_WPS_SKIPPREV,    BUTTON_LEFT|BUTTON_REL,       BUTTON_LEFT },
+    /* A-B repeat markers. ab_repeat_buttons is enabled, so the setting is
+     * documented and reachable, but without these the points themselves could
+     * never be marked. A is the modifier: hold it, then press the direction.
+     * This is the as3525 convention verbatim -- keymap-c200.c:66-69 and
+     * keymap-e200.c:66-69 use POWER+LEFT, POWER+RIGHT and POWER+UP with
+     * POWER as the prerequisite, and keymap-fuzeplus.c:93-95 does the same with
+     * BACK. action.c's matcher requires an exact button_code and prefers an
+     * exact prerequisite, so these are distinct events rather than ambiguous
+     * ones: pressing A on its own reports BUTTON_A, and A-then-Left reports
+     * BUTTON_A|BUTTON_LEFT with last->button == BUTTON_A. */
+    { ACTION_WPS_ABSETA_PREVDIR, BUTTON_A|BUTTON_LEFT,       BUTTON_A },
+    { ACTION_WPS_ABSETB_NEXTDIR, BUTTON_A|BUTTON_RIGHT,      BUTTON_A },
+    { ACTION_WPS_ABRESET,        BUTTON_A|BUTTON_B,          BUTTON_A },
     LAST_ITEM_IN_LIST
 }; /* button_context_wps */
 
