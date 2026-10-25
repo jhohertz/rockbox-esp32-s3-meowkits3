@@ -341,6 +341,12 @@ void usb_dw_target_enable_clocks(void)
     esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ZERO_INPUT,
                                    USB_OTG_AVALID_IN_IDX, false);
 
+    /* The device is now armed: from here the host can drive frames at us, and its
+     * interrupt cannot wake the core out of light sleep. Hold the lock until the
+     * clocks come back down. See xt_light_sleep_block() for the arithmetic.
+     */
+    xt_light_sleep_block(true);
+
     /* The last thing that runs before the console disappears: from here on the
      * breadcrumb trail is the only record, until the next boot prints it. */
     xtensa_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
@@ -388,6 +394,10 @@ void usb_dw_target_disable_clocks(void)
 
     /* Only RTCCNTL and the SoC clock-enable register are readable here: the wrap block has
      * just been ungated, and reading it would stall the bus the way PCGCCTL did. */
+    /* USB is down and the PHY is powered back to its reset state, so the idle task
+     * may sleep again. Paired with the acquire in enable_clocks(). */
+    xt_light_sleep_block(false);
+
     xtensa_breadcrumb_rtc("usbEnd", rd(XT_RTC_USB_CONF), rd(XT_PERIP_CLK_EN0));
 }
 
