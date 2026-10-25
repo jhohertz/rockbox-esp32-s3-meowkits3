@@ -111,7 +111,12 @@ the corresponding spike is done and the manual's keymap file should stop saying
 - **Reality:** `apps/recorder/keyboard.c:506` requires `LCD_WIDTH >= 480 &&
   LCD_HEIGHT >= 640` for `HAVE_KBD_POINT_MODE`, and `#error`s otherwise (line
   539). We have a touchscreen but not the resolution, so the keyboard is the
-  character-list keyboard navigated with the stick, and tapping it does nothing.
+  character-list keyboard. **The stick half of this is now fixed** —
+  `keymap-meowkits3.c` had no keyboard context at all, so the stick did nothing
+  in that screen and the panel could only drive actions, not characters; see the
+  Closed section. What remains is the discoverability problem: `kbd_draw_buttons()`
+  is called only for point mode (`keyboard.c:688`), so line mode never names the
+  keys and a user cannot tell how to finish or cancel without being told.
 - **What fixing it means:** a point-mode layout for 320x240 in `keyboard.c`.
   That is a core file, so it would need the same kind of seam we use elsewhere
   rather than a resolution-specific hack.
@@ -199,4 +204,14 @@ actually have.
 
 ## Closed
 
-*(none yet)*
+- **§8, part 1 — the stick had no keyboard context.** `button_context_keyboard`
+  now exists in `apps/keymaps/keymap-meowkits3.c` and
+  `target_get_context_mapping()` answers `CONTEXT_KEYBOARD` and
+  `CONTEXT_MORSE_INPUT` with it, which is where
+  `keymap-touchscreen.c`'s keyboard list chains to via `LAST_ITEM_IN_LIST__NEXTLIST`.
+  Mapping: Up/Down rows, Left/Right along a row, A tap = select, A hold = done,
+  B tap = abort, B hold = backspace, A+B = page flip. No cursor gestures on
+  purpose: `keyboard.c:713-725` already turns LEFT/RIGHT into cursor movement in
+  line-edit and morse mode, and the dispatcher returns the first match, so a
+  hold-based cursor mapping would have shadowed the row move. The manual's
+  keyboard macros were updated to match. Part 2 (the hint line) is still open.

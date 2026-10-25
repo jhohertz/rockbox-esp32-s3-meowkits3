@@ -79,6 +79,10 @@ matching change to `manual/platform/keymap-meowkits3.tex`, which currently says
 
 ### S1 — Keyboard: stick context and discoverability  *(highest value)*
 
+**Status: mapping half landed** (`button_context_keyboard` in
+`apps/keymaps/keymap-meowkits3.c`, wired for `CONTEXT_KEYBOARD` and
+`CONTEXT_MORSE_INPUT`). The hint half is still open and needs the seam.
+
 Two separate problems.
 
 **Mapping.** `apps/keymaps/keymap-meowkits3.c` has no keyboard context, so in
