@@ -698,8 +698,12 @@ unsigned long i2s_tx_sample_rate(void)
  *   start/act/idle  -- whether the port is started, whether its clock generator
  *                      runs, and the transmitter's own idle flag. A session with
  *                      play=1 and start=0 is a handoff that never completed.
- *   own/len         -- the four descriptors as the engine sees them. Any owner bit
- *                      0 while playing is the descriptor-error storm.
+ *   arm           -- the four descriptors' armed length as the engine sees them: bits
+ *                    23:12 of dw0. The size field (bits 11:0) is always XT_TX_SLOT, so
+ *                    reading it as a length is a mistake this probe briefly made and
+ *                    reported 2048 for every slot at every rate.
+ *   flen          -- the mixer frame size for the rate in effect. arm != flen on a slot
+ *                    the engine has not retired yet is a rate change mid-session.
  *   usb/und/drop    -- what the host thinks the rate is, and whether the isochronous
  *                      side is underflowing or dropping frames.
  */
@@ -708,6 +712,7 @@ extern int usb_audio_trace_underflow(void);
 extern int usb_audio_trace_overflow(void);
 extern int usb_audio_trace_dropped(void);
 extern int usb_audio_trace_pending(void);
+extern int usb_audio_trace_rates(void);
 extern int es8311_trace_read(int reg);
 
 static void audio_trace_tick(void)
@@ -730,7 +735,7 @@ static void audio_trace_tick(void)
 
     for (int i = 0; i < XT_TX_RING; i++) {
         own |= ((unsigned int)(desc[i].dw0 >> 31) & 1u) << i;
-        lens[i] = (unsigned int)(desc[i].dw0 & 0xfff);
+        lens[i] = (unsigned int)((desc[i].dw0 >> 12) & 0xfff);
     }
 
     if (++slow >= 8) {
@@ -743,8 +748,8 @@ static void audio_trace_tick(void)
 
     logf("TRC hw=%lu pend=%d cfg=%d play=%d start=%d act=%d idle=%d "
          "ena=%08x gst=%08x link=%08x fifo=%08x gstate=%08x own=%04x "
-         "len=%u,%u,%u,%u flen=%lu done=%d str=%d pval=%d que=%d "
-         "usb=%lu und=%d ovf=%d drop=%d rxq=%d%s",
+         "arm=%u,%u,%u,%u flen=%lu done=%d str=%d pval=%d que=%d "
+         "usb=%lu und=%d ovf=%d drop=%d rxq=%d rates=%d%s",
          i2s_tx_sample_rate(),
          (int)builtin_pcm_sink.pending_freq,
          (int)builtin_pcm_sink.configured_freq,
@@ -758,7 +763,8 @@ static void audio_trace_tick(void)
          tx_frame_len, done_slot, dscr_streak, pend_valid, queued,
          usb_audio_trace_rate(), usb_audio_trace_underflow(),
          usb_audio_trace_overflow(),
-         usb_audio_trace_dropped(), usb_audio_trace_pending(), codec);
+         usb_audio_trace_dropped(), usb_audio_trace_pending(),
+         usb_audio_trace_rates(), codec);
 }
 #endif /* XT_AUDIO_TRACE */
 
