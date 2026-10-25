@@ -1615,11 +1615,15 @@ obvious from the datasheet tables:
   independently of the SoC, so `meowkits3.h` defines it - as do sansa, iriver, iaudio,
   gigabeats, fiio, erosq and onda.
 - **Rockbox refuses a poweroff while in USB mode, and that refusal is correct - the host
-  owns the card.** `button-xtensa.c` accommodates it by not acknowledging the PEK latch
-  while `usb_inserted()` is true, so the countdown is never armed and the press simply
-  waits; because the latch stays set, the poweroff takes effect on extraction. Doing the
-  opposite - acking and then letting Rockbox refuse - was the behaviour that produced a
-  clean-looking refusal followed by an unflushed hard cut ten seconds later.
+  owns the card. The PMU is made to agree, so a key hold in MSC mode does nothing at all.**
+  While `usb_inserted()` is true, `button-xtensa.c` disables the PEK auto-off (REG 36H bit 3)
+  and then clears both PEK status bits, and never calls `sys_poweroff()`. Bit 3 goes first:
+  clearing the latch is what starts the OFFLEVEL countdown, so with the auto-off disabled
+  there is no countdown to start. The press is discarded rather than deferred - nothing is
+  left pending, so extraction does not trigger a delayed shutdown either. REG 32H bit 7 is
+  a separate mechanism, so the clean shutdown path still works with bit 3 clear; the cost is
+  that a hung application has no hardware kill while the cable is in, and the veto is lifted
+  on extraction.
 - **`splash(0, ...)` only draws - it does not wait.** `splashf()` in `gui/splash.c:392`
   sleeps `if (ticks)`, and `clean_shutdown()` passes 0, so "Shutting down..." is wiped by
   `font_unload_all()` inside `shutdown_hw()` a few tens of milliseconds later. Its absence
