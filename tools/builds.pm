@@ -211,6 +211,9 @@ $releasenotes="/wiki/ReleaseNotes400";
         # cannot exist. builds.pm defaults sim to 0 for non-stable targets anyway;
         # the explicit 1 was a claim the build farm would have tried to honour.
         sim => 0,
+        # The manual builds from manual/platform/meowkits3.tex, so it is not the
+        # placeholder status 2 would otherwise imply.
+        manualok => 1,
     },
     'mrobe100' => {
         name => 'Olympus M-Robe 100',

@@ -1,0 +1,182 @@
+% MeowKit ESP32-S3 controls: a 5-way joystick, two face buttons (A and B) and
+% the AXP173's PEK input. The capacitive panel is documented separately by
+% keymap-touchscreen.tex, which describes the same 3x3 grid the driver reports.
+%
+% The stick follows the scroll-wheel convention used by the iriver and Sansa
+% targets: up and down are the wheel axis (move through a list, change a value,
+% adjust volume) and left and right are the select axis.
+
+\newcommand{\ButtonUp}{\btnfnt{Up}}
+\newcommand{\ButtonDown}{\btnfnt{Down}}
+\newcommand{\ButtonLeft}{\btnfnt{Left}}
+\newcommand{\ButtonRight}{\btnfnt{Right}}
+\newcommand{\ButtonA}{\btnfnt{A}}
+\newcommand{\ButtonB}{\btnfnt{B}}
+\newcommand{\ButtonPower}{\btnfnt{Power}}
+
+% Aliases for the roles these keys take, so the rest of the manual can refer to
+% an action by the name it uses.
+\newcommand{\ButtonPlay}{\ButtonA}
+\newcommand{\ButtonSelect}{\ButtonA}
+\newcommand{\ButtonCancel}{\ButtonB}
+\newcommand{\ButtonMenu}{\ButtonB}
+\newcommand{\ButtonPrev}{\ButtonUp}
+\newcommand{\ButtonNext}{\ButtonDown}
+\newcommand{\ButtonRew}{\ButtonLeft}
+\newcommand{\ButtonFF}{\ButtonRight}
+\newcommand{\ButtonVolUp}{\ButtonUp}
+\newcommand{\ButtonVolDown}{\ButtonDown}
+\newcommand{\ButtonScrollUp}{\ButtonUp}
+\newcommand{\ButtonScrollDown}{\ButtonDown}
+\newcommand{\ButtonScrollBack}{\ButtonLeft}
+\newcommand{\ButtonScrollFwd}{\ButtonRight}
+% This board has no hold switch, no mode key and no record key. Power is the
+% PMU's PEK input, which shuts the player off when held.
+\newcommand{\ButtonHold}{\ButtonPower}
+\newcommand{\ButtonMode}{\ButtonB}
+\newcommand{\ButtonOn}{\ButtonPower}
+\newcommand{\ButtonOff}{\ButtonPower}
+\newcommand{\ButtonRec}{\ButtonA}
+\newcommand{\ButtonPlus}{\ButtonRight}
+\newcommand{\ButtonMinus}{\ButtonLeft}
+\newcommand{\ButtonFunc}{\ButtonB}
+
+%Button actions, standard context
+\newcommand{\ActionStdPrev}{\ButtonUp{} or \TouchActionStdPrev}
+\newcommand{\ActionStdPrevRepeat}{Long \ButtonUp{} or \TouchActionStdPrevRepeat}
+\newcommand{\ActionStdNext}{\ButtonDown{} or \TouchActionStdNext}
+\newcommand{\ActionStdNextRepeat}{Long \ButtonDown{} or \TouchActionStdNextRepeat}
+\newcommand{\ActionStdOk}{\ButtonA{} or \ButtonRight{} or \TouchActionStdOk}
+\newcommand{\ActionStdOkRepeat}{Long \ButtonA}
+\newcommand{\ActionStdCancel}{\ButtonLeft{} or \TouchActionStdCancel}
+\newcommand{\ActionStdContext}{Long \ButtonA{} or \TouchActionStdContext}
+\newcommand{\ActionStdContextRepeat}{Long \ButtonA}
+\newcommand{\ActionStdMenu}{\ButtonB{} or \TouchActionStdMenu}
+\newcommand{\ActionStdMenuRepeat}{Long \ButtonB}
+\newcommand{\ActionStdQuickScreen}{Long \ButtonB{} or \TouchActionStdQuickScreen}
+\newcommand{\ActionStdQuickScreenRepeat}{Long \ButtonB}
+\newcommand{\ActionQuickScreenExit}{\TouchActionQuickScreenExit}
+\newcommand{\ActionStdHotkey}{Long \ButtonRight}
+\newcommand{\ActionStdRec}{Long \ButtonUp}
+\newcommand{\ActionStdUsbCharge}{\ButtonPower}
+\newcommand{\ActionStdKeylock}{\ButtonPower}
+\newcommand{\ActionStdShowScreen}{Long \ButtonDown}
+
+%Button actions, wps context
+\newcommand{\ActionWpsBrowse}{\ButtonLeft{} or \TouchActionWpsBrowse}
+\newcommand{\ActionWpsPlay}{\ButtonA{} or \TouchActionWpsPlay}
+\newcommand{\ActionWpsMenu}{\ButtonB{} or \TouchActionWpsMenu}
+\newcommand{\ActionWpsStop}{Long \ButtonPower}
+\newcommand{\ActionWpsSkipNext}{\ButtonRight{} or \TouchActionWpsSkipNext}
+\newcommand{\ActionWpsSkipPrev}{\ButtonLeft{} or \TouchActionWpsSkipPrev}
+\newcommand{\ActionWpsSeekBack}{Long \ButtonLeft{} or \TouchActionWpsSeekBack}
+\newcommand{\ActionWpsSeekFwd}{Long \ButtonRight{} or \TouchActionWpsSeekFwd}
+\newcommand{\ActionWpsVolUp}{\ButtonUp{} or \TouchActionWpsVolUp}
+\newcommand{\ActionWpsVolDown}{\ButtonDown{} or \TouchActionWpsVolDown}
+\newcommand{\ActionWpsVolUpRepeat}{Long \ButtonUp}
+\newcommand{\ActionWpsVolDownRepeat}{Long \ButtonDown}
+\newcommand{\ActionWpsContext}{Long \ButtonA{} or \TouchActionWpsContext}
+\newcommand{\ActionWpsIdThreeScreen}{\TouchActionWpsIdThreeScreen}
+\newcommand{\ActionWpsPitchScreen}{Long \ButtonUp}
+\newcommand{\ActionWpsPlaylist}{Long \ButtonDown}
+\newcommand{\ActionWpsShowPlaylist}{Long \ButtonDown}
+\newcommand{\ActionWpsHotkey}{Long \ButtonRight{} or \TouchBottomRight}
+\newcommand{\ActionWpsRepeatMode}{Long \ButtonB}
+\newcommand{\ActionWpsShuffle}{Long \ButtonMenu}
+\newcommand{\ActionWpsQuickScreen}{Long \ButtonB{} or \TouchActionStdQuickScreen}
+\newcommand{\ActionWpsAbSetA}{Long \ButtonLeft}
+\newcommand{\ActionWpsAbSetB}{Long \ButtonRight}
+\newcommand{\ActionWpsAbSetAPrevDir}{Long \ButtonLeft}
+\newcommand{\ActionWpsAbSetBNextDir}{Long \ButtonRight}
+\newcommand{\ActionWpsAbReset}{Long \ButtonA{} or Long \TouchCenter}
+\newcommand{\ActionWpsSetRepeatMode}{Long \ButtonB}
+\newcommand{\ActionWpsSetShuffle}{Long \ButtonB}
+
+%Button actions, tree context
+\newcommand{\ActionTreeWps}{\TouchActionTreeWps}
+\newcommand{\ActionTreeStop}{\TouchActionTreeStop}
+\newcommand{\ActionTreeEnter}{\ButtonA{} or \TouchActionTreeEnter}
+\newcommand{\ActionTreeParentDirectory}{\ButtonLeft{} or \TouchActionTreeParentDirectory}
+\newcommand{\ActionTreeHotkey}{Long \ButtonRight{} or \TouchActionTreeHotkey}
+
+%Button actions, settings list context
+\newcommand{\ActionSettingsInc}{\ButtonUp{} or \ButtonRight}
+\newcommand{\ActionSettingsIncrRepeat}{Long \ButtonUp}
+\newcommand{\ActionSettingsDec}{\ButtonDown{} or \ButtonLeft}
+\newcommand{\ActionSettingsDecrRepeat}{Long \ButtonDown}
+\newcommand{\ActionSettingsEnter}{\ButtonA}
+\newcommand{\ActionSettingsReset}{\ButtonB}
+\newcommand{\ActionSettingInc}{\ButtonRight}
+\newcommand{\ActionSettingDec}{\ButtonLeft}
+
+%Button actions, YesNo context
+\newcommand{\ActionYesNoAccept}{\ButtonA}
+\newcommand{\ActionYesNoReject}{\ButtonB}
+
+%Button actions, recording context
+\newcommand{\ActionRecPause}{\ButtonA{} or \TouchActionRecPause}
+\newcommand{\ActionRecMenu}{\ButtonB}
+\newcommand{\ActionRecNewFile}{Long \ButtonB}
+\newcommand{\ActionRecSettingsInc}{\ButtonRight}
+\newcommand{\ActionRecSettingsDec}{\ButtonLeft}
+\newcommand{\ActionRecPrev}{\ButtonUp}
+\newcommand{\ActionRecNext}{\ButtonDown}
+\newcommand{\ActionRecExit}{\ButtonB}
+
+%Button actions, virtual keyboard context. This panel shows an on-screen
+% keyboard, so the stick moves the highlight and A commits; the grid's cells
+% cover the same ground.
+\newcommand{\ActionKbdLeft}{\ButtonLeft{} or \TouchActionKbdLeft}
+\newcommand{\ActionKbdRight}{\ButtonRight{} or \TouchActionKbdRight}
+\newcommand{\ActionKbdUp}{\ButtonUp{} or \TouchActionKbdUp}
+\newcommand{\ActionKbdDown}{\ButtonDown{} or \TouchActionKbdDown}
+\newcommand{\ActionKbdSelect}{\ButtonA{} or \TouchActionKbdSelect}
+\newcommand{\ActionKbdDone}{\ButtonA{} or \TouchActionKbdDone}
+\newcommand{\ActionKbdAbort}{\ButtonB{} or \TouchActionKbdAbort}
+\newcommand{\ActionKbdCursorLeft}{\ButtonLeft{} or \TouchActionKbdCursorLeft}
+\newcommand{\ActionKbdCursorRight}{\ButtonRight{} or \TouchActionKbdCursorRight}
+\newcommand{\ActionKbdBackSpace}{\ButtonB{} or \TouchActionKbdBackSpace}
+\newcommand{\ActionKbdPageFlip}{\ButtonA{} or \TouchActionKbdPageFlip}
+\newcommand{\ActionKbdMorseSelect}{\ButtonA}
+
+%Button actions, pitch screen context
+\newcommand{\ActionPsToggleMode}{\ButtonB{} or \TouchActionPsToggleMode}
+\newcommand{\ActionPsIncSmall}{\ButtonRight{} or \TouchActionPsIncSmall}
+\newcommand{\ActionPsIncBig}{Long \ButtonRight{} or \TouchActionPsIncBig}
+\newcommand{\ActionPsDecSmall}{\ButtonLeft{} or \TouchActionPsDecSmall}
+\newcommand{\ActionPsDecBig}{Long \ButtonLeft{} or \TouchActionPsDecBig}
+\newcommand{\ActionPsNudgeLeft}{\ButtonLeft{} or \TouchActionPsNudgeLeft}
+\newcommand{\ActionPsNudgeRight}{\ButtonRight{} or \TouchActionPsNudgeRight}
+\newcommand{\ActionPsReset}{\ButtonA{} or \TouchActionPsReset}
+\newcommand{\ActionPsExit}{\ButtonB}
+
+%Button actions, bookmark context
+\newcommand{\ActionBmDelete}{\ButtonB{} or \TouchActionBmDelete}
+\newcommand{\ActionBmView}{\ButtonA}
+\newcommand{\ActionBmJump}{\ButtonA}
+
+%Plugin lib actions
+\newcommand{\PluginUp}{\ButtonUp{} or \TouchTopMiddle}
+\newcommand{\PluginDown}{\ButtonDown{} or \TouchBottomMiddle}
+\newcommand{\PluginLeft}{\ButtonLeft{} or \TouchMidLeft}
+\newcommand{\PluginRight}{\ButtonRight{} or \TouchMidRight}
+\newcommand{\PluginSelect}{\ButtonA{} or \TouchCenter}
+\newcommand{\PluginSelectRepeat}{Long \ButtonA{} or Long \TouchCenter}
+\newcommand{\PluginCancel}{\ButtonB{} or \TouchBottomRight}
+\newcommand{\PluginExit}{\ButtonB{} or \TouchBottomRight}
+\newcommand{\PluginScrollBack}{\ButtonLeft}
+\newcommand{\PluginScrollFwd}{\ButtonRight}
+\newcommand{\PluginMenu}{\ButtonB}
+\newcommand{\PluginActionOne}{\ButtonA}
+\newcommand{\PluginActionTwo}{\ButtonB}
+\newcommand{\PluginActionThree}{\ButtonRight}
+\newcommand{\PluginActionFour}{\ButtonLeft}
+\newcommand{\PluginActionFive}{\ButtonUp}
+\newcommand{\PluginActionSix}{\ButtonDown}
+
+%There is no Ingenic-style bootloader recovery mode on this board: the image is
+%flashed over USB or UART, so these describe that instead.
+\newcommand{\ActionBootRecoveryMenu}{\ButtonPower}
+\newcommand{\ActionBootOFPlayer}{\ButtonPower}
+\newcommand{\ActionBootOFRecovery}{\ButtonPower}
+\newcommand{\ActionIngenicUSBBoot}{\ButtonPower}
