@@ -3261,6 +3261,7 @@ time the one-step build is genuinely sufficient.
 ```bash
 # useful make goals
 make bin        # firmware only
+make voice      # voice UI clips (needs --type=AV and a host TTS, see below)
 make zip        # full package
 make tools      # host tools only
 make tags
@@ -4389,4 +4390,57 @@ codec directly and work with it off.
 What is left at 42 mA is board current the architecture cannot reclaim without deep sleep
 (which skips the clean shutdown) or cutting rails the expander and card slot need. Full
 inventory, budgets and the open hardware questions (MMU table retention across light sleep,
-PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.
+PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.## Voice UI: how to build it, and where it lands
+
+The voice UI is selected by the build **type string**, not by a target config
+define. `tools/configure` only parses the developer-option letters on the
+`(A)dvanced` path -- `case $btype in [Aa]*)` calls `whichadvanced`, and that is
+where `[Vv])` sets `voice="yes"` -- so a `--type=N` build can never get voice no
+matter what else is passed. The canonical invocation for this target is:
+
+```sh
+../tools/configure --target=meowkit-esp32s3 --ram=8 --rbdir=/.rockbox \
+                   --type=AV --language=english --tts=espeak
+make && make voice && make zip
+```
+
+`--target` takes the target name (`meowkit-esp32s3`), not the model name
+(`meowkits3`) -- the latter prints "Please select a supported target platform!".
+`--tts=espeak` is fine even though only `espeak-ng` is installed: configure
+substitutes it (`tools/configure:1423-1425`). `ENCODER` is fixed to `rbspeexenc`
+with `-q 7 -c 10`, built by the `voicetools` goal that `voice` depends on.
+
+`make voice` runs `tools/voice.pl -V` once per language, and hands it the
+target's *feature list* (`$(BUILDDIR)/apps/genlang-features`), so the clip set
+matches what this build actually offers. For english on 30 features it produced
+950 clips in ~25 s and `english.voice` at 2,506,357 bytes. It writes into the
+build directory, and `make zip` picks the results up -- `buildzip.pl:681-689`
+copies `apps/lang/*.lng`, `apps/lang/*.zip`, and then `*.voice`, `*.lng.talk`
+and `Invalid*.talk` from the build dir. So the answer to "does it go in the zip"
+is yes: `.rockbox/langs/english.voice`, `english.lng.talk` and
+`InvalidVoice_english.talk` are all in the package, and the card is populated
+from the zip as usual.
+
+The firmware looks for `LANG_DIR "/%s.voice"` (`talk.c:265`) using
+`global_settings.lang_file`, which is the language base name -- so the file must
+be `english.voice`, not `en.voice` or `rockbox_en.voice`. It matches what
+voice.pl emits, with no renaming step.
+
+**Memory is the thing to watch, not size on disk.** `talk_init` caps its buffer
+at `MIN(MAX_CLIP_BUFFER_SIZE, audio_buffer_available() - 64K)` and the voice
+file is loaded into the buflib arena, which on this target is ~3.94 MB. A 2.5 MB
+voice file is most of it. If voice turns out to starve codecs, album art or the
+dircache, the knob is `MAX_CLIP_BUFFER_SIZE` -- `talk.c:100` is an `#ifndef`, so
+defining it in `config/meowkits3.h` caps the buffer without touching core
+behaviour, and talk then reloads clips from disk as needed. If the cap comes out
+negative, `talk_init` logs "Not enough memory for voice. Disabling..." and sets
+`TALK_STATUS_ERR_OOM` rather than failing, so the failure mode is graceful.
+
+Note that `talk_menu` defaults to **on** in `settings_list.c:1729` and is
+`F_TEMPVAR`, so it is never saved and returns to on every boot. That is why this
+target used to crash on the quickscreen gesture: the voice UI was enabled by
+default on a build with no voice files. Populating them is the fix; there is no
+per-target default knob for `talk_menu`, and one should not be invented.
+
+
+
