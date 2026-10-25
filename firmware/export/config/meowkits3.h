@@ -282,19 +282,6 @@
  * eat the safety net. */
 #define CLEAN_SHUTDOWN_MESSAGE_HOLD 100 /* 1 s */
 
-/* TEMPORARY PROBE -- off. The blocks it guards stay in i2s-xtensa.c, es8311.c/.h
- * and usb_audio.c for a later run.
- *
- * It is off because the probe is itself a suspect for the DAC crunch: each line
- * goes through logf() -> usb_serial_send(), which masks interrupts while it pushes
- * into the device FIFO, four times a second, on the same 200-word pool whose RX
- * half feeds the isochronous OUT endpoint; the codec register reads add an I2C bus
- * hold every two seconds. That is the shape of flaw that reads as "fine at first,
- * then crunchy, sometimes recovers". Re-enable only to answer a specific question,
- * and expect it to change what it measures. */
-/* #define XT_AUDIO_TRACE 1 */
-
-
 /* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA
 

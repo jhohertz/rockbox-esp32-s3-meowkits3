@@ -622,6 +622,29 @@ Verified from `components/soc/esp32s3/register/soc/reg_base.h` and `gdma_channel
 | GDMA channel stride | IN: `base + 0xC0 * n`; OUT: `base + 0x60 + 0xC0 * n` |
 | I2S registers | `INT_RAW/ST/ENA/CLR`, `RX_CONF`, `TX_CONF`, `RX_CONF1`, `TX_CONF1`, clock mux + divider, TDM ctrl, timing |
 
+### The transmit interface must run on silence, not only while playing
+
+Two facts that are easy to get wrong, both measured:
+
+- **`tx_start` is what puts BCLK and WS on the pads.** Asserting the clock
+  generator (`tx_clk_active`) only produces MCLK. A codec configured before
+  `tx_start` has its clock manager enabled against a half-present bus, and it
+  acquires the bus at the first audio frame — which is the first thing the
+  listener hears. Bring the interface up before configuring the codec.
+- **An underrunning I2S TX replays whatever the FIFO holds.** There is no
+  auto-clear on this path, so a gap in the ring is audible junk rather than
+  silence. ESP-IDF's legacy driver sets `tx_desc_auto_clear = true` for exactly
+  this reason, and the MeowKit reference driver also calls `i2s_zero_dma_buffer()`
+  when playback ends. Rockbox's target does the same with `idle_tx()`: arm every
+  slot with silence and start the walk, from `sink_init()`, from `stop_tx()` and
+  after a rate change.
+
+Consequences of a free-running silent ring: `tx_flush()` stops the channel, so any
+caller must restart it (`idle_tx()`) or the ring dies; and the completion handler
+must re-arm the slot it retires while nothing is playing, otherwise the ring
+survives one lap, walks onto a CPU-owned descriptor, and the error branch refuses
+to restart because there is no session to restart for.
+
 ### There is no NULL-terminated descriptor list on this GDMA
 
 `next = 0` does **not** end a link list. With `out_auto_wrback` (`OUT_CONF0`

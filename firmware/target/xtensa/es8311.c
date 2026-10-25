@@ -94,15 +94,6 @@ static int read_reg(int reg)
  * which is exactly the {11289600, 44100, 1, 0, 1, 1, 0, 0, 0xff, 4, 16, 16} entry
  * in the reference table.
  */
-#ifdef XT_AUDIO_TRACE
-/* TEMPORARY PROBE: one register read for the transmit trace. Costs 1.6 ms of
- * polled I2C, so the caller takes it at most every couple of seconds. */
-int es8311_trace_read(int reg)
-{
-    return read_reg(reg);
-}
-#endif
-
 void es8311_set_clock(unsigned long rate, unsigned long mclk)
 {
     unsigned long target = 256UL * rate;
@@ -149,29 +140,36 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
     write_reg(REG_CLK08, 255);                                   /* lrcl = 255 */
 }
 
-/* Read the codec back over I2C. This is the only way to distinguish "we wrote
- * the right values" from "the chip is configured", and until now nothing in the
- * driver ever asked the chip what it thinks its state is. */
-void es8311_dump(const char *tag)
+/* The codec's own opinion of its state, formatted for the debug screen.
+ *
+ * Asking the chip is the only way to distinguish "we wrote the right values" from
+ * "the chip is configured": an earlier revision of this driver read back values
+ * that matched what it had written and was in fact showing reset defaults, because
+ * every write was going out malformed and being discarded. w/f are the writes
+ * attempted and the ones that did not complete.
+ *
+ * Two registers are known to read back different from what we write and neither is
+ * explained: 0x08 is written 255 (the low half of the 9-bit LRCK divider for
+ * 256*MCLK) and reads 0x00, and 0x0D is written 0x01 and reads 0x02. In slave mode
+ * the chip takes LRCK from the pin rather than dividing MCLK, so 0x08 may be
+ * don't-care and 0x0D may report status rather than intent -- that is an
+ * assumption, not a measurement, and it is the reason this row exists. */
+int es8311_stat(char *buf, size_t bufsz)
 {
-    /* One printf, not twenty. The multi-call version this replaces was cut off
-     * at twelve registers by interleaving output, which truncated it exactly
-     * before dac31/dac32 -- the two that mattered. */
     int chip = read_reg(0x00), clk1 = read_reg(0x01), clk2 = read_reg(0x02);
     int clk3 = read_reg(0x03), clk4 = read_reg(0x04), clk5 = read_reg(0x05);
     int clk6 = read_reg(0x06), clk7 = read_reg(0x07), clk8 = read_reg(0x08);
-    int sdpin = read_reg(0x09), sdpo = read_reg(0x0A), sys0d = read_reg(0x0D);
-    int sys0e = read_reg(0x0E), sys12 = read_reg(0x12), sys13 = read_reg(0x13);
+    int sys0d = read_reg(0x0D), sys12 = read_reg(0x12), sys13 = read_reg(0x13);
     int dac31 = read_reg(0x31), dac32 = read_reg(0x32);
 
-    printf("ES8311 %s: w=%d f=%d | chip=%02x clk=%02x %02x %02x %02x %02x "
-           "%02x %02x %02x | sdp=%02x %02x | sys=%02x %02x %02x %02x | "
-           "dac31=%02x dac32=%02x\n",
-           tag, es8311_writes, es8311_write_fails,
-           chip & 0xff, clk1 & 0xff, clk2 & 0xff, clk3 & 0xff, clk4 & 0xff,
-           clk5 & 0xff, clk6 & 0xff, clk7 & 0xff, clk8 & 0xff,
-           sdpin & 0xff, sdpo & 0xff, sys0d & 0xff, sys0e & 0xff, sys12 & 0xff,
-           sys13 & 0xff, dac31 & 0xff, dac32 & 0xff);
+    return snprintf(buf, bufsz,
+                    "ES8311 %02x %02x %02x %02x %02x %02x %02x %02x %02x "
+                    "| %02x %02x %02x | %02x %02x | w%d f%d",
+                    chip & 0xff, clk1 & 0xff, clk2 & 0xff, clk3 & 0xff,
+                    clk4 & 0xff, clk5 & 0xff, clk6 & 0xff, clk7 & 0xff,
+                    clk8 & 0xff, sys0d & 0xff, sys12 & 0xff, sys13 & 0xff,
+                    dac31 & 0xff, dac32 & 0xff,
+                    es8311_writes, es8311_write_fails);
 }
 
 /* The last volume we were asked for, in centibels, or VOL_UNSET before the first

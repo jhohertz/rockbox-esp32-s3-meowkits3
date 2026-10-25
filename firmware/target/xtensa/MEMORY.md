@@ -689,3 +689,64 @@ tagcache-busy refusal path.
 Core files touched by all of this: `apps/misc.c` only, and only the
 `#ifdef CLEAN_SHUTDOWN_MESSAGE_HOLD` seam, which defaults to no delay. `usb.c` gains the
 accessor. Everything else is target and driver.
+
+## The transmit interface runs on silence from boot (2026-10-24)
+
+The cold-start garble was neither buffer placement nor rate bookkeeping. It was
+bring-up order: MCLK is asserted by the clock generator, but **BCLK and WS only
+leave the pads when `tx_start` is set**, and `tx_start` lived in `start_tx()` --
+the first audio frame. The codec was reset, powered and given its clock registers
+against a bus that did not exist, and acquired it at the exact moment real audio
+arrived, so its lock transient landed on the first thing the listener heard. It
+settled by itself a moment later at any rate, which is what made it look like a
+rate-independent "first second" effect.
+
+The MeowKit reference driver never lets the DAC see anything but zeros when there
+is no audio: `tx_desc_auto_clear = true` ("Auto-clear DMA on underflow (silence)")
+and `i2s_zero_dma_buffer()` on stop. Our I2S has no auto-clear, so an underrun
+replays whatever the FIFO holds -- a gap is audible junk, not silence.
+
+`idle_tx()` is that behaviour: flush, arm the whole ring with silence, start the
+walk, never touch the PCM core. It runs from `sink_init()`, from `stop_tx()` and
+from `i2s_set_frequency()`.
+
+**Contract for anyone else that calls `tx_flush()`**: follow it with `idle_tx()`.
+`tx_flush()` stops the GDMA channel and resets the I2S port; if nothing restarts
+the walk, the ring is dead and nothing re-arms it. Related: the DONE branch re-arms
+the slot it retires while `playing` is false, because a silent free-running ring
+otherwise survives one lap -- four slots, ~23 ms at 44.1 kHz -- then walks onto a
+CPU-owned descriptor, raises `out_dscr_err`, and the error branch declines to
+restart since nothing is playing. `sink_stop()` no longer hands the descriptors
+back for the same reason; an emptied ring is what the old teardown bursts were
+anchored on.
+
+`stat_silence` counts only silence the *core could not supply* -- `playing` is set
+before `start_tx()`, so preroll silence still counts, and the idle ring's ~86
+re-arms per second do not. Without that guard the debug row climbs forever and
+says nothing about starvation.
+
+### Two codec registers that do not read back as written (unexplained)
+
+Written and read over the same working I2C master, with `f=0` (no failed writes):
+
+| REG | written | reads back |
+|---|---|---|
+| 0x08 (LRCK divider low half) | 255, i.e. 256-1 for 256*MCLK | 0x00 |
+| 0x0D (analog power) | 0x01 | 0x02 |
+
+In slave mode the chip takes LRCK from the pin rather than dividing MCLK, so 0x08
+may be don't-care, and 0x0D may report status rather than intent. That is an
+assumption, not a measurement. `es8311_stat()` is now a `Debug -> View HW info`
+row so this stays observable without a console; it replaced the uncalled
+`es8311_dump()`.
+
+### Rejected: moving `dma_buf` into internal DRAM
+
+`dram0_0_seg` overflows by 3,872 bytes with a 4 x 1024 TX ring there. Donors that
+are neither thread stacks nor DMA destinations, measured from the link map:
+`splash_buf` 2,121 (`apps/gui/splash.o`), `kbd_param` 2,084
+(`apps/recorder/keyboard.o`), `simplelist_buffer` 1,024 (`apps/gui/list.o`) --
+5,229 bytes against a 3,872 shortfall, so it is fundable. Rejected because a
+placement change cannot explain a fault that heals on a one-second timer, and
+because the D/IRAM region is the D-cache address room anyway, so it would not
+remove the cache maintenance, only move it. Recorded here rather than in a stash.

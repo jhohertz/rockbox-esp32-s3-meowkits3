@@ -31,12 +31,6 @@
 #define LOGF_ENABLE
 #include "logf.h"
 
-#ifdef XT_AUDIO_TRACE
-/* TEMPORARY PROBE -- off. The blocks it guards stay in i2s-xtensa.c, es8311.c/.h
- * and usb_audio.c for a later run. */
-#include <stdio.h>
-#endif
-
 #include "system.h"
 #include "string.h"
 
@@ -469,10 +463,6 @@ static void refill(void);      /* defined with the transmit path below */
 static void fill(int i, const void *src, unsigned long len);
 static void i2s_stat_tick(void);  /* prints the session line in tick context */
 
-#ifdef XT_AUDIO_TRACE
-static void audio_trace_tick(void);
-#endif
-
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
@@ -514,7 +504,14 @@ static void fill_silence(int i)
      * and hands refill() a consumed-buffer event the DAC has not earned yet. */
     unsigned long len = tx_frame_len;
 
-    stat_silence++;
+    /* Silence the core could not supply, not silence the idle ring always
+     * re-arms. The ring runs continuously between sessions and re-arms about 86
+     * slots a second at 44.1 kHz; counting those would make this figure climb
+     * forever and stop saying anything about starvation. `playing` is set before
+     * start_tx(), so the preroll silence of a real session still counts. */
+    if (playing)
+        stat_silence++;
+
     memset(dma_buf[i], 0, len);
     discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
     arm(i, len);
@@ -751,17 +748,6 @@ void i2s_init(void)
 
     gdma_init();
 
-#ifdef XT_AUDIO_TRACE
-    /* i2s_init() can be reached again, and tick_add_task() would add a second
-       copy of the same task each time. */
-    static bool trace_added;
-
-    if (!trace_added) {
-        trace_added = true;
-        tick_add_task(audio_trace_tick);
-    }
-#endif
-
     /* The session stats line is printed here rather than in start_tx(), which can
        be reached from the GDMA handler. One task, checked every tick, printing
        only when a session has started. */
@@ -800,93 +786,6 @@ void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
     *recover = stat_recover;
     *silence = stat_silence;
 }
-
-#ifdef XT_AUDIO_TRACE
-/* One line every 250 ms of everything the transmit path believes, so a garbled
- * window can be read from the CDC console instead of described.
- *
- * It runs as a tick task: interrupts enabled, never inside the GDMA handler and
- * never inside ops.play, so it cannot reorder the path it is watching. About 200
- * characters at 4 lines/s is six bulk-IN packets a second on a 16-word endpoint,
- * well inside what a DAC session already tolerates. The codec registers are read
- * once every eight lines because each read costs 1.6 ms of polled I2C.
- *
- * What the columns are for:
- *   hw vs pend/cfg  -- programmed rate against pcm's bookkeeping. If pend != cfg
- *                      while audio is wrong, nothing will repair it: apply_settings
- *                      only acts on a difference.
- *   start/act/idle  -- whether the port is started, whether its clock generator
- *                      runs, and the transmitter's own idle flag. A session with
- *                      play=1 and start=0 is a handoff that never completed.
- *   arm           -- the four descriptors' armed length as the engine sees them: bits
- *                    23:12 of dw0. The size field (bits 11:0) is always XT_TX_SLOT, so
- *                    reading it as a length is a mistake this probe briefly made and
- *                    reported 2048 for every slot at every rate.
- *   flen          -- the mixer frame size for the rate in effect. arm != flen on a slot
- *                    the engine has not retired yet is a rate change mid-session.
- *   usb/und/drop    -- what the host thinks the rate is, and whether the isochronous
- *                      side is underflowing or dropping frames.
- */
-extern unsigned long usb_audio_trace_rate(void);
-extern int usb_audio_trace_underflow(void);
-extern int usb_audio_trace_overflow(void);
-extern int usb_audio_trace_dropped(void);
-extern int usb_audio_trace_pending(void);
-extern int usb_audio_trace_rates(void);
-extern int es8311_trace_read(int reg);
-
-static void audio_trace_tick(void)
-{
-    static unsigned int div;
-    static unsigned int slow;
-    unsigned int lens[XT_TX_RING];
-    char codec[32] = "";
-
-    if (++div < (HZ / 4))
-        return;
-    div = 0;
-
-    /* The engine clears owner bits through the bus, so read what is really there.
-       Discarding is safe here: every write to desc[] is committed by fill() before
-       the slot is handed over, so no CPU-side value is lost. */
-    discard_dcache_range((const void *)desc, sizeof(desc));
-
-    unsigned int own = 0;
-
-    for (int i = 0; i < XT_TX_RING; i++) {
-        own |= ((unsigned int)(desc[i].dw0 >> 31) & 1u) << i;
-        lens[i] = (unsigned int)((desc[i].dw0 >> 12) & 0xfff);
-    }
-
-    if (++slow >= 8) {
-        slow = 0;
-        snprintf(codec, sizeof codec, " cd=%02x%02x%02x%02x%02x",
-                 es8311_trace_read(0x00), es8311_trace_read(0x01),
-                 es8311_trace_read(0x06), es8311_trace_read(0x07),
-                 es8311_trace_read(0x0d));
-    }
-
-    logf("TRC hw=%lu pend=%d cfg=%d play=%d start=%d act=%d idle=%d "
-         "ena=%08x gst=%08x link=%08x fifo=%08x gstate=%08x own=%04x "
-         "arm=%u,%u,%u,%u flen=%lu done=%d str=%d pval=%d que=%d "
-         "usb=%lu und=%d ovf=%d drop=%d rxq=%d rates=%d%s",
-         i2s_tx_sample_rate(),
-         (int)builtin_pcm_sink.pending_freq,
-         (int)builtin_pcm_sink.configured_freq,
-         playing ? 1 : 0,
-         (rd(I2S_TX_CONF) & TX_CONF_START) ? 1 : 0,
-         (rd(I2S_TX_CLKM_CONF) & CLKM_CONF_CLK_ACTIVE) ? 1 : 0,
-         (rd(I2S_TX_STATE) & TX_STATE_IDLE) ? 1 : 0,
-         rd(GDMA_TX_INT_ENA), rd(GDMA_TX_INT_ST), rd(GDMA_TX_LINK),
-         rd(GDMA_TX_FIFO_STATUS), rd(GDMA_TX_STATE),
-         own, lens[0], lens[1], lens[2], lens[3],
-         tx_frame_len, done_slot, dscr_streak, pend_valid, queued,
-         usb_audio_trace_rate(), usb_audio_trace_underflow(),
-         usb_audio_trace_overflow(),
-         usb_audio_trace_dropped(), usb_audio_trace_pending(),
-         usb_audio_trace_rates(), codec);
-}
-#endif /* XT_AUDIO_TRACE */
 
 /* Hand the three shared clock pads to whichever port is master right now.
  * esp_rom_gpio_connect_out_signal() just rewrites the pad's OUT_SEL, so this is
@@ -1023,8 +922,8 @@ static void stop_tx(void)
      * GDMA_INT_DSCR_ERR is still armed, so this is the moment the ring is most
      * fragile. */
 
-    /* Mask the descriptor-error interrupt while the path is being emptied, and
-     * re-arm it in the idle restart below.
+    /* Mask the descriptor-error interrupt for the teardown, and re-arm it in the
+     * idle restart below.
      *
      * With out_auto_wrback set the engine mounts the next descriptor the instant
      * the current one retires, so any slot the CPU owns mid-teardown is rejected as
