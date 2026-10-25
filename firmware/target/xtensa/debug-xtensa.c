@@ -28,6 +28,10 @@
 #include "i2s-xtensa.h"
 #include <stdio.h>
 
+#include "esp_pm.h"      /* esp_pm_config_t, esp_pm_get_configuration() */
+#include "esp_timer.h"   /* esp_timer_get_time() -- wall clock, runs through sleep */
+#include "esp_cpu.h"     /* esp_cpu_get_cycle_count() -- core clock, does not */
+
 static inline uint32_t rd(uint32_t reg)
 {
     return *(volatile uint32_t *)reg;
@@ -110,6 +114,18 @@ enum
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
      * screen is opened rather than sampled continuously. */
     INFO_CODEC,
+    /* Whether power management is configured, and whether the core is actually
+     * asleep. esp_pm_dump_locks() is the obvious tool and is unusable here: it
+     * takes a newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this
+     * measures the effect instead. esp_cpu_get_cycle_count() counts core clocks and
+     * stops when the core is powered down in light sleep
+     * (CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP); esp_timer_get_time() is wall time
+     * and keeps running. Their ratio is therefore the average MHz the core saw: if
+     * it reads below the configured minimum, the core was asleep for part of the
+     * interval. The interval is since the last time this row was drawn, so the
+     * reading that matters is the second one -- open the screen, let it go dark for
+     * a couple of minutes, come back and read it again. */
+    INFO_PM,
     /* The crash trail, newest first. A hardware exception goes to IDF's handler,
      * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
      * no message to show and this ring is the only surviving record. Six rows is
@@ -192,6 +208,33 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_CODEC:
         es8311_stat(buf, bufsz);
         break;
+    case INFO_PM: {
+        esp_pm_config_t cfg = { 0 };
+        uint32_t cyc = esp_cpu_get_cycle_count();
+        uint64_t us = esp_timer_get_time();
+
+        /* Modular difference: correct for any interval shorter than 2^32 cycles,
+         * which at this chip's slowest clock is 53 s -- far longer than anyone
+         * spends on this screen. */
+        static uint32_t prev_cyc;
+        static uint64_t prev_us;
+        unsigned int eff = 0;
+        uint64_t d_us = prev_us ? us - prev_us : 0;
+
+        if (d_us > 0)
+            eff = (unsigned int)((uint32_t)(cyc - prev_cyc) / d_us);
+
+        prev_cyc = cyc;
+        prev_us = us;
+
+        if (esp_pm_get_configuration(&cfg) == ESP_OK)
+            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, eff %u MHz since last read",
+                     cfg.min_freq_mhz, cfg.max_freq_mhz,
+                     cfg.light_sleep_enable ? "on" : "off", eff);
+        else
+            snprintf(buf, bufsz, "PM: esp_pm_get_configuration failed");
+        break;
+    }
     default: {
         int i = item - INFO_I2C_BASE;
 
