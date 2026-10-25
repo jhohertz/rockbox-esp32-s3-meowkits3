@@ -42,6 +42,10 @@ void es8311_init(void);
 void es8311_dump(const char *tag);
 void es8311_postinit(void);
 void es8311_close(void);
+#ifdef XT_AUDIO_TRACE
+int es8311_trace_read(int reg);   /* TEMPORARY PROBE, see es8311.c */
+#endif
+
 void es8311_set_clock(unsigned long rate, unsigned long mclk);
 void es8311_set_volume(int val);   /* Rockbox 0.1 dB unit */
 void es8311_mute(int mute);
