@@ -4462,7 +4462,7 @@ the rest populate the card or document the target.
 | `rockbox.esp32s3` | `make` (IDF link) | ESP image, flashed at offset `0x0` |
 | `rockbox.zip` | `make zip` | card payload **without** fonts: default theme + failsafe cfg, icons, backdrops, plugins, codecs, languages, the image itself |
 | `rockbox-fonts.zip` | `tools/buildzip.pl … -f 1` | 88 `.fnt` files converted from `fonts/*.bdf` by `tools/convbdf` |
-| `rockbox-themes.zip` | third-party themes from the themes server | additional themes; each archive is already `.rockbox/`-rooted |
+| `rockbox-themes.zip` | `tools/rbthemes.py pack` | third-party themes pulled from the themes server through a proxy target; each archive is already `.rockbox/`-rooted |
 | `rockbox-manual.pdf` | `make manual-pdf` | 281-page per-target manual |
 
 `make zip` deliberately excludes fonts (`tools/root.make:712`); `fullzip` and
@@ -4534,6 +4534,44 @@ Compatibility, measured rather than assumed:
 Because content spans three archives, an audit must run against their **union**
 — a theme referencing `20-Terminus-Bold.fnt` is satisfied by the font zip, and
 auditing the theme zip alone would report a false failure.
+
+### tools/rbthemes.py
+
+`list`, `get`, `check`, `pack`, `fonts`, `show`, `remove`. Stdlib only, no
+build required.
+
+**The cache is the design, not a convenience.** The themes server is a
+volunteer-run service, so the tool fetches each resource *once, ever*: the
+listing goes to `~/.cache/rbthemes/<target>.list.ini`, each archive to
+`archives/<themeid>.zip`, the unpacked tree to `extracted/<slug>/`, and the pack
+membership to `installed.json`. Nothing re-requests unless `--refresh` is
+passed explicitly. `RBTHEMES_CACHE` relocates it.
+
+Mechanics, measured:
+
+- `rbutilqt.php?target=X` replies in an ini-ish shape, one section per theme,
+  with `about` values spanning many lines — `configparser` rejects the
+  continuation lines, so the listing is parsed by hand.
+- `download.php?themeid=N` needs the `pass_current` token from the listing and
+  answers **302** to `/themes/<W>x<H>/<slug>/rockbox.zip`. A client that does
+  not follow redirects gets a zero-length body and no error.
+- Resolution comes from the `image` path (`/themes/320x240/...`); for
+  `ibassodx90` all 422 entries are 320x240.
+
+Current pack: 8 themes (Bayer, Laserhead, ZX Spectrum Monochrome, ALLCAPS,
+adwaitapod + its dark variant, 1ST_GEN_REMIX, AMusicPod dark) — 348 entries,
+17.5 MB compressed, 68.9 MB unpacked. `check` reports zero problems: every font
+reference resolves against the theme's own fonts plus the 88 in
+`rockbox-fonts.zip`. Only **one** of the eight defines a `%T` region, which is
+the measured answer to the "themes give us shuffle/repmode affordances" idea —
+most catalogue themes rely on the automatic bar zones, so a user wanting the
+visible lock/shuffle buttons needs a theme that happens to define them.
+
+Verified additive: the pack shares **no** path with `rockbox.zip` and no font
+basename with `rockbox-fonts.zip`, and carries no `config.cfg` and nothing under
+`.rockbox/rocks`, so installing it over a populated card cannot clobber
+anything. `pack` compares md5 per path and reports a clash when two themes want
+the same file with different bytes rather than silently picking one.
 
 ### The manual
 
