@@ -18,21 +18,34 @@
  * split has to be stated. Making this larger takes memory straight out of IDF's
  * PSRAM heap.
  *
- * The 64 KB deduction is not slack for its own sake -- it is the clearance the
+ * The deduction is not slack for its own sake -- it is the clearance the
  * section needs above itself. XT_AUDIOBUF_SIZE is only what memory-xtensa-syms.S
  * puts in .ext_ram.bss; IDF's own PSRAM objects and every object the ld fragment
  * maps to extern_ram (unicode, language, the skin parser, dir/file/fileobj_mgr,
- * and since the frequency seam, system.o's boost log) are placed in the same
- * section, so the section ends well past audiobufend. Above it sit the codec and
- * plugin text reservations, and .ext_ram.bss is memset to zero at boot by
- * esp_psram_bss_init() -- so a section that reaches into plugin_text silently
- * zeroes the head of the region every plugin is loaded into. That is exactly what
- * happened: moving system.o's 16,664 bytes of .bss to PSRAM put the section end at
- * 0x3c58290c, 10,508 bytes past XT_PLUGIN_TEXT_ADDR, and every plugin crashed on
- * arrival while codecs (at XT_CODEC_TEXT_ADDR, further up) kept working. The
- * guard in system_init() now watches that boundary; keep this deduction large
- * enough that it never fires. */
-#define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) - 0x10000)
+ * system.o's boost log and, since the feature flags, gui/line.o's layout state) are
+ * placed in the same section, so the section ends well past audiobufend. Above it
+ * sit the codec and plugin text reservations, and .ext_ram.bss is memset to zero at
+ * boot by esp_psram_bss_init() -- so a section that reaches into plugin_text
+ * silently zeroes the head of the region every plugin is loaded into. That is
+ * exactly what happened: moving system.o's 16,664 bytes of .bss to PSRAM put the
+ * section end at 0x3c58290c, 10,508 bytes past XT_PLUGIN_TEXT_ADDR, and every
+ * plugin crashed on arrival while codecs (at XT_CODEC_TEXT_ADDR, further up) kept
+ * working. The guard in system_init() now watches that boundary; keep this
+ * deduction large enough that it never fires.
+ *
+ * It has to be a whole page, not merely "a bit more", and that is the part worth
+ * remembering. .ext_ram.bss does not start at a fixed address: IDF's .ext_ram.dummy
+ * advances the location counter past the flash rodata and then aligns to the 64 KB
+ * MMU page, so the section's start moves in 64 KB steps whenever code or rodata
+ * growth crosses a boundary. Enabling HAVE_ALBUMART, HAVE_JPEG, HAVE_QUICKSCREEN
+ * and AB_REPEAT_ENABLE grew the image by ~24 KB, which pushed _ext_ram_bss_start
+ * from 0x3c120000 to 0x3c130000 -- a full page for a 24 KB change -- and a 64 KB
+ * deduction was therefore consumed entirely, putting the end at 0x3c582e8c and
+ * reproducing the original crash figure almost exactly. 128 KB covers one page of
+ * growth plus the donated objects. If the image grows another page this moves
+ * again, so read the MEMORY: line printed at boot rather than trusting this
+ * number. */
+#define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) - 0x20000)
 
 /*
  * Codec and plugin load buffers, pinned to the top of the PSRAM part of the

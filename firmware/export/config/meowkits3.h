@@ -68,6 +68,31 @@
 /* 320x240 across a 2.0" diagonal is 400 pixels diagonal, i.e. 200 dpi. */
 #define LCD_DPI    200
 
+/* Album art, and the JPEG decoder behind cover.jpg.
+ *
+ * These two are not just menu entries: struct plugin_api (apps/plugin.h:213) has
+ * gated members at line 860 (HAVE_ALBUMART) and line 1015 (HAVE_JPEG), both
+ * mid-struct, so enabling either moves the offset of every member after it. Plugins
+ * reach the firmware by those offsets, which is the same failure mode that made
+ * every codec on a card misbehave once -- so a change here means rebuilding the
+ * plugins, not just the firmware. struct codec_api has no such gates, so codecs are
+ * unaffected by this particular pair.
+ *
+ * What gets compiled (apps/SOURCES:131-142): resize.c for either flag, albumart.c
+ * for HAVE_ALBUMART, and jpeg_load.c for HAVE_JPEG. jpeg_load.c:287 has an
+ * #ifndef CPU_ARM path, so this core gets the software IDCT and needs no arch asm;
+ * jpeg_idct_arm.S is ARM-only and stays out. HAVE_JPEG additionally enables the
+ * imageviewer's JPEG plugin (apps/plugins/SOURCES:217), which is the cheapest way
+ * to prove the decoder works on hardware without needing a skin.
+ *
+ * Nothing will be visible from HAVE_ALBUMART alone: the shipped cabbiev2.wps has no
+ * %aa token, so album art needs a skin that asks for it. The flag is being enabled
+ * now so the capability exists when the theme work lands, rather than being
+ * entangled with it.
+ */
+#define HAVE_ALBUMART
+#define HAVE_JPEG
+
 /* Three display power states. The backlight dominates the panel, but the panel
  * keeps driving its gates as long as it is enabled, so DISPOFF follows the
  * backlight and SLPIN is reached only after the backlight has been off for a
@@ -326,6 +351,38 @@
  * reference firmware uses display x = 320 - raw_y, display y = raw_x.
  */
 #define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
+
+/* HAVE_KBD_POINT_MODE is deliberately not set, and the reason is worth keeping
+ * here because it looks like a flag we should want.
+ *
+ * A touch keyboard on this board is genuinely awkward: without the flag,
+ * keyboard.c:472 forces TOUCHSCREEN_BUTTON while the keyboard is up -- its own
+ * comment says "keyboard is unusuable in pointing mode" -- and falls back to a 3x3
+ * multi-tap grid at MIN_GRID_SIZE 16 px. Enabling the flag is the fix, and it fails
+ * to compile: keyboard.c:508 requires LCD_WIDTH >= 480 && LCD_HEIGHT >= 640 for the
+ * point-mode layout, which is a 10-column by 8-line table needing all eight lines
+ * visible at once. Anything smaller reaches
+ * #error "HAVE_KBD_POINT_MODE: no point-mode layout for this screen size".
+ * The two targets that do set it are 480x640 and larger.
+ *
+ * So this is not a define to flip: it needs a layout for 320x240, which is app
+ * behaviour rather than target config. Left as a known gap. */
+
+/* UI features that need no hardware and, verified against apps/plugin.h, no ABI
+ * change.
+ *
+ * HAVE_QUICKSCREEN compiles gui/quickscreen.c (apps/SOURCES:88). keymap-meowkits3.c
+ * already binds ACTION_STD_QUICKSCREEN to a held B, so that binding has been dead
+ * until now and becomes live with no keymap edit. It does move UI around: menu.c:538
+ * has an #ifndef HAVE_QUICKSCREEN branch, so some entries leave the context menu for
+ * the quickscreen.
+ *
+ * AB_REPEAT_ENABLE adds no source file -- apps/SOURCES:8 compiles abrepeat.c
+ * unconditionally -- it only adds the settings and the context-menu entries, which
+ * are reachable through the ACTION_WPS_CONTEXT we already bind to a held B.
+ */
+#define HAVE_QUICKSCREEN
+#define AB_REPEAT_ENABLE
 
 /*
  * USB: the stack is compiled, the hardware bring-up is not.
