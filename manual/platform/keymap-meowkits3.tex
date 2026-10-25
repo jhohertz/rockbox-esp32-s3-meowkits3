@@ -171,8 +171,12 @@
 \newcommand{\ActionPsSlower}{\TouchActionPsSlower}
 \newcommand{\ActionPsFaster}{\TouchActionPsFaster}
 
-%Button actions, bookmark context. Deleting works; creating and listing do not,
-% because no key produces those actions on this target.
+%Button actions, bookmark context. Deleting is the only action this context
+% needs from the stick; creating and listing are offered on the WPS screen with
+% Button B + Up and Button B + Down. Bookmarks are keyed to
+% the current playlist name, so a bookmark made while playing a single file
+% directly has no playlist to resume into, and the list reports itself as empty
+% when no playlist is loaded.
 \newcommand{\ActionBmDelete}{\ButtonB{} or \TouchActionBmDelete}
 \newcommand{\ActionBmView}{\NotAvail}
 \newcommand{\ActionBmJump}{\NotAvail}

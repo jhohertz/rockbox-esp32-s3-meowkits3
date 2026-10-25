@@ -213,56 +213,87 @@ Doing both is reasonable: combo when the keys are handy, region when the screen
 is. Key lock also matters for pocket operation on a touch panel, since a locked
 panel is the difference between accidental track skips and nothing.
 
-### S6 — Shuffle and repeat mode: theme, not keys
+### S6 — Shuffle, repeat mode and the visible affordances: deferred to theme packs
 
-No upstream key action exists. Implement as `%T` regions in our theme:
+**Deferred by decision: do not touch cabbiev2.** The builtin theme is the
+default set and stays untouched. Shuffle and repeat mode have no upstream key
+action (`apps/action.h` has neither), so the only route is `%T` regions:
 
 ```
 %T(x,y,w,h,shuffle)   %T(x,y,w,h,repmode)   %T(x,y,w,h,mute)
+%T(x,y,w,h,createbookmark)   %T(x,y,w,h,listbookmarks)   %T(x,y,w,h,lock)
 ```
 
-This is also the fix for gap #2 and it improves third-party themes' usability on
-our panel. It needs a theme file of our own (cabbiev2 variant) rather than
-`keymap-*.c` edits. Keep cabbiev2 in the core zip as the default set; the
-variant is theme content.
+That belongs with the third-party theme packs rather than our default: a theme
+that ships these regions gets them on our panel with no firmware change at all,
+which is the point of the skin engine's touch actions. When theme packs are
+evaluated, `tools/rbthemes.py` should flag which themes define `%T` regions —
+that is a compatibility signal worth showing at `list` time, since a theme with
+no regions on a touch panel gives the user only the automatic bar zones
+(`skin_parser.c:1261`).
 
-### S7 — USB HID keypad: add the stick, then verify on hardware
+Until then: shuffle and repeat are reachable from the settings menu, and the
+keymap continues to say *not available* for them, which is accurate.
 
-Better news than expected. The whole path exists and is compiled:
+### S7 — USB HID keypad: touch-only, stick layer declined
 
-- `firmware/SOURCES:1033` builds `usbstack/usb_hid.c`; `firmware/usb.c:251`
-  enables `USB_DRIVER_HID`; `apps/settings_list.c:2470` offers the
-  multimedia / presentation / browser modes (no mouse, we lack
-  `HAVE_USB_HID_MOUSE`).
-- `apps/usb_keymaps.c` maps `ACTION_USB_HID_*` to consumer and keyboard usages.
-- `apps/gui/usb_screen.c` draws the current mode and switches on
-  `ACTION_USB_HID_MODE_SWITCH_NEXT/PREV`.
-- `apps/keymaps/keymap-touchscreen.c:293-330` already maps all three modes onto
-  the 3x3 grid: mode switch on Top-Left tap/hold, multimedia on the four
-  edges plus Centre for mute, presentation on Top-Right/MidLeft/MidRight/
-  Bottom-Right, browser likewise.
+**Decision: leave HID on the touch grid, no stick mapping, no core edit.**
 
-So HID is usable by touch today. What is missing is **the stick**, and
-verification. Proposed stick layer per mode (`keymap-meowkits3.c`), mirroring
-`button_context_usb_hid_mode_*`:
+The path is real and compiled:
 
-- `CONTEXT_USB_HID` base: B tap = next mode, B hold = previous mode.
-- Multimedia: Up/Down = volume up/down, A tap = play/pause, A hold = stop,
-  Left/Right = track prev/next, B tap = mute.
-- Presentation: Left/Right = slide prev/next, Up = slideshow start, Down =
-  leave, A = black screen, B = white, holds for first/last slide.
-- Browser: Up/Down = scroll, Left/Right = tab prev/next, A = zoom in,
-  B = zoom out, holds for full-screen and history back/forward.
+- `firmware/export/config.h:1450` defines `USB_ENABLE_HID` from
+  `USB_HAS_INTERRUPT`, so HID is enabled for us; `firmware/SOURCES:1033` builds
+  `usbstack/usb_hid.c`; `firmware/usb.c:251` enables `USB_DRIVER_HID`.
+- Descriptors are assembled in `firmware/usbstack/usb_core.c` (device and config
+  descriptors at lines 94 and 117), **not** in the designware driver — that was
+  the open question in the earlier draft of this plan and it is now answered.
+- `apps/usb_keymaps.c` maps `ACTION_USB_HID_*` to consumer and keyboard usages,
+  per mode, each with its own context.
+- `apps/keymaps/keymap-touchscreen.c` supplies complete tables for
+  `CONTEXT_USB_HID`, `_MODE_MULTIMEDIA`, `_MODE_PRESENTATION` and
+  `_MODE_BROWSER`, and its dispatcher answers those contexts.
 
-Then on-device: confirm the composite descriptor enumerates the HID interface
-alongside MSC and CDC, that mode switching repaints, and that each mode's usage
-reaches the host. The endpoint/descriptor question is the part I have not
-verified — `firmware/usb.c` does not reference `USB_INTERFACE_HID` in a grep,
-so the descriptor assembly lives elsewhere (`usb_architecture/` or the
-designware driver) and needs reading before any keymap work is trusted.
+**Where input can happen.** `get_hid_usb_action()` (`apps/usb_keymaps.c`) is the
+only pump, and its only caller is `usb_screen.c:handle_usb_events()` under
+`global_settings.usb_hid`. So the keypad is live only while the USB screen runs.
+That is upstream design, not a port gap, and it is not a limitation in practice:
+our profile is always `CDC+HID+MSC`, MSC is what makes the USB screen appear,
+and the screen is up whenever the cable is attached. The `remote_control` plugin
+calls `usb_hid_send()` directly but plugins cannot run while USB is active, so
+it is not an alternate route either.
 
-Files: `apps/keymaps/keymap-meowkits3.c`, then driver verification.
-Doc: document the keypad gestures per mode.
+**Why the stick is not feasible without touching core.** The HID tables end with
+`LAST_ITEM_IN_LIST` or `LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_USB_HID)`; unlike
+the keyboard table, which chains with
+`NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_KEYBOARD)` and is therefore how our stick
+keyboard context is reached, the HID tables never call
+`target_get_context_mapping()`. So `keymap-meowkits3.c` cannot contribute HID
+gestures at all. Adding the chain would mean editing `keymap-touchscreen.c`,
+which is shared — and unlike the `CONTEXT_RECSCREEN` chain this port already
+added (that fixed a screen no touchscreen target could use at all), this one is
+a preference and would make every touchscreen target's HID contexts fall through
+to their own standard table.
+
+Revisit only as an upstream change, or if a target ever gains a HID screen of
+its own.
+
+**Verify on hardware (touch only).** With the board plugged in as MSC:
+
+- Top-Left tap / hold switches keypad mode, and the mode name in the title
+  repaints (`usb_screen.c:draw_usb_keypad_mode`).
+- Multimedia: Top-Middle / Bottom-Middle volume (tap and hold behave the same —
+  those entries have no release variants on purpose), Centre tap = mute,
+  Centre hold = play/pause, Top-Right tap = stop… read the table rather than
+  trusting this line: `keymap-touchscreen.c:300-311` is the authority.
+- Presentation and browser modes map onto Top-Right / MidLeft / MidRight /
+  Bottom-Right with tap and hold distinct.
+- The host must see a HID interface alongside MSC and CDC. That is the one claim
+  still unverified, and it is a host-side observation (`lsusb -d 1058:`, or the
+  OS input device list), not something the source can settle.
+
+Files: none. Doc: the manual already documents the modes via
+`configure_rockbox/system_options.tex`; the gesture table for our target lives
+in the shared touchscreen mapping, so nothing in `keymap-meowkits3.tex` changes.
 
 ### S8 — Recording screen entry from anywhere
 
@@ -331,8 +362,11 @@ Keep it everywhere.
 2. **S4** A-B combos — **done**, closes the most visible advertised-but-unusable
    gap and fixes manual p.35.
 3. **S3** bookmarks — **done**, WPS context only.
-4. **S7** USB HID stick layer, preceded by reading the descriptor assembly.
-5. **S6** theme touch regions (shuffle, repmode, lock, bookmarks).
+4. **S7** USB HID — **touch-only, stick layer declined**: the HID contexts never
+   chain to the target, so a stick mapping would require editing the shared
+   `keymap-touchscreen.c`. Verify the touch keypad on hardware instead.
+5. **S6** theme touch regions — **deferred**: cabbiev2 stays untouched, and
+   `%T` regions come with the theme packs instead.
 6. **S5** key lock, **S8** recording, **S9** settings reset — each only if it
    maps to an action Rockbox already has. S2 is parked; short PEK stays unused
    rather than becoming a new action.
