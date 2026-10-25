@@ -413,8 +413,14 @@
  * and the CDC OUT packet. That caps this at 320: 512 bytes would need 176 RX words, which
  * the split cannot pay for, so raising it is not an option on this silicon.
  *
- * 320 carries Rockbox's 44.1 kHz (176 bytes a frame), 48 kHz (192) and 64 kHz (256). There
- * is no 80 kHz entry to carry: hw_freq_sampr[] is 192/176/96/88/64/48/44/32/24/22/16/12/11/8,
+ * 320 is what the RX FIFO can arm, but it is deliberately *not* what the descriptor
+ * advertises: 320 would carry 64 kHz (256 bytes a frame), and a DAC session measured on this
+ * board churned 44.1 -> 64 -> 48 -> 44.1 -> 48 kHz because the host was free to pick it. Each
+ * hop goes through mixer_set_frequency(), which stops the transport, reprograms BCLK/MCLK and
+ * the codec, and re-prerolls the ring -- audible as a few seconds of garble that settles when
+ * the host finally picks one rate. See USB_AUDIO_MAX_PACKET_BYTES below.
+ *
+ * There is no 80 kHz entry to carry: hw_freq_sampr[] is 192/176/96/88/64/48/44/32/24/22/16/12/11/8,
  * so 64 kHz is the ceiling this packet can hold. The class default of 1023 could never be
  * armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE at all.
  *
@@ -429,9 +435,15 @@
 #define USB_AUDIO_BUFFER_SIZE 320
 
 /* Advertise only the sample rates whose per-frame payload (2 channels x 16-bit = 4 bytes)
- * fits the armed packet. The class default of 0 advertises all of hw_freq_sampr, as every
- * other target does; here it follows the buffer size so the two cannot drift apart. */
-#define USB_AUDIO_MAX_PACKET_BYTES  USB_AUDIO_BUFFER_SIZE
+ * fits the armed packet, and stay at or below 48 kHz.
+ *
+ * 192 keeps 44.1 kHz (176) and 48 kHz (192) and drops 64 kHz (256). This is a rate-menu
+ * decision, not a FIFO limit: the packet could carry 64 kHz, but nothing produces 64 kHz
+ * audio, and letting the host choose it costs a transport restart per hop. It is also the
+ * number to revisit when 96 kHz is: the blocker there is not this filter but proving the
+ * isochronous OUT endpoint receives packets at all.
+ */
+#define USB_AUDIO_MAX_PACKET_BYTES  192
 
 /* Cushion, declared in slots (one slot = one full-speed packet = one ms at any rate this
  * device negotiates). Unit convention follows target/hosted/hiby/usb-dac-hiby.c, which
