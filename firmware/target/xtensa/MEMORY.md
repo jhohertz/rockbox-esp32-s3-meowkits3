@@ -926,6 +926,26 @@ estimate. Enabling the CPU-frequency seam also adds **Debug → CPU frequency**
 (`debug_menu.c:2955`), which is the on-device witness for DFS. Note the AXP173's current
 registers use five low bits, not the four the voltage registers use.
 
+### S1 result: gating the PEK poll changed nothing measurable (2026-10-25)
+
+Baseline on battery, `8b2ef8a821` tree: **78-80 mA** idle at the Debug -> View battery
+screen (87 %, est. 950 min), **57 mA** after ~3 min of dark idle. With the PEK read
+gated on the IRQ pin (`3a9d11e90d`) both readings were the same within noise, and a
+1 s power-key hold still shuts the player down cleanly.
+
+So the 1.6 ms poll was not a current cost: the AXP173's discharge reading is dominated
+by the backlight and the awake 240 MHz core, and a 1.6 % duty cycle of blocking I2C
+sits under that resolution. The change is kept for the reason it was actually sized
+for -- it widens the idle window that light sleep has to fit into, from ~8.4 ms to
+~9.7 ms against an 8 ms floor -- and it is the kind of saving that only becomes visible
+once S4 makes sleep happen. Recording the null result matters: if S4 does *not* reduce
+the dark-idle number, this is one of the things to re-check rather than assume.
+
+Also measured, worth keeping as the scale of the problem: dark idle is 57 mA into a
+1400 mAh cell. That is the number DFS and light sleep are aimed at, and it says the
+frequency term (S3) and the sleep term (S4) together are worth far more than every I2C
+and touch-poll trim combined.
+
 One more thing worth knowing before anything network-ish is ever enabled: `esp_wifi` and
 `bt` are `y` in sdkconfig but unreferenced, so their text is not linked (`esp_wifi_init`
 has no entry in `rockbox.map`). If they were ever pulled in, their tasks run at priority
