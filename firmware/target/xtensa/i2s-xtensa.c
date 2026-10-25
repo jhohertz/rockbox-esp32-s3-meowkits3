@@ -1283,6 +1283,15 @@ static void sink_play(const void *addr, size_t size)
 
 }
 
+bool i2s_tx_playing(void)
+{
+    /* `playing` is the sink's own state: true from the first real frame until
+     * sink_stop(). It is deliberately not derived from audio_status(), because a
+     * USB-DAC stream is the host driving the mixer and Rockbox's audio state does
+     * not report it -- and the amp has to be on for that case too. */
+    return playing;
+}
+
 static void sink_stop(void)
 {
     playing = false;
