@@ -69,14 +69,22 @@ void system_init(void)
 
     /* The codec and plugin buffers are pinned to a fixed address so that this
      * side agrees with the CODEC_ORIGIN / PLUGIN_ORIGIN that plugin.lds gives
-     * the images -- apps/codecs.c rejects anything else. Because they are
-     * absolute symbols rather than .space, no section reserves the range, so
-     * the only thing standing between a growing .ext_ram.bss and silent
-     * corruption of a loaded codec is this check. Loud beats corrupt. */
+     * the images -- apps/codecs.c and apps/plugin.c reject anything else. Because
+     * they are absolute symbols rather than .space, no section reserves the range,
+     * so the only thing standing between a growing .ext_ram.bss and silent
+     * corruption of a loaded image is this check. Loud beats corrupt.
+     *
+     * The bound is the *lowest* reserved address, XT_PLUGIN_TEXT_ADDR, not
+     * codecbuf. Checking codecbuf was the bug that let every plugin crash: the
+     * region between plugin_text and codecbuf is reserved too (plugin text, then
+     * codec text), and .ext_ram.bss is memset at boot, so reaching into
+     * plugin_text zeroes the head of the area plugins are loaded into while the
+     * codecbuf test still reports a clean layout. Codecs kept working precisely
+     * because they sit above the damage -- which is why a wrong boundary here is
+     * so easy to mistake for a plugin bug. */
     {
         extern char rb_ext_ram_end[];
         extern char _ext_ram_bss_end[];
-        extern unsigned char codecbuf[];
 
         /* rb_ext_ram_end alone was the blind spot. It is a label in
          * memory-xtensa-syms.S sitting right after audiobufend, so it marks the
@@ -95,10 +103,15 @@ void system_init(void)
         unsigned long ours = (unsigned long)rb_ext_ram_end;
         unsigned long sect = (unsigned long)_ext_ram_bss_end;
         unsigned long end = sect > ours ? sect : ours;
+        unsigned long first_reserved = (unsigned long)XT_PLUGIN_TEXT_ADDR;
 
-        if (end > (unsigned long)codecbuf)
-            printf("MEMORY: .ext_ram.bss ends %p, past pinned codecbuf %p\n",
-                   (void *)end, (void *)codecbuf);
+        if (end > first_reserved)
+            printf("MEMORY: .ext_ram.bss ends %p, %lu bytes into the plugin/codec "
+                   "text reservations at %p -- plugins load into zeroed memory\n",
+                   (void *)end, end - first_reserved, (void *)first_reserved);
+        else
+            printf("MEMORY: .ext_ram.bss ends %p, %lu bytes clear of %p\n",
+                   (void *)end, first_reserved - end, (void *)first_reserved);
     }
 
     /* The other end of the same problem, and the check that was missing.
