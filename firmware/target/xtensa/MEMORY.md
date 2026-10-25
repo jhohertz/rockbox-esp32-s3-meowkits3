@@ -1113,3 +1113,61 @@ the frequency seam was 48 mA), whether the TX row stays clean across sleep/wake
 boundaries, and whether the USB-JTAG console survives a sleep while idle (it is the boot
 log's only output, and `CONFIG_ESP_SLEEP_*` handles pad restore for chips that do not
 support USJ in light sleep).
+
+## Idle current after DFS and light sleep: the board, not the core (2026-10-25)
+
+Measured on battery, Debug -> View battery view 3, ~60 s on screen then ~3 min dark:
+
+| state | dark idle |
+|---|---|
+| before the frequency seam | 57 mA |
+| seam on (idle core at 80 MHz instead of 240) | 48 mA |
+| automatic light sleep on | 46 mA |
+
+The seam is worth 9 mA. Light sleep is worth 2 mA, and `esp_pm_get_configuration()`
+reports `light_sleep_enable` on -- so sleep is configured and happening, and the
+remaining 46 mA is mostly **the board**: AXP173 quiescent, PCF8563, FT6336, ES8311,
+the NS4150B class-D stage, PCA9557, PSRAM refresh, and the digital peripheral domain
+that `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` deliberately leaves powered.
+That last term is the price of this port's design: retaining the domain is what makes
+light sleep safe for hand-written I2S/GDMA/GPSPI2/LEDC/I2C/USB drivers, and it is also
+what caps how deep the sleep can be. Making it deeper would mean save/restore for six
+subsystems, which is a project, not a knob.
+
+Consequences: **the sleep-threshold spike is dropped.** `configEXPECTED_IDLE_TIME_BEFORE_SLEEP`
+is already 8 ticks against a 10 ms tick period, and lowering it buys windows the core is
+already spending asleep. What is left is board-side gating, and the only element that was
+still permanently on was the amplifier.
+
+### The amplifier is now switched off when nothing is playing
+
+`audiohw_enable_speaker(true)` ran once at startup and nothing ever turned it off, so a
+class-D stage with no signal to amplify stayed enabled indefinitely. `audiohw-xtensa.c`
+now runs an idle policy as a `tick_add_task()`: ~250 ms after the transmit engine stops
+carrying real audio it drops the amp (PCA9557 IO3) and then mutes the codec; when audio
+returns it unmutes the codec first and enables the amp second, so the amp switches on into
+a line that is already silent -- `idle_tx()` keeps the ring armed with silence from boot.
+Off-then-mute and unmute-then-on are deliberate: each avoids amplifying the other device's
+own transition, and the 250 ms grace keeps a playback fade's tail audible.
+
+Two constraints that shaped where this lives:
+
+- **Not in the sink.** `usb_audio.c` calls `mixer_channel_play_data()` inside
+  `disable_irq_save()` (see `sink_play()`), and both the amp and the codec are I2C. The
+  tick thread is the same place `power-xtensa.c` and `usb-xtensa.c` already do periodic
+  work.
+- **Not `audio_status()`.** A USB-DAC stream is the host driving the mixer and Rockbox's
+  audio state does not report it, so keying the amp off `audio_status()` would mute a
+  stream the user can hear. The policy reads `i2s_tx_playing()`, which is the sink's own
+  state and covers both playback and USB DAC. That is the one way this change could break
+  audio instead of saving current, so `Debug -> View HW info`'s TX row and a USB-DAC play
+  are both part of the test.
+
+`audiohw_enable_speaker()` keeps the policy's flag in step, so a core-initiated enable or
+disable is not second-guessed from stale state.
+
+**How to read the PM row.** The first read of `Debug -> View HW info`'s PM row arms the
+cycle sampling and reports no rate; the next read covers the interval since, so the
+meaningful reading is: open it, let the screen go dark for a few minutes, come back. It
+reads `min/max MHz`, `sleep on/off`, and the average MHz the core actually saw -- which is
+below the configured minimum exactly when the core spent part of that interval asleep.
