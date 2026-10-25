@@ -151,21 +151,28 @@ press, so it would cost no extra I2C; `BUTTON_POWER` at `0x00008000` is free
 already calls `backlight_on()` on key activity, so waking would come free.
 
 
-### S3 — Bookmarks via B-modifier combos
+### S3 — Bookmarks via B-modifier combos  *(done)*
 
-Currently deletable, not creatable. Proposed, following the ondio precedent
-(`POWER+DOWN` / `POWER+SELECT`):
+Was deletable, not creatable. Following `keymap-hm801.c:79-80`
+(`POWER|SELECT` to list, `POWER|DOWN` to create), with B as the modifier:
 
 - WPS: `BUTTON_B|BUTTON_UP` (prereq B) → `ACTION_WPS_CREATE_BOOKMARK`
 - WPS: `BUTTON_B|BUTTON_DOWN` (prereq B) → `ACTION_WPS_LIST_BOOKMARKS`
-- Std/tree: same pair, so bookmarks can be listed from the file browser too.
 
-Also add the skin regions (`%T(...,createbookmark)`, `%T(...,listbookmarks)`)
-to our theme so the gesture is visible on screen, not just memorised.
+WPS context only, deliberately: the handlers are `apps/gui/wps.c:1053` and
+`:1062`, so a standard- or tree-context mapping would emit an action nothing
+consumes. The original plan to also cover std/tree was wrong.
 
-Files: `apps/keymaps/keymap-meowkits3.c`, theme file.
-Doc: replace `ActionBmView`/`ActionBmJump` "not available", document create and
-list.
+No manual change was needed — the body has no `\ActionWpsCreateBookmark` or
+`\ActionWpsListBookmarks` macro to fill.
+
+Still worth doing later: add the skin regions (`%T(...,createbookmark)`,
+`%T(...,listbookmarks)`) to our theme so the gesture is visible on screen rather
+than only memorised. That belongs with S6.
+
+Files: `apps/keymaps/keymap-meowkits3.c`.
+Doc: `ActionBmView`/`ActionBmJump` remain *not available* — those are bookmark
+screen actions (`ACTION_BM_*`) and no target maps them to keys.
 
 ### S4 — A-B repeat via A-modifier combos  *(done)*
 
@@ -181,6 +188,13 @@ not a combo the dispatcher would confuse with A-then-Left, because the combo
 fires while A is still held and the prereq is A. This is exactly how the as3525
 targets do it. Verify on hardware that a seek gesture (`Left|REPEAT`, no A)
 still reaches seek and not A-B.
+
+**Observed on hardware, and correct:** when A-B repeat is *not* active, A+Left
+and A+Right jump to the previous and next directory. That is upstream's
+semantics — the `*_PREVDIR` / `*_NEXTDIR` action names say so — and it is why
+the manual lists the same gesture twice, once in the A-B rows and once in the
+directory-skip rows. Recorded here so the dual purpose is not mistaken for a
+mis-mapping.
 
 Doc: replace the five `Ab*` "not available" entries — that also fixes the
 "not available or Short Right + Long Right" line on manual p.35.
@@ -316,7 +330,7 @@ Keep it everywhere.
    line is dropped as an invention rather than deferred.
 2. **S4** A-B combos — **done**, closes the most visible advertised-but-unusable
    gap and fixes manual p.35.
-3. **S3** bookmarks — same modifier pattern, same file.
+3. **S3** bookmarks — **done**, WPS context only.
 4. **S7** USB HID stick layer, preceded by reading the descriptor assembly.
 5. **S6** theme touch regions (shuffle, repmode, lock, bookmarks).
 6. **S5** key lock, **S8** recording, **S9** settings reset — each only if it

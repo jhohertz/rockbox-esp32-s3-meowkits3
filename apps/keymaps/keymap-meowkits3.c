@@ -93,10 +93,25 @@ static const struct button_mapping button_context_wps[]  = {
      * BACK. action.c's matcher requires an exact button_code and prefers an
      * exact prerequisite, so these are distinct events rather than ambiguous
      * ones: pressing A on its own reports BUTTON_A, and A-then-Left reports
-     * BUTTON_A|BUTTON_LEFT with last->button == BUTTON_A. */
+     * BUTTON_A|BUTTON_LEFT with last->button == BUTTON_A.
+     *
+     * Worth knowing before using them: these two gestures are dual-purpose
+     * upstream. When A-B repeat is not active they jump to the previous and
+     * next directory instead of marking a point -- the *_PREVDIR and *_NEXTDIR
+     * names say so -- which is why the manual lists the same gesture twice,
+     * once for A-B and once for directory skipping. */
     { ACTION_WPS_ABSETA_PREVDIR, BUTTON_A|BUTTON_LEFT,       BUTTON_A },
     { ACTION_WPS_ABSETB_NEXTDIR, BUTTON_A|BUTTON_RIGHT,      BUTTON_A },
     { ACTION_WPS_ABRESET,        BUTTON_A|BUTTON_B,          BUTTON_A },
+    /* Bookmarks. Only the WPS context handles these -- apps/gui/wps.c:1053
+     * lists them and :1062 creates one -- so they are mapped here and not in
+     * the standard or tree contexts, where the action would go nowhere.
+     * B is the modifier, following keymap-hm801.c:79-80 which uses
+     * POWER+SELECT to list and POWER+DOWN to create. B alone stays menu and
+     * B held stays context, because action.c:591-604 matches the button code
+     * exactly and prefers an exact prerequisite. */
+    { ACTION_WPS_CREATE_BOOKMARK, BUTTON_B|BUTTON_UP,        BUTTON_B },
+    { ACTION_WPS_LIST_BOOKMARKS,  BUTTON_B|BUTTON_DOWN,      BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_wps */
 
