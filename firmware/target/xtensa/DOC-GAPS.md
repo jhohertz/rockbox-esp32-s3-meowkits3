@@ -38,9 +38,12 @@ the corresponding spike is done and the manual's keymap file should stop saying
   `ACTION_TOUCH_SHUFFLE` and `ACTION_TOUCH_REPMODE` (`skin_parser.c:1625`) —
   so they work only if the theme defines a `%T` region with that action. The
   default cabbiev2 defines none.
-- **What fixing it means:** either add key mappings, or add `%T` regions to our
-  theme so the gestures exist on screen.
-- **Status:** open, partly mitigated by the skin engine.
+- **What fixing it means:** `%T` regions in a theme, not firmware. Deferred: the
+  builtin cabbiev2 stays untouched, so these arrive with the third-party theme
+  packs that define them (`tools/rbthemes.py` should report which ones do).
+  Shuffle and repeat remain settable from the settings menu meanwhile, which is
+  what the manual's *not available* note reflects.
+- **Status:** open, deferred to theme packs.
 
 ## 3. Bookmarks: delete works, create and list do not
 
@@ -52,6 +55,13 @@ the corresponding spike is done and the manual's keymap file should stop saying
   deleted but never created. **Fixed** — see Closed.
 - **Evidence:** the action list extracted from both keymap files. The handlers
   are at `apps/gui/wps.c:1053` (list) and `:1062` (create).
+- **Note on resume, which looks like it does nothing.** Bookmarks are keyed to
+  the **current playlist name** (`generate_bookmark_file_name()` in
+  `apps/bookmark.c`), and `bookmark_load_menu()` splashes *"empty"* when
+  `playlist_dynamic_only()` is true. A bookmark created while playing a single
+  file directly therefore has no playlist to resume into, and resuming is only
+  meaningful when a playlist was in use. That is upstream behaviour, not a port
+  bug; the manual should say so.
 - **What fixing it means:** two WPS-context mappings using a held modifier.
   Note the delete action's spelling is `ACTION_BMS_DELETE`, not
   `ACTION_BM_DELETE`; the manual's macro is `\ActionBmDelete`.
@@ -156,15 +166,29 @@ Minor, collected because the macros have to say something:
   unplayable, and whether the touch grid can stand in for the missing keys.
 - **Status:** open, needs an audit pass.
 
-## 11. USB HID modes are wired but unexercised
+## 11. USB HID: wired, and the keypad only lives on the USB screen
 
 - **Claim:** `manual/configure_rockbox/system_options.tex` documents USB HID
-  with multimedia, presentation and browser keypad modes, and we build
-  `usb_hid`.
-- **Reality:** `keymap-touchscreen.c` produces the full `ACTION_USB_HID_*` set
-  (multimedia, presentation, browser, and mouse where supported), so the input
-  side exists. Only multimedia has actually been used on this board.
-- **Status:** verify on hardware. Not a code gap as far as the source shows.
+  with multimedia, presentation and browser keypad modes.
+- **Reality:** HID is enabled — `firmware/export/config.h:1450` defines
+  `USB_ENABLE_HID` from `USB_HAS_INTERRUPT`, `firmware/usb.c:251` enables
+  `USB_DRIVER_HID`, descriptors are assembled in `usbstack/usb_core.c`, and
+  `keymap-touchscreen.c` supplies complete tables for all four HID contexts.
+  The catch is the pump: `get_hid_usb_action()` (`apps/usb_keymaps.c`) is called
+  only from `usb_screen.c:handle_usb_events()`, so the keypad is live only while
+  the USB screen runs. Our profile is always `CDC+HID+MSC`, and MSC is what makes
+  that screen appear, so the keypad is available whenever the cable is attached.
+  The `remote_control` plugin calls `usb_hid_send()` directly, but plugins cannot
+  run during USB mode, so it is not a second route.
+- **Stick input is not reachable without a core edit.** The HID tables end with
+  `LAST_ITEM_IN_LIST` or `NEXTLIST(CONTEXT_USB_HID)` and never call
+  `target_get_context_mapping()`, unlike the keyboard table's
+  `NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_KEYBOARD)`. Adding the chain would change
+  behaviour for every touchscreen target, so it was declined; see `UX-PLAN.md`
+  S7.
+- **Status:** verify the touch keypad on hardware (mode switch repaint, usages
+  reaching the host). Not a code gap; the host-side descriptor claim is the one
+  thing still unverified.
 
 ## 12. Release and tooling infrastructure has no entry for us
 
