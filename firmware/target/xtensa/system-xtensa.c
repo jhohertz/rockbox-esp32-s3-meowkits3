@@ -16,20 +16,22 @@
  *     from a guest's position; it uninstalls FreeRTOS's tick, the GDMA
  *     completions the audio path depends on, and the gptimer alarm that drives
  *     the Rockbox tick itself.
- *   - `cpu_clock_up()` and `set_cpu_frequency()`, which wrote CPUPERIOD_SEL,
- *     SYSCLK_CONF and the LDO slave count. IDF owns the clock tree, and the
- *     analog bias (dbias) that has to move with it is something only IDF can
- *     do - it comes from the ROM's PVT calibration through REGI2C. Writing the
- *     LDO slaves by hand is the sort of change that browns out the SoC rather
- *     than failing visibly.
+ *   - `cpu_clock_up()`, which wrote CPUPERIOD_SEL, SYSCLK_CONF and the LDO slave
+ *     count. IDF owns the clock tree, and the analog bias (dbias) that has to move
+ *     with it comes from the ROM's PVT calibration through REGI2C, which Rockbox
+ *     cannot reproduce. Writing the LDO slaves by hand is the sort of change that
+ *     browns out the SoC rather than failing visibly. `set_cpu_frequency()` does
+ *     exist -- see below -- but it asks IDF for the frequency instead of setting it.
  *   - peripheral clock gating written into SYSTEM_PERIPHS_CLK_EN by address.
  *     IDF's drivers enable their own clocks; a blanket write from here can
  *     only duplicate or undo that.
  *
- * Rockbox's adjustable-CPU-FREQ machinery (cpu_boost) is switched off in the
- * target config for the same reason: it exists to call set_cpu_frequency().
- * If power management is wanted later it should go through IDF's esp_pm DFS,
- * not around it.
+ * Rockbox's adjustable-CPU-FREQ machinery is switched on in the target config
+ * (HAVE_ADJUSTABLE_CPU_FREQ). The core side already does all the bookkeeping --
+ * firmware/system.c keeps the boost counter and calls set_cpu_frequency() with
+ * CPUFREQ_MAX on the first boost, CPUFREQ_NORMAL when it drops, and CPUFREQ_DEFAULT
+ * when cpu_idle_mode() has marked the machine idle -- so this file only has to turn
+ * one of those three numbers into a clock change, and it does that through IDF.
  ****************************************************************************/
 
 #include "config.h"
@@ -42,9 +44,11 @@
 #include "font.h"            /* FONT_SYSFIXED, FONT_HEIGHT */
 
 #include "sdkconfig.h"
+#include "esp_pm.h"
 
 /* cpu_frequency is declared in system.h and defined by firmware/kernel/system.c
- * for every target; this file only has to put the right number in it. */
+ * for every target; this file puts the right number in it, and keeps it right when
+ * the number changes -- see set_cpu_frequency(). */
 
 /* CPU_FREQ lives in the target config and CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ in
  * the IDF project, and only the second one is real. Drift between them shows
@@ -126,16 +130,54 @@ void system_init(void)
                    (unsigned long)(MEMORYSIZE * 16) - 1);
     }
 
-    /* udelay() in system-target.h counts core cycles, so it needs the frequency
-     * the core is actually on. IDF picked it in sdkconfig; reading it back from
-     * the hardware would mean re-deriving IDF's clock tree, which is what this
-     * file no longer does. If IDF's dynamic frequency scaling is ever enabled,
-     * this has to become esp_clk_cpu_freq() and udelay() has to stop caching
-     * it. */
-    cpu_frequency = CPU_FREQ;
+    /* udelay() in system-target.h counts core cycles, so cpu_frequency has to be
+     * the frequency the core is actually on. Rockbox owns that choice through
+     * set_cpu_frequency() below and nothing else moves the clock, so assigning it
+     * here is enough -- but it is assigned through the same function, so the value
+     * and the hardware cannot disagree. If IDF's dynamic frequency scaling is ever
+     * enabled (max != min, or light sleep), this has to become esp_clk_cpu_freq()
+     * and udelay() has to stop caching it. */
+    set_cpu_frequency(CPU_FREQ);
 
     /* Nothing else. Anything added here should be checked against the list at
      * the top of the file: if IDF already owns it, it does not belong here. */
+}
+
+/*
+ * Rockbox's one clock entry point. firmware/system.c calls this with CPUFREQ_MAX,
+ * CPUFREQ_NORMAL or CPUFREQ_DEFAULT, picked by the boost counter and cpu_idle_mode();
+ * the ladder itself is in system-target.h.
+ *
+ * Applied through esp_pm_configure() with max == min, which is deliberate. It asks
+ * IDF to put the core on that frequency and leaves dynamic frequency scaling inert,
+ * so: dbias and the rest of the clock tree move the way IDF moves them; Rockbox's
+ * notion of "the frequency" is the whole truth rather than a floor under a scaler;
+ * and the PM locks IDF's own drivers take -- the I2S driver acquires one around
+ * every transfer, at i2s_common.c:1235 -- cannot move the clock out from under
+ * udelay(). Light sleep is left off here for the same reason: it needs locks to
+ * hold, and that is its own step.
+ *
+ * The three points are all BBPLL taps, so APB and AHB (which is GDMA's clock) stay
+ * at 80 MHz and I2S, I2C and the timer groups stay on XTAL; only the core moves.
+ * CPUFREQ_MAX is what CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ boots at, asserted above.
+ */
+void set_cpu_frequency(long frequency)
+{
+    int mhz = (int)(frequency / 1000000L);
+    esp_pm_config_t cfg = {
+        .max_freq_mhz = mhz,
+        .min_freq_mhz = mhz,
+        .light_sleep_enable = false,
+    };
+
+    /* On failure leave cpu_frequency alone: udelay() counts cycles against it, so
+     * a value that matches the hardware is worth more than a value Rockbox asked
+     * for. esp_pm_configure() rejects values it cannot express as a rtc clock
+     * config, and 240/160/80 all can be. */
+    if (esp_pm_configure(&cfg) != ESP_OK)
+        return;
+
+    cpu_frequency = frequency;
 }
 
 void system_reboot(void)

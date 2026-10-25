@@ -343,10 +343,13 @@ and now `file` are the ones that have moved.
 
 ## 5. Known gaps and opportunities
 
-1. **The arena has no headroom.** 26,316 bytes of the window are idle and the
-   three largest holders are all either pinned or grab-everything. Any new
-   resident consumer has to be funded by shrinking dircache, the theme, or the
-   tree caches -- see §3b before assuming there is somewhere to put it.
+1. **The arena has no headroom, and it is now smaller.** 9,652 bytes of the
+   window are idle (was 26,316 before the CPU-frequency seam moved
+   `libfirmware.a(system.o)`'s .bss out of DRAM -- 16,664 bytes, see
+   "The frequency seam is wired" below). The three largest holders are all either
+   pinned or grab-everything. Any new resident consumer has to be funded by
+   shrinking dircache, the theme, or the tree caches -- see §3b before assuming
+   there is somewhere to put it.
 
 2. **The arena top is only guarded by a printf.** A layout overrun reports
    itself at boot but does not stop the build. It should arguably be a link-time
@@ -363,12 +366,18 @@ and now `file` are the ones that have moved.
    actual high-water mark. A stack-usage probe would let these be sized from
    data instead of guesswork.
 
-5. **DRAM free space is 1,020 bytes.** It was 4,376 before
-   `CONFIG_ESP_PANIC_HANDLER_IRAM` (cost ~5,464) and `file` -> PSRAM (gave back
-   2,108). The handler is what makes exit-path and cache-disabled faults
-   reportable at all -- without it the panic handler itself cannot execute and
-   the device reboots with no register dump -- so it is worth the space. But the
-   margin is now one small static deep.
+5. **DRAM free space is 3,152 bytes**, measured as the highest address inside
+   `dram0_0_seg` against its end (`0x3fcdb700`), not from a section sum -- the
+   remainder of the region is IDF's internal heap, so "free" is what the heap
+   starts with rather than spare statics. The figure in earlier revisions of this
+   file, 1,020, was stale: the tree measured 4,320 before the frequency seam,
+   which costs 1,168 of DRAM and moves 16,664 to PSRAM instead. It was 4,376
+   before `CONFIG_ESP_PANIC_HANDLER_IRAM` (cost ~5,464) and `file` -> PSRAM (gave
+   back 2,108). The handler is what makes exit-path and cache-disabled faults
+   reportable at all -- without it the panic handler itself cannot execute and the
+   device reboots with no register dump -- so it is worth the space. But the margin
+   is still one small static deep, and `dram0_0_seg` overflow is the failure mode
+   to expect from any new static.
 
 ---
 
@@ -951,3 +960,59 @@ One more thing worth knowing before anything network-ish is ever enabled: `esp_w
 has no entry in `rockbox.map`). If they were ever pulled in, their tasks run at priority
 18 while every Rockbox task sits at `tskIDLE_PRIORITY + 1` — they would preempt the whole
 player.
+
+## The frequency seam is wired (2026-10-25)
+
+`HAVE_ADJUSTABLE_CPU_FREQ` is now defined for meowkits3 and
+`set_cpu_frequency()` is implemented in `system-xtensa.c` as `esp_pm_configure()`
+with **max == min**. Rockbox's ladder (240 / 160 / 80 MHz, `system-target.h`) is
+therefore applied by asking IDF for the frequency rather than writing CPUPERIOD_SEL
+and the LDO slaves -- dbias travels with the core clock through REGI2C and the ROM's
+PVT calibration, which only IDF can do, and the hand-written version of that is the
+thing this file used to refuse. Keeping DFS inert (max == min) is deliberate: the
+clock is exactly what the boost counter asked for, `udelay()`'s cached
+`cpu_frequency` cannot drift out of agreement with the hardware, and the PM locks
+IDF's own drivers take -- `i2s_common.c:1235` acquires one around every transfer --
+cannot move the clock underneath us.
+
+The core side needs nothing. `HAVE_SCHEDULER_BOOSTCTRL` is set for every native
+platform (`config.h:1051-1053`) and `firmware/system.c` already owns the bookkeeping:
+`cpu_boost_()` keeps `boost_counter`, calls `set_cpu_frequency(CPUFREQ_MAX)` on the
+first boost, `CPUFREQ_NORMAL` when it drops to zero, and `CPUFREQ_DEFAULT` when
+`cpu_idle_mode()` has marked the machine idle. So `trigger_cpu_boost()` from
+`codec_thread.c:403,469,520` and `playback.c:2470` -- which were already executing,
+against an empty macro -- now actually move the clock. Defining the seam changed no
+core file.
+
+**What it cost, and where that came from.** The seam's price is not IDF, it is a
+diagnostic: `system.h:43-46` turns on `CPU_BOOST_LOGGING` when
+`HAVE_ADJUSTABLE_CPU_FREQ` + `ROCKBOX_HAS_LOGF` + `NUM_CORES == 1` are all true, and
+that allocates `cpu_boost_calls[64][MAX_PATH]` = 16,640 bytes (`MAX_PATH` is 260,
+`fs_defines.h:32`). With `dram0_0_seg` 4,320 bytes free, enabling the seam overflowed
+the region by 13,520. It is handled by granting `system (rb_psram)` in
+`idf-app/main/rockbox_memory.lf`, the same mechanism already used for `file.o` and
+`fileobj_mgr.o`; net result is DRAM free 4,320 -> 3,152 and the arena's idle slack
+26,316 -> 9,652, flash +8,416.
+
+**The fact that made that legal.** `.ext_ram.bss` is `NOLOAD` and IDF's `init_bss()`
+clears only `_bss_start.._bss_end`, which are dram0 (`cpu_start.c:449`) -- so the PSRAM
+range is *not* covered by it. It is cleared separately by `esp_psram_bss_init()`
+(`esp_psram.c:767`, a plain `memset(&_ext_ram_bss_start, 0, size)`, called from
+`cpu_start.c:771` and present in this image at `0x420061b4`). That matters whenever an
+object with zero-initialised *bookkeeping* -- not just scratch buffers -- moves to
+PSRAM: without it `boost_counter` would start random and `++boost_counter == 1` would
+never fire, so the clock would never be set at all. Note the scheme only maps `bss`
+and `common`; `cpu_frequency` is `.data` and stays in internal DRAM, so `udelay()` did
+not start reading a clock word out of PSRAM on every call.
+
+**Open, and the first thing to check on the device.** Nothing boosts during USB DAC
+streaming: `usb_audio.c:1780` is `.needs_cpu_boost = false` (`usb_storage.c:1610` is
+true), and `usb.c:374` sets `cpu_idle_mode(true)` on entering USB mode -- which now
+means the core runs at 80 MHz while isochronous frames arrive. Whether that costs
+anything is a measurement, not an argument: watch `Debug -> View HW info`'s TX row
+(`sess / err / rec / sil`) during USB playback. If it degrades, the fix is target-side
+-- hold a boost across `usb_dw_target_enable_clocks()`/`disable_clocks()` -- rather
+than editing the core driver's flag.
+
+**Measured** (protocol: on battery, Debug -> View battery view 3, ~60 s on screen then
+~3 min dark). Baseline before the seam: 78-80 mA at the UI screen, 57 mA dark.

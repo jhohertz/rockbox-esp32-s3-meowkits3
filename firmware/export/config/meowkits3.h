@@ -40,13 +40,22 @@
  */
 #define CPU_FREQ 240000000
 
-/* Not set, on purpose. Rockbox's cpu_boost() exists to call
- * set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
+/* Set, and the ladder in system-target.h is applied through IDF.
+ *
+ * The objection to setting this used to be that Rockbox's cpu_boost() exists to
+ * call set_cpu_frequency(), and on this SoC the clock tree belongs to ESP-IDF:
  * IDF moves the analog regulator bias (dbias) along with the core clock via
- * REGI2C and the ROM's PVT calibration, which Rockbox cannot reproduce. Hand
- * writing CPUPERIOD_SEL and the LDO slave count is the kind of change that
- * browns out the chip instead of failing visibly. Power management, if wanted,
- * goes through IDF's esp_pm DFS rather than around it. */
+ * REGI2C and the ROM's PVT calibration, which Rockbox cannot reproduce, so hand
+ * writing CPUPERIOD_SEL and the LDO slave count browns out the chip instead of
+ * failing visibly. That objection still holds -- which is exactly why
+ * set_cpu_frequency() is implemented as esp_pm_configure() rather than as
+ * register writes (see system-xtensa.c). Rockbox picks the frequency, IDF applies
+ * it, and the bias handling stays IDF's.
+ *
+ * What this define turns on is real: HAVE_SCHEDULER_BOOSTCTRL is set for every
+ * native platform, so trigger_cpu_boost() already runs from codec_thread.c and
+ * playback.c and reached an empty macro until now. */
+#define HAVE_ADJUSTABLE_CPU_FREQ
 
 /* LCD: ST7789. The panel's GRAM is 240x320, but the reference firmware drives it
  * rotated 90 degrees (LovyanGFX offset_rotation = 3), so it is used as 320x240. */
