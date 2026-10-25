@@ -37,14 +37,11 @@ AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 30, 30)
 #endif
 
 void es8311_init(void);
-/* Read the codec back over I2C and print what it reports, with a count of the
- * writes we attempted and how many were NAKed. */
-void es8311_dump(const char *tag);
+/* Format the codec's readback state (clock dividers, power, DAC, and the write
+ * success counts) into buf for the debug screen. Returns the snprintf length. */
+int es8311_stat(char *buf, size_t bufsz);
 void es8311_postinit(void);
 void es8311_close(void);
-#ifdef XT_AUDIO_TRACE
-int es8311_trace_read(int reg);   /* TEMPORARY PROBE, see es8311.c */
-#endif
 
 void es8311_set_clock(unsigned long rate, unsigned long mclk);
 void es8311_set_volume(int val);   /* Rockbox 0.1 dB unit */
