@@ -25,6 +25,7 @@
 #include "es8311.h"
 #include "es7210.h"
 #include "axp173.h"
+#include "i2s-xtensa.h"
 #include <stdio.h>
 
 static inline uint32_t rd(uint32_t reg)
@@ -99,6 +100,11 @@ enum
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_PANIC,
     INFO_RESET,
+    /* Cumulative transmit-path housekeeping: sessions started, descriptor errors,
+     * recoveries, and slots armed with silence. Together they say whether the ring is
+     * being starved and recovered. Counted always rather than behind a probe, because
+     * the moment worth catching is shorter than any sampling interval. */
+    INFO_TXSTAT,
     /* The crash trail, newest first. A hardware exception goes to IDF's handler,
      * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
      * no message to show and this ring is the only surviving record. Six rows is
@@ -170,6 +176,14 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         snprintf(buf, bufsz, "Reset %lu, rtc trail %lu",
                  xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count());
         break;
+    case INFO_TXSTAT: {
+        unsigned int sessions, err, recover, silence;
+
+        i2s_tx_stats(&sessions, &err, &recover, &silence);
+        snprintf(buf, bufsz, "TX sess %u err %u rec %u sil %u",
+                 sessions, err, recover, silence);
+        break;
+    }
     default: {
         int i = item - INFO_I2C_BASE;
 
