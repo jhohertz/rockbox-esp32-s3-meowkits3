@@ -163,11 +163,11 @@ codec.
             | IDF .flash_rodata_dummy  |  sized SIZEOF(.flash.text)
             | IDF .ext_ram.dummy       |  1,179,616 B (same span, other view)
 0x3C090120  | .flash.rodata            |  568,704 B
-0x3C120000  | .ext_ram.bss             |  4,560,884 B  entry 18
-0x3C15D2E0  |   audiobuffer            |    4,194,304 B (the buflib arena) entry 21
-0x3C55D2E0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
-0x3C5797F4  +--------------------------+  end of .ext_ram.bss, entry 85
-            |     26,636 B free        |  <- the only idle bytes in the window
+0x3C120000  | .ext_ram.bss             |  4,532,492 B  entry 18
+0x3C1612E0  |   audiobuffer            |    4,128,768 B (the buflib arena) entry 22
+0x3C5512E0  |   ...framebuffers etc.   |    ~368,000 B of PSRAM_BSS_ATTR objects
+0x3C57290C  +--------------------------+  _ext_ram_bss_end, entry 87
+            |    55,028 B clearance    |  <- must stay clear; see the invariant below
 0x3C580000  | plugin_text              |  524,288 B  entry 88
 0x3C600000  | codec_text               |  524,288 B  entry 96
 0x3C680000  | codecbuf                 |  1 MiB      entry 104
@@ -175,8 +175,29 @@ codec.
 0x3C800000  +--------------------------+  == end of the 8 MB window, entry 128
 ```
 
+**The invariant: `_ext_ram_bss_end` must stay below `XT_PLUGIN_TEXT_ADDR` (`0x3C580000`).**
+This is not a tidy-up rule, it is the fix for "every plugin crashes on load". The
+codec/plugin text reservations are *absolute symbols*, not section contents, so nothing
+in the link reserves them; and `.ext_ram.bss` is memset to zero at boot by
+`esp_psram_bss_init()`. If the section grows past `0x3C580000`, every boot silently
+zeroes the head of the region plugins are loaded into. That is exactly what happened
+when `system (rb_psram)` added 16,664 bytes: the section end went from `0x3C57E7F4`
+(6,156 B clear) to `0x3C58290C` (10,508 B *inside* plugin_text), and every plugin
+crashed immediately while codecs were fine -- because `codec_text` sits at `0x3C600000`,
+above the damage. The boot guard was watching `codecbuf`, so it reported a clean layout.
+`XT_AUDIOBUF_SIZE` now reserves 64 KB to restore clearance, and `system_init()` checks
+`XT_PLUGIN_TEXT_ADDR` and prints the clearance on every boot.
+
+Note the asymmetry that makes this easy to get wrong: `XT_AUDIOBUF_SIZE` is only what
+`memory-xtensa-syms.S` contributes. The real section end is `_ext_ram_bss_end`, which
+includes IDF's PSRAM objects and every object the ld fragment maps to `extern_ram` --
+unicode, language, the skin parser, dir/file/fileobj_mgr, `system.o`'s boost log. The
+gap between `audiobufend` and the section end was 117,372 bytes on a recent build, so
+"the arena fits" says nothing about whether the section does.
+
 Every byte is accounted for: 1.125 MB firmware mapping + 4.36 MB `.ext_ram.bss`
-+ 1 MB `_text` reservations + 1.5 MB codec/plugin buffers + 26 KB idle = 8 MB.
+(including its 55 KB of clearance) + 1 MB `_text` reservations + 1.5 MB codec/plugin
+buffers = 8 MB.
 
 **The 1.125 MB firmware reservation is not reclaimable.** It looks like the cost
 of IDF's PSRAM-XIP options (`CONFIG_SPIRAM_RODATA`, `SPIRAM_FETCH_INSTRUCTIONS`,
@@ -240,7 +261,8 @@ it. Not yet fixed.
 ## 3b. Who actually holds the arena
 
 Measured by walking buflib at three points (boot, first playback frame, after a
-recording session closes). The full arena is 4,095 KiB and reads
+recording session closes). The arena was 4,095 KiB then; `XT_AUDIOBUF_SIZE` now
+reserves 64 KB of clearance above it, so it is 3.94 MiB (4,128,768 B). It reads
 `used=4095 KiB, free=0 KiB in 0 runs` in steady state.
 
 | Bytes | Owner (resolved from the `ops` pointer) | Can it yield? |
