@@ -664,6 +664,22 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
     xt_audio_rx_addr = xt_audio_rx_buf;
     return xt_audio_rx_buf;
 }
+
+/* Withhold 64 kHz from the DAC menu.
+ *
+ * The 384-byte packet can carry it -- 256 bytes a frame -- so the ceiling does not
+ * drop it, and a menu entry is an offer a host is free to take. Measured on this
+ * board: a session renegotiated 44.1 -> 64 -> 48 -> 44.1 -> 48, and every hop runs
+ * through mixer_set_frequency(), which stops the transport, reprograms BCLK/MCLK and
+ * the codec, and re-prerolls the GDMA ring. That is audible as seconds of garble that
+ * settle once the host picks one rate, and it is why 64 kHz was removed in the first
+ * place. Nothing produces 64 kHz audio, so offering it buys nothing here; 88.2 and
+ * 96 kHz are kept because the host has real files at those rates.
+ */
+bool usb_audio_target_rate_allowed(unsigned long rate)
+{
+    return rate != 64000;
+}
 #endif /* USB_ENABLE_AUDIO */
 
 /* Strong implementation of the driver's weak DMA hook. The esp32s3 D-cache covers
