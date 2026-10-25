@@ -59,7 +59,7 @@ extern void rb_thread_set_thread0_task(void *handle);
  * disagree with the kernel that actually gets linked. */
 const unsigned int rb_kernel_tick_hz = configTICK_RATE_HZ;
 
-/* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa.c. It is
+/* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa-syms.S. It is
  * created here rather than left to FreeRTOS because Rockbox's kernel reads
  * stackbegin/stackend as linker symbols and uses them as thread 0's stack
  * bounds -- for stack usage reporting, and to place its first thread. If the
@@ -67,7 +67,7 @@ const unsigned int rb_kernel_tick_hz = configTICK_RATE_HZ;
  * region nothing was actually running on. */
 extern unsigned char rockbox_stack[];
 
-/* Rockbox's thread 0 stack, in bytes. memory-xtensa.h defines the array; this
+/* Rockbox's thread 0 stack, in bytes. memory-xtensa-syms.S defines the array; this
  * side only needs the size to agree, and xTaskCreateStatic fails loudly (it
  * asserts) if the buffer is smaller than the word count asked for. */
 #define ROCKBOX_STACK_BYTES 0x8000
