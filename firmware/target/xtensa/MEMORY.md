@@ -1015,4 +1015,18 @@ anything is a measurement, not an argument: watch `Debug -> View HW info`'s TX r
 than editing the core driver's flag.
 
 **Measured** (protocol: on battery, Debug -> View battery view 3, ~60 s on screen then
-~3 min dark). Baseline before the seam: 78-80 mA at the UI screen, 57 mA dark.
+~3 min dark). Baseline before the seam was 78-80 mA at the UI screen and **57 mA dark**;
+with the seam it is **48 mA dark**, so the idle clock alone is worth 9 mA, about 16% of
+the dark-idle draw, and `Debug -> CPU frequency` confirms the ladder: 80 MHz idle,
+240 MHz during playback, 160 MHz while browsing.
+
+The USB DAC question resolved in favour of leaving it alone: a minute of streaming at
+80 MHz left the TX row (`Debug -> View HW info`) solid and error-free, so
+`.needs_cpu_boost = false` in `usb_audio.c:1780` is not a problem to work around and no
+target-side boost is added. Full-speed isochronous OUT is 192 bytes per 1 ms frame, and
+servicing that is nowhere near the core's limit at 80 MHz. Worth re-checking only if the
+endpoint geometry changes.
+
+Scale for what is left: dark idle is 48 mA into a 1400 mAh cell. DFS moved the *awake*
+floor from 240 to 80 MHz; the remaining draw is the chip staying awake at all, which is
+light sleep's territory, not frequency's.
