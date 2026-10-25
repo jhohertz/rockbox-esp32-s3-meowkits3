@@ -400,42 +400,56 @@
  * path blocking on a stalled endpoint, which the target now prevents on its own.
  */
 
-/* The isochronous packet size this target arms per frame, which is also the OUT endpoint's
- * declared wMaxPacketSize and therefore the ceiling on what the descriptor may promise.
- * The device FIFO RAM measures 200 words; after NPTX 16 and PTX 8 x 6 the RX side is 136
- * words = 544 bytes, and usb-xtensa.c asserts it can hold one isochronous packet plus EP0's
- * and the CDC OUT packet. That caps this at 320: 512 bytes would need 176 RX words, which
- * the split cannot pay for, so raising it is not an option on this silicon.
+/* The isochronous packet size this target arms per frame, which is also the OUT
+ * endpoint's declared wMaxPacketSize.
  *
- * 320 is what the RX FIFO can arm, but it is deliberately *not* what the descriptor
- * advertises: 320 would carry 64 kHz (256 bytes a frame), and a DAC session measured on this
- * board churned 44.1 -> 64 -> 48 -> 44.1 -> 48 kHz because the host was free to pick it. Each
- * hop goes through mixer_set_frequency(), which stops the transport, reprograms BCLK/MCLK and
- * the codec, and re-prerolls the ring -- audible as a few seconds of garble that settles when
- * the host finally picks one rate. See USB_AUDIO_MAX_PACKET_BYTES below.
+ * The device FIFO RAM measures 200 words. After NPTX 16 and PTX 16 x 4 the RX side is
+ * 120 words = 480 bytes, and usb-xtensa.c asserts it can hold one isochronous packet
+ * plus one 64-byte control packet. A 384-byte packet is 96 words, so 112 of the 120
+ * are committed and 8 are spare; 512 bytes would need 128 plus the control packet,
+ * 144, which the split cannot pay for. The class default of 1023 needs 256 words and
+ * is out of reach on this core -- which is why this target overrides
+ * USB_AUDIO_BUFFER_SIZE at all, and why every other target in the tree does not:
+ * they are high-speed devices with hundreds of words of FIFO, e.g. x1000's
+ * rx_fifosz = 816 of 3576.
  *
- * There is no 80 kHz entry to carry: hw_freq_sampr[] is 192/176/96/88/64/48/44/32/24/22/16/12/11/8,
- * so 64 kHz is the ceiling this packet can hold. The class default of 1023 could never be
- * armed here, which is why usb_audio.c exposes USB_AUDIO_BUFFER_SIZE at all.
+ * 384 here is a receiver experiment, not a rate decision. The rate menu stays at
+ * 44.1 and 48 kHz via USB_AUDIO_MAX_PACKET_BYTES below, so the host enumerates a
+ * 384-byte endpoint and then streams 176 or 192 bytes into it at a rate that is known
+ * to work. That separates the one unknown which stopped the 96 kHz attempt: the
+ * previous change raised this packet and the rate menu together, and the device went
+ * silent with no sign of life on the USB DAC page, which cannot distinguish "the RX
+ * path cannot take a 384-byte packet" from "the 96 kHz device-side path is broken".
+ * If this build plays normally, the packet size is not the limit and 96 kHz fails on
+ * the device side; if it goes silent again, the receiver cannot take 384 and the park
+ * becomes a finding rather than an open question.
  *
- * HW_SAMPR_CAPS is SAMPR_CAP_ALL_96, so hw_freq_sampr still contains 88.2 kHz (353 bytes a
- * frame) and 96 kHz (384) -- both over this packet size, and a frame that does not fit is
- * dropped silently. USB_AUDIO_MAX_PACKET_BYTES below is what stops the descriptor from
- * offering them; without it the host is free to request 96 kHz, as the CDC log showed. The
- * aligned alternative is HW_SAMPR_CAPS itself, which is how every other target expresses
- * "the hardware cannot carry these rates" -- but that knob feeds local playback and
- * recording as well, so it costs 88.2/96 kHz off the player, not just off the DAC.
+ * HW_SAMPR_CAPS stays SAMPR_CAP_ALL_96 because local playback and recording use
+ * 88.2/96 kHz on this board -- verified on the current build -- and that knob feeds
+ * both of those paths as well as the DAC menu.
+ *
+ * Cost, to be watched rather than assumed: REAL_DSP_BUF_SIZE comes from BUFFER_SIZE*4,
+ * so the queue allocation in usb_audio_request_buf() goes from 48 * 1280 = 61,440
+ * bytes to 48 * 1536 = 73,728 -- 12,288 more out of the buflib arena. "ALLOC FAILED!"
+ * on the USB Audio debug page is the live check that the request was satisfied.
  */
-#define USB_AUDIO_BUFFER_SIZE 320
+#define USB_AUDIO_BUFFER_SIZE 384
 
 /* Advertise only the sample rates whose per-frame payload (2 channels x 16-bit = 4 bytes)
- * fits the armed packet, and stay at or below 48 kHz.
+ * fits within 192 bytes, i.e. 44.1 kHz (176) and 48 kHz (192) only.
  *
- * 192 keeps 44.1 kHz (176) and 48 kHz (192) and drops 64 kHz (256). This is a rate-menu
- * decision, not a FIFO limit: the packet could carry 64 kHz, but nothing produces 64 kHz
- * audio, and letting the host choose it costs a transport restart per hop. It is also the
- * number to revisit when 96 kHz is: the blocker there is not this filter but proving the
- * isochronous OUT endpoint receives packets at all.
+ * This is deliberately smaller than USB_AUDIO_BUFFER_SIZE above, which now arms a
+ * 384-byte packet. The two constants are decoupled on purpose: wMaxPacketSize comes
+ * from the buffer size and the menu from this number, so the packet can be tested
+ * without letting the host pick a rate we have never carried over USB. 192 is also
+ * the number to raise to 384 once the packet experiment comes back clean -- that is
+ * what puts 88.2 and 96 kHz on the menu, and the descriptor's tSamFreq array is sized
+ * for exactly five entries, which is what the filtered list becomes at 384.
+ *
+ * It is not a FIFO limit: nothing produces 64 kHz audio, and letting the host choose
+ * it costs a transport restart per hop (measured churn 44.1 -> 64 -> 48 -> 44.1 -> 48,
+ * audible as several seconds of garble). See the note above for why 96 kHz is a
+ * separate question from this filter.
  */
 #define USB_AUDIO_MAX_PACKET_BYTES  192
 
