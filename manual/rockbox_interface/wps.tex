@@ -82,6 +82,9 @@ your WPS (While Playing Screen).
           \opt{SANSA_CLIP_PAD}{\ButtonHome+\ButtonSelect}
           \opt{SANSA_FUZEPLUS_PAD,AIGO_EROSQ_PAD}{\ButtonPower}
           \opt{RG_NANO_PAD}{\ButtonStart+\ButtonFN}
+          % No hold switch: both face buttons held, the same gesture in every
+          % context because the unlock gesture is remembered from what locked it.
+          \opt{ESP32S3_PAD}{Long (\ButtonA{} + \ButtonB{})}
           & Key lock (software hold switch) on/off.\\
       }%
       % We explicitly list all the appropriate targets here and do no condition
@@ -89,7 +92,7 @@ your WPS (While Playing Screen).
       % not have the button to go from the WPS to the pitch screen.
       \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IRIVER_H10_PAD,MROBE100_PAD%
           ,GIGABEAT_PAD,GIGABEAT_S_PAD,SANSA_E200_PAD,SANSA_C200_PAD%
-          ,SANSA_FUZEPLUS_PAD,RG_NANO_PAD}{%
+          ,SANSA_FUZEPLUS_PAD,RG_NANO_PAD,ESP32S3_PAD}{%
         \ActionWpsPitchScreen
         \opt{HAVEREMOTEKEYMAP}{& \ActionRCWpsPitchScreen}
           & Show \setting{Pitch Screen} (see \reference{sec:pitchscreen}).\\%
