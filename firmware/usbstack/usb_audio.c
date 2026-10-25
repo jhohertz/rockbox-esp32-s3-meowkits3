@@ -701,6 +701,23 @@ int usb_audio_trace_pending(void)
 {
     return rx_usb_idx - rx_play_idx;
 }
+
+/* The rate menu the descriptor actually offers: the same filter the descriptor builder
+   uses, so the trace can say whether 64 kHz is still on the menu. */
+int usb_audio_trace_rates(void)
+{
+    int count = 0;
+
+    for (int i = 0; i <= HW_FREQ_44; i++) {
+#if USB_AUDIO_MAX_PACKET_BYTES
+        if (hw_freq_sampr[i] / 250 > USB_AUDIO_MAX_PACKET_BYTES)
+            continue;
+#endif
+        count++;
+    }
+
+    return count;
+}
 #endif /* XT_AUDIO_TRACE */
 
 __attribute__((weak)) unsigned char *usb_audio_target_rx_buffer(size_t size)
