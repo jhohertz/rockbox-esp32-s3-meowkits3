@@ -97,35 +97,32 @@ void tick_start(unsigned int interval_in_ms)
              rb_kernel_tick_hz, HZ, rb_kernel_tick_hz / HZ, interval_in_ms);
 }
 
-/* SMP FreeRTOS ticks on both cores; Rockbox runs on one, so counting on both
- * would double the clock. */
+/* The kernel tick is the only clock this target has; Rockbox mirrors it rather
+ * than arming its own timer. */
 
 void vApplicationTickHook(void)
 {
-    /* Rockbox's clock has to follow the kernel's, not the core's, and it has to
-     * do so on EVERY tick, unconditionally, before anything else in this hook
-     * can bail out.
-     *
-     * In SMP FreeRTOS the tick hook runs on whichever core won the tick
-     * increment for that period -- measured on this board, always core 1, even
-     * though core 0's tick ISR itself is running fine (IDF's per-core served
-     * counter advances on both). Gating the bump on "am I core 0" therefore left
-     * current_tick at zero forever: the tick was healthy, no thread ever timed
-     * out, and every Rockbox thread blocked and stayed blocked. That is what
-     * made a live, ticking core look idle.
+    /* Rockbox's clock has to follow the kernel's, and it has to do so on EVERY
+     * tick, unconditionally, before anything else in this hook can bail out.
+     * The symptom of gating it on anything was a tick that looked healthy while
+     * current_tick stayed at zero: no thread ever timed out, and every Rockbox
+     * thread blocked and stayed blocked. That is what made a live, ticking core
+     * look idle.
      *
      * xTaskGetTickCount() is a single global counter advanced exactly once per
-     * tick regardless of which core delivers it, so mirroring it is correct
-     * whichever core gets the hook.
+     * tick, so mirroring it is correct whichever context delivers the hook. When
+     * this project ran on the SMP kernel the hook arrived on core 1 rather than
+     * core 0 even though core 0's tick ISR was fine, which is what first made
+     * the unconditional mirror necessary; the kernel is not SMP now, but the
+     * requirement does not depend on that.
      *
      * The two clocks do not run at the same rate, and they must not be forced to
      * agree. Rockbox's HZ is 100 and is not a per-target knob (kernel/include/
-     * tick.h), but ESP-IDF defaults FreeRTOS to 1000 Hz and a great many IDF
-     * components -- the wireless stack especially -- are written against that
-     * granularity. Pinning configTICK_RATE_HZ to 100 to suit Rockbox would bend
-     * the operating system around one application and would come back the moment
-     * Bluetooth is enabled. So the OS keeps its native rate and this seam divides
-     * down to Rockbox's.
+     * tick.h), and this build sets configTICK_RATE_HZ to 1000 -- note that IDF's
+     * own default is 100 (components/freertos/Kconfig:37), so 1000 is a choice
+     * made here rather than something inherited, and the claim that IDF
+     * components need it is being tested separately. So the OS keeps its rate
+     * and this seam divides down to Rockbox's.
      *
      * The divisor must come from the kernel that is actually running, NOT from
      * configTICK_RATE_HZ as seen from this translation unit. Rockbox's objects

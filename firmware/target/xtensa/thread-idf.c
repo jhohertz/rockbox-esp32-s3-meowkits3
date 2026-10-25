@@ -100,15 +100,20 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
 
     /* configSTACK_DEPTH_TYPE counts words; Rockbox's stack_size is bytes. */
     /* Pinned to core 0, and that is load-bearing rather than a tuning choice.
-       xTaskCreateStatic is only a macro for xTaskCreateStaticPinnedToCore with
-       tskNO_AFFINITY, so unaffinitied tasks let SMP FreeRTOS run two Rockbox
-       threads at the same moment on two cores -- measured as CPU 0 running
-       "tick" while CPU 1 ran "scroll", with core 1's idle task starved into the
-       task watchdog. Rockbox's kernel is single-core (NUM_CORES is 1 here), the
-       gate handoff assumes the outgoing and incoming thread are on the same
-       core, and switch_thread() holds no cross-core lock. Pinning also frees
-       core 1's idle task, which is what the watchdog was actually complaining
-       about. */
+       Rockbox's kernel is single-core here (NUM_CORES is 1), the gate handoff
+       assumes the outgoing and incoming thread are on the same core, and
+       switch_thread() holds no cross-core lock. xTaskCreateStatic is only a
+       macro for xTaskCreateStaticPinnedToCore with tskNO_AFFINITY, so an
+       unaffinitied task is what would let two Rockbox threads run at the same
+       moment on two cores -- which happened when this project was built on the
+       SMP kernel, as CPU 0 running "tick" while CPU 1 ran "scroll".
+
+       That kernel is not in use now: idf-app/sdkconfig leaves
+       CONFIG_FREERTOS_SMP unset and the build links
+       components/freertos/FreeRTOS-Kernel, so core 1 runs no tasks. The pin is
+       kept anyway, because Rockbox's single-core assumption is what makes the
+       gate design correct, and because SMP would also remove power management
+       -- see the note on that coupling in MEMORY.md. */
     ctx->task = (void *)xTaskCreateStaticPinnedToCore(
         rb_task_body, ref->name ? ref->name : "rb",
         (configSTACK_DEPTH_TYPE)(ref->stack_size / sizeof(StackType_t)),
