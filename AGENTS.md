@@ -662,6 +662,31 @@ must re-arm the slot it retires while nothing is playing, otherwise the ring
 survives one lap, walks onto a CPU-owned descriptor, and the error branch refuses
 to restart because there is no session to restart for.
 
+### USB device audio on ESP32-S3 tops out at 48 kHz, because of the data FIFO
+
+The wire is not the limit — full-speed isochronous allows 1023 bytes per 1 ms frame,
+and a 96 kHz stereo S16 frame is 384. The limit is the controller's single shared
+data FIFO, which `GHWCFG3[31:16]` reports as **200 words** on this silicon (IDF's
+`OTG_DFIFO_DEPTH 256` and TinyUSB's `dwc2_esp32.h` `.otg_dfifo_depth = 256` are both
+wrong for ESP32-S3; `GHWCFG4[3:0]` reads 0, so TinyUSB's `+ EP_LOC_CNT` adds nothing).
+Synopsys' allocation rule, quoted in TinyUSB's `dcd_dwc2.c`, is that the shared RX
+FIFO must hold *two* packets of the largest endpoint size:
+
+```c
+GRXFSIZ = 13 + 1 + 2 * (largest_ep_size/4 + 1) + 2 * ep_out_count
+```
+
+With RX at 120 words: 192-byte frames need 112 and fit; 256-byte frames need 144;
+384-byte frames need 208 — more than the whole RAM. So the ceiling is 48 kHz at any
+endpoint count, and adding OUT endpoints makes it worse at 2 words each.
+
+Two things that cost two flashes to learn. Full-speed isochronous OUT is **never
+re-sent**: bytes that do not fit are dropped without an error, without a completion
+and without a counter, and the host's URBs still complete — so a Linux stream sitting
+in `RUNNING` with `hw_ptr` advancing proves only that the host transmitted. And the
+advertised rate list is not inert: with two rates offered ALSA reserved 192-byte
+packets, with four the same negotiated 48 kHz stream reserved 288.
+
 ### There is no NULL-terminated descriptor list on this GDMA
 
 `next = 0` does **not** end a link list. With `out_auto_wrback` (`OUT_CONF0`
