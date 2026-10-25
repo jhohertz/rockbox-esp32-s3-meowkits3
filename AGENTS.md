@@ -3537,6 +3537,12 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- Rockbox's build does not use `-Wshadow`, and neither do the IDF flags layered on top of
+  it. A function-local `static` that shares a name with a file-scope `static` therefore
+  compiles without warning and silently reads a fresh zero-initialized object instead of the
+  one another function maintains. This produced a debug counter that reported zero forever
+  and looked like a hardware result (`firmware/target/xtensa/debug-xtensa.c`, the PM row).
+  Code that reads a file-scope value must not re-declare it in the reader.
 - On ESP32-S3, **any access to the USB wrap block or its pads must happen while that block is
   clocked**. `usb_dw_target_disable_clocks()` clears the wrap gate at the end of the detach; a
   read or write of `USB_WRAP_*` afterwards does not fault, it stalls the bus until the
