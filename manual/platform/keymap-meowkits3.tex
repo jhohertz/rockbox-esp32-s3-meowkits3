@@ -97,11 +97,13 @@
 \newcommand{\ActionWpsSetRepeatMode}{\NotAvail}
 \newcommand{\ActionWpsShuffle}{\NotAvail}
 \newcommand{\ActionWpsSetShuffle}{\NotAvail}
-\newcommand{\ActionWpsAbSetA}{\NotAvail}
-\newcommand{\ActionWpsAbSetB}{\NotAvail}
-\newcommand{\ActionWpsAbSetAPrevDir}{\NotAvail}
-\newcommand{\ActionWpsAbSetBNextDir}{\NotAvail}
-\newcommand{\ActionWpsAbReset}{\NotAvail}
+% A-B repeat markers: hold A, then press the direction. Reset takes both face
+% buttons.
+\newcommand{\ActionWpsAbSetA}{\ButtonA{} + \ButtonLeft}
+\newcommand{\ActionWpsAbSetB}{\ButtonA{} + \ButtonRight}
+\newcommand{\ActionWpsAbSetAPrevDir}{\ButtonA{} + \ButtonLeft}
+\newcommand{\ActionWpsAbSetBNextDir}{\ButtonA{} + \ButtonRight}
+\newcommand{\ActionWpsAbReset}{\ButtonA{} + \ButtonB}
 
 %Button actions, tree context
 \newcommand{\ActionTreeWps}{\TouchActionTreeWps}

@@ -21,19 +21,14 @@ the corresponding spike is done and the manual's keymap file should stop saying
 - **Claim:** `ab_repeat_buttons` is in our feature list, so
   `manual/configure_rockbox/playback_options.tex` documents the A-B repeat
   setting.
-- **Reality:** no key on this target produces `ACTION_WPS_ABSETA` or
-  `ACTION_WPS_ABSETB`. `apps/keymaps/keymap-meowkits3.c` and
-  `apps/keymaps/keymap-touchscreen.c` contain neither. The user can turn A-B
-  repeat on in the settings menu but cannot mark the two points.
-- **Evidence:** the action list extracted from both keymap files has no `AB*`
+- **Reality:** no key on this target produced `ACTION_WPS_ABSETA_PREVDIR` or
+  `ACTION_WPS_ABSETB_NEXTDIR`. The user could turn A-B repeat on in the
+  settings menu but could not mark the two points. **Fixed** — see Closed.
+- **Evidence:** the action list extracted from both keymap files had no `AB*`
   entries.
-- **What fixing it means:** add mappings in the WPS context. Long Left/Right are
-  taken by seek, so the natural slots are the touch grid corners we currently
-  leave unclaimed, or a modifier gesture on B. `keymap-touchscreen.c` leaves
-  `TouchActionWpsAbSet*` empty, so a target-specific addition is the right
-  shape.
-- **Status:** open. This is the most user-visible gap: a feature we advertise
-  but cannot use.
+- **What fixing it means:** mappings in the WPS context using a held modifier,
+  following the as3525 convention. See `UX-PLAN.md` S4.
+- **Status:** closed.
 
 ## 2. Shuffle and repeat-mode toggles have no key
 
@@ -120,8 +115,10 @@ the corresponding spike is done and the manual's keymap file should stop saying
 - **What fixing it means:** a point-mode layout for 320x240 in `keyboard.c`.
   That is a core file, so it would need the same kind of seam we use elsewhere
   rather than a resolution-specific hack.
-- **Status:** open. This is a real usability gap on a touch device: text entry
-  by stick is slow.
+- **Status:** part 1 closed (stick mapping). Part 2 closed as "not doing" —
+  see Closed. Text entry is now possible with the stick; the screen still does
+  not name the keys, and that is upstream behaviour shared by every stick-only
+  target rather than a gap we should paper over.
 
 ## 9. Actions the manual names that we never produce
 
@@ -204,6 +201,16 @@ actually have.
 
 ## Closed
 
+- **§1 — A-B repeat markers.** `button_context_wps` in
+  `apps/keymaps/keymap-meowkits3.c` now maps `BUTTON_A|BUTTON_LEFT` →
+  `ACTION_WPS_ABSETA_PREVDIR`, `BUTTON_A|BUTTON_RIGHT` →
+  `ACTION_WPS_ABSETB_NEXTDIR` and `BUTTON_A|BUTTON_B` → `ACTION_WPS_ABRESET`,
+  each with `BUTTON_A` as the prerequisite — the as3525 pattern
+  (`keymap-c200.c:66-69`, `keymap-e200.c:66-69`) with A as the modifier instead
+  of POWER. `action.c:591-604` requires an exact `button_code` and prefers an
+  exact prerequisite, so a lone A is still play/pause and these are separate
+  events. This also removed the "not available or Short Right + Long Right"
+  line the manual was printing on the directory-skip rows.
 - **§8, part 1 — the stick had no keyboard context.** `button_context_keyboard`
   now exists in `apps/keymaps/keymap-meowkits3.c` and
   `target_get_context_mapping()` answers `CONTEXT_KEYBOARD` and
@@ -214,4 +221,14 @@ actually have.
   purpose: `keyboard.c:713-725` already turns LEFT/RIGHT into cursor movement in
   line-edit and morse mode, and the dispatcher returns the first match, so a
   hold-based cursor mapping would have shadowed the row move. The manual's
-  keyboard macros were updated to match. Part 2 (the hint line) is still open.
+  keyboard macros were updated to match.
+- **§8, part 2 — keyboard hint line.** **Not doing; nothing to integrate.**
+  `gui_dynbutton` / `dynamic_menu.c` do not exist in this tree at all (zero
+  references tree-wide), and `kbd_draw_buttons()` draws
+  `LANG_KBD_OK`/`DELETE`/`CANCEL` only as touchable regions on the point-mode
+  path (`keyboard.c:688`), which is itself gated behind the 480x640 requirement.
+  `keyboard.c` includes `talk.h` but never calls the voice UI, so there is no
+  spoken-hint feature to enable either. A hint line would mean inventing a core
+  feature for one target. Discoverability is covered by the manual's keyboard
+  table instead, and by the stick gestures deliberately mirroring the touch
+  grid's tap-select / hold-done convention.
