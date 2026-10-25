@@ -239,16 +239,22 @@ int button_read_device(int *data)
      * REG 46H bit list) sets when the press outlasts the long-press threshold -- 1 s here
      * -- and stays set until written back. The short press is bit 1 of the same register.
      *
-     * Nothing gates on the IRQ pin. Per section 9.10 the pin is an open-drain output that
-     * reflects *enabled* pending events and is pulled high externally through 51K, so
-     * gating on it makes detection depend on both the mask semantics and that resistor.
-     * The status register is the authoritative witness and the read is cheap enough to
-     * take directly.
+     * The IRQ pin gates the read. Per section 9.10 it is an open-drain output that
+     * reflects *enabled* pending events, and axp173_init() leaves only IRQ23 (the PEK long
+     * press) enabled -- IRQEN0..2 and 4..5 are written 0 there, and every status register
+     * is cleared -- so a high pin means there is nothing latched to read. The pin is not
+     * trusted absolutely: it is pulled high by 51K externally and by the pad's internal
+     * pull-up, and if it ever read high while a press *was* latched the key would go dead.
+     * So every twentieth pass ignores the pin and reads the latch anyway. The latch
+     * survives release, which is what makes that safe: a press missed by the gate is still
+     * seen within 2 s, and 2 s is invisible against a threshold measured in seconds.
      *
-     * The read costs about 1.6 ms of I2C, so it is taken once every 100 ms rather than on
-     * every tick: this function runs at HZ in the tick thread. 100 ms of granularity is
-     * invisible against a threshold measured in seconds, and it keeps the bus free for the
-     * codec and the expander.
+     * The read costs about 1.6 ms of blocking I2C, so it is taken at most once every
+     * 100 ms: this function runs at HZ in the tick thread. That 1.6 ms is not just bus
+     * load -- it is subtracted from the window the idle task would otherwise sleep in, and
+     * the light-sleep floor is 8 ms of a 10 ms tick period. Gating it is what keeps that
+     * margin, which is why it is done before power management is switched on rather than
+     * as part of it.
      *
      * sys_poweroff() is the clean path: it queues SYS_POWEROFF, the main thread runs
      * clean_shutdown() (stop the recorder, bookmark, flush settings and the dircache),
@@ -286,6 +292,7 @@ int button_read_device(int *data)
      * mechanism, so the clean shutdown path is unaffected.
      */
     static unsigned int pek_poll_div;
+    static unsigned int pek_pin_skips;
     static bool shutdown_requested;
     static long shutdown_request_tick;
     static bool auto_off = true;    /* as programmed by axp173_init() */
@@ -325,6 +332,13 @@ int button_read_device(int *data)
             auto_off = true;
         }
 #endif
+        /* One GPIO read instead of one I2C transaction, on the 99 passes in 100 that
+           have nothing latched. See the note above for why the pin may gate the read and
+           why it may not be the only witness. */
+        if (gpio_read_pin(PIN_PMU_IRQ) && ++pek_pin_skips < 20)
+            return b;
+        pek_pin_skips = 0;
+
         if (axp173_power_key_pressed())
         {
             shutdown_requested = true;
