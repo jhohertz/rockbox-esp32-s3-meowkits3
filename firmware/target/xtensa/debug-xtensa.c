@@ -95,11 +95,12 @@ static bool i2c_answers(const struct i2c_device *dev)
     return i2c_readmem(dev->addr, dev->reg, &val, 1) == 1;
 }
 
-/* Total core cycles since the PM row started sampling. Sampled from the tick
- * thread rather than differenced between screen reads: the cycle counter is 32
- * bits and wraps well inside the interval this row is meant to cover. See the
- * INFO_PM case below. */
+/* Total core cycles since the PM row started sampling, and how many times the
+ * sampling ran. Sampled from the tick thread rather than differenced between
+ * screen reads: the cycle counter is 32 bits and wraps well inside the interval
+ * this row is meant to cover. See the INFO_PM case below. */
 static uint64_t cycle_total;
+static unsigned int cycle_samples;
 
 static void pm_cycle_tick(void)
 {
@@ -111,6 +112,7 @@ static void pm_cycle_tick(void)
      * below the wrap point. */
     cycle_total += (uint32_t)(now - last);
     last = now;
+    cycle_samples++;
 }
 
 enum
@@ -133,17 +135,30 @@ enum
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
      * screen is opened rather than sampled continuously. */
     INFO_CODEC,
-    /* Whether power management is configured, and whether the core is actually
-     * asleep. esp_pm_dump_locks() is the obvious tool and is unusable here: it
-     * takes a newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this
-     * measures the effect instead. esp_cpu_get_cycle_count() counts core clocks and
-     * stops when the core is powered down in light sleep
+    /* Whether power management is configured, and what the core actually did.
+     * esp_pm_dump_locks() is the obvious tool and is unusable here: it takes a
+     * newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this measures
+     * the effect instead: esp_cpu_get_cycle_count() counts core clocks and stops
+     * while the core is powered down in light sleep
      * (CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP); esp_timer_get_time() is wall time
-     * and keeps running. Their ratio is therefore the average MHz the core saw: if
-     * it reads below the configured minimum, the core was asleep for part of the
-     * interval. The interval is since the last time this row was drawn, so the
-     * reading that matters is the second one -- open the screen, let it go dark for
-     * a couple of minutes, come back and read it again. */
+     * and keeps running.
+     *
+     * The first version of this row divided one by the other and printed an average
+     * MHz. It read zero on every visit -- not "the core slept forever" but the
+     * numerator never moving, because a local declaration of the accumulator shadowed
+     * the file-scope one that pm_cycle_tick() increments. A derived ratio that can
+     * silently be zero is worse than no number, so the row now prints its inputs and
+     * nothing else: the sample count, the cycles accumulated since the previous read,
+     * and the wall microseconds since it. Those three also separate the ways this can
+     * fail, which a single ratio could not:
+     *
+     *   samples advancing, cycles zero -> the cycle counter itself reads zero, i.e. a
+     *                                     sleep does not put it back
+     *   samples stuck at zero           -> the tick task is not running
+     *
+     * The first read arms the sampling and reports no interval; the next covers the
+     * time since, which is the dark-idle window worth measuring: open the screen,
+     * let it go dark for a few minutes, come back and read it again. */
     INFO_PM,
     /* The crash trail, newest first. A hardware exception goes to IDF's handler,
      * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
@@ -230,43 +245,46 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_PM: {
         esp_pm_config_t cfg = { 0 };
         uint64_t us = esp_timer_get_time();
-        unsigned int eff = 0;
+        unsigned int n_samp = 0;
+        uint32_t d_cyc = 0, d_us = 0;
 
-        /* esp_cpu_get_cycle_count() is 32 bits: it wraps every 17.9 s at 240 MHz
-         * and every 53.7 s at 80 MHz, so differencing two reads of this row
-         * silently drops whole wraps. A core that never slept for a minute at
-         * 80 MHz then computes to ~11 MHz and looks like it slept 90 % of the
-         * interval -- which is exactly the false conclusion this row was written
-         * to avoid. Instead the counter is sampled every tick, where a 10 ms
-         * window cannot wrap, and summed. The first read arms the sampling and
-         * takes a baseline, so it reports no rate; the next one covers the
-         * interval since, which is the dark-idle window worth measuring. */
-        static uint64_t base_us, base_cycles, cycle_total;
+        /* The accumulator is named here only as a reader of the file-scope variable:
+         * declaring it in this list would create a local that shadows it, and every
+         * reading would then be zero -- which is exactly the bug this row had. Both
+         * deltas print as 32-bit values; three minutes at this chip's slowest clock is
+         * 1.4e8 cycles and 1.8e8 microseconds, so the range covers any interval worth
+         * measuring here, and the row stays clear of a 64-bit conversion in a printf
+         * other targets build with narrower formats. */
+        static uint64_t base_us, base_cycles;
+        static unsigned int base_samples;
         static bool sampling;
+
+        if (sampling)
+        {
+            d_cyc = (uint32_t)(cycle_total - base_cycles);
+            d_us = (uint32_t)(us - base_us);
+            n_samp = cycle_samples - base_samples;
+        }
+
+        base_us = us;
+        base_cycles = cycle_total;
+        base_samples = cycle_samples;
 
         if (!sampling)
         {
-            if (tick_add_task(pm_cycle_tick) == 0)
-                sampling = true;
-            base_us = us;
-            base_cycles = cycle_total;
-        }
-        else
-        {
-            uint64_t d_us = us - base_us;
-            uint64_t d_cyc = cycle_total - base_cycles;
-
-            if (d_us > 0)
-                eff = (unsigned int)(d_cyc / d_us);
-            base_us = us;
-            base_cycles = cycle_total;
+            /* tick_add_task() returns 0 on success (tick.c:59). */
+            if (tick_add_task(pm_cycle_tick) != 0)
+            {
+                snprintf(buf, bufsz, "PM: tick_add_task failed, cannot sample");
+                break;
+            }
+            sampling = true;
         }
 
         if (esp_pm_get_configuration(&cfg) == ESP_OK)
-            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, eff %u MHz%s",
+            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, %u samples %u cyc / %u us",
                      cfg.min_freq_mhz, cfg.max_freq_mhz,
-                     cfg.light_sleep_enable ? "on" : "off", eff,
-                     sampling ? "" : " (arming)");
+                     cfg.light_sleep_enable ? "on" : "off", n_samp, d_cyc, d_us);
         else
             snprintf(buf, bufsz, "PM: esp_pm_get_configuration failed");
         break;

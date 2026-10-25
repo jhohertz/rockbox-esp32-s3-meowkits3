@@ -1171,3 +1171,47 @@ cycle sampling and reports no rate; the next read covers the interval since, so 
 meaningful reading is: open it, let the screen go dark for a few minutes, come back. It
 reads `min/max MHz`, `sleep on/off`, and the average MHz the core actually saw -- which is
 below the configured minimum exactly when the core spent part of that interval asleep.
+
+## Measured floor after the amplifier policy: 42 mA
+
+Dark idle, battery current, Debug -> View battery view 3:
+
+| state | dark idle | change |
+|---|---|---|
+| before the frequency seam | 57 mA | -- |
+| seam on, idle core at 80 MHz | 48 mA | -9 mA |
+| automatic light sleep on | 46 mA | -2 mA |
+| amp + codec off when nothing plays | 42 mA | -4 mA |
+
+The amplifier was the largest board-side element still permanently on, and it was worth
+more than light sleep. That is the whole point of the progression: once the core spends most
+of its time asleep, further sleep work buys nothing, and the remaining current belongs to
+devices that are simply powered. What is left -- AXP173 quiescent, PCF8563, FT6336, PSRAM
+refresh, and the retained digital peripheral domain -- cannot be cut without either deep
+sleep (which skips the clean shutdown) or removing rails the expander and card slot depend
+on. Playback and a USB-DAC session were both confirmed working after the policy landed,
+which is the pair that would have exposed a wrong playing-state source.
+
+### The PM row's `eff` was a shadowed variable, not a sleeping core
+
+The first version of `INFO_PM` printed an average MHz and read **zero on every visit**. The
+tempting reading was "the core is asleep all the time"; the actual cause was
+
+```c
+static uint64_t base_us, base_cycles, cycle_total;   /* inside the case block */
+```
+
+which declared a fresh local `cycle_total` that shadowed the file-scope accumulator
+`pm_cycle_tick()` increments. The row was reading its own zero-initialized copy. The
+compiler does not warn: this build has no `-Wshadow`, and Rockbox's own build flags are not
+the IDF ones, so nothing in either half of the tree catches a static shadowing a static.
+
+The row now prints its inputs instead of a derived ratio -- sample count, accumulated
+cycles and wall microseconds since the previous read -- for two reasons. A ratio that can
+silently be zero is worse than no number. And the three raw values separate failure modes
+the ratio could not: samples advancing while cycles stay zero means the cycle counter itself
+is not surviving a sleep; samples stuck at zero means the tick task is not running.
+
+General lesson for this tree: **a function-local `static` that shares a name with a
+file-scope `static` compiles silently.** Anything reading a value another function
+maintains must not be re-declared in the reader.
