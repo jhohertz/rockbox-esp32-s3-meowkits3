@@ -1134,6 +1134,17 @@ void ICODE_ATTR gdma_irq(void)
 
     if (st & GDMA_INT_DONE)
     {
+        /* Teardown guard. sink_stop() clears playing and then hands every
+         * descriptor back to the CPU; a completion that arrives during that window
+         * must not arm anything, or the handler would write into slots the stop
+         * sequence is clearing. This is the race the completion mask used to paper
+         * over, handled at the point where the state is actually known. */
+        if (!playing)
+        {
+            cb_pending = 0;
+            goto done_exit;
+        }
+
         /* Take the engine off the list before it can fetch anything else.
          *
          * This is the imx233 model -- that driver's DMA command carries
@@ -1221,39 +1232,46 @@ done_exit:
 
 }
 
-/* Mask the event rather than the slot, so a completion that happens while the mixer
- * is busy is not lost: int_raw stays set and fires as soon as the mask is lifted. */
+/* The play lock is a counter only -- it must not mask GDMA_INT_DONE.
+ *
+ * Masking the completion event stops the handler from re-arming retired slots,
+ * but out_auto_wrback means the engine keeps consuming descriptors regardless.
+ * After four of them the walk wraps onto a descriptor the CPU owns,
+ * out_dscr_err fires, and tx_recover() answers with one repeated frame and three
+ * silent slots -- audible as a glitch.
+ *
+ * That is why the symptom lives at the first frame of a session and not at a
+ * particular rate: pcm_mixer.c:359 holds this lock across the whole DSP chain,
+ * and the first frame is the expensive one (resampler and channel setup,
+ * buffering's first SD read, codec startup). It outlasts the ring's runway of
+ * three slots, about 16 ms at 44.1 kHz. Steady-state frames fit, which is why
+ * the error counters go flat after the first couple of sessions.
+ *
+ * The handler already copes with a locked completion: it arms the retired slot
+ * unconditionally -- pending audio if ops.play published one, silence otherwise --
+ * and defers only the core callback through cb_pending, replayed on unlock below.
+ * There is nothing for a mask to protect. What the mask did protect was teardown,
+ * and that is now handled where it belongs: the DONE branch declines to arm
+ * anything once playing is false. */
 static void sink_lock(void)
 {
-    if (locked++ == 0)
-        wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DONE);
+    locked++;
 }
 
 static void sink_unlock(void)
 {
-    /* Clamped, and the clamp is the fix for a drift that was easy to miss.
+    /* Clamped at zero, and the clamp still matters now that the count no longer
+     * gates an interrupt.
      *
-     * sink_stop() sets locked = 0 deliberately (see the note there: a stop that
-     * arrives while the mixer still holds the play lock used to leave the count
-     * nonzero and GDMA_INT_DONE masked for good). But the mixer's own outstanding
-     * pcm_play_unlock() still runs afterwards, and with a bare --locked that took
-     * the count to -1 -- where it then stayed: measured locked=-1 in 500 of 548
-     * samples during ordinary playback.
-     *
-     * Once negative, neither transition ever equals zero again. sink_lock()'s
-     * "if (locked++ == 0)" never masks and this function's "if (--locked == 0)"
-     * never unmasks, so the pair silently stops doing anything and the completion
-     * interrupt is live at all times -- including inside the start and stop
-     * sequences the play lock exists to protect. That is a race window, not a
-     * cosmetic counter bug.
-     *
-     * Clamping at zero keeps the invariant the two guards depend on: the count is
-     * always the number of locks genuinely held, the 0<->1 edges still mean
-     * something, and an unlock that arrives after a stop simply re-asserts the
-     * unmask, which is what we want anyway. */
+     * sink_stop() sets locked = 0 when a stop ends the session, but the mixer's own
+     * outstanding pcm_play_unlock() still runs afterwards. With a bare --locked that
+     * took the count to -1 -- measured locked=-1 in 500 of 548 samples during
+     * ordinary playback -- and from there it never returns to zero, so the
+     * `locked == 0` test that replays a deferred completion would never fire again.
+     * Clamping keeps the count equal to the number of locks genuinely held, which is
+     * all this counter is used for now. */
     if (locked > 0)
         locked--;
-
 
     if (locked == 0 && cb_pending)
     {
@@ -1270,14 +1288,6 @@ static void sink_unlock(void)
         }
         else
             fill_silence(slot);
-    }
-
-    if (locked == 0)
-    {
-        /* Re-enabling the completion event is the whole job here. Nothing may
-           print: usb_audio.c reaches this unlock with interrupts disabled, and a
-           printf on this core stops the player rather than reporting anything. */
-        wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
     }
 }
 
@@ -1339,17 +1349,16 @@ static void sink_stop(void)
     commit_dcache_range((const void *)desc, sizeof(desc));
     pend_valid = 0;
 
-    /* Restore the interrupt invariant. sink_lock() masks GDMA_INT_DONE on the
-     * first lock and sink_unlock() only unmasks it when the count returns to
-     * zero, so a stop that arrives while the mixer still holds the play lock
-     * leaves the count nonzero and the completion masked for good: the next
-     * session's sink_unlock() decrements to a nonzero count and skips the
-     * re-enable, no OUT_DONE ever fires, and playback hangs with the buffer
-     * full. Measured that way -- locked=2, int_ena 0x4 with the DONE bit clear,
-     * dma irq=0, pcmbuf 181504/524288 and rising.
+    /* End of session: drop the lock accounting. A stop abandons any lock still
+     * held, and leaving the count nonzero would suppress the cb_pending replay in
+     * sink_unlock() forever -- the historical symptom was playback hanging with the
+     * buffer full, measured as locked=2, int_ena 0x4 with the completion bit clear,
+     * dma irq=0 and pcmbuf 181504/524288 and rising.
      *
-     * A stop ends the session, so any lock still held is moot: drop the
-     * accounting and unmask unconditionally. */
+     * Asserting GDMA_INT_DONE here is now defensive rather than load-bearing:
+     * sink_lock() no longer masks the event, but a stop should leave the transport
+     * able to signal completions whatever the interrupt enable register happened to
+     * hold. */
     locked = 0;
     wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE);
 }
