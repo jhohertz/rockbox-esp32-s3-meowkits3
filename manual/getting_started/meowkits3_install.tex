@@ -1,0 +1,91 @@
+Installing Rockbox on the \dap{} means writing one image to the board's
+flash memory and putting Rockbox's own files on the SD card. There is no
+separate bootloader: the image written at flash offset \fname{0x0} is read and
+loaded by the chip's mask ROM, which is part of the ESP32-S3 itself. This also
+means the stock firmware is replaced outright, and there is nothing to keep or
+back up unless you want to restore it later.
+
+Rockbox Utility does not offer this board yet, so the installation is done by
+hand. You will need:
+
+\begin{itemize}
+  \item The \fname{rockbox.esp32s3} image from a Rockbox build for the
+    MeowKit ESP32-S3 target.
+  \item A USB-C cable. The board's USB socket is wired directly to the
+    ESP32-S3, so \fname{esptool} can talk to it over that connection.
+  \item \fname{esptool}, version 4 or later.
+  \item A FAT32-formatted microSD card. Rockbox reads its files from the card,
+    and the player stores no music in internal flash.
+\end{itemize}
+
+\begin{enumerate}
+
+\item \textbf{Connect the board.} Plug the USB-C cable into your computer. If
+  the board is already running Rockbox or the stock firmware, hold the
+  \ButtonPower{} key until it powers off, then connect while it is off. The
+  chip's boot loader reports itself as a serial port; on Linux it usually
+  appears as \fname{/dev/ttyACM0}, and on Windows as a \fname{COM} port.
+
+\item \textbf{Check that \fname{esptool} can see the chip.}
+
+\begin{code}
+    esptool --chip esp32s3 --port /dev/ttyACM0 chip_info
+\end{code}
+
+  This prints the chip revision and the flash size. If it fails, the board is
+  not in download mode; power it off and try again, or use the board's UART
+  pins instead of USB.
+
+\item \textbf{Write the firmware image.}
+
+\begin{code}
+    esptool --chip esp32s3 --port /dev/ttyACM0 write_flash 0 rockbox.esp32s3
+\end{code}
+
+  The address matters: the image must start at offset \fname{0}, because that
+  is where the mask ROM looks for it. \fname{esptool} verifies the image header
+  and its checksum as it writes.
+
+  \note{Writing to offset 0 replaces whatever was there. If you may want the
+    board's original firmware again, read it off before you start and keep the
+    copy. The command below saves the whole 16~MB flash.}
+
+\begin{code}
+    esptool --chip esp32s3 --port /dev/ttyACM0 read_flash 0 0x1000000 stock-firmware.bin
+\end{code}
+
+\item \textbf{Prepare the SD card.} Format it as FAT32, then unpack Rockbox's
+  files into the root of the card. The main package contains the player's
+  default theme, its plugins and codecs, and the language files:
+
+\begin{code}
+    unzip rockbox.zip -d /path/to/sd-card/
+\end{code}
+
+  This creates a \fname{.rockbox} directory at the card's root. Two further
+  packages are worth unpacking into the same location:
+
+\begin{itemize}
+  \item \fname{rockbox-fonts.zip} -- the font files that many third-party
+    themes need. Without them a theme that asks for a font of its own reports
+    a font load error and is not displayed.
+  \item \fname{rockbox-themes.zip} -- additional themes, if you installed any.
+    Each theme ships its own backdrops and images, and the themes are selected
+    in \fname{Settings --> Theme}.
+\end{itemize}
+
+\note{The \fname{.rockbox} directory is hidden on some operating systems. If
+  you cannot see it in a file manager, enable viewing of hidden files before
+  copying anything else onto the card, or you may end up with a second
+  \fname{.rockbox} directory nested inside the first.}
+
+\item \textbf{Start Rockbox.} Insert the card, then press and hold the
+  \ButtonPower{} key to turn the board on. The player boots to the main menu.
+  Rockbox reads \fname{.rockbox/settings/rockbox.cfg} from the card at startup,
+  so your settings follow the card rather than the board.
+
+\end{enumerate}
+
+To update Rockbox later, repeat step 3 with a new image. Settings and the
+theme files are untouched by that step; overwriting them requires the
+corresponding zip to be unpacked again.

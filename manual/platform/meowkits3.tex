@@ -1,0 +1,32 @@
+\def\UseOption{meowkits3}
+\edef\UseOption{\UseOption,ESP32S3_PAD}
+\edef\UseOption{\UseOption,HAVE_BACKLIGHT}
+\edef\UseOption{\UseOption,touchpad}
+\edef\UseOption{\UseOption,meowkits3}
+
+\newcommand{\playerman}{MeowKit}
+\newcommand{\playertype}{ESP32-S3}
+\newcommand{\playerlongtype}{\playertype}
+\newcommand{\dapdisplaywidth}{320}
+\newcommand{\dapdisplayheight}{240}
+\newcommand{\dapdisplaydepth}{16}
+\newcommand{\specimg}{meowkits3}
+%Used to name the player, e.g. ...to the \dap
+\newcommand{\dap}{player}
+%For use when referring to the player. E.g. the \daps\ capacity ...
+\newcommand{\daps}{player's}
+\newcommand{\firmwarefilename}{\fname{rockbox.esp32s3}}
+\newcommand{\firmwareextension}{\fname{esp32s3}}
+% There is no separate bootloader file: the image flashed at offset 0x0 is
+% loaded by the chip's mask ROM. These are defined because the generic
+% installation text references them.
+\newcommand{\bootfilename}{\fname{rockbox.esp32s3}}
+\newcommand{\bootbackupfilename}{\fname{stock-firmware.bin}}
+\newcommand{\originalfirmwarefilename}{\fname{stock-firmware.bin}}
+\newcommand{\screenshotsize}{8cm}
+\newcommand{\disk}{SD card}
+
+% link external keymap files: the stick and the two face buttons, then the
+% shared 3x3 touch grid used by every touchscreen target
+\input{platform/keymap-meowkits3.tex}
+\input{platform/keymap-touchscreen.tex}
