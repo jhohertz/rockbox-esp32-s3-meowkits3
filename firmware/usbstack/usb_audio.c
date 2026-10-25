@@ -673,6 +673,36 @@ static void usb_audio_init(void)
  * allocator's pool may live exactly there. A target that can offer an
  * internal-SRAM buffer returns it from this hook; the default NULL keeps the
  * core_alloc() path every other target uses. */
+#ifdef XT_AUDIO_TRACE
+/* TEMPORARY PROBE: read-only views for the i2s transmit trace (i2s-xtensa.c).
+ * These read nothing but state the class already keeps for its own debug screen,
+ * and they are called from a tick task, not from the isochronous completion path. */
+unsigned long usb_audio_trace_rate(void)
+{
+    return hw_freq_sampr[as_playback_freq_idx];
+}
+
+int usb_audio_trace_underflow(void)
+{
+    return playback_audio_underflow ? 1 : 0;
+}
+
+int usb_audio_trace_overflow(void)
+{
+    return usb_rx_overflow ? 1 : 0;
+}
+
+int usb_audio_trace_dropped(void)
+{
+    return frames_dropped;
+}
+
+int usb_audio_trace_pending(void)
+{
+    return rx_usb_idx - rx_play_idx;
+}
+#endif /* XT_AUDIO_TRACE */
+
 __attribute__((weak)) unsigned char *usb_audio_target_rx_buffer(size_t size)
 {
     (void)size;
