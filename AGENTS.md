@@ -4567,7 +4567,9 @@ actions this target cannot produce, and every mapping in it mirrors
 `apps/keymaps/keymap-meowkits3.c` and `keymap-touchscreen.c`. The gaps that
 surface as a result are tracked in `firmware/target/xtensa/DOC-GAPS.md`: add an
 entry whenever the manual promises something the keymap does not deliver, and
-update the tex file when a mapping is finally implemented.
+update the tex file when a mapping is finally implemented. The implementation
+plan for those gaps — gesture budget, upstream precedents, spike order — is in
+`firmware/target/xtensa/UX-PLAN.md`.
 
 Two LaTeX gotchas found while writing ours: `\begin{code}` is fancyvrb and
 **cannot appear inside a `\note{}` argument** (runaway argument, then a
