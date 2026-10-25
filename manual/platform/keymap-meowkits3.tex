@@ -137,18 +137,22 @@
 \newcommand{\ActionRecExit}{\ButtonB{} or \TouchActionRecExit}
 
 %Button actions, virtual keyboard context. This is the line-at-a-time keyboard;
-% the point-mode layout needs 480x640, which this panel is not.
+% the point-mode layout needs 480x640, which this panel is not. Select is a tap
+% and done is a hold of the same key, which is the convention the on-screen
+% keyboard uses throughout Rockbox. Left and right move along a character row;
+% in line-edit and morse mode the keyboard turns the same two gestures into
+% cursor movement, so there are no separate cursor keys here.
 \newcommand{\ActionKbdLeft}{\ButtonLeft{} or \TouchActionKbdLeft}
 \newcommand{\ActionKbdRight}{\ButtonRight{} or \TouchActionKbdRight}
 \newcommand{\ActionKbdUp}{\ButtonUp{} or \TouchActionKbdUp}
 \newcommand{\ActionKbdDown}{\ButtonDown{} or \TouchActionKbdDown}
 \newcommand{\ActionKbdSelect}{\ButtonA{} or \TouchActionKbdSelect}
-\newcommand{\ActionKbdDone}{\ButtonA{} or \TouchActionKbdDone}
+\newcommand{\ActionKbdDone}{Long \ButtonA{} or \TouchActionKbdDone}
 \newcommand{\ActionKbdAbort}{\ButtonB{} or \TouchActionKbdAbort}
 \newcommand{\ActionKbdCursorLeft}{\ButtonLeft{} or \TouchActionKbdCursorLeft}
 \newcommand{\ActionKbdCursorRight}{\ButtonRight{} or \TouchActionKbdCursorRight}
-\newcommand{\ActionKbdBackSpace}{\ButtonB{} or \TouchActionKbdBackSpace}
-\newcommand{\ActionKbdPageFlip}{\TouchActionKbdPageFlip}
+\newcommand{\ActionKbdBackSpace}{Long \ButtonB{} or \TouchActionKbdBackSpace}
+\newcommand{\ActionKbdPageFlip}{\ButtonA{} + \ButtonB{} or \TouchActionKbdPageFlip}
 \newcommand{\ActionKbdMorseSelect}{\ButtonA}
 
 %Button actions, pitch screen context. The pitch screen itself is entered from
