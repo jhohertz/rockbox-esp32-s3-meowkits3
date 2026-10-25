@@ -46,14 +46,16 @@ the corresponding spike is done and the manual's keymap file should stop saying
 
 - **Claim:** `manual/rockbox_interface/bookmarking.tex` documents creating a
   bookmark, listing them, and deleting them.
-- **Reality:** `ACTION_BMS_DELETE` is produced (bottom-right hold, via
+- **Reality:** `ACTION_BMS_DELETE` was produced (bottom-right hold, via
   `keymap-touchscreen.c`), but `ACTION_WPS_CREATE_BOOKMARK` and
-  `ACTION_WPS_LIST_BOOKMARKS` are produced nowhere. Bookmarks can therefore be
-  deleted but never created from the WPS.
-- **What fixing it means:** two mappings in the WPS context. Note the delete
-  action's spelling is `ACTION_BMS_DELETE`, not `ACTION_BM_DELETE`; the manual's
-  macro is `\ActionBmDelete`.
-- **Status:** open.
+  `ACTION_WPS_LIST_BOOKMARKS` were produced nowhere, so bookmarks could be
+  deleted but never created. **Fixed** — see Closed.
+- **Evidence:** the action list extracted from both keymap files. The handlers
+  are at `apps/gui/wps.c:1053` (list) and `:1062` (create).
+- **What fixing it means:** two WPS-context mappings using a held modifier.
+  Note the delete action's spelling is `ACTION_BMS_DELETE`, not
+  `ACTION_BM_DELETE`; the manual's macro is `\ActionBmDelete`.
+- **Status:** closed.
 
 ## 4. Key lock is documented with an empty key column
 
@@ -211,6 +213,15 @@ actually have.
   exact prerequisite, so a lone A is still play/pause and these are separate
   events. This also removed the "not available or Short Right + Long Right"
   line the manual was printing on the directory-skip rows.
+- **§3 — bookmark create and list.** `button_context_wps` now maps
+  `BUTTON_B|BUTTON_UP` → `ACTION_WPS_CREATE_BOOKMARK` and
+  `BUTTON_B|BUTTON_DOWN` → `ACTION_WPS_LIST_BOOKMARKS`, with B as the
+  prerequisite, following `keymap-hm801.c:79-80` (`POWER+SELECT` to list,
+  `POWER+DOWN` to create). Deliberately WPS-context only: the handlers live in
+  `apps/gui/wps.c:1053` and `:1062`, so a standard- or tree-context mapping
+  would produce an action nothing consumes. The manual needed no change — its
+  body has no `\ActionWpsCreateBookmark` or `\ActionWpsListBookmarks` macro to
+  fill.
 - **§8, part 1 — the stick had no keyboard context.** `button_context_keyboard`
   now exists in `apps/keymaps/keymap-meowkits3.c` and
   `target_get_context_mapping()` answers `CONTEXT_KEYBOARD` and
