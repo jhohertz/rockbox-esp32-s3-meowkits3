@@ -63,7 +63,13 @@
 \newcommand{\ActionStdHotkey}{\NotAvail}
 \newcommand{\ActionStdRec}{\NotAvail}
 \newcommand{\ActionStdShowScreen}{\NotAvail}
-\newcommand{\ActionStdKeylock}{\NotAvail}
+% Screen lock (the software equivalent of a hold switch). Holding both face
+% buttons locks the panel; the same gesture unlocks it. While locked, every
+% other input is ignored, including the touchscreen, so this is the gesture that
+% makes pocket operation safe on a touch panel. Locking once also arms the
+% autolock options under Settings -> Advanced Key Lock, which otherwise cannot
+% engage because there would be no gesture to unlock with.
+\newcommand{\ActionStdKeylock}{Long (\ButtonA{} + \ButtonB{})}
 % Power is the PMU's PEK input; the player follows VBUS on its own, so there is
 % no key to press to start charging.
 \newcommand{\ActionStdUsbCharge}{\ButtonPower}

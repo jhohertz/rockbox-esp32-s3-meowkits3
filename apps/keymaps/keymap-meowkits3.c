@@ -51,6 +51,15 @@ static const struct button_mapping button_context_standard[]  = {
     { ACTION_STD_OK,          BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
 
     { ACTION_STD_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
+    /* Screen lock, and the way out of it: A and B held together. While locked,
+     * do_softlock() filters every other action (action.c:885-940) and, under the
+     * default settings, button_enable_touch(false) switches the panel off at the
+     * driver level as well, so this combo is the only input that does anything.
+     * Mapping it is also what makes autolock reachable at all: the settings can
+     * carry SEL_ACTION_AUTOLOCK, but action_autosoftlock_init() only arms it when
+     * unlock_combo != BUTTON_NONE, and that happens solely once something
+     * produces ACTION_STD_KEYLOCK. */
+    { ACTION_STD_KEYLOCK,     BUTTON_A|BUTTON_B|BUTTON_REPEAT, BUTTON_A|BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_standard */
 
@@ -103,6 +112,12 @@ static const struct button_mapping button_context_wps[]  = {
     { ACTION_WPS_ABSETA_PREVDIR, BUTTON_A|BUTTON_LEFT,       BUTTON_A },
     { ACTION_WPS_ABSETB_NEXTDIR, BUTTON_A|BUTTON_RIGHT,      BUTTON_A },
     { ACTION_WPS_ABRESET,        BUTTON_A|BUTTON_B,          BUTTON_A },
+    /* Key lock. Held, not tapped: the tap is already A-B reset here, and a
+     * pocket lock should not be reachable by an accidental press. Holding both
+     * face buttons is the same gesture in every context, which matters because
+     * the unlock gesture is remembered from whatever locked the panel
+     * (action.c:887 compares cur->button against unlock_combo). */
+    { ACTION_STD_KEYLOCK,        BUTTON_A|BUTTON_B|BUTTON_REPEAT, BUTTON_A|BUTTON_B },
     /* Bookmarks. Only the WPS context handles these -- apps/gui/wps.c:1053
      * lists them and :1062 creates one -- so they are mapped here and not in
      * the standard or tree contexts, where the action would go nowhere.

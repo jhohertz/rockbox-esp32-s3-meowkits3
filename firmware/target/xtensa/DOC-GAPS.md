@@ -71,13 +71,37 @@ the corresponding spike is done and the manual's keymap file should stop saying
 
 - **Claim:** `manual/rockbox_interface/wps.tex:83` renders a "Key lock (software
   hold switch) on/off" row for every target without a `hold_button` option.
-- **Reality:** no `ACTION_STD_KEYLOCK` mapping exists. That row selects its key
-  from an explicit pad list (`SANSA_CLIP_PAD`, `SANSA_FUZEPLUS_PAD`,
-  `AIGO_EROSQ_PAD`, `RG_NANO_PAD`), so for us the cell renders blank.
-- **What fixing it means:** either implement key lock (it is cheap —
-  `ACTION_STD_KEYLOCK` just gates non-power keys), or accept a blank row.
-  Upstream could gate the row properly, but that edits other targets' manuals.
-- **Status:** open, cosmetic until key lock is implemented.
+- **Reality:** no `ACTION_STD_KEYLOCK` mapping existed, and that row selects its
+  key from an explicit pad list (`SANSA_CLIP_PAD`, `SANSA_FUZEPLUS_PAD`,
+  `AIGO_EROSQ_PAD`, `RG_NANO_PAD`), so for us the cell rendered blank. **Fixed**
+  — see Closed.
+- **What key lock actually is here.** There is no `firmware/keylock.c` and no
+  `CONFIG_KEYLOCK` in this tree; the whole mechanism is the *soft lock* in
+  `apps/action.c`, active because we do not define `HAS_BUTTON_HOLD`.
+  `do_key_lock()` sets `keys_locked` and, for touchscreen targets, calls
+  `button_enable_touch(false)` unless the selective-softlock setting is enabled
+  with touch not excluded. `do_softlock()` then filters every action while
+  locked, except the one matching `unlock_combo`, which is remembered from the
+  gesture that locked the panel (`action.c:885-895`).
+- **Why a key mapping was required, not optional.** Two reasons, both measured:
+  - Touch alone cannot be the whole story. With default settings a locked panel
+    has the touch device switched off at the driver level, so a lock produced by
+    touch would leave only the *stick* to unlock it — and `unlock_combo` would
+    hold the touch code that no stick press matches. That is an unrecoverable
+    state until reboot.
+  - Autolock was dead code for us. `action_autosoftlock_init()` arms
+    `SEL_ACTION_ALOCK_OK` only when `unlock_combo != BUTTON_NONE`, and that combo
+    is found by searching the WPS and STD contexts for `ACTION_STD_KEYLOCK`
+    (`action.c:1485-1504`). With nothing producing the action, the "Advanced Key
+    Lock" submenu in Settings (present for us, since it is gated on
+    `!HAS_BUTTON_HOLD`, not on `hold_button`) could never engage.
+- **Distinct mechanism, worth not confusing:** the skin engine's `%T(...,lock)`
+  is *not* soft lock. `ACTION_TOUCH_SOFTLOCK` only toggles
+  `data->touchscreen_locked`, which hides that skin's other regions while
+  leaving the lock region itself tappable (`skin_touchsupport.c:73-76, 226`).
+  It is a per-theme panel lock, reversible by construction, and does not touch
+  the mixer, backlight or autolock state.
+- **Status:** closed.
 
 ## 5. Pitch screen is reachable only by touch
 
@@ -89,7 +113,10 @@ the corresponding spike is done and the manual's keymap file should stop saying
 - **What fixing it means:** one WPS-context mapping. Free stick slots are
   scarce: `Up|REPEAT` and `Down|REPEAT` are volume on the WPS, `A|REPEAT` is
   context there and stop, `B|REPEAT` is quick screen.
-- **Status:** open, low severity.
+- **Status:** open, low severity. The manual now shows the touch gesture — the
+  pitch row in `wps.tex` was gated on an explicit pad list that excluded us, and
+  `ESP32S3_PAD` has been added, so the entry reads *Long Bottom-Left* instead of
+  being missing. The stick slot remains deliberately unclaimed.
 
 ## 6. No hotkeys
 
@@ -141,7 +168,7 @@ Minor, collected because the macros have to say something:
 | `ACTION_STD_REC` | start recording from any screen | WPS only (`ACTION_WPS_REC`) |
 | `ACTION_STD_SHOWSCREEN` | screen/backlight toggle | none |
 | `ACTION_SETTINGS_RESET` | reset a setting to default | none |
-| `ACTION_STD_KEYLOCK` | key lock | none (see §4) |
+| `ACTION_STD_KEYLOCK` | key lock | both face buttons held (see §4) |
 | `ACTION_STD_HOTKEY` | hotkey | none, and correctly undocumented |
 
 - **Status:** open, low severity. Each is one mapping if we decide the gesture.
@@ -267,3 +294,13 @@ actually have.
   feature for one target. Discoverability is covered by the manual's keyboard
   table instead, and by the stick gestures deliberately mirroring the touch
   grid's tap-select / hold-done convention.
+
+- **§4 — key lock.** `ACTION_STD_KEYLOCK` on both face buttons held, in the
+  standard and WPS contexts (`apps/keymaps/keymap-meowkits3.c`). Held rather
+  than tapped, because a pocket lock must not be reachable by an accidental
+  press, and because in the WPS the tap is already A-B reset. The same gesture
+  in both contexts matters: unlocking compares the raw button against the
+  `unlock_combo` recorded at lock time. The pad list in
+  `manual/rockbox_interface/wps.tex` gained `ESP32S3_PAD` for the key-lock row,
+  and for the pitch row, which our touch grid does provide. Autolock becomes
+  reachable as a side effect, since arming it requires a stored unlock combo.
