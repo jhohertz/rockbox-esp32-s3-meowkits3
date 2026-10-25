@@ -12,11 +12,27 @@
  * Everything here depends on config.h having been included first.
  */
 
-/* Half of PSRAM. On every other Rockbox target the audiobuffer is whatever is
- * left of one contiguous memory region after the firmware; here IDF owns that
- * region's other half as its general heap, so the split has to be stated.
- * Making this larger takes memory straight out of IDF's PSRAM heap. */
-#define XT_AUDIOBUF_SIZE    (MEMORYSIZE * 0x80000)
+/* Half of PSRAM, minus a reservation. On every other Rockbox target the
+ * audiobuffer is whatever is left of one contiguous memory region after the
+ * firmware; here IDF owns that region's other half as its general heap, so the
+ * split has to be stated. Making this larger takes memory straight out of IDF's
+ * PSRAM heap.
+ *
+ * The 64 KB deduction is not slack for its own sake -- it is the clearance the
+ * section needs above itself. XT_AUDIOBUF_SIZE is only what memory-xtensa-syms.S
+ * puts in .ext_ram.bss; IDF's own PSRAM objects and every object the ld fragment
+ * maps to extern_ram (unicode, language, the skin parser, dir/file/fileobj_mgr,
+ * and since the frequency seam, system.o's boost log) are placed in the same
+ * section, so the section ends well past audiobufend. Above it sit the codec and
+ * plugin text reservations, and .ext_ram.bss is memset to zero at boot by
+ * esp_psram_bss_init() -- so a section that reaches into plugin_text silently
+ * zeroes the head of the region every plugin is loaded into. That is exactly what
+ * happened: moving system.o's 16,664 bytes of .bss to PSRAM put the section end at
+ * 0x3c58290c, 10,508 bytes past XT_PLUGIN_TEXT_ADDR, and every plugin crashed on
+ * arrival while codecs (at XT_CODEC_TEXT_ADDR, further up) kept working. The
+ * guard in system_init() now watches that boundary; keep this deduction large
+ * enough that it never fires. */
+#define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) - 0x10000)
 
 /*
  * Codec and plugin load buffers, pinned to the top of the PSRAM part of the
