@@ -32,6 +32,38 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # for the whole ladder.
 CONFIG_PM_ENABLE=y
 
+# ---- automatic light sleep: tickless idle ----
+# With this, FreeRTOS's idle task calls portSUPPRESS_TICKS_AND_SLEEP(), which the
+# xtensa port maps to vApplicationSleep() (portmacro.h:510) and esp_pm implements as
+# esp_light_sleep_start() plus vTaskStepTick() to repair the paused tick counter.
+# Rockbox's current_tick mirrors xTaskGetTickCount() through the tick hook, so the
+# compensation flows through and nothing in Rockbox has to know sleep happened.
+#
+# The threshold matters more than it looks. configEXPECTED_IDLE_TIME_BEFORE_SLEEP may
+# not be below 2 ticks (FreeRTOS.h:874-876) and IDF defaults it to 8 whenever
+# FREERTOS_HZ > 200 (freertos/Kconfig:340). At 1000 Hz that is 8 ms, and the shortest
+# period anything in Rockbox needs is the 10 ms tick -- so the idle window is 10 ms and
+# sleeps are accepted with 2 ms of margin. This is the reason the tick rate stays at
+# 1000: at 100 Hz the same default is 80 ms and light sleep would never be attempted.
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# Keep the digital peripheral domain powered during light sleep, and say so here rather
+# than relying on IDF's default: this is the single setting that makes this port sleepable.
+# Rockbox's I2S, GDMA, GPSPI2, LEDC, I2C and USB drivers are written against registers
+# directly rather than through IDF's driver model, so they have no enter/exit sleep
+# callbacks to save and restore their configuration. With this off, PMU_SLEEP_PD_TOP
+# drops that domain and every one of those peripherals loses its setup -- the display's
+# GPIO-matrix routing, the LEDC channel behind the backlight, the GDMA link address,
+# the I2S dividers. With it on, light sleep powers the CPU and cache only, registers
+# retain, and the audio ring keeps being fed by hardware while the core is asleep.
+# CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP is not set
+
+# PM_SLP_IRAM_OPT cannot be used: it wants ~2.1 KB for the sleep path plus IRAM for
+# esp_timer, and iram0_0_seg has 16 bytes free on this build (measured from the map).
+# So the sleep path executes from flash XIP, which is fine because flash keeps power in
+# light sleep -- CONFIG_ESP_SLEEP_FLASH_LEAKAGE_WORKAROUND holds CS0, and
+# CONFIG_ESP_SLEEP_PSRAM_LEAKAGE_WORKAROUND holds CS1 for the octal PSRAM.
+
 # ---- flash ----
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
