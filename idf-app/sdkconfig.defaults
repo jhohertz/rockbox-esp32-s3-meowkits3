@@ -78,17 +78,19 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # fixed; back to n, because a Rockbox core with every thread blocked is normal.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_PANIC=y
-# FreeRTOS tick rate. Rockbox's HZ is 100 and is not a per-target knob, so the only
-# requirement here is that this be an exact multiple of it: timer-xtensa.c divides
-# xTaskGetTickCount() by kernel_hz/HZ to make current_tick, and tick_start() panics if the
-# division is not exact. 1000 Hz is IDF's default and what its own components -- the wireless
-# stack in particular -- are written against.
+# FreeRTOS tick rate. Rockbox's HZ is 100 and is not a per-target knob, so the
+# only requirement here is that this be an exact multiple of it: timer-xtensa.c
+# divides xTaskGetTickCount() by kernel_hz/HZ to make current_tick, and
+# tick_start() panics if the division is not exact. 1000 Hz is IDF's default and
+# what its own components -- the wireless stack in particular -- are written
+# against.
 #
-# 500 Hz was tried once as a test of whether the missing isochronous frames were caused by the
-tick ISR delaying the USB interrupt. It was the wrong test: this app selects
-# CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1, so the tick runs at level 1 and chains with the audio
-# GDMA pass rather than blocking the level-2 USB handler. Measured with the rate halved: no
-# change to the drop rate or to what was heard, which is what the level map predicts. Keep 1000.
+# 500 Hz was tried once as a test of whether the missing isochronous frames were
+# caused by the tick ISR delaying the USB interrupt. It was the wrong test: this
+# app selects CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1, so the tick runs at level 1
+# and chains with the audio GDMA pass rather than blocking the level-2 USB
+# handler. Measured with the rate halved: no change to the drop rate or to what
+# was heard, which is what the level map predicts. Keep 1000.
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TICK_HOOK=y
 
