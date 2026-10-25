@@ -372,7 +372,17 @@ static void tx_flush(void)
     wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
 }
 
-void i2s_set_frequency(unsigned long rate)
+/* Program the I2S port only: clock generator, slot, and the mixer frame length that
+ * follows from the rate. Deliberately touches neither codec.
+ *
+ * Split out of i2s_set_frequency() because sink_init() needs the clock generator
+ * running *before* audiohw_preinit(): the ES8311 is a slave and takes MCLK, BCLK and
+ * WS from pads 15/14/13, and es8311_init() resets the chip without ever writing
+ * CLK01..07 -- so anything the codec had been told about its clocks is wiped by that
+ * reset. Programming the port first is what lets the chip acquire its interface from
+ * something real at power-up.
+ */
+static void i2s_program_clock(unsigned long rate)
 {
     /* Clock and slot configuration, computed by IDF's HAL.
      *
@@ -418,6 +428,20 @@ void i2s_set_frequency(unsigned long rate)
      * calls it before any buffer is handed down. */
     tx_frame_len = MIX_FRAME_SAMPLES * 4 * XT_MIX_MULT(rate);
 
+#ifdef HAVE_RECORDING
+    /* The rate the recording session's IDF channel must be created at. Recorded
+       here rather than in the codec section so it is set even when only the port is
+       being programmed. */
+    rx_rate = rate;
+#endif
+}
+
+void i2s_set_frequency(unsigned long rate)
+{
+    i2s_program_clock(rate);
+
+    /* The codec's clock registers belong after any chip reset, which is why they
+       are not in i2s_program_clock(). */
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
     /* The ADC shares the transmitter's MCLK, so it has to be reprogrammed
@@ -428,7 +452,6 @@ void i2s_set_frequency(unsigned long rate)
      * slot. All this file still owes the capture path is the sample rate the
      * session must match, recorded below, and the shared clock pads. */
 #ifdef HAVE_RECORDING
-    rx_rate = rate;
     es7210_set_frequency(rate);
 #endif
 
@@ -1353,15 +1376,32 @@ static void sink_init(void)
 
     i2s_init();
 
+    /* Cold-start order: clock generator, then codec reset and power-up, then the
+     * codec's clock registers.
+     *
+     * es8311_init() resets the chip and writes only its port, power and analog
+     * registers -- the clock dividers come from es8311_set_clock(). With the old
+     * order (codec init, then sink_set_freq()) the chip was reset while MCLK, BCLK
+     * and WS were absent, and the clock registers were written *before* that reset
+     * and therefore wiped: the codec came up with CLK01 at its reset value against
+     * a clock that only appeared afterwards, and the first thing that reprogrammed
+     * it was the next i2s_set_frequency() -- the codec applying a file's rate at the
+     * start of playback. That is the window in which the first seconds of a cold
+     * start sound garbled and then clean up by themselves.
+     */
+    i2s_program_clock(hw_freq_sampr[builtin_pcm_sink.caps.default_freq]);
 
-    audiohw_preinit();
+    audiohw_preinit();      /* reset and power-up, with clocks present */
 
-    /* The capture ADC is deliberately not brought up here. This is the playback
-     * sink: resetting the ES7210 and programming its dividers on every boot --
-     * and on every playback rate change -- and holding the I2C bus across two
-     * 10ms delays to do it, belongs to the recording session that needs it and
-     * nowhere else. It now happens in pcm_rec_dma_start(). */
-    sink_set_freq(builtin_pcm_sink.caps.default_freq);
+    es8311_set_clock(hw_freq_sampr[builtin_pcm_sink.caps.default_freq],
+                     hw_freq_sampr[builtin_pcm_sink.caps.default_freq] * MCLK_MULTIPLE);
+
+    /* The ADC is deliberately not brought up here. This is the playback sink:
+     * resetting the ES7210 and programming its dividers on every boot -- and on
+     * every playback rate change -- and holding the I2C bus across two 10ms delays
+     * to do it, belongs to the recording session that needs it and nowhere else. It
+     * now happens in pcm_rec_dma_start(). */
+    tx_flush();
 }
 
 struct pcm_sink builtin_pcm_sink = {
