@@ -436,6 +436,8 @@ static void i2s_program_clock(unsigned long rate)
 #endif
 }
 
+static void idle_tx(void);   /* defined with the transmit path below */
+
 void i2s_set_frequency(unsigned long rate)
 {
     i2s_program_clock(rate);
@@ -455,9 +457,12 @@ void i2s_set_frequency(unsigned long rate)
     es7210_set_frequency(rate);
 #endif
 
-    /* The clock has just moved under whatever the FIFO still holds. Flush so the
-       next session starts on a frame boundary rather than mid-sample. */
-    tx_flush();
+    /* The clock has just moved under whatever the FIFO still holds, and the port
+       is now halted by that flush. Restart it on silence rather than leaving it
+       dark: the codec's clock registers above were just rewritten against a rate
+       that is not on the bus yet, and the chip needs a silent window to re-acquire
+       it before any audio arrives. */
+    idle_tx();
 }
 
 static void refill(void);      /* defined with the transmit path below */
@@ -962,6 +967,42 @@ static void start_tx(void)
     stat_log_pending = true;
 }
 
+/* Arm the whole ring with silence and leave the transmitter running.
+ *
+ * This is the vendor behaviour, and it is not cosmetic. MeowKit's reference driver
+ * installs its I2S channel with `tx_desc_auto_clear = true`, commented "Auto-clear
+ * DMA on underflow (silence)", and calls i2s_zero_dma_buffer() when playback ends.
+ * Its DAC is therefore fed zeros whenever there is no audio. Ours had no equivalent:
+ * an underrunning I2S transmitter replays whatever the FIFO still holds, so any gap
+ * in the ring is audible junk rather than nothing.
+ *
+ * Same invariant as start_tx(): every slot owned and filled before the walk starts,
+ * so there is no descriptor the CPU owns anywhere in the cycle. The difference is
+ * that nothing here asks the PCM core for data -- sink_init() runs before there is a
+ * playback to ask about, and the DONE branch of gdma_irq() returns without touching
+ * the core while `playing` is false, so a free-running silent ring is inert.
+ */
+static void idle_tx(void)
+{
+    tx_flush();
+
+    for (int i = 0; i < XT_TX_RING; i++)
+        fill_silence(i);
+
+    done_slot = 0;
+    dscr_streak = 0;
+
+    wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
+    /* DONE is what keeps the idle ring fed, so this primitive enables both events
+     * rather than relying on gdma_init() having left DONE set. */
+    wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE | GDMA_INT_DSCR_ERR);
+
+    i2s_ll_tx_start(tx_hal.dev);
+
+    wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
+    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
+}
+
 /* Runs in the tick thread, where the console can drain. Prints once per session
  * start, not on an interval. */
 static void i2s_stat_tick(void)
@@ -982,26 +1023,28 @@ static void stop_tx(void)
      * GDMA_INT_DSCR_ERR is still armed, so this is the moment the ring is most
      * fragile. */
 
-    /* Mask the descriptor-error interrupt before the ring is emptied on purpose.
+    /* Mask the descriptor-error interrupt while the path is being emptied, and
+     * re-arm it in the idle restart below.
      *
-     * sink_stop() hands every descriptor back to the CPU (dw0 = 0) immediately
-     * after this returns. With out_auto_wrback set the engine mounts the next
-     * descriptor the instant the current one retires, and out_check_owner then
-     * rejects a slot we have just taken away: out_dscr_err. That is the teardown
-     * doing what it was designed to do, not a fault -- and it was being counted as
-     * one. This is where the transition bursts came from, including the nine
-     * entries measured in the very first session before any audio had completed,
-     * and a burst with no DONE between the entries is what trips tx_recover().
+     * With out_auto_wrback set the engine mounts the next descriptor the instant
+     * the current one retires, so any slot the CPU owns mid-teardown is rejected as
+     * out_dscr_err. That is the teardown doing what it was designed to do, not a
+     * fault -- and it was being counted as one. This is where the transition bursts
+     * came from, including the nine entries measured in the very first session
+     * before any audio had completed, and a burst with no DONE between the entries
+     * is what trips tx_recover().
      *
-     * Masked for the stopped period, re-armed in start_tx(). A genuine error
-     * during playback is still reported; a designed one during teardown is not. */
+     * idle_tx() below re-arms every slot with silence instead of leaving the ring
+     * empty, so there is no CPU-owned descriptor for the engine to reject, and the
+     * interface keeps running between sessions rather than going dark. */
     wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DSCR_ERR);
 
     /* Flush rather than merely halt: the bytes left in the I2S FIFO and in the
        channel are the ones that misalign the next session. Clearing the latched
-       bits belongs to the flush, and is safe here because the transport is
-       stopped, so a completion from the previous session has nothing to refill. */
+       bits belongs to the flush, and is safe here because nothing from the previous
+       session can refill -- `playing` is already false. */
     tx_flush();
+    idle_tx();
 }
 
 /* Nothing is started or stopped for the receiver in this file any more: it is an
@@ -1114,13 +1157,14 @@ void ICODE_ATTR gdma_irq(void)
          * This was the burst. err steps to +52, +10 and +16 landed on exactly
          * the samples where (refill - irq) steps by 4 -- one start_tx() preroll,
          * i.e. a playback session starting -- and never on samples with heavy
-         * volume or touch traffic and no session start. At a track switch
-         * stop_tx() halts the walk, sink_stop() then clears every descriptor to
-         * CPU-owned with zero length, and DSCR_ERR stays armed. Any error
-         * pending across that teardown fired this branch, which started a
-         * transport the core had just stopped -- straight onto the cleared
-         * descriptors, producing more errors, which tripped tx_recover(), which
-         * also started. Self-sustaining, anchored at the transition. */
+         * volume or touch traffic and no session start. At a track switch the old
+         * teardown halted the walk and cleared every descriptor to CPU-owned with
+         * zero length, while DSCR_ERR stayed armed. Any error pending across that
+         * teardown fired this branch, which started a transport the core had just
+         * stopped -- straight onto the cleared descriptors, producing more errors,
+         * which tripped tx_recover(), which also started. Self-sustaining, anchored
+         * at the transition. Teardown now replaces the ring with silence instead of
+         * emptying it, so there is no CPU-owned descriptor to restart onto. */
         if (!playing)
         {
             /* Stopped: nothing to restart. Clear the pending error and stay down. */
@@ -1134,32 +1178,41 @@ void ICODE_ATTR gdma_irq(void)
 
     if (st & GDMA_INT_DONE)
     {
+        /* Which slot just retired. Read before anything else, because both the
+         * idle re-arm below and the playing path act on it. */
+        int slot = done_slot;
+
         /* Teardown guard. sink_stop() clears playing and then hands every
          * descriptor back to the CPU; a completion that arrives during that window
          * must not arm anything, or the handler would write into slots the stop
          * sequence is clearing. This is the race the completion mask used to paper
          * over, handled at the point where the state is actually known. */
+        /* Session guard. sink_stop() clears `playing` before stop_tx() replaces the
+         * ring with silence, so a completion that arrives in that window belongs to
+         * the idle walk rather than to a session: it re-arms silence and does not
+         * pull from the PCM core, which has already been stopped. This is the race
+         * the completion mask used to paper over, handled at the point where the
+         * state is actually known. */
         if (!playing)
         {
             cb_pending = 0;
+            /* The ring is free-running from sink_init() and stays running across
+             * sessions, so a completion here is the idle walk retiring a silence
+             * slot. Re-arm it: leaving it CPU-owned means the engine wraps back onto
+             * it one lap later under auto-writeback, raises out_dscr_err, and this
+             * handler then refuses to restart the walk because nothing is playing --
+             * the interface would go dark about 23 ms after every start. */
+            fill_silence(slot);
             goto done_exit;
         }
 
-        /* Take the engine off the list before it can fetch anything else.
-         *
-         * This is the imx233 model -- that driver's DMA command carries
-         * next = NULL, so the transfer ends and the ISR restarts it. Our GDMA is
-         * chained and free-running, which means it advances to the next
-         * descriptor about a microsecond after retiring the current one, while
-         * the refill that would arm it is still inside the interrupt. Measured on
-         * this part: reaching a descriptor the CPU owns raises out_dscr_err, it is
-         * not a benign park, so "let it park and restart later" is not a strategy
-         * here. Stopping the walk removes the race instead of trying to win it.
-         *
-         * The I2S FIFO bridges the gap; it was measured running full, so there is
-         * real capacity between a stopped outlink and the DAC. */
-        int slot = done_slot;
-
+        /* The engine advances to the next descriptor about a microsecond after
+         * retiring the current one, while the refill that would arm it is still
+         * inside the interrupt. Measured on this part: reaching a descriptor the CPU
+         * owns raises out_dscr_err, it is not a benign park, so "let it park and
+         * restart later" is not a strategy here. The I2S FIFO bridges the gap; it
+         * was measured running full, so there is real capacity between a retired
+         * slot and the DAC. */
         done_slot = (slot + 1) % XT_TX_RING;
         dscr_streak = 0;      /* a DONE proves the walk is healthy again */
 
@@ -1251,8 +1304,8 @@ done_exit:
  * unconditionally -- pending audio if ops.play published one, silence otherwise --
  * and defers only the core callback through cb_pending, replayed on unlock below.
  * There is nothing for a mask to protect. What the mask did protect was teardown,
- * and that is now handled where it belongs: the DONE branch declines to arm
- * anything once playing is false. */
+ * and that is now handled where it belongs: the DONE branch keeps the idle ring
+ * fed with silence once playing is false, and never pulls from the core. */
 static void sink_lock(void)
 {
     locked++;
@@ -1336,17 +1389,10 @@ static void sink_stop(void)
     queued = 0;
     stop_tx();
 
-    /* Hand every descriptor back to the CPU. If the DMA left one owned by
-     * itself, the engine would suspend on it at the next start and nothing would
-     * ever come out.
-     *
-     * Take the lines from memory before writing them, as fill() does: the engine
-     * has been clearing owner bits through the bus, and a blind write here would
-     * publish whatever our cache last held rather than what is actually there. */
-    discard_dcache_range((const void *)desc, sizeof(desc));
-    for (int i = 0; i < XT_TX_RING; i++)
-        desc[i].dw0 = 0;
-    commit_dcache_range((const void *)desc, sizeof(desc));
+    /* stop_tx() has already replaced the ring with silence and left the walk
+     * running, so there is nothing to hand back: every descriptor is owned by the
+     * engine and filled, which is the same invariant start_tx() requires. Dropping
+     * the pending buffer is all that is left. */
     pend_valid = 0;
 
     /* End of session: drop the lock accounting. A stop abandons any lock still
@@ -1409,8 +1455,20 @@ static void sink_init(void)
      * resetting the ES7210 and programming its dividers on every boot -- and on
      * every playback rate change -- and holding the I2C bus across two 10ms delays
      * to do it, belongs to the recording session that needs it and nowhere else. It
-     * now happens in pcm_rec_dma_start(). */
-    tx_flush();
+     * now happens in pcm_rec_dma_start().
+     *
+     * Bring the transmitter up here rather than leaving it halted. The clock
+     * registers above describe an interface that does not exist yet: MCLK is
+     * asserted by the generator, but BCLK and WS only leave the pads once tx_start
+     * is set, and that used to happen in start_tx() -- i.e. at the first audio
+     * frame. The codec therefore spent the whole boot powered up, with its clock
+     * manager enabled against a half-present bus, and acquired the bus at the exact
+     * moment real audio started. That is the cold-start garble: the chip's lock
+     * transient landed on the first thing the listener heard. Running a silent ring
+     * from here means the transient happens while nothing is being played, and the
+     * first frame of audio arrives on an interface that is already locked.
+     */
+    idle_tx();
 }
 
 struct pcm_sink builtin_pcm_sink = {
