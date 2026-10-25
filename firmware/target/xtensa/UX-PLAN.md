@@ -127,54 +127,23 @@ Files: `apps/keymaps/keymap-meowkits3.c`, `apps/recorder/keyboard.c` (seam),
 `firmware/target/xtensa/*` if the hint is target-drawn.
 Doc: replace the five `*kbd*` "not available" entries.
 
-### S2 — Short PEK as a real key, then screen/backlight toggle
+### S2 — Short PEK: parked
 
-There is no upstream action for a backlight toggle: `apps/action.h` has no
-`ACTION_STD_BACKLIGHT`/`SHOWSCREEN`, and `backlight_hw_off()` is only called
-from `firmware/backlight.c`'s own timeout paths. So this needs a target-level
-handler, which is the shape the user asked for anyway.
+**Not doing.** The intended use was a screen/backlight toggle, and there is no
+upstream action for one: `apps/action.h` has no `ACTION_STD_BACKLIGHT` or
+`ACTION_STD_SHOWSCREEN`, and `backlight_hw_off()` is only reached from
+`firmware/backlight.c`'s own timeout paths. Making the gesture work would mean
+inventing a new action and target-side handling for it, which is out of scope
+while there are unimplemented gestures that map to functions Rockbox already
+has. Short PEK stays unused; long PEK continues to mean shutdown.
 
-Prerequisites, in order:
+If it is revisited, the groundwork is worth keeping in mind: the short press is
+bit 1 of REG `0x46`, the register `button-xtensa.c` already reads for the long
+press, so it would cost no extra I2C; `BUTTON_POWER` at `0x00008000` is free
+(our keys use `0x00000001`–`0x00004000`, `BUTTON_REL` is `0x02000000`,
+`BUTTON_REPEAT` is `0x04000000`); and `firmware/drivers/button.c:374-397`
+already calls `backlight_on()` on key activity, so waking would come free.
 
-1. **Make PEK short press a button code.** `button-target.h` defines no power
-   code and its comment says the PMU owns power. Add `BUTTON_POWER` at
-   `0x00008000` — verified free: our keys use bits `0x00000001` through
-   `0x00004000`, and the modifiers live far above them (`BUTTON_REL` is
-   `0x02000000`, `BUTTON_REPEAT` is `0x04000000`, `firmware/export/button.h:96`).
-   Do **not** add it to `BUTTON_MAIN`: the panic path and the raw-press helper
-   should keep seeing only GPIO keys.
-2. **Read the short-press latch.** `button-xtensa.c` already reads REG `0x46`
-   for the long-press bit (bit 0 / IRQ23). The short press is **bit 1 of the
-   same register**, so this costs no extra I2C traffic — one read, two bits.
-   The IRQ *enable* side needs attention: `axp173_init()` currently enables only
-   IRQ23, so the IRQ pin stays high for a short press and the cheap pin gate
-   would skip the read. Either enable the short-press IRQ bit too, or rely on
-   the existing "every twentieth pass ignores the pin" fallback — the latch
-   survives release, so a missed short press is still seen within 2 s. Enabling
-   the bit is cleaner but makes the pin low more often, which is fine because
-   the pin is only a gate.
-3. **Debounce and distinguish from shutdown.** Long press already means
-   `sys_poweroff()`. A short press must not fire on the way to a long press:
-   emit it on release only, after the long-press threshold check.
-4. **Implement the toggle.** Call the backlight API from target code. The usual
-   trick is `backlight_set_timeout(1)` to force it off promptly, then restore
-   `global_settings.backlight_timeout` on the next key. `backlight_set_timeout()`
-   takes seconds and multiplies by HZ (`firmware/backlight.c:872`), so 0 means
-   always on and 1 means off within a second. Waking is already handled: the
-   button thread calls `backlight_on()` on key activity
-   (`firmware/drivers/button.c:374-397`), and `is_backlight_on()` exists to
-   decide which way to toggle. What still needs checking on hardware is whether
-   the restore of the user's timeout happens on wake or on the next PEK press —
-   the flag has to live in target code either way.
-
-Files: `firmware/target/xtensa/button-target.h`, `button-xtensa.c`,
-`drivers/axp173.c` (IRQ enable), maybe `power-xtensa.c`.
-Doc: add `\ActionStdShowScreen` (or whatever we name it) with the short-PEK
-gesture, and mention it in the Quick Start controls section.
-
-**Deliberately reserved:** short-PEK goes to the screen toggle and nothing
-else. It is also the only remaining single-input capacity, so spending it here
-closes off other ideas — noted so later decisions are made with that in mind.
 
 ### S3 — Bookmarks via B-modifier combos
 
@@ -343,12 +312,12 @@ Keep it everywhere.
    fixes manual p.35.
 3. **S3** bookmarks — same modifier pattern, same file.
 4. **S7** USB HID stick layer, preceded by reading the descriptor assembly.
-5. **S2** short PEK + screen toggle — the one spike that touches the PMU and the
-   button thread, so do it alone and measure the poll cost.
-6. **S6** theme touch regions (shuffle, repmode, lock, bookmarks).
-7. **S5** key lock, **S8** recording, **S9** settings reset.
-8. **S10** plugin audit as its own multi-part effort.
-9. **S11** tooling and rbutil stubs.
+5. **S6** theme touch regions (shuffle, repmode, lock, bookmarks).
+6. **S5** key lock, **S8** recording, **S9** settings reset — each only if it
+   maps to an action Rockbox already has. S2 is parked; short PEK stays unused
+   rather than becoming a new action.
+7. **S10** plugin audit as its own multi-part effort.
+8. **S11** tooling and rbutil stubs.
 
 Every step updates `manual/platform/keymap-meowkits3.tex` and moves the matching
 entry in `DOC-GAPS.md` to *Closed* with the commit id.
