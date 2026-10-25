@@ -9,6 +9,11 @@ gaps, ordered roughly by how much a user would notice.
 
 Format: **claim / reality / evidence / what fixing it means / status.**
 
+The implementation plan for these entries — gesture budget, precedents, spike
+order — is in `UX-PLAN.md` alongside this file. When an entry is closed here,
+the corresponding spike is done and the manual's keymap file should stop saying
+*not available*.
+
 ---
 
 ## 1. A-B repeat is enabled but cannot be set
