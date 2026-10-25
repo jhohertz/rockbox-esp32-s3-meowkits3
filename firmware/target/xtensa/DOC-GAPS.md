@@ -37,7 +37,10 @@ the corresponding spike is done and the manual's keymap file should stop saying
   These are reachable from a skin through touch regions — the skin engine has
   `ACTION_TOUCH_SHUFFLE` and `ACTION_TOUCH_REPMODE` (`skin_parser.c:1625`) —
   so they work only if the theme defines a `%T` region with that action. The
-  default cabbiev2 defines none.
+  default cabbiev2 defines none. Measured on the theme pack: **1 of 8**
+  downloaded themes defines any `%T` region at all, so most catalogue themes give
+  only the automatic bar zones (`skin_parser.c:1261`). `tools/rbthemes.py check`
+  reports the count per theme.
 - **What fixing it means:** `%T` regions in a theme, not firmware. Deferred: the
   builtin cabbiev2 stays untouched, so these arrive with the third-party theme
   packs that define them (`tools/rbthemes.py` should report which ones do).
@@ -165,9 +168,9 @@ Minor, collected because the macros have to say something:
 
 | Action | Manual context | Ours |
 |---|---|---|
-| `ACTION_STD_REC` | start recording from any screen | WPS only (`ACTION_WPS_REC`) |
+| `ACTION_STD_REC` | start recording from any screen | WPS only (`ACTION_WPS_REC`) — deliberately passed; the std handler exists at `apps/menu.c:495` |
 | `ACTION_STD_SHOWSCREEN` | screen/backlight toggle | none |
-| `ACTION_SETTINGS_RESET` | reset a setting to default | none |
+| `ACTION_SETTINGS_RESET` | reset a setting to default | **no such action in this tree** — not in `apps/action.h` or any keymap |
 | `ACTION_STD_KEYLOCK` | key lock | both face buttons held (see §4) |
 | `ACTION_STD_HOTKEY` | hotkey | none, and correctly undocumented |
 
