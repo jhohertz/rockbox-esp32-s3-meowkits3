@@ -366,18 +366,25 @@ and now `file` are the ones that have moved.
    actual high-water mark. A stack-usage probe would let these be sized from
    data instead of guesswork.
 
-5. **DRAM free space is 3,152 bytes**, measured as the highest address inside
-   `dram0_0_seg` against its end (`0x3fcdb700`), not from a section sum -- the
-   remainder of the region is IDF's internal heap, so "free" is what the heap
-   starts with rather than spare statics. The figure in earlier revisions of this
-   file, 1,020, was stale: the tree measured 4,320 before the frequency seam,
-   which costs 1,168 of DRAM and moves 16,664 to PSRAM instead. It was 4,376
-   before `CONFIG_ESP_PANIC_HANDLER_IRAM` (cost ~5,464) and `file` -> PSRAM (gave
-   back 2,108). The handler is what makes exit-path and cache-disabled faults
-   reportable at all -- without it the panic handler itself cannot execute and the
-   device reboots with no register dump -- so it is worth the space. But the margin
-   is still one small static deep, and `dram0_0_seg` overflow is the failure mode
-   to expect from any new static.
+5. **Static DRAM headroom is 184 bytes.** This is *not* the heap, and conflating
+   the two is easy to do. `dram0_0_seg` is capped at `0x53700` and only bounds
+   `.data`/`.bss`; IDF's internal heap is described separately in
+   `components/heap/port/esp32s3/memory_layout.c`, which reserves
+   `_data_start.._heap_start` (the statics) and the IRAM alias, and lets the heap
+   run to `SOC_DIRAM_DRAM_HIGH` (`0x3FD00000`) -- about 149 KB free in this build,
+   which is where `app_main`'s 8 KB stack and every FreeRTOS object come from.
+   So running out of statics is a link error, never an allocation failure, and
+   "free DRAM" in this file has always meant the former.
+
+   The progression: 4,376 before `CONFIG_ESP_PANIC_HANDLER_IRAM` (cost ~5,464),
+   4,320 after `file` -> PSRAM, 3,152 with the frequency seam, **184 with
+   tickless idle and light sleep** (they cost ~2,968 of statics). The handler is
+   what makes exit-path and cache-disabled faults reportable at all -- without it
+   the panic handler itself cannot execute and the device reboots with no register
+   dump -- so it is worth the space. Any new static has to come from a donor: the
+   stack-free, DMA-free objects still in DRAM are `pcm_mixer.o` (4,121),
+   `apps/settings.o` (2,316) and `dircache`'s non-stack half, and the
+   `.lf` mechanism already moves objects on that rule.
 
 ---
 
@@ -1030,3 +1037,57 @@ endpoint geometry changes.
 Scale for what is left: dark idle is 48 mA into a 1400 mAh cell. DFS moved the *awake*
 floor from 240 to 80 MHz; the remaining draw is the chip staying awake at all, which is
 light sleep's territory, not frequency's.
+
+## Light sleep is on, and the setting that makes it safe is not the obvious one (2026-10-25)
+
+`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y` (needs `PM_ENABLE`, needs the non-SMP kernel) puts
+`portSUPPRESS_TICKS_AND_SLEEP()` in the idle task, which on this port is
+`vApplicationSleep()` -> `esp_light_sleep_start()` -> `vTaskStepTick()`.
+`esp_pm_configure()` now passes `light_sleep_enable = true`, with a retry at `false` so
+the frequency still gets programmed if tickless idle is ever switched off again
+(`esp_pm_configure()` returns `ESP_ERR_NOT_SUPPORTED` for a sleep request without it --
+that failure would otherwise silently stop `set_cpu_frequency()` doing anything at all).
+
+**The load-bearing setting is `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP`, left off.**
+It is IDF's default, but nothing in this project would notice if it were on and plenty
+would break: Rockbox's I2S, GDMA, GPSPI2, LEDC, I2C and USB drivers write registers
+directly rather than through IDF's driver model, so they have no enter/exit sleep
+callbacks, and `PMU_SLEEP_PD_TOP` would drop the whole digital domain and lose the
+display's GPIO-matrix routing, the LEDC channel behind the backlight, the GDMA link
+address and the I2S dividers. With it off, light sleep powers the CPU and cache only:
+registers retain, and the audio ring keeps being walked by hardware while the core is
+asleep. `esp_sleep_pd_config()` has no `ESP_PD_DOMAIN_DIG`-style knob for this on
+esp32s3 -- it is the Kconfig symbol or nothing -- so it is written explicitly in
+`sdkconfig.defaults` rather than inherited silently.
+
+**One lock, and it is the USB one.** `xt_light_sleep_block(bool)`
+(`system-xtensa.c`, declared in `system-target.h`) holds `ESP_PM_NO_LIGHT_SLEEP`, created
+on first use, and `usb-xtensa.c` acquires it in `usb_dw_target_enable_clocks()` and
+releases it in `usb_dw_target_disable_clocks()`. The reason is that a peripheral
+interrupt is not a light-sleep wake source: with the core asleep, a DesignWare frame
+completion would sit pending until the next tick, and with two frames of RX FIFO
+headroom that is a drop. SD and I2C need nothing of the kind -- their transfers are
+driven by a thread that is running, and with the peripheral domain powered the hardware
+keeps going even if a sleep slips in during a wait. Recording that reasoning matters
+because "hold a lock for every busy peripheral" looks like the safe general answer and
+is actually the one that prevents sleeping altogether: the idle TX ring is *always*
+busy, so a lock around the audio path would have meant no sleep ever.
+
+Why sleeping does not starve the audio ring: the DONE interrupt cannot wake the core, so
+slots retire without being re-armed while asleep -- but sleep windows are bounded by the
+10 ms tick, the ring is four slots (~92 ms of silence), and the handler re-arms on the
+next wake. Margins, not luck: 10 ms of sleep against 92 ms of ring.
+
+Budgets: static DRAM headroom 3,152 -> 184 (see §5 item 5), flash +10,976, IRAM unchanged
+and irrelevant here -- `PM_SLP_IRAM_OPT` would want ~2.1 KB and `iram0_0_seg` has 140
+bytes, so the sleep path executes from flash XIP; that is fine because flash keeps power
+in light sleep and the leakage workarounds hold CS0/CS1. `vTaskStepTick` landed in IRAM on
+its own (`0x4037f6b4`). The sleep threshold is IDF's computed default of 8 ticks = 8 ms at
+1000 Hz, against the 10 ms tick period -- see the note in `sdkconfig.defaults`, which also
+explains why `FREERTOS_HZ` cannot drop to 100.
+
+Not yet measured on the device: dark-idle current with sleeping enabled (baseline after
+the frequency seam was 48 mA), whether the TX row stays clean across sleep/wake
+boundaries, and whether the USB-JTAG console survives a sleep while idle (it is the boot
+log's only output, and `CONFIG_ESP_SLEEP_*` handles pad restore for chips that do not
+support USJ in light sleep).

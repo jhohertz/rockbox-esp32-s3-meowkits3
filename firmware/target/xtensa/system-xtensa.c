@@ -153,9 +153,13 @@ void system_init(void)
  * so: dbias and the rest of the clock tree move the way IDF moves them; Rockbox's
  * notion of "the frequency" is the whole truth rather than a floor under a scaler;
  * and the PM locks IDF's own drivers take -- the I2S driver acquires one around
- * every transfer, at i2s_common.c:1235 -- cannot move the clock out from under
- * udelay(). Light sleep is left off here for the same reason: it needs locks to
- * hold, and that is its own step.
+ * every transfer, at i2s_common.c:1235, of type ESP_PM_CPU_FREQ_MAX -- cannot move
+ * the clock out from under udelay().
+ *
+ * light_sleep_enable is on, which is what makes the idle task's tickless branch
+ * actually sleep. It needs CONFIG_FREERTOS_USE_TICKLESS_IDLE; if that is ever turned
+ * off again, esp_pm_configure() returns ESP_ERR_NOT_SUPPORTED for this call, so the
+ * retry below keeps the frequency working even when sleeping is gone.
  *
  * The three points are all BBPLL taps, so APB and AHB (which is GDMA's clock) stay
  * at 80 MHz and I2S, I2C and the timer groups stay on XTAL; only the core moves.
@@ -167,17 +171,61 @@ void set_cpu_frequency(long frequency)
     esp_pm_config_t cfg = {
         .max_freq_mhz = mhz,
         .min_freq_mhz = mhz,
-        .light_sleep_enable = false,
+        .light_sleep_enable = true,
     };
 
     /* On failure leave cpu_frequency alone: udelay() counts cycles against it, so
      * a value that matches the hardware is worth more than a value Rockbox asked
      * for. esp_pm_configure() rejects values it cannot express as a rtc clock
      * config, and 240/160/80 all can be. */
-    if (esp_pm_configure(&cfg) != ESP_OK)
-        return;
+    if (esp_pm_configure(&cfg) != ESP_OK) {
+        cfg.light_sleep_enable = false;   /* tickless idle not compiled in */
+        if (esp_pm_configure(&cfg) != ESP_OK)
+            return;
+    }
 
     cpu_frequency = frequency;
+}
+
+/*
+ * One ESP_PM_NO_LIGHT_SLEEP lock, held while the USB device is armed.
+ *
+ * Light sleep is entered from the idle task, i.e. when no Rockbox thread is ready.
+ * Nothing in the digital domain stops -- CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+ * is off, so GDMA keeps walking the audio ring and the I2S clocks keep running while
+ * the core is asleep -- but a peripheral interrupt is not a light-sleep wake source,
+ * and the DesignWare core's is not one. So while USB is enabled, an isochronous frame
+ * arriving from the host would set a pending interrupt that cannot wake the core, and
+ * the data would sit in the RX FIFO until the next tick; that is a stall, and with two
+ * frames of FIFO headroom it becomes a drop. Holding the lock makes the USB path
+ * un-sleepable instead, which costs the whole saving while a host is attached --
+ * correct, because a host session is not an idle machine.
+ *
+ * SD and I2C do not need the same treatment: their transfers are driven by a thread
+ * that is running, and with the peripheral domain powered the hardware keeps going
+ * even if a sleep slips in during a wait.
+ *
+ * Created on first use rather than in system_init(), because the USB clock hook can
+ * legitimately be reached before Rockbox has finished initialising. An unbalanced
+ * release is not a hazard: IDF reports the error and the lock simply stays acquired,
+ * which is the safe direction.
+ */
+static esp_pm_lock_handle_t sleep_block_lock;
+static bool sleep_block_created;
+
+void xt_light_sleep_block(bool block)
+{
+    if (block) {
+        if (!sleep_block_created) {
+            if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "rockbox-usb",
+                                   &sleep_block_lock) != ESP_OK)
+                return;
+            sleep_block_created = true;
+        }
+        esp_pm_lock_acquire(sleep_block_lock);
+    } else if (sleep_block_created) {
+        esp_pm_lock_release(sleep_block_lock);
+    }
 }
 
 void system_reboot(void)

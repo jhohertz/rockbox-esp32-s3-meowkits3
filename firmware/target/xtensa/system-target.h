@@ -9,6 +9,7 @@
 #define SYSTEM_TARGET_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef HAVE_SYSTEM_LIBC
 #include <xtensa/hal.h>
 #include "cache-xtensa.h"
@@ -26,6 +27,14 @@ void xthal_icache_all_invalidate(void);
 #endif
 
 extern long cpu_frequency;   /* set by system_init */
+
+/* Hold ESP_PM_NO_LIGHT_SLEEP while a peripheral whose interrupt cannot wake the core
+ * is armed. Only the USB device needs it today: see xt_light_sleep_block() in
+ * system-xtensa.c for why, and idf-app/sdkconfig.defaults for why sleeping is safe on
+ * this port at all -- the peripheral domain is deliberately left powered, which is what
+ * keeps hand-written drivers intact across a sleep. Codecs and plugins never call it,
+ * and the firmware side is the only definition. */
+void xt_light_sleep_block(bool block);
 
 /*
  * Frequency ladder.
