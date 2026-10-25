@@ -24,11 +24,16 @@
  ****************************************************************************/
 #include "config.h"
 
-#ifdef XT_AUDIO_TRACE
-/* TEMPORARY PROBE -- delete this block, the trace task below, the two accessor
- * blocks in es8311.c and usb_audio.c, and the define in meowkits3.h. */
+/* One line per transmit session, on the CDC console when a host is present. This
+ * file asks for logf deliberately: the session counters below are the difference
+ * between "the ring was starved and recovered" and "the FIFO was left misaligned",
+ * and they are only useful if they can be read after the fact. */
 #define LOGF_ENABLE
 #include "logf.h"
+
+#ifdef XT_AUDIO_TRACE
+/* TEMPORARY PROBE -- off. The blocks it guards stay in i2s-xtensa.c, es8311.c/.h
+ * and usb_audio.c for a later run. */
 #include <stdio.h>
 #endif
 
@@ -262,6 +267,25 @@ static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
  * interrupt-watchdog panic measured at first play with a free-running ring. */
 static volatile int dscr_streak;
 
+/* Cumulative housekeeping, always counted rather than behind a probe. The failure
+ * mode being chased lasts milliseconds, so a sampler cannot catch it; these are
+ * read after the fact, from the debug screen or from the session line below.
+ *   sessions  transmit sessions started
+ *   err       OUT_DSCR_ERR entries (the engine reached a slot the CPU owns)
+ *   recover   tx_recover() calls, each of which repeats one frame and then silence
+ *   silence   slots armed with silence instead of audio
+ */
+static volatile unsigned int stat_sessions;
+static volatile unsigned int stat_err;
+static volatile unsigned int stat_recover;
+static volatile unsigned int stat_silence;
+/* start_tx() can run inside the GDMA handler -- refill() reaches the core's
+ * completion callback, which reaches ops.play, which is sink_play, which calls
+ * start_tx() for the first frame. logf() sends over CDC and needs the console to
+ * drain, which is fatal with interrupts off (see the note in sink_play), so the
+ * line is flagged here and printed by the tick task instead. */
+static volatile bool stat_log_pending;
+
 /* IDF interrupt handle for the GDMA OUT channel, allocated once in gdma_init().
  * Keeping the handle is what makes the allocation idempotent: i2s_init() can be
  * reached again and a second esp_intr_alloc() on the same source would fail. */
@@ -306,6 +330,47 @@ static unsigned long rx_rate;
 
 
 /* i2s_ll_tx_set_mclk's mapping from (integer, num/den) to the four registers. */
+
+/* Flush the whole transmit data path: the GDMA channel and the I2S FIFO.
+ *
+ * Nothing else in this file resets either one, and both hold data across a
+ * transition. link.stop halts the walk and i2s_ll_tx_stop() halts the port, but
+ * the bytes already in the I2S FIFO and in the channel's internal FIFO stay where
+ * they are, so the next session starts mid-frame. On 16-bit stereo a one-byte
+ * offset shifts every subsequent sample, which sounds like distorted audio rather
+ * than missing audio -- and it corrects itself whenever the FIFO happens to drain
+ * and refill on a frame boundary, which is why the crunch comes and goes while
+ * every register reads the same.
+ *
+ * A rate change is the other moment: the clock moves under whatever the FIFO still
+ * holds, so leftover samples from the old rate are played at the new one.
+ *
+ * Order: stop, reset, re-program, then arm. out_rst clears the channel's state
+ * machine and its FIFO; the configuration is written again afterwards rather than
+ * read back, which costs nothing and makes the flush independent of whatever the
+ * reset touches. The caller must not need the walk running -- this stops it. */
+static void tx_flush(void)
+{
+    unsigned int conf;
+
+    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* outlink.stop */
+    i2s_ll_tx_stop(tx_hal.dev);
+
+    /* I2S side: reset the transmitter and its FIFO. Both bits are self-clearing.
+       tx_reset also clears the idle and hung latches, so a stale tx_hung cannot be
+       reported against a session that has not run yet. */
+    wr(I2S_TX_CONF, rd(I2S_TX_CONF) | TX_CONF_RESET | TX_CONF_FIFO_RESET);
+    wr(I2S_TX_CONF, rd(I2S_TX_CONF) & ~(TX_CONF_RESET | TX_CONF_FIFO_RESET));
+
+    /* GDMA side: reset the OUT channel, then restore its configuration. */
+    conf = rd(GDMA_TX_CONF0);
+    wr(GDMA_TX_CONF0, conf | GDMA_OUT_RST);
+    wr(GDMA_TX_CONF0, (conf & ~GDMA_OUT_RST) | (1u << 4) | (1u << 2));
+    wr(GDMA_TX_CONF1, (1u << 12));                      /* out_check_owner */
+    wr(GDMA_TX_PERI_SEL, GDMA_TRIG_I2S1);
+
+    wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
+}
 
 void i2s_set_frequency(unsigned long rate)
 {
@@ -366,10 +431,15 @@ void i2s_set_frequency(unsigned long rate)
     rx_rate = rate;
     es7210_set_frequency(rate);
 #endif
+
+    /* The clock has just moved under whatever the FIFO still holds. Flush so the
+       next session starts on a frame boundary rather than mid-sample. */
+    tx_flush();
 }
 
 static void refill(void);      /* defined with the transmit path below */
 static void fill(int i, const void *src, unsigned long len);
+static void i2s_stat_tick(void);  /* prints the session line in tick context */
 
 #ifdef XT_AUDIO_TRACE
 static void audio_trace_tick(void);
@@ -416,6 +486,7 @@ static void fill_silence(int i)
      * and hands refill() a consumed-buffer event the DAC has not earned yet. */
     unsigned long len = tx_frame_len;
 
+    stat_silence++;
     memset(dma_buf[i], 0, len);
     discard_dcache_range((const void *)&desc[i], sizeof(desc[i]));
     arm(i, len);
@@ -434,6 +505,8 @@ static void fill_silence(int i)
  * cycle. */
 static void tx_recover(void)
 {
+    stat_recover++;
+
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
 
     for (int i = 0; i < XT_TX_RING; i++)
@@ -660,6 +733,16 @@ void i2s_init(void)
         tick_add_task(audio_trace_tick);
     }
 #endif
+
+    /* The session stats line is printed here rather than in start_tx(), which can
+       be reached from the GDMA handler. One task, checked every tick, printing
+       only when a session has started. */
+    static bool stat_task_added;
+
+    if (!stat_task_added) {
+        stat_task_added = true;
+        tick_add_task(i2s_stat_tick);
+    }
 }
 
 #ifdef HAVE_RECORDING
@@ -679,6 +762,15 @@ unsigned long i2s_rx_sample_rate(void)
 unsigned long i2s_tx_sample_rate(void)
 {
     return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+}
+
+void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
+                  unsigned int *recover, unsigned int *silence)
+{
+    *sessions = stat_sessions;
+    *err = stat_err;
+    *recover = stat_recover;
+    *silence = stat_silence;
 }
 
 #ifdef XT_AUDIO_TRACE
@@ -792,6 +884,12 @@ void i2s_rx_pads_release(void)
 
 static void start_tx(void)
 {
+    /* Start from an empty path. Without this the first descriptor of a session is
+       appended to whatever survived the previous one, and a leftover odd number of
+       bytes shifts every sample by half a stereo frame. */
+    tx_flush();
+    stat_sessions++;
+
     /* Preroll every slot before the walk begins, so the engine never reaches a
      * descriptor the CPU owns. Ask the core at most once per slot and stop
      * asking at the first decline -- driving pcm_play_dma_complete_callback()
@@ -834,6 +932,25 @@ static void start_tx(void)
 
     wr(GDMA_TX_LINK, (uint32_t)(unsigned long)&desc[0] & 0xFFFFF);
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
+
+    /* One line per session, printed from tick context: err/recover/silence since
+       boot are the only way to tell a starvation-recovery from a misalignment after
+       the fact. */
+    stat_log_pending = true;
+}
+
+/* Runs in the tick thread, where the console can drain. Prints once per session
+ * start, not on an interval. */
+static void i2s_stat_tick(void)
+{
+    if (!stat_log_pending)
+        return;
+
+    stat_log_pending = false;
+
+    logf("i2s: session %u err=%u rec=%u sil=%u rate=%lu",
+         stat_sessions, stat_err, stat_recover, stat_silence,
+         i2s_tx_sample_rate());
 }
 
 static void stop_tx(void)
@@ -857,13 +974,11 @@ static void stop_tx(void)
      * during playback is still reported; a designed one during teardown is not. */
     wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DSCR_ERR);
 
-    wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 20));    /* link.stop */
-    i2s_ll_tx_stop(tx_hal.dev);
-
-    /* Drop whatever latched during the halt so nothing stale survives into the
-     * next session. Safe to clear the completion bit here: the transport is
-     * stopped, so a completion from the previous session has nothing to refill. */
-    wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
+    /* Flush rather than merely halt: the bytes left in the I2S FIFO and in the
+       channel are the ones that misalign the next session. Clearing the latched
+       bits belongs to the flush, and is safe here because the transport is
+       stopped, so a completion from the previous session has nothing to refill. */
+    tx_flush();
 }
 
 /* Nothing is started or stopped for the receiver in this file any more: it is an
@@ -951,6 +1066,8 @@ void ICODE_ATTR gdma_irq(void)
      * is what we want: DONE has just armed a real buffer. */
     if (st & GDMA_INT_DSCR_ERR)
     {
+        stat_err++;
+
         /* Owner error or a bad descriptor word.
 
            This handler used to reset cur to 0 as well as re-pointing the link.
