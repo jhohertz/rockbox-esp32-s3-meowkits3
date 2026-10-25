@@ -755,3 +755,71 @@ are neither thread stacks nor DMA destinations, measured from the link map:
 placement change cannot explain a fault that heals on a one-second timer, and
 because the D/IRAM region is the D-cache address room anyway, so it would not
 remove the cache maintenance, only move it. Recorded here rather than in a stash.
+
+## USB DAC sample-rate ceiling: 48 kHz, and it is the FIFO (2026-10-25)
+
+96 kHz over USB device mode on ESP32-S3 is not reachable, and the reason is arithmetic
+rather than folklore. The wire is not the limit: full-speed isochronous allows up to
+1023 bytes per 1 ms frame, and a 96 kHz stereo S16 frame is 384. Neither is the
+device's audio path -- 96 kHz plays locally on this board, exercising the same mixer,
+TX ring, I2S clocks and codec.
+
+The limit is the controller's single shared data FIFO. `GHWCFG3[31:16]` reads **200
+words** on this silicon (`hwcfg3=0x00c804b5`, measured at boot). `GHWCFG4[3:0]` reads
+0, so TinyUSB's `+ EP_LOC_CNT` correction adds nothing. The split in use is NPTX 16 +
+4 x 16 dedicated IN + RX 120 words = 480 bytes. Synopsys' allocation rule, quoted in
+TinyUSB's `dcd_dwc2.c:208`, is:
+
+```
+GRXFSIZ = 13 + 1 + 2 * (largest_ep_size/4 + 1) + 2 * ep_out_count
+```
+
+i.e. the shared RX FIFO must hold **two** packets of the largest endpoint size. Two
+consecutive frames plus one 64-byte control packet:
+
+| ISO packet | two frames + control | in 120 words? |
+|---|---|---|
+| 192 B (48 kHz) | 96 + 16 = 112 | yes, 8 spare |
+| 256 B (64 kHz) | 128 + 16 = 144 | no |
+| 384 B (96 kHz) | 192 + 16 = 208 | no -- more than the entire 200-word RAM |
+
+Adding OUT endpoints makes it worse at 2 words each, so no endpoint count rescues it.
+The only lever with any value is per-endpoint TX sizing -- only mass storage needs a
+16-word IN FIFO, while HID, CDC notification and the audio feedback IN need 8, 16 and
+4 -- which frees about 24 words and reaches 576 bytes: enough for two 64 kHz frames,
+still nowhere near 96 kHz.
+
+**Two attempts, both measured silent.** `USB_AUDIO_BUFFER_SIZE` 384 with the menu held
+at 44.1/48 kHz, then with 88.2 and 96 kHz offered. Both produced the same signature:
+USB Audio page shows `Playing`, `iface: 3 alt: 1`, `out ep: 0x2 in ep: 0x84`, and every
+frame and sample counter at zero. Allocation was excluded (`ALLOC FAILED!` absent, and
+the strong `usb_audio_target_rx_buffer()` returns the internal-SRAM static at
+`3fcd20e0`, so the DMA destination was never in PSRAM). Local playback confirmed fine
+in the same build, so the transmit chain was healthy. That is an RX overflow signature:
+full-speed isochronous OUT is never re-sent, so bytes that do not fit are dropped
+without an error, without a completion, and without a counter.
+
+### Host-side readings that are worth keeping
+
+`/proc/asound/card2/stream0` is the cheapest independent witness on Linux:
+
+```
+Playback: Status: Running, Interface 4, Altset 1
+          Packet Size = 288            <-- ALSA's reserved ISO packet for the endpoint
+          Momentary freq = 48000 Hz    <-- feedback value the host is honouring
+          Rates: 96000, 88200, 48000, 44100
+```
+
+Two lessons from reading it:
+
+- **`hw_ptr` advancing proves nothing.** Full-speed isochronous OUT has no handshake, so
+  the host's URBs complete whether or not the device accepts the bytes. A stream can sit
+  in `RUNNING` forever into a device that is silently discarding everything.
+- **The offered rate list changes the host's reservation.** With two rates advertised
+  ALSA reserved 192-byte packets; with four it reserved 288 at the same negotiated
+  48 kHz. So a menu is not inert -- it changes what goes on the wire.
+
+Also: a device that is reflashed while the host keeps its stream open produces exactly
+this silence, because the host never re-sends `SET_CUR` after re-enumeration and the
+device's rate stays at its `HW_FREQ_DEFAULT` -- which the debug page shows as a
+plausible-looking `48000`. Replug before concluding anything about a fresh build.

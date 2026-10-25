@@ -403,50 +403,61 @@
 /* The isochronous packet size this target arms per frame, which is also the OUT
  * endpoint's declared wMaxPacketSize.
  *
- * The device FIFO RAM measures 200 words. After NPTX 16 and PTX 16 x 4 the RX side is
- * 120 words = 480 bytes, and usb-xtensa.c asserts it can hold one isochronous packet
- * plus one 64-byte control packet. A 384-byte packet is 96 words, so 112 of the 120
- * are committed and 8 are spare; 512 bytes would need 128 plus the control packet,
- * 144, which the split cannot pay for. The class default of 1023 needs 256 words and
- * is out of reach on this core -- which is why this target overrides
- * USB_AUDIO_BUFFER_SIZE at all, and why every other target in the tree does not:
- * they are high-speed devices with hundreds of words of FIFO, e.g. x1000's
+ * The ceiling here is the device's shared data FIFO, not the wire. The core reports
+ * 200 words of FIFO RAM in GHWCFG3[31:16] (hwcfg3=0x00c804b5, measured at boot), and
+ * after NPTX 16 and four 16-word dedicated IN FIFOs the RX side is 120 words =
+ * 480 bytes. Synopsys' allocation rule, quoted in TinyUSB's dcd_dwc2.c, is that the
+ * shared RX FIFO holds *two* packets of the largest endpoint size plus 14 words of
+ * setup/control and 2 words per OUT endpoint:
+ *
+ *     GRXFSIZ = 13 + 1 + 2 * (largest_ep/4 + 1) + 2 * ep_out_count
+ *
+ * Two consecutive full-speed frames plus one 64-byte control packet is the test:
+ *
+ *   192 B (48 kHz)   96 words + 16 = 112  fits in 120
+ *   256 B (64 kHz)  128 words + 16 = 144  no
+ *   384 B (96 kHz)  192 words + 16 = 208  no -- more than the entire 200-word SPRAM
+ *
+ * So 48 kHz is the ceiling for USB device mode on this silicon, at any endpoint
+ * count, and adding OUT endpoints makes it worse at 2 words each. Full-speed
+ * isochronous is not the limit -- the wire allows 1023 bytes per 1 ms frame -- and
+ * the device's own audio path is not either: 96 kHz plays locally on this board,
+ * which exercises the same mixer, TX ring, I2S clocks and codec. Only the FIFO.
+ *
+ * Attempts made and measured, so this is not re-litigated: USB_AUDIO_BUFFER_SIZE 384
+ * with the menu held at 44.1/48 kHz, and then with 88.2 and 96 kHz offered. Both went
+ * silent -- the USB Audio page showed Playing, iface and alt and both endpoints
+ * correct, every frame and sample counter at zero. That is what an RX overflow looks
+ * like: full-speed isochronous OUT is never re-sent, so bytes that do not fit are
+ * dropped without an error, without a completion and without a counter.
+ *
+ * The class default of 1023 could never be armed here, which is why this target
+ * overrides USB_AUDIO_BUFFER_SIZE at all; every other target in the tree leaves it,
+ * because they are high-speed devices with hundreds of words of FIFO -- x1000 runs
  * rx_fifosz = 816 of 3576.
  *
- * The packet was varied on its own first, and that experiment passed: with this at
- * 384 and the menu still at 44.1 and 48 kHz, the host enumerated a 384-byte endpoint
- * and played normally, which cleared the descriptor, the endpoint allocation table and
- * the RX FIFO. What it did not prove is that a 384-byte packet is ever *delivered* --
- * at those two rates the host sends 176 and 192 bytes -- so the menu now carries
- * 96 kHz and that is the leg under test. The device side is already proven: 96 kHz
- * plays locally on this board, so the mixer, the 2048-byte TX slots, the I2S clocks
- * and the codec are not in question.
- *
  * HW_SAMPR_CAPS stays SAMPR_CAP_ALL_96 because local playback and recording use
- * 88.2/96 kHz on this board -- verified on the current build -- and that knob feeds
- * both of those paths as well as the DAC menu.
- *
- * Cost, to be watched rather than assumed: REAL_DSP_BUF_SIZE comes from BUFFER_SIZE*4,
- * so the queue allocation in usb_audio_request_buf() goes from 48 * 1280 = 61,440
- * bytes to 48 * 1536 = 73,728 -- 12,288 more out of the buflib arena. "ALLOC FAILED!"
- * on the USB Audio debug page is the live check that the request was satisfied.
+ * 88.2/96 kHz on this board. That knob feeds both of those paths as well as the DAC
+ * menu, so trimming it would take rates off the player to fix a USB limitation.
  */
-#define USB_AUDIO_BUFFER_SIZE 384
+#define USB_AUDIO_BUFFER_SIZE 320
 
-/* Offer every rate whose per-frame payload (2 channels x 16-bit = 4 bytes) fits the
- * armed 384-byte packet: 44.1 kHz (176), 48 kHz (192), 88.2 kHz (353) and 96 kHz (384).
+/* Offer only the rates whose per-frame payload (2 channels x 16-bit = 4 bytes) fits
+ * within 192 bytes: 44.1 kHz (176) and 48 kHz (192).
  *
- * 64 kHz (256) also fits and is deliberately not offered -- usb-xtensa.c withholds it
- * through usb_audio_target_rate_allowed(), because a menu entry is an offer the host
- * may take and each pickup costs a transport restart. See the note there.
+ * This is a rate-menu ceiling and it is deliberately below USB_AUDIO_BUFFER_SIZE,
+ * which arms a 320-byte packet: the packet is what the endpoint can receive, this is
+ * what the device is willing to negotiate.
  *
- * The filtered list is four entries against a tSamFreq array sized for five, so
- * bSamFreqType and bLength stay consistent. The host reads the list in the order
- * hw_freq_sampr declares it, which is descending, so a fresh DAC session starts at the
- * highest rate offered -- 96 kHz here -- and that is the case this build is meant to
- * exercise rather than avoid.
+ * 64 kHz (256) fits the packet but nothing produces it, and letting the host pick it
+ * costs a transport restart per hop -- measured churn 44.1 -> 64 -> 48 -> 44.1 -> 48,
+ * each hop going through mixer_set_frequency() and therefore stopping the transport,
+ * reprogramming the clocks and re-prerolling the ring, audible as seconds of garble.
+ *
+ * Without this filter the descriptor would offer 88.2 and 96 kHz, which the FIFO
+ * above cannot receive, and a host that selected them would be silently truncated.
  */
-#define USB_AUDIO_MAX_PACKET_BYTES  384
+#define USB_AUDIO_MAX_PACKET_BYTES  192
 
 /* Cushion, declared in slots (one slot = one full-speed packet = one ms at any rate this
  * device negotiates). Unit convention follows target/hosted/hiby/usb-dac-hiby.c, which
