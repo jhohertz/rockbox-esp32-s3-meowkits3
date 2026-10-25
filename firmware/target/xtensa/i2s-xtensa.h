@@ -124,6 +124,11 @@
 
 /* GDMA TX channel 0 */
 #define GDMA_TX_CONF0   (GDMA_BASE + 0x60)
+/* out_rst, bit 0. The name in gdma_reg.h is GDMA_OUT_RST_CH0 rather than
+   OUT_RESET, so a grep for OUT_RESET finds nothing and the bit looks absent --
+   the same trap that once got I2S_CLK_EN deleted from this file. Pulsing it
+   resets the OUT channel's state machine and its internal FIFO. */
+#define GDMA_OUT_RST    (1u << 0)
 #define GDMA_TX_CONF1   (GDMA_BASE + 0x64)
 #define GDMA_TX_INT_RAW (GDMA_BASE + 0x68)
 #define GDMA_TX_INT_ST  (GDMA_BASE + 0x6C)
@@ -222,6 +227,10 @@ void i2s_init(void);
 bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
 #endif
 void i2s_set_frequency(unsigned long rate);
+/* Cumulative transmit-path counters, for the debug screen. Reading them changes
+ * nothing; they are incremented in the handler and at the start of a session. */
+void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
+                  unsigned int *recover, unsigned int *silence);
 #ifdef HAVE_RECORDING
 /* The receiver is a full ESP-IDF I2S channel created per recording session in
  * pcm-xtensa.c, so there is no rx init/start/stop to declare here. What the
