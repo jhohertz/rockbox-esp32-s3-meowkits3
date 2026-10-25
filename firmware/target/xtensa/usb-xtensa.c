@@ -70,7 +70,13 @@
  * (hwcfg3=0x00c804b5, measured at boot). The register wins -- a split sized for
  * 256 words would program DIEPTXF registers whose start addresses run past the
  * end of the RAM, which shows up as IN transfers that never complete rather than
- * as anything that names the cause. */
+ * as anything that names the cause.
+ *
+ * TinyUSB ships the same wrong number: its dwc2_esp32.h controller table hardcodes
+ * .otg_dfifo_depth = 256 for ESP32-S2/S3, so a UAC device built on it over-commits
+ * the FIFO by 56 words. Note also that its dfifo accounting adds EP_LOC_CNT to the
+ * register field; GHWCFG4[3:0] reads 0 on this core, so that correction adds nothing
+ * here and 200 is the whole SPRAM. */
 #define XT_FIFO_RAMSZ   200
 
 /* EP0 IN. Full speed caps the packet at 64 bytes = 16 words. */
@@ -101,18 +107,20 @@
  * Going back to 16 costs audio nothing, because the RX side no longer pays for six
  * FIFOs: 200 - 16 - 4*16 = 120 words = 480 bytes, against the 88 words = 352 bytes that
  * the old six-FIFO reservation left when this value was 16. The audio bug 1df51c1468 was
- * fixing -- an isochronous OUT packet with nowhere to land -- stays fixed at 480 bytes
- * with the 384-byte packet: 96 words of ISO plus 16 for one control packet, leaving 8
- * words spare. Two control packets would need 112 and no room for the ISO packet, so
- * the assertion below allows one. */
+ * fixing -- an isochronous OUT packet with nowhere to land -- stays fixed at 480 bytes:
+ * one 320-byte isochronous packet is 80 words, plus two 64-byte control packets at 16
+ * each, which commits 112 of the 120. That is the whole budget, which is why the
+ * isochronous packet cannot grow: two consecutive frames plus one control packet is
+ * what Synopsys' allocation rule asks for, and a 384-byte frame needs more than the
+ * entire 200-word RAM. See the note on USB_AUDIO_BUFFER_SIZE in config/meowkits3.h. */
 #define PTX_FIFOSZ      16
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
                          PTX_FIFOSZ * XT_PTX_FIFOS)
 
 _Static_assert(PTX_FIFOSZ >= 64 / 4,
                "a dedicated IN FIFO cannot hold one full-speed packet");
-_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 1 * (64 / 4),
-               "RX FIFO cannot hold an isochronous packet plus a control packet");
+_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4),
+               "RX FIFO cannot hold an isochronous packet plus the two control packets");
 _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * XT_PTX_FIFOS + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
                "device FIFO split exceeds the core's measured FIFO RAM");
@@ -665,21 +673,6 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
     return xt_audio_rx_buf;
 }
 
-/* Withhold 64 kHz from the DAC menu.
- *
- * The 384-byte packet can carry it -- 256 bytes a frame -- so the ceiling does not
- * drop it, and a menu entry is an offer a host is free to take. Measured on this
- * board: a session renegotiated 44.1 -> 64 -> 48 -> 44.1 -> 48, and every hop runs
- * through mixer_set_frequency(), which stops the transport, reprograms BCLK/MCLK and
- * the codec, and re-prerolls the GDMA ring. That is audible as seconds of garble that
- * settle once the host picks one rate, and it is why 64 kHz was removed in the first
- * place. Nothing produces 64 kHz audio, so offering it buys nothing here; 88.2 and
- * 96 kHz are kept because the host has real files at those rates.
- */
-bool usb_audio_target_rate_allowed(unsigned long rate)
-{
-    return rate != 64000;
-}
 #endif /* USB_ENABLE_AUDIO */
 
 /* Strong implementation of the driver's weak DMA hook. The esp32s3 D-cache covers

@@ -637,20 +637,6 @@ unsigned long usb_audio_get_playback_sampling_frequency(void)
 #define USB_AUDIO_MAX_PACKET_BYTES 0
 #endif
 
-/* Whether a target wants this rate on the AudioStreaming menu at all.
- *
- * The default allows everything the packet ceiling above already permits, so a
- * target that overrides neither sees the descriptor it always did. A target may
- * still want to withhold a rate its hardware could carry: the ceiling is a
- * capability, and what a host does with a capability it is offered is not the
- * device's choice. Called once per rate at usb_core_init() time, never on the
- * isochronous path. */
-__attribute__((weak)) bool usb_audio_target_rate_allowed(unsigned long rate)
-{
-    (void)rate;
-    return true;
-}
-
 /*
  * Initialize the driver. Called by usb_core_init().
  * Currently initializes the sampling frequency values available
@@ -670,11 +656,6 @@ static void usb_audio_init(void)
         if (hw_freq_sampr[i] / 250 > USB_AUDIO_MAX_PACKET_BYTES)
             continue;
 #endif
-        /* The target may withhold a rate the packet can carry. Applied after the
-         * ceiling so the filtered count -- and therefore bSamFreqType and bLength --
-         * describes the list that is actually encoded. */
-        if (!usb_audio_target_rate_allowed(hw_freq_sampr[i]))
-            continue;
         logf("usbaudio: %lu Hz", hw_freq_sampr[i]);
         encode3(as_playback_format_type_i.tSamFreq[count], hw_freq_sampr[i]);
         count++;
