@@ -3275,6 +3275,14 @@ arch but produces a host executable, so it has no flash goal). Overridable
 variables: `ESPTOOL` (default `esptool`), `ESPPORT` (empty means let esptool
 probe), `ESPCHIP` (derived from the artifact name), `ESPADDR` (default `0x0`).
 
+**`make flash` needs download mode every time the player is running.** Its
+`--before=default_reset` drives RTS/DTR to reboot into the ROM loader, but while
+Rockbox is up the USB stack owns the port as a composite device, so esptool
+retries for several seconds and then fails with `Failed to connect to ESP32-S3:
+No serial data received` — nothing is wrong with the image or the wiring. Put the
+board in download mode first (**hold BOOT, then tap RESET**, or hold BOOT while
+plugging USB in) and re-run. Worth recognising from that message alone.
+
 Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 `RBDEV_BUILD`, `RBDEV_RESTART` (restart a toolchain build at a given step),
 `RBDEV_TARGET`, `RBDEV_ESP_TOOLCHAIN` (Espressif release tag).
