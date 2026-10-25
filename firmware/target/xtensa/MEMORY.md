@@ -1215,3 +1215,62 @@ is not surviving a sleep; samples stuck at zero means the tick task is not runni
 General lesson for this tree: **a function-local `static` that shares a name with a
 file-scope `static` compiles silently.** Anything reading a value another function
 maintains must not be re-declared in the reader.
+
+## Enabling feature flags costs DRAM in a place unrelated to the feature (2026-10-25)
+
+`HAVE_ALBUMART`, `HAVE_JPEG`, `HAVE_QUICKSCREEN` and `AB_REPEAT_ENABLE` were turned on in
+`config/meowkits3.h`. The feature list went from 27 entries to 30 (`albumart`,
+`quickscreen`, `ab_repeat_buttons`). Three things about that are worth knowing, all
+measured rather than expected:
+
+**1. The features themselves add almost no data.** `albumart.o` and `jpeg_load.o` have no
+`.bss` at all, `quickscreen.o` has one byte. What actually grew is `settings.o` /
+`settings_list.o`: every new setting appends an entry to the config-value table. The link
+failed with `region 'dram0_0_seg' overflowed by 72 bytes` against 184 bytes of previous
+headroom -- a 24 KB code increase paid for in *static data*, in a file that has nothing to
+do with album art.
+
+**2. Only `.bss` and `COMMON` can be donated to PSRAM.** The first donor tried was
+`skin_tokens.o` at 1,016 bytes, which looked ideal -- pure UI scratch, no thread stack. It
+changed the link result by nothing, because all 1,016 of it is `.data`: `.ext_ram.bss` is
+NOLOAD, so there is nothing to load initial values from, and the ld fragment deliberately
+moves only zero-initialised sections. `gui/line.o` works instead -- `lines[]` is 1,056
+bytes of `.bss`, no thread stack, never a DMA destination -- and headroom went 184 -> 984
+bytes. `settings.o` has 2,340 bytes of `.bss` and is the obvious donor on size alone; it
+is not used, because `global_settings` is read on the audio path, which is the same reason
+`talk.o` and `beep.o` are excluded here.
+
+**3. `.ext_ram.bss` moves in 64 KB steps, so a small growth can cost a page.** The section
+does not start at a fixed address: IDF's `.ext_ram.dummy` advances past the flash rodata
+and aligns to the 64 KB MMU page. This 24 KB growth moved `_ext_ram_bss_start` from
+`0x3c120000` to `0x3c130000` -- a whole page -- which consumed the entire 64 KB arena
+deduction and left `_ext_ram_bss_end` at `0x3c582e8c`, i.e. **11,916 bytes inside
+plugin_text**, reproducing the plugin-crash condition almost exactly (the original was
+`0x3c58290c`, 10,508 past). `XT_AUDIOBUF_SIZE` is now `(MEMORYSIZE * 0x80000) - 0x20000`,
+giving clearance 53,620 bytes. Read the `MEMORY:` line at boot; do not trust this number
+surviving the next code growth.
+
+### Flipping these flags is a plugin ABI change, and one flag is not available at all
+
+`struct plugin_api` (`apps/plugin.h:213`, lines 213-1057) has gated members at line 860
+(`HAVE_ALBUMART`) and line 1015 (`HAVE_JPEG`), both mid-struct, so enabling either moves
+the offset of every member after it. Plugins reach the firmware by those offsets -- the
+same failure mode as the codec incident -- so the plugin objects and codec objects were
+forcibly rebuilt (`plugins/lib/*.o`, plugin outputs, and every codec `.o` deleted) before
+re-zipping. `struct codec_api` in `firmware/export/codecs.h` has no such gates, so codec
+ABI is unaffected by this particular pair; `apps/plugins/SOURCES:217` additionally gained
+the imageviewer's `jpeg` and `jpegp` viewers, which is the cheapest way to prove the
+decoder works on hardware without needing a skin.
+
+`HAVE_KBD_POINT_MODE` is **not** available on this panel and the reason is a hard compile
+error, not a preference: `keyboard.c:508` requires `LCD_WIDTH >= 480 && LCD_HEIGHT >= 640`
+for the point-mode layout (a 10-column by 8-line table needing all eight lines visible),
+and anything smaller hits `#error "HAVE_KBD_POINT_MODE: no point-mode layout for this
+screen size"`. Without it, `keyboard.c:472` forces `TOUCHSCREEN_BUTTON` while the keyboard
+is up -- its own comment: "keyboard is unusuable in pointing mode" -- so text entry here is
+3x3 multi-tap. Fixing that means writing a layout for 320x240, which is app behaviour, not
+target config. Recorded as a known gap.
+
+Nothing will visibly change from `HAVE_ALBUMART` alone: the shipped `cabbiev2.wps` contains
+no `%aa` token, so album art needs a skin that asks for it. The capability is enabled now
+so it exists when the theme work lands rather than being entangled with it.

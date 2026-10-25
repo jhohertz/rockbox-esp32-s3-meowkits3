@@ -142,6 +142,25 @@ entries:
     # back about 5.4 KB.
     tree (rb_psram)
     playlist_viewer (rb_psram)
+    # line.o -- lines[], the text-line layout state gui/line.c builds while drawing
+    # (1,056 bytes of .bss plus a 4-byte index). Pure UI state: no thread stack, never
+    # a DMA destination.
+    #
+    # This entry exists because enabling feature flags costs DRAM in a place that has
+    # nothing to do with the features. HAVE_QUICKSCREEN, AB_REPEAT_ENABLE, HAVE_ALBUMART
+    # and HAVE_JPEG add almost no .bss of their own -- albumart.o and jpeg_load.o have
+    # none at all, quickscreen.o has one byte -- but each new setting appends an entry
+    # to the config-value table, and dram0_0_seg then overflowed by 72 bytes against
+    # 184 bytes of previous headroom. Donating 1,060 covers it.
+    #
+    # It is not settings.o, which has 2,340 bytes of .bss and would be the obvious
+    # donor: that is global_settings, read on the audio path, and this fragment already
+    # excludes talk.o and beep.o for exactly that reason. Nor skin_tokens.o, which was
+    # tried first and did nothing: its 1,016 bytes are all .data, and .data cannot move
+    # here because .ext_ram.bss is NOLOAD, so there would be nothing to load initial
+    # values from. Only .bss and COMMON are movable, which is the real constraint when
+    # buying back internal SRAM.
+    line (rb_psram)
     filetypes (rb_psram)
     # tagtree.o is the tagcache's browse-menu layer. Its only large static is
     # uniqbuf, 64 KB of pure scratch handed to tagcache_search_set_uniqbuf() and

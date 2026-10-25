@@ -3567,6 +3567,17 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
+- Enabling a `HAVE_*` feature flag can cost internal SRAM in a file unrelated to the
+  feature: every new setting appends an entry to the config-value table in
+  `apps/settings.c`/`settings_list.c`, and that is what overflowed `dram0_0_seg` when album
+  art and quickscreen were turned on. Only `.bss` and `COMMON` can be donated to PSRAM by
+  the ld fragment -- `.data` cannot, because `.ext_ram.bss` is NOLOAD -- so check the
+  section split with `xtensa-elf-size -A` before picking a donor. Separately,
+  `.ext_ram.bss` starts where IDF's rodata dummy alignment puts it, so code growth can move
+  it a whole 64 KB page and eat the arena deduction that keeps it clear of `plugin_text`.
+- `HAVE_ALBUMART` and `HAVE_JPEG` sit mid-`struct plugin_api` (`apps/plugin.h:860` and
+  `:1015`), so either one shifts every plugin-API offset after it. That is a rebuild of all
+  plugins, not just the firmware.
 - Rockbox's build does not use `-Wshadow`, and neither do the IDF flags layered on top of
   it. A function-local `static` that shares a name with a file-scope `static` therefore
   compiles without warning and silently reads a fresh zero-initialized object instead of the
