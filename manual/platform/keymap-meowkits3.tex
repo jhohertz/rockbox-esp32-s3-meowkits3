@@ -1,10 +1,13 @@
 % MeowKit ESP32-S3 controls: a 5-way joystick, two face buttons (A and B) and
-% the AXP173's PEK input. The capacitive panel is documented separately by
+% the AXP173's PEK power input. The capacitive panel is documented by
 % keymap-touchscreen.tex, which describes the same 3x3 grid the driver reports.
 %
-% The stick follows the scroll-wheel convention used by the iriver and Sansa
-% targets: up and down are the wheel axis (move through a list, change a value,
-% adjust volume) and left and right are the select axis.
+% Every mapping here mirrors apps/keymaps/keymap-meowkits3.c and
+% apps/keymaps/keymap-touchscreen.c. Where the manual asks for an action this
+% target cannot produce, the macro says so rather than naming a key: see
+% firmware/target/xtensa/DOC-GAPS.md for the list and the reason.
+
+\newcommand{\NotAvail}{\textit{not available}}
 
 \newcommand{\ButtonUp}{\btnfnt{Up}}
 \newcommand{\ButtonDown}{\btnfnt{Down}}
@@ -30,16 +33,16 @@
 \newcommand{\ButtonScrollDown}{\ButtonDown}
 \newcommand{\ButtonScrollBack}{\ButtonLeft}
 \newcommand{\ButtonScrollFwd}{\ButtonRight}
-% This board has no hold switch, no mode key and no record key. Power is the
-% PMU's PEK input, which shuts the player off when held.
-\newcommand{\ButtonHold}{\ButtonPower}
-\newcommand{\ButtonMode}{\ButtonB}
-\newcommand{\ButtonOn}{\ButtonPower}
-\newcommand{\ButtonOff}{\ButtonPower}
 \newcommand{\ButtonRec}{\ButtonA}
 \newcommand{\ButtonPlus}{\ButtonRight}
 \newcommand{\ButtonMinus}{\ButtonLeft}
+\newcommand{\ButtonMode}{\ButtonB}
 \newcommand{\ButtonFunc}{\ButtonB}
+% There is no hold switch and no on/off key: Power is the PMU's PEK input, and
+% holding it shuts the player down.
+\newcommand{\ButtonHold}{\NotAvail}
+\newcommand{\ButtonOn}{\ButtonPower}
+\newcommand{\ButtonOff}{\ButtonPower}
 
 %Button actions, standard context
 \newcommand{\ActionStdPrev}{\ButtonUp{} or \TouchActionStdPrev}
@@ -56,76 +59,85 @@
 \newcommand{\ActionStdQuickScreen}{Long \ButtonB{} or \TouchActionStdQuickScreen}
 \newcommand{\ActionStdQuickScreenRepeat}{Long \ButtonB}
 \newcommand{\ActionQuickScreenExit}{\TouchActionQuickScreenExit}
-\newcommand{\ActionStdHotkey}{Long \ButtonRight}
-\newcommand{\ActionStdRec}{Long \ButtonUp}
+% No hotkey support on this target, so there is nothing to map.
+\newcommand{\ActionStdHotkey}{\NotAvail}
+\newcommand{\ActionStdRec}{\NotAvail}
+\newcommand{\ActionStdShowScreen}{\NotAvail}
+\newcommand{\ActionStdKeylock}{\NotAvail}
+% Power is the PMU's PEK input; the player follows VBUS on its own, so there is
+% no key to press to start charging.
 \newcommand{\ActionStdUsbCharge}{\ButtonPower}
-\newcommand{\ActionStdKeylock}{\ButtonPower}
-\newcommand{\ActionStdShowScreen}{Long \ButtonDown}
 
 %Button actions, wps context
-\newcommand{\ActionWpsBrowse}{\ButtonLeft{} or \TouchActionWpsBrowse}
 \newcommand{\ActionWpsPlay}{\ButtonA{} or \TouchActionWpsPlay}
+\newcommand{\ActionWpsStop}{Long \ButtonA{} or \TouchActionWpsStop}
 \newcommand{\ActionWpsMenu}{\ButtonB{} or \TouchActionWpsMenu}
-\newcommand{\ActionWpsStop}{Long \ButtonPower}
+\newcommand{\ActionWpsBrowse}{\TouchActionWpsBrowse}
+\newcommand{\ActionWpsContext}{Long \ButtonA{} or \TouchActionWpsContext}
 \newcommand{\ActionWpsSkipNext}{\ButtonRight{} or \TouchActionWpsSkipNext}
 \newcommand{\ActionWpsSkipPrev}{\ButtonLeft{} or \TouchActionWpsSkipPrev}
-\newcommand{\ActionWpsSeekBack}{Long \ButtonLeft{} or \TouchActionWpsSeekBack}
 \newcommand{\ActionWpsSeekFwd}{Long \ButtonRight{} or \TouchActionWpsSeekFwd}
+\newcommand{\ActionWpsSeekBack}{Long \ButtonLeft{} or \TouchActionWpsSeekBack}
 \newcommand{\ActionWpsVolUp}{\ButtonUp{} or \TouchActionWpsVolUp}
-\newcommand{\ActionWpsVolDown}{\ButtonDown{} or \TouchActionWpsVolDown}
 \newcommand{\ActionWpsVolUpRepeat}{Long \ButtonUp}
+\newcommand{\ActionWpsVolDown}{\ButtonDown{} or \TouchActionWpsVolDown}
 \newcommand{\ActionWpsVolDownRepeat}{Long \ButtonDown}
-\newcommand{\ActionWpsContext}{Long \ButtonA{} or \TouchActionWpsContext}
+\newcommand{\ActionWpsQuickScreen}{Long \ButtonB{} or \TouchActionWpsQuickScreen}
+% Bottom-right: the playlist when hotkeys are off, the track info screen when
+% held. There is no hotkey setting on this target, so the tap is the playlist.
+\newcommand{\ActionWpsPlaylist}{\TouchBottomRight}
+\newcommand{\ActionWpsShowPlaylist}{\TouchBottomRight}
 \newcommand{\ActionWpsIdThreeScreen}{\TouchActionWpsIdThreeScreen}
-\newcommand{\ActionWpsPitchScreen}{Long \ButtonUp}
-\newcommand{\ActionWpsPlaylist}{Long \ButtonDown}
-\newcommand{\ActionWpsShowPlaylist}{Long \ButtonDown}
-\newcommand{\ActionWpsHotkey}{Long \ButtonRight{} or \TouchBottomRight}
-\newcommand{\ActionWpsRepeatMode}{Long \ButtonB}
-\newcommand{\ActionWpsShuffle}{Long \ButtonMenu}
-\newcommand{\ActionWpsQuickScreen}{Long \ButtonB{} or \TouchActionStdQuickScreen}
-\newcommand{\ActionWpsAbSetA}{Long \ButtonLeft}
-\newcommand{\ActionWpsAbSetB}{Long \ButtonRight}
-\newcommand{\ActionWpsAbSetAPrevDir}{Long \ButtonLeft}
-\newcommand{\ActionWpsAbSetBNextDir}{Long \ButtonRight}
-\newcommand{\ActionWpsAbReset}{Long \ButtonA{} or Long \TouchCenter}
-\newcommand{\ActionWpsSetRepeatMode}{Long \ButtonB}
-\newcommand{\ActionWpsSetShuffle}{Long \ButtonB}
+\newcommand{\ActionWpsPitchScreen}{\TouchActionWpsPitchScreen}
+\newcommand{\ActionWpsRec}{Long \TouchTopLeft}
+\newcommand{\ActionWpsHotkey}{\NotAvail}
+% Repeat mode and shuffle are reachable from a skin's touch region, not from a
+% key: see the touch actions in the skin engine.
+\newcommand{\ActionWpsRepeatMode}{\NotAvail}
+\newcommand{\ActionWpsSetRepeatMode}{\NotAvail}
+\newcommand{\ActionWpsShuffle}{\NotAvail}
+\newcommand{\ActionWpsSetShuffle}{\NotAvail}
+\newcommand{\ActionWpsAbSetA}{\NotAvail}
+\newcommand{\ActionWpsAbSetB}{\NotAvail}
+\newcommand{\ActionWpsAbSetAPrevDir}{\NotAvail}
+\newcommand{\ActionWpsAbSetBNextDir}{\NotAvail}
+\newcommand{\ActionWpsAbReset}{\NotAvail}
 
 %Button actions, tree context
 \newcommand{\ActionTreeWps}{\TouchActionTreeWps}
 \newcommand{\ActionTreeStop}{\TouchActionTreeStop}
 \newcommand{\ActionTreeEnter}{\ButtonA{} or \TouchActionTreeEnter}
 \newcommand{\ActionTreeParentDirectory}{\ButtonLeft{} or \TouchActionTreeParentDirectory}
-\newcommand{\ActionTreeHotkey}{Long \ButtonRight{} or \TouchActionTreeHotkey}
+\newcommand{\ActionTreeHotkey}{\NotAvail}
 
-%Button actions, settings list context
-\newcommand{\ActionSettingsInc}{\ButtonUp{} or \ButtonRight}
+%Button actions, settings list context. On the stick the wheel axis changes the
+% highlighted value; on the EQ, colour-picker and time screens left and right do
+% instead, which is why both appear here.
+\newcommand{\ActionSettingsInc}{\ButtonUp}
 \newcommand{\ActionSettingsIncrRepeat}{Long \ButtonUp}
-\newcommand{\ActionSettingsDec}{\ButtonDown{} or \ButtonLeft}
+\newcommand{\ActionSettingsDec}{\ButtonDown}
 \newcommand{\ActionSettingsDecrRepeat}{Long \ButtonDown}
 \newcommand{\ActionSettingsEnter}{\ButtonA}
-\newcommand{\ActionSettingsReset}{\ButtonB}
+\newcommand{\ActionSettingsReset}{\NotAvail}
 \newcommand{\ActionSettingInc}{\ButtonRight}
 \newcommand{\ActionSettingDec}{\ButtonLeft}
 
 %Button actions, YesNo context
-\newcommand{\ActionYesNoAccept}{\ButtonA}
+\newcommand{\ActionYesNoAccept}{\ButtonA{} or \TouchActionYesNoAccept}
 \newcommand{\ActionYesNoReject}{\ButtonB}
 
 %Button actions, recording context
 \newcommand{\ActionRecPause}{\ButtonA{} or \TouchActionRecPause}
-\newcommand{\ActionRecMenu}{\ButtonB}
+\newcommand{\ActionRecMenu}{\ButtonB{} or \TouchActionRecMenu}
 \newcommand{\ActionRecNewFile}{Long \ButtonB}
-\newcommand{\ActionRecSettingsInc}{\ButtonRight}
-\newcommand{\ActionRecSettingsDec}{\ButtonLeft}
-\newcommand{\ActionRecPrev}{\ButtonUp}
-\newcommand{\ActionRecNext}{\ButtonDown}
-\newcommand{\ActionRecExit}{\ButtonB}
+\newcommand{\ActionRecSettingsInc}{\ButtonRight{} or \TouchActionRecSettingsInc}
+\newcommand{\ActionRecSettingsDec}{\ButtonLeft{} or \TouchActionRecSettingsDec}
+\newcommand{\ActionRecPrev}{\ButtonUp{} or \TouchActionRecPrev}
+\newcommand{\ActionRecNext}{\ButtonDown{} or \TouchActionRecNext}
+\newcommand{\ActionRecExit}{\ButtonB{} or \TouchActionRecExit}
 
-%Button actions, virtual keyboard context. This panel shows an on-screen
-% keyboard, so the stick moves the highlight and A commits; the grid's cells
-% cover the same ground.
+%Button actions, virtual keyboard context. This is the line-at-a-time keyboard;
+% the point-mode layout needs 480x640, which this panel is not.
 \newcommand{\ActionKbdLeft}{\ButtonLeft{} or \TouchActionKbdLeft}
 \newcommand{\ActionKbdRight}{\ButtonRight{} or \TouchActionKbdRight}
 \newcommand{\ActionKbdUp}{\ButtonUp{} or \TouchActionKbdUp}
@@ -136,10 +148,11 @@
 \newcommand{\ActionKbdCursorLeft}{\ButtonLeft{} or \TouchActionKbdCursorLeft}
 \newcommand{\ActionKbdCursorRight}{\ButtonRight{} or \TouchActionKbdCursorRight}
 \newcommand{\ActionKbdBackSpace}{\ButtonB{} or \TouchActionKbdBackSpace}
-\newcommand{\ActionKbdPageFlip}{\ButtonA{} or \TouchActionKbdPageFlip}
+\newcommand{\ActionKbdPageFlip}{\TouchActionKbdPageFlip}
 \newcommand{\ActionKbdMorseSelect}{\ButtonA}
 
-%Button actions, pitch screen context
+%Button actions, pitch screen context. The pitch screen itself is entered from
+% the WPS by holding the bottom-left cell; once there these keys work.
 \newcommand{\ActionPsToggleMode}{\ButtonB{} or \TouchActionPsToggleMode}
 \newcommand{\ActionPsIncSmall}{\ButtonRight{} or \TouchActionPsIncSmall}
 \newcommand{\ActionPsIncBig}{Long \ButtonRight{} or \TouchActionPsIncBig}
@@ -148,14 +161,18 @@
 \newcommand{\ActionPsNudgeLeft}{\ButtonLeft{} or \TouchActionPsNudgeLeft}
 \newcommand{\ActionPsNudgeRight}{\ButtonRight{} or \TouchActionPsNudgeRight}
 \newcommand{\ActionPsReset}{\ButtonA{} or \TouchActionPsReset}
-\newcommand{\ActionPsExit}{\ButtonB}
+\newcommand{\ActionPsExit}{\ButtonB{} or \TouchActionPsExit}
+\newcommand{\ActionPsSlower}{\TouchActionPsSlower}
+\newcommand{\ActionPsFaster}{\TouchActionPsFaster}
 
-%Button actions, bookmark context
+%Button actions, bookmark context. Deleting works; creating and listing do not,
+% because no key produces those actions on this target.
 \newcommand{\ActionBmDelete}{\ButtonB{} or \TouchActionBmDelete}
-\newcommand{\ActionBmView}{\ButtonA}
-\newcommand{\ActionBmJump}{\ButtonA}
+\newcommand{\ActionBmView}{\NotAvail}
+\newcommand{\ActionBmJump}{\NotAvail}
 
-%Plugin lib actions
+%Plugin lib actions. The stick drives the directions; the touch grid covers
+% select and cancel through the shared touchscreen mapping.
 \newcommand{\PluginUp}{\ButtonUp{} or \TouchTopMiddle}
 \newcommand{\PluginDown}{\ButtonDown{} or \TouchBottomMiddle}
 \newcommand{\PluginLeft}{\ButtonLeft{} or \TouchMidLeft}
@@ -164,8 +181,8 @@
 \newcommand{\PluginSelectRepeat}{Long \ButtonA{} or Long \TouchCenter}
 \newcommand{\PluginCancel}{\ButtonB{} or \TouchBottomRight}
 \newcommand{\PluginExit}{\ButtonB{} or \TouchBottomRight}
-\newcommand{\PluginScrollBack}{\ButtonLeft}
-\newcommand{\PluginScrollFwd}{\ButtonRight}
+\newcommand{\PluginScrollBack}{\NotAvail}
+\newcommand{\PluginScrollFwd}{\NotAvail}
 \newcommand{\PluginMenu}{\ButtonB}
 \newcommand{\PluginActionOne}{\ButtonA}
 \newcommand{\PluginActionTwo}{\ButtonB}
@@ -174,8 +191,8 @@
 \newcommand{\PluginActionFive}{\ButtonUp}
 \newcommand{\PluginActionSix}{\ButtonDown}
 
-%There is no Ingenic-style bootloader recovery mode on this board: the image is
-%flashed over USB or UART, so these describe that instead.
+%There is no bootloader recovery mode on this board: the image is flashed over
+%USB or UART, so these describe that instead.
 \newcommand{\ActionBootRecoveryMenu}{\ButtonPower}
 \newcommand{\ActionBootOFPlayer}{\ButtonPower}
 \newcommand{\ActionBootOFRecovery}{\ButtonPower}

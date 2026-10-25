@@ -1,0 +1,197 @@
+# Documentation-driven gap log
+
+Running list of implementation gaps surfaced while writing the target manual.
+The manual is effectively a spec of what the player promises, so every `\opt{}`
+the body expects and every action macro it renders is a claim we either honour
+or don't. Each entry says what the manual promises, what the code actually does,
+and where the evidence is. Nothing here is a build failure; these are product
+gaps, ordered roughly by how much a user would notice.
+
+Format: **claim / reality / evidence / what fixing it means / status.**
+
+---
+
+## 1. A-B repeat is enabled but cannot be set
+
+- **Claim:** `ab_repeat_buttons` is in our feature list, so
+  `manual/configure_rockbox/playback_options.tex` documents the A-B repeat
+  setting.
+- **Reality:** no key on this target produces `ACTION_WPS_ABSETA` or
+  `ACTION_WPS_ABSETB`. `apps/keymaps/keymap-meowkits3.c` and
+  `apps/keymaps/keymap-touchscreen.c` contain neither. The user can turn A-B
+  repeat on in the settings menu but cannot mark the two points.
+- **Evidence:** the action list extracted from both keymap files has no `AB*`
+  entries.
+- **What fixing it means:** add mappings in the WPS context. Long Left/Right are
+  taken by seek, so the natural slots are the touch grid corners we currently
+  leave unclaimed, or a modifier gesture on B. `keymap-touchscreen.c` leaves
+  `TouchActionWpsAbSet*` empty, so a target-specific addition is the right
+  shape.
+- **Status:** open. This is the most user-visible gap: a feature we advertise
+  but cannot use.
+
+## 2. Shuffle and repeat-mode toggles have no key
+
+- **Claim:** playback options describe shuffle and repeat mode.
+- **Reality:** no `ACTION_WPS_SHUFFLE` / `ACTION_WPS_REPEAT_MODE` mapping.
+  These are reachable from a skin through touch regions — the skin engine has
+  `ACTION_TOUCH_SHUFFLE` and `ACTION_TOUCH_REPMODE` (`skin_parser.c:1625`) —
+  so they work only if the theme defines a `%T` region with that action. The
+  default cabbiev2 defines none.
+- **What fixing it means:** either add key mappings, or add `%T` regions to our
+  theme so the gestures exist on screen.
+- **Status:** open, partly mitigated by the skin engine.
+
+## 3. Bookmarks: delete works, create and list do not
+
+- **Claim:** `manual/rockbox_interface/bookmarking.tex` documents creating a
+  bookmark, listing them, and deleting them.
+- **Reality:** `ACTION_BMS_DELETE` is produced (bottom-right hold, via
+  `keymap-touchscreen.c`), but `ACTION_WPS_CREATE_BOOKMARK` and
+  `ACTION_WPS_LIST_BOOKMARKS` are produced nowhere. Bookmarks can therefore be
+  deleted but never created from the WPS.
+- **What fixing it means:** two mappings in the WPS context. Note the delete
+  action's spelling is `ACTION_BMS_DELETE`, not `ACTION_BM_DELETE`; the manual's
+  macro is `\ActionBmDelete`.
+- **Status:** open.
+
+## 4. Key lock is documented with an empty key column
+
+- **Claim:** `manual/rockbox_interface/wps.tex:83` renders a "Key lock (software
+  hold switch) on/off" row for every target without a `hold_button` option.
+- **Reality:** no `ACTION_STD_KEYLOCK` mapping exists. That row selects its key
+  from an explicit pad list (`SANSA_CLIP_PAD`, `SANSA_FUZEPLUS_PAD`,
+  `AIGO_EROSQ_PAD`, `RG_NANO_PAD`), so for us the cell renders blank.
+- **What fixing it means:** either implement key lock (it is cheap —
+  `ACTION_STD_KEYLOCK` just gates non-power keys), or accept a blank row.
+  Upstream could gate the row properly, but that edits other targets' manuals.
+- **Status:** open, cosmetic until key lock is implemented.
+
+## 5. Pitch screen is reachable only by touch
+
+- **Claim:** `pitchscreen` is in our feature list; the manual documents
+  entering it from the WPS.
+- **Reality:** `ACTION_WPS_PITCHSCREEN` comes only from holding the bottom-left
+  grid cell (`keymap-touchscreen.c:100`). No stick gesture produces it. Once
+  inside, the stick works — `ACTION_PS_*` are all available.
+- **What fixing it means:** one WPS-context mapping. Free stick slots are
+  scarce: `Up|REPEAT` and `Down|REPEAT` are volume on the WPS, `A|REPEAT` is
+  context there and stop, `B|REPEAT` is quick screen.
+- **Status:** open, low severity.
+
+## 6. No hotkeys
+
+- **Claim:** none — `manual/rockbox_interface/hotkeys.tex` is gated on
+  `\opt{hotkey}` and our feature list has no `hotkey`, so the manual correctly
+  omits it. The shared touchscreen keymap therefore routes its bottom-right tap
+  to the playlist instead (`keymap-touchscreen.c:94-98`).
+- **Reality:** consistent. Deferred deliberately: `HAVE_HOTKEY` needs a modifier
+  button, and this board has six inputs with no natural modifier.
+- **Status:** deferred by choice, documented as such.
+
+## 7. No wake-up alarm
+
+- **Claim:** none — the alarm section is gated on `\opt{alarm}`, and we do not
+  advertise it.
+- **Reality:** `rtc_setalarm()` is not implemented in
+  `firmware/drivers/rtc/rtc_pcf8563.c`, so `HAVE_RTC_ALARM` cannot be enabled.
+  The PCF8563 has a countdown timer register that would support it.
+- **Status:** deferred by choice. Enabling it is a target-driver task, not a
+  config flag.
+
+## 8. The on-screen keyboard is line-mode, not touch-mode
+
+- **Claim:** `manual/rockbox_interface/browsing_and_playing.tex` documents the
+  virtual keyboard and shows `ss-virtual-keyboard-320x240x16.png`.
+- **Reality:** `apps/recorder/keyboard.c:506` requires `LCD_WIDTH >= 480 &&
+  LCD_HEIGHT >= 640` for `HAVE_KBD_POINT_MODE`, and `#error`s otherwise (line
+  539). We have a touchscreen but not the resolution, so the keyboard is the
+  character-list keyboard navigated with the stick, and tapping it does nothing.
+- **What fixing it means:** a point-mode layout for 320x240 in `keyboard.c`.
+  That is a core file, so it would need the same kind of seam we use elsewhere
+  rather than a resolution-specific hack.
+- **Status:** open. This is a real usability gap on a touch device: text entry
+  by stick is slow.
+
+## 9. Actions the manual names that we never produce
+
+Minor, collected because the macros have to say something:
+
+| Action | Manual context | Ours |
+|---|---|---|
+| `ACTION_STD_REC` | start recording from any screen | WPS only (`ACTION_WPS_REC`) |
+| `ACTION_STD_SHOWSCREEN` | screen/backlight toggle | none |
+| `ACTION_SETTINGS_RESET` | reset a setting to default | none |
+| `ACTION_STD_KEYLOCK` | key lock | none (see §4) |
+| `ACTION_STD_HOTKEY` | hotkey | none, and correctly undocumented |
+
+- **Status:** open, low severity. Each is one mapping if we decide the gesture.
+
+## 10. Plugins: 53 sources reference buttons we don't have
+
+- **Claim:** the manual documents many plugins with their own key tables
+  (`ButtonHome`, `ButtonPlus`, `ButtonMinus`, `ButtonMode`, `ButtonFn`,
+  `ButtonRec`, `ButtonOff` appear throughout `manual/plugins/`).
+- **Reality:** this board has six inputs plus the touch grid. 53 plugin sources
+  under `apps/plugins/` reference at least one button we cannot produce.
+  `apps/plugins/lib/pluginlib_actions.c` has an `ESP32S3_PAD` branch, but it
+  defines only the four directions and their repeats; select/cancel/exit come
+  from the shared `HAVE_TOUCHSCREEN` block.
+- **Why this matters:** that shared block is the reason a comment in our branch
+  warns about a silent failure mode — with `HAVE_TOUCHSCREEN` defined, the
+  `#else` branch compiles a pluginlib list with no `PLA_*` entries at all, so a
+  plugin loads, runs, draws and ignores every key. `2048` was exactly that
+  before the `ESP32S3_PAD` branch existed.
+- **What fixing it means:** a per-plugin audit against our inputs, not a
+  wholesale fix. Worth ranking: which plugins ship in our zip and are
+  unplayable, and whether the touch grid can stand in for the missing keys.
+- **Status:** open, needs an audit pass.
+
+## 11. USB HID modes are wired but unexercised
+
+- **Claim:** `manual/configure_rockbox/system_options.tex` documents USB HID
+  with multimedia, presentation and browser keypad modes, and we build
+  `usb_hid`.
+- **Reality:** `keymap-touchscreen.c` produces the full `ACTION_USB_HID_*` set
+  (multimedia, presentation, browser, and mouse where supported), so the input
+  side exists. Only multimedia has actually been used on this board.
+- **Status:** verify on hardware. Not a code gap as far as the source shows.
+
+## 12. Release and tooling infrastructure has no entry for us
+
+- `https://download.rockbox.org/build-info` lists 100 targets; we are not one,
+  so `\download{...}` links in the manual point at paths that will not resolve
+  for this board.
+- `themes.rockbox.org` answers `code=1 "No themes available for the selected
+  target"` for `meowkits3`, so third-party themes have to be pulled through a
+  proxy target (`ibassodx90` for 320x240 touch, `ipodvideo` for the wider
+  320x240 set).
+- Rockbox Utility cannot install this target, which is why
+  `meowkits3_install.tex` is a hand-written esptool procedure.
+- **Status:** expected for an unreleased port. Worth revisiting when the target
+  goes upstream.
+
+## 13. Two fonts the themes server carries are not in the tree
+
+`05-Cabbie-Bold.fnt` and `06-Cabbie-Bold.fnt` are in the server's 90-font pack
+but not in `fonts/` here, nor in `upstream/master`. Our tree builds the other 88.
+Nothing sampled needs them. **Status:** no action unless a theme asks for one.
+
+---
+
+## Keeping this log
+
+When a gap is closed, move the entry to the closed section at the bottom and
+note the commit. When the manual is regenerated, re-check the action macros in
+`manual/platform/keymap-meowkits3.tex`: it deliberately says *not available*
+where the code produces nothing, so a mapping added to the keymap should be
+followed by a change in that file, or the manual will understate the player.
+
+The check that produces the list is small: extract `ACTION_*` from
+`apps/keymaps/keymap-meowkits3.c` and `apps/keymaps/keymap-touchscreen.c`, and
+compare against the `\Action*` macros the manual body uses under options we
+actually have.
+
+## Closed
+
+*(none yet)*
