@@ -655,3 +655,37 @@ for c in $(find lib/rbcodec/codecs -name '*.codec'); do
   [ "$o" != "0x$FW" ] && echo "MISMATCH $c $o"
 done
 ```
+
+## Power handling: the ack is what arms the cut (2026-10-24)
+
+The AXP173 owns every rail, so power-off is a PMU conversation, not a SoC one. The
+measured facts, in the order they matter:
+
+| Fact | Evidence |
+|---|---|
+| PEK long-press latches in REG **0x46 bit 0** (IRQ23); REG 0x44 bit 0 is reserved | datasheet IRQ table + REG 46H bit list; the vendor driver for this board reads 0x44 and so never sees a press |
+| Writing 1 to that bit **starts** the OFFLEVEL countdown | two builds differing only in that write: with it, a 2.5 s press ended in a cut ~10 s later; without it, the same press produced nothing and a continuous 10 s hold was needed |
+| The countdown **cannot** be recalled once started | asserted first, then treated as fact; nothing found that aborts it |
+| REG **0x36 bit 3** is the auto-off *function* enable (reset 1) | §REG 36H: 按键时长大于关机时长时自动关机功能设置, 0 关闭 / 1 打开 |
+| REG **0x32 bit 7** is a separate mechanism | measured to drop every rail except LDO1, on battery and on cable, with bit 3 clear too |
+
+So a press that Rockbox intends to refuse must be vetoed before it is acked: clear bit 3,
+then clear the latch. `firmware/target/xtensa/button-xtensa.c` does exactly that while
+`usb_host_session()` is true.
+
+`usb_host_session()` is a new accessor in `firmware/usb.c` (`usb_state == USB_INSERTED`).
+`usb_inserted()` is too broad for this purpose: it is also true for `USB_POWERED`, where the
+cable only charges, the normal UI is running, and a shutdown is honoured - and being able to
+power off while charging is worth having. The refusal itself is not MSC-specific:
+`handle_usb_events()` returns only on `SYS_USB_DISCONNECTED`, so every enumerated class
+refuses.
+
+The poll reads REG 0x46 once per 100 ms (the read costs ~1.6 ms of polled I2C, this runs at
+HZ in the tick thread) and stops once it has requested a shutdown, because `power_off()` has
+to own the bus for its final write. `cancel_shutdown()` publishes no state, so the request
+tick is remembered and the poll re-arms after 30 s of continued running - that is the
+tagcache-busy refusal path.
+
+Core files touched by all of this: `apps/misc.c` only, and only the
+`#ifdef CLEAN_SHUTDOWN_MESSAGE_HOLD` seam, which defaults to no delay. `usb.c` gains the
+accessor. Everything else is target and driver.

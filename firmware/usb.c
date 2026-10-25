@@ -828,6 +828,15 @@ bool usb_inserted(void)
     return usb_state == USB_INSERTED || usb_state == USB_POWERED;
 }
 
+/* True only while the host has enumerated. gui_usb_screen_run() -> handle_usb_events()
+   loops until SYS_USB_DISCONNECTED and ignores every other event, so a SYS_POWEROFF
+   posted in that state is never dispatched and Rockbox refuses the shutdown. VBUS without
+   enumeration leaves the normal UI running, and there a shutdown is honoured. */
+bool usb_host_session(void)
+{
+    return usb_state == USB_INSERTED;
+}
+
 #if defined(USB_FULL_INIT)
 bool usb_exclusive_storage(void)
 {
@@ -962,6 +971,11 @@ bool usb_powered_only(void)
 /* Dummy functions for USB_NONE  */
 
 bool usb_inserted(void)
+{
+    return false;
+}
+
+bool usb_host_session(void)
 {
     return false;
 }
