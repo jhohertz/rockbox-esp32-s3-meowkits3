@@ -327,19 +327,22 @@ Files: none. Doc: the manual already documents the modes via
 `configure_rockbox/system_options.tex`; the gesture table for our target lives
 in the shared touchscreen mapping, so nothing in `keymap-meowkits3.tex` changes.
 
-### S8 — Recording screen entry from anywhere
+### S8 — Recording screen entry from anywhere: **passed**
 
-`ACTION_WPS_REC` exists (touch Top-Left hold). For the stick: `B|UP` is taken by
-S3's bookmark create, so use `BUTTON_A|BUTTON_DOWN` (prereq A) →
-`ACTION_STD_REC`, or leave recording as a touch/WPS-only gesture and rely on the
-settings menu. Decide alongside S3 rather than pre-assigning; the modifier space
-is small and one gesture should not do two things.
+`ACTION_STD_REC` is real — `apps/menu.c:495` maps it to `GO_TO_RECSCREEN` — so
+the mapping would have worked. Passed on purpose: recording is already reachable
+from the WPS (touch Top-Left hold, and our recscreen table) and from the
+settings/menu route, and a from-anywhere record key is not something the panel
+needs. Revisit if short PEK is ever implemented, which is driver work rather
+than a keymap change: `0x00008000` is still free for a PEK button code.
 
-### S9 — Settings reset
+### S9 — Settings reset: **not doing; nothing to integrate**
 
-Minor. `ACTION_SETTINGS_RESET` has no upstream precedent in any keymap. Cheapest
-correct answer is a skin region (`%T(...,setting_set)`), or `Long B` in the
-settings context, which is currently free there. Low priority.
+`ACTION_SETTINGS_RESET` does not exist anywhere in this tree — not in
+`apps/action.h`, not in any keymap. Same class as the short-PEK screen toggle
+and the keyboard hint line: mapping it would mean inventing a core action for
+one target. Reset is available by editing the value, or by deleting
+`/.rockbox/config.cfg` off the card.
 
 ### S10 — Plugin button audit  *(its own effort)*
 
@@ -399,12 +402,17 @@ Keep it everywhere.
    `keymap-touchscreen.c`. Verify the touch keypad on hardware instead.
 5. **S6** theme touch regions — **deferred**: cabbiev2 stays untouched, and
    `%T` regions come with the theme packs instead.
-6. **S5** key lock — **landed** as A + B held, std and WPS contexts. **S8**
-   recording and **S9** settings reset — each only if it
-   maps to an action Rockbox already has. S2 is parked; short PEK stays unused
-   rather than becoming a new action.
-7. **S10** plugin audit as its own multi-part effort.
-8. **S11** tooling and rbutil stubs.
+6. **S5** key lock — **landed** as A + B held, std and WPS contexts, verified on
+   hardware. **S8** recording — **passed**: the action exists
+   (`apps/menu.c:495`) but a from-anywhere record key isn't wanted. **S9**
+   settings reset — **not doing**: `ACTION_SETTINGS_RESET` is not in this tree
+   at all. S2 is parked; short PEK stays unused rather than becoming a new
+   action.
+7. **Theme pack** — **built**: `tools/rbthemes.py` plus an 8-theme
+   `rockbox-themes.zip`, audited clean against the union of the core and fonts
+   artifacts.
+8. **S10** plugin audit as its own multi-part effort.
+9. **S11** tooling and rbutil stubs.
 
 Every step updates `manual/platform/keymap-meowkits3.tex` and moves the matching
 entry in `DOC-GAPS.md` to *Closed* with the commit id.
