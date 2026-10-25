@@ -263,19 +263,24 @@ int button_read_device(int *data)
      * while the main thread halts; a 100 ms reader running concurrently is enough to
      * corrupt that write, which is what let the chip sit on until OFFLEVEL expired.
      *
-     * A press is also ignored while USB is inserted, because Rockbox refuses a poweroff in
-     * USB mode and the refusal has to be honoured -- the session is the card's owner. What
-     * makes that safe is that the poll then does not acknowledge the latch: writing 1 to
-     * 0x46 bit 0 is what starts the chip's OFFLEVEL countdown, so an unacknowledged press
-     * leaves the chip alone rather than hard-killing the board ten seconds later with
-     * nothing flushed. Two builds of this file proved the coupling: the one that acked cut
-     * ten seconds after a 2.5 s press, the one that read a reserved register and so never
-     * acked needed a continuous ten-second hold instead. Since the countdown cannot be
-     * recalled once started, the press is left latched and takes effect on extraction --
-     * deferred, not dropped.
+     * A press during a USB session is discarded outright, because Rockbox refuses a
+     * poweroff in USB mode and that refusal is correct: the host owns the card. The PMU is
+     * made to agree -- while usb_inserted() the poll disables the PEK auto-off (REG 36H
+     * bit 3) and then clears both PEK status bits, so holding the key in MSC mode does
+     * nothing at all, now or later.
+     *
+     * The order matters. Clearing the latch is what starts the OFFLEVEL countdown: two
+     * builds of this file that differed only in whether they wrote 1 to 0x46 bit 0 showed
+     * the one that acked cutting ten seconds after a 2.5 s press, and the one that never
+     * acked needing a continuous ten-second hold. Since that countdown cannot be recalled,
+     * bit 3 is cleared first so there is no countdown to start. The cost is that a hung
+     * application has no hardware kill while the cable is in; VBUS powers the board and the
+     * host can unplug it, and the veto is lifted on extraction. REG 32H bit 7 is a separate
+     * mechanism, so the clean shutdown path is unaffected.
      */
     static unsigned int pek_poll_div;
     static bool shutdown_requested;
+    static bool auto_off = true;    /* as programmed by axp173_init() */
 
     if (shutdown_requested)
         return b;
@@ -285,7 +290,20 @@ int button_read_device(int *data)
         pek_poll_div = 0;
 #ifdef HAVE_USBSTACK
         if (usb_inserted())
-            return b;   /* refused: leave the latch alone so nothing gets armed */
+        {
+            if (auto_off)
+            {
+                axp173_auto_off_enable(false);
+                auto_off = false;
+            }
+            axp173_power_key_cancel();
+            return b;
+        }
+        if (!auto_off)
+        {
+            axp173_auto_off_enable(true);
+            auto_off = true;
+        }
 #endif
         if (axp173_power_key_pressed())
         {

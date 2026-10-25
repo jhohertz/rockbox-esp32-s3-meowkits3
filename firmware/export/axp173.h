@@ -91,6 +91,12 @@
    reserved: the vendor driver for this board reads PEK status there and is wrong. */
 #define AXP_IRQ_PEK_LONG    (1u << 0)
 #define AXP_IRQ_PEK_SHORT   (1u << 1)
+
+/* REG 36H bit 3: the PEK auto-off function itself. The datasheet calls it
+   "按键时长大于关机时长时自动关机功能设置", 0 = off, 1 = on, and it resets to 1.
+   Clearing it disables the OFFLEVEL hard cut wholesale; it is a different mechanism from
+   the software shutdown in REG 32H bit 7, so axp173_power_off() still works with it off. */
+#define AXP_TIMING_AUTOOFF  (1u << 3)
 #define AXP_IRQ_LDO4_LOW    (1u << 3)
 #define AXP_IRQ_DCDC2_LOW   (1u << 4)
 #define AXP_IRQ_DCDC1_LOW   (1u << 5)
@@ -138,5 +144,13 @@ void axp173_power_off(void);
 /* True if the PEK power key was pressed since the last call. Consumes the
    latched status bits so the same press is not reported twice. */
 bool axp173_power_key_pressed(void);
+
+/* Enable or disable the PEK auto-off (OFFLEVEL hard cut) without disturbing the
+   other fields of REG 36H. */
+bool axp173_auto_off_enable(bool on);
+
+/* Discard any latched PEK press, long or short, without reporting it. Returns
+   true if something was cleared. */
+bool axp173_power_key_cancel(void);
 
 #endif /* AXP173_H */

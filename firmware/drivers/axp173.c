@@ -239,6 +239,34 @@ bool axp173_power_key_pressed(void)
     return false;
 }
 
+bool axp173_auto_off_enable(bool on)
+{
+    /* Only bit 3 of REG 36H; the on/off levels, PWROK delay and OFFLEVEL selection are
+       left exactly as axp173_init() programmed them. */
+    return axp173_modify_reg(AXP_REG_TIMING,
+                             on ? 0 : AXP_TIMING_AUTOOFF,
+                             on ? AXP_TIMING_AUTOOFF : 0);
+}
+
+bool axp173_power_key_cancel(void)
+{
+    int st = axp173_read_reg(AXP_REG_IRQST3);
+
+    if (st < 0)
+        return false;
+
+    unsigned int bits = (unsigned int)st & (AXP_IRQ_PEK_LONG | AXP_IRQ_PEK_SHORT);
+
+    if (!bits)
+        return false;
+
+    /* Write-1-to-clear, so this writes back only the bits that were set. Both PEK bits are
+       cleared: a short press during a USB session would otherwise sit latched with nothing
+       acting on it, holding the IRQ pin low forever. */
+    axp173_write_reg(AXP_REG_IRQST3, (unsigned char)bits);
+    return true;
+}
+
 void axp173_power_off(void)
 {
     axp173_modify_reg(AXP_REG_SHUTDOWN, 0, 1 << 7);
