@@ -105,6 +105,11 @@ enum
      * being starved and recovered. Counted always rather than behind a probe, because
      * the moment worth catching is shorter than any sampling interval. */
     INFO_TXSTAT,
+    /* What the codec itself reports. The transmit counters can say the transport is
+     * healthy while nothing audible comes out, because the chip's state is only
+     * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
+     * screen is opened rather than sampled continuously. */
+    INFO_CODEC,
     /* The crash trail, newest first. A hardware exception goes to IDF's handler,
      * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
      * no message to show and this ring is the only surviving record. Six rows is
@@ -184,6 +189,9 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
                  sessions, err, recover, silence);
         break;
     }
+    case INFO_CODEC:
+        es8311_stat(buf, bufsz);
+        break;
     default: {
         int i = item - INFO_I2C_BASE;
 
