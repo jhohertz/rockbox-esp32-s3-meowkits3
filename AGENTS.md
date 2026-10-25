@@ -4442,5 +4442,145 @@ target used to crash on the quickscreen gesture: the voice UI was enabled by
 default on a build with no voice files. Populating them is the fix; there is no
 per-target default knob for `talk_menu`, and one should not be invented.
 
+---
+
+## 10. Build artifacts
+
+Five outputs live in the build directory. The firmware is the primary artifact;
+the rest populate the card or document the target.
+
+| Artifact | How it is made | Contents |
+|---|---|---|
+| `rockbox.esp32s3` | `make` (IDF link) | ESP image, flashed at offset `0x0` |
+| `rockbox.zip` | `make zip` | card payload **without** fonts: default theme + failsafe cfg, icons, backdrops, plugins, codecs, languages, the image itself |
+| `rockbox-fonts.zip` | `tools/buildzip.pl … -f 1` | 88 `.fnt` files converted from `fonts/*.bdf` by `tools/convbdf` |
+| `rockbox-themes.zip` | third-party themes from the themes server | additional themes; each archive is already `.rockbox/`-rooted |
+| `rockbox-manual.pdf` | `make manual-pdf` | 281-page per-target manual |
+
+`make zip` deliberately excludes fonts (`tools/root.make:712`); `fullzip` and
+`fontzip` are the upstream goals that include them. `fontzip` sets `NODEPS=1`
+but still relinks the firmware, because the zip depends on `rockbox-info.txt`
+which depends on the binary — so for fonts alone, call `buildzip.pl -f 1`
+directly, which needs no firmware at all:
+
+```sh
+cd build-meowkits3
+perl ../tools/buildzip.pl -m meowkits3 -i 126 -o rockbox-fonts.zip \
+     -r "$PWD/.." --rbdir=/.rockbox -f 1 -DMEOWKIT_ESP32S3 rockbox.esp32s3
+```
+
+The tree builds 88 of the 90 fonts the themes server ships. The two it cannot
+(`05-Cabbie-Bold.fnt`, `06-Cabbie-Bold.fnt`) are not in `fonts/` in this repo
+*or* in `upstream/master` — they exist only server-side. Nothing we or the
+sampled themes reference needs them.
+
+### The themes catalogue
+
+`https://download.rockbox.org/build-info` carries:
+
+```
+themes_url      = https://themes.rockbox.org/
+themes_info_url = https://themes.rockbox.org/rbutilqt.php?target=%TARGET%&…
+```
+
+`rbutilqt.php?target=<name>` returns an ini-style list (`name`, `size`,
+`image`, `archive=/download.php?themeid=N`) for targets the server knows. Our
+target is not one of them (`code=1 "No themes available"`), so we read the
+catalogue through a **proxy target** whose form factor matches: `ibassodx90`
+and `ibassodx50` give 422 themes at 320x240 on touch players, `ipodvideo` gives
+455 at 320x240. Archives are already built per target — filenames carry no
+`.320x240x16.` — and are `.rockbox/`-rooted, so installation is a plain extract.
+
+Compatibility, measured rather than assumed:
+
+- **Tags cost nothing.** All 193 tags are in `lib/skin_parser/tag_table.c` for
+  every build. Where `apps/gui/skin_engine/skin_parser.c` gates a dispatch case
+  (`CONFIG_TUNER`, `HAVE_RADIO_RDS`, `HAVE_PEAK_METER`, `HAVE_REMOTE_LCD` — the
+  four we lack), the switch falls to `default: break` with `function == NULL`
+  and `if (function)` skips it: the tag renders nothing, parsing continues.
+  `FEATURE_TAG` tags (`cc`, `tp`, `Rp`) return `FEATURE_NOT_AVAILABLE` and the
+  conditional takes its else branch.
+- **We do have the two gates that matter**: `HAVE_BACKDROP_IMAGE`
+  (`config.h:874`, gated on `LCD_DEPTH > 1`) and `HAVE_SKIN_VARIABLES`
+  (`config.h:1372`, gated on `HAVE_TOUCHSCREEN`), so viewport colours,
+  `textstyle`, backdrops and skin variables all compile.
+- **Fonts are the only real dependency, and they fail loudly.**
+  `parse_font_load` only records the name; the load happens in viewport setup
+  and `font_load_ex` failing does `splashf(LANG_FONT_LOAD_ERROR)` with
+  `success = false`, so the theme will not display. Theme archives carry their
+  own non-standard fonts (e.g. `adwaitapod` ships its Cantarell set and an icon
+  font); the rest come from the font artifact. In a 20-theme sample, theme +
+  fonts covered 18; the two stragglers were theme bugs (`7-Fixed.fnt` for
+  `07-Fixed.fnt`, and a `Font.fnt` reference with no such file in the archive).
+- **cfg paths need no rewriting.** The server writes `/.rockbox/wps/x.wps`.
+  `apps/filetree.c:681` calls `settings_load_config(buf, true)` when a `.cfg`
+  is picked from the Theme menu, and values are stored verbatim, so the
+  absolute form is the correct one. There is no cfg parser in the firmware
+  beyond that; `themeeditor` and `checkwps` read cfg keys, the player does not.
+- **Touch zones are automatic for bars.** `skin_parser.c:1261` gives every
+  progressbar, volume bar and setting bar a touch region with ~5% padding.
+  Explicit ones are `%T([label,] x,y,width,height, action)`, actions listed at
+  `skin_parser.c:1625`; a `&` prefix means hold. Most catalogue themes define no
+  `%T`, so they get bar touch only.
+
+Because content spans three archives, an audit must run against their **union**
+— a theme referencing `20-Terminus-Bold.fnt` is satisfied by the font zip, and
+auditing the theme zip alone would report a false failure.
+
+### The manual
+
+`make manual-pdf` needs `texlive-latex-extra` (a4wide, enumitem, multirow,
+optional, scrhack, and `inputenx`'s `ix-utf8enc.dfu`) and `texlive-plain-generic`
+(`soul.sty`, which lives in `tex/generic/`, not `tex/latex/`). PDF needs no
+`hevea`/`htlatex` (those are the HTML and text routes) and no SVG rasterizer —
+`pdflatex` takes PNG directly.
+
+A new target must provide `manual/platform/<modelname>.tex`: `preamble.tex:46`
+does `\input{platform/\platform.tex}` and `tools/configure:4536` sets
+`manualdev=$modelname`, so without that file the build stops with
+`File 'platform/meowkits3.tex' not found`. Ours also adds
+`manual/platform/keymap-meowkits3.tex` and reuses the shared
+`manual/platform/keymap-touchscreen.tex`, which defines the 3x3 grid
+(`TouchTopLeft` … `TouchBottomRight`) and the `TouchAction*` set every touch
+target uses. Note `\opt{touchpad}` gates the touch prose but is **not** in
+`apps/features.txt`, so the platform file must add it to its `\UseOption` chain
+(`sansafuzeplus.tex` does the same).
+
+Images degrade rather than fail: `rockbox_interface/main.tex:16` wraps the front
+photo in `\IfFileExists{…/\specimg-front.png}`, and `\screenshot` tries
+`name-<WxHxD>-<specimg>.png`, then the series variant, then
+`name-<WxHxD>.png`, then the bare name — printing a red `WARNING! Image not
+found` instead of stopping. Five generic screenshots already exist at
+`320x240x16`, so they come free.
+
+Four LaTeX errors remain, all upstream and none in our files: `\item`-less
+`description` blocks at `getting_started/installation.tex:418` and
+`configure_rockbox/system_options.tex:250-267` (their items are all inside
+`\opt{}` branches naming pads we are not), a lost float in
+`appendix/config_file_options.tex`, and the WPS keylock row at
+`rockbox_interface/wps.tex:83`, which is gated on `hold_button` plus an
+explicit pad list, so our key column renders empty. They are left alone because
+fixing them changes other targets' manuals.
+
+Two LaTeX gotchas found while writing ours: `\begin{code}` is fancyvrb and
+**cannot appear inside a `\note{}` argument** (runaway argument, then a
+cascading `\begin{code} ended by \end{enumerate}`); and a `description`/`itemize`
+whose only `\item`s sit inside an untaken `\opt{}` is an error, so a list we
+gate must keep at least one unconditional item.
+
+### Environment
+
+`idf.py` reaches PATH only when `IDF_PATH_FORCE=1` is exported alongside
+`IDF_PATH`. Without it, `export.sh` prints "To use the IDF_PATH set in the
+environment, you can enforce it by setting IDF_PATH_FORCE=1" and configures
+nothing, which surfaces much later as `/bin/sh: 1: idf.py: not found` from
+`make zip`, `make voice` or `make manual-pdf`. The recipe is:
+
+```sh
+export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1
+. $IDF_PATH/export.sh
+```
+
+
 
 
