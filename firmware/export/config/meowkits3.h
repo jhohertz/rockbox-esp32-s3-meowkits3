@@ -282,6 +282,11 @@
  * eat the safety net. */
 #define CLEAN_SHUTDOWN_MESSAGE_HOLD 100 /* 1 s */
 
+/* TEMPORARY PROBE -- delete this line and the blocks it guards. Puts a
+ * transmit-path trace on the CDC console every 250 ms so a garbled window can be
+ * read instead of described. */
+#define XT_AUDIO_TRACE 1
+
 
 /* I2C uses the hardware master peripheral at 0x60013000, on GPIO 1/2. */
 #define CONFIG_I2C I2C_XTENSA

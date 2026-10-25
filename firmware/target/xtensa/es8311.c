@@ -94,6 +94,15 @@ static int read_reg(int reg)
  * which is exactly the {11289600, 44100, 1, 0, 1, 1, 0, 0, 0xff, 4, 16, 16} entry
  * in the reference table.
  */
+#ifdef XT_AUDIO_TRACE
+/* TEMPORARY PROBE: one register read for the transmit trace. Costs 1.6 ms of
+ * polled I2C, so the caller takes it at most every couple of seconds. */
+int es8311_trace_read(int reg)
+{
+    return read_reg(reg);
+}
+#endif
+
 void es8311_set_clock(unsigned long rate, unsigned long mclk)
 {
     unsigned long target = 256UL * rate;
