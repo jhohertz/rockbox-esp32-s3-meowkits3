@@ -4,9 +4,16 @@ Rockbox is the open-source firmware for portable media players. It is a large,
 old C codebase (2001-present) with a build system that is *not* autotools and a
 target abstraction layer (TAL) that is more elaborate than it first looks.
 
-**Current branch:** `esp32-s3-ports` — porting to an ESP32-S3-WROOM-1-N16R8 based
-device. There is no Xtensa support in the tree yet, so this is a new-architecture
-port, not a new-board port.
+**Current branch:** `esp32-s3-idf` — Rockbox running as a guest of ESP-IDF and
+FreeRTOS on an ESP32-S3-WROOM-1-N16R8 device (MeowKit). Xtensa support is in the
+tree (`firmware/target/xtensa`, `config/meowkits3.h`); the earlier bare-metal
+variant, where Rockbox owned the vectors, the MMU and the PSRAM bring-up, is
+preserved on the tag `baremetal-pre-idf`.
+
+Sections 3-5 and 10-11 below contain narrative from that bare-metal branch. The
+paths it names that no longer exist here are `firmware/target/xtensa/crt0.S`,
+`vectors.S`, `irom-map.c`, `psram-xtensa.c`, `rom_cache.S`, `sdmmc-xtensa.c`,
+`tools/esp-elf2image`, `tools/esp-stage2` and `tools/esp-usbflash.py`.
 
 Remotes: `origin` is the working fork, `upstream` is `git.rockbox.org`.
 
@@ -110,8 +117,11 @@ RAMLDS := $(FIRMDIR)/target/$(CPU)/app.lds                   # otherwise
 
 ## 3. What a new architecture needs
 
+Historical: this was the checklist for adding Xtensa, and it is done. Kept because
+the dispatch points are still the ones to consult when a new arch is added.
+
 Arch dispatch is driven by `CPU_<arch>` defines, produced in
-`firmware/export/config.h` from `ARCH`. Adding Xtensa means touching these:
+`firmware/export/config.h` from `ARCH`. Adding an architecture means touching these:
 
 | Place | Why |
 |---|---|
@@ -356,23 +366,30 @@ They are ~14 KB, entirely in IRAM, and **windowed ABI** (106 `retw`, 204
 `call8`/`call4`/`call12`, zero `call0`, zero `ret.n`) — which is the reason the
 windowed-ABI branch can use them at all.
 
-`tools/esp-stage2` flashes the three pieces and generates the partition table
-itself (32-byte `esp_partition_info_t` entries, terminated by an `0xEBEB` entry
-whose MD5 sits at offset 16, per `ESP_PARTITION_MD5_OFFSET`):
+`tools/esp-stage2` (bare-metal branch, tag `baremetal-pre-idf`) flashed the three
+pieces and generated the partition table itself (32-byte `esp_partition_info_t`
+entries, terminated by an `0xEBEB` entry whose MD5 sits at offset 16, per
+`ESP_PARTITION_MD5_OFFSET`). On this branch the layout comes from IDF's own
+partition table and `make flash`:
 
 ```sh
-make flash-stage2 ESPBOOT=~/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/bootloader_opi_80m.elf ESPPORT=/dev/ttyACM0
+# historical, bare-metal branch only:
+# make flash-stage2 ESPBOOT=.../bootloader_opi_80m.elf ESPPORT=/dev/ttyACM0
 ```
 
 Layout: bootloader at 0x0, partition table at 0x8000, Rockbox image at 0x10000
-(the `app0` partition). Verified: with `ESP_STAGE2_BOOTLOADER` defined in
-`config/meowkits3.h`, crt0 skips the cache-enable and `irom_mmu_map()` sequence
-entirely and the MMU entries are still armed — MMU[0..7] = 1..8 for DROM and
-MMU[144..148] = 9..13 for IROM.
+(the `app0` partition). Verified on the bare-metal branch: with
+`ESP_STAGE2_BOOTLOADER` defined in `config/meowkits3.h`, crt0 skipped the
+cache-enable and `irom_mmu_map()` sequence entirely and the MMU entries were still
+armed — MMU[0..7] = 1..8 for DROM and MMU[144..148] = 9..13 for IROM.
 
 What the stage-2 loader does *not* do is bring up the octal PSRAM: that lives in
-the application, in `components/esp_psram/esp32s3/esp_psram_impl_octal.c`, so
-`psram-xtensa.c` still owns it.
+the application, in `components/esp_psram/esp32s3/esp_psram_impl_octal.c`. On this
+branch that application is IDF's own startup, configured from
+`idf-app/sdkconfig.defaults` (`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT`,
+`CONFIG_SPIRAM_SPEED_80M`, `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y`,
+`CONFIG_SPIRAM_XIP_FROM_PSRAM=y`). The hand-written `psram-xtensa.c` and `crt0.S`
+are bare-metal-branch files and no longer exist.
 
 ### Reaching the ROM from hand-written assembly
 
