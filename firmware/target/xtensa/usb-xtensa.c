@@ -101,17 +101,18 @@
  * Going back to 16 costs audio nothing, because the RX side no longer pays for six
  * FIFOs: 200 - 16 - 4*16 = 120 words = 480 bytes, against the 88 words = 352 bytes that
  * the old six-FIFO reservation left when this value was 16. The audio bug 1df51c1468 was
- * fixing -- an isochronous OUT packet of 320 bytes with nowhere to land -- stays fixed
- * with 480 bytes, which is one ISO packet plus two 64-byte control packets and 32 words
- * to spare. */
+ * fixing -- an isochronous OUT packet with nowhere to land -- stays fixed at 480 bytes
+ * with the 384-byte packet: 96 words of ISO plus 16 for one control packet, leaving 8
+ * words spare. Two control packets would need 112 and no room for the ISO packet, so
+ * the assertion below allows one. */
 #define PTX_FIFOSZ      16
 #define RX_FIFOSZ       (XT_FIFO_RAMSZ - NPTX_FIFOSZ - \
                          PTX_FIFOSZ * XT_PTX_FIFOS)
 
 _Static_assert(PTX_FIFOSZ >= 64 / 4,
                "a dedicated IN FIFO cannot hold one full-speed packet");
-_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4),
-               "RX FIFO cannot hold an isochronous packet plus the two control packets");
+_Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 1 * (64 / 4),
+               "RX FIFO cannot hold an isochronous packet plus a control packet");
 _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * XT_PTX_FIFOS + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
                "device FIFO split exceeds the core's measured FIFO RAM");
@@ -622,8 +623,9 @@ static uint32_t xt_attach_tick;
  * which shows up as a device that enumerates, streams, and says nothing.
  *
  * Internal SRAM has room for a dedicated static: the firmware's .data/.bss region
- * ends where the IDF heap begins, with roughly 90 KiB of that unused (Rockbox's own
- * allocator lives in PSRAM), so 640 bytes costs nothing.
+ * ends where the IDF heap begins, and dram0_0_seg currently reports 2,464 bytes
+ * unused, so the 768 bytes this needs (two 384-byte halves) costs nothing. Raising
+ * USB_AUDIO_BUFFER_SIZE moves this size with it, since the span is 2 * arm.
  *
  * It has to be dedicated rather than borrowed. The mass-storage class uses its
  * transfer buffer for the head of every SCSI read and write, and usb.c enables the
