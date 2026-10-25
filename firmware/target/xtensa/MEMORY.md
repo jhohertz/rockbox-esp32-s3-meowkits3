@@ -823,3 +823,111 @@ Also: a device that is reflashed while the host keeps its stream open produces e
 this silence, because the host never re-sends `SET_CUR` after re-enumeration and the
 device's rate stays at its `HW_FREQ_DEFAULT` -- which the debug page shows as a
 plausible-looking `48000`. Replug before concluding anything about a fresh build.
+
+## Power management: the kernel choice decides whether it exists (2026-10-25)
+
+IDF gates power management on the FreeRTOS flavour, and the gate is structural
+rather than a preference:
+
+```
+components/esp_pm/Kconfig:14-17
+    # SMP FreeRTOS currently does not support power management IDF-4997
+    depends on (!FREERTOS_SMP && SOC_PM_SUPPORTED) || __DOXYGEN__
+components/freertos/Kconfig:319-324
+    config FREERTOS_USE_TICKLESS_IDLE   # "Currently not supported in SMP ... yet"
+    depends on PM_ENABLE
+```
+
+The mechanism is one port macro. The idle task's tickless branch calls
+`portSUPPRESS_TICKS_AND_SLEEP(xExpectedIdleTime)` when the next wake is far enough
+away; the xtensa port of the *vanilla* kernel defines it as `vApplicationSleep()`
+(`FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:510`), which
+`esp_pm/pm_impl.c:855` implements as `esp_light_sleep_start()` followed by
+`vTaskStepTick()` to repair the paused tick counter. The SMP port's `portmacro.h`
+does not define the macro at all, so it falls back to the empty definition in
+`FreeRTOS.h:866-867` — the tickless branch compiles and does nothing.
+
+Light sleep is a whole-SoC state (CPU power-down, RTC peripheral power-down, cache
+tagmem, and a *single* global tick counter), while "idle" under SMP is a per-core
+predicate: one core can be ready to sleep while the other holds a spinlock on a
+clock about to be stopped. `vApplicationSleep()` does take a `core_id` and consults
+`other_core_should_skip_light_sleep()` (`pm_impl.c:848`, called at `:906`), so the intent
+existed; the SMP port simply never reaches it.
+
+**Decision: stay on the non-SMP kernel.** Verified for this build:
+`# CONFIG_FREERTOS_SMP is not set` in `idf-app/sdkconfig`, and
+`idf-app/build/esp-idf/freertos/libfreertos.a` is built from
+`components/freertos/FreeRTOS-Kernel` (`strings` shows the source paths; `Kernel-SMP`
+appears nowhere in it). Rockbox's kernel here is `NUM_CORES 1` and every thread is
+pinned to core 0, so SMP buys nothing — and it would delete the power option
+*silently*, because the Kconfig symbol simply stops being selectable. The one-line
+re-check that this is still true:
+
+```sh
+strings idf-app/build/esp-idf/freertos/libfreertos.a | grep -c Kernel-SMP   # want 0
+```
+
+What is switched off today, each measured rather than assumed:
+
+| | current | consequence |
+|---|---|---|
+| `CONFIG_PM_ENABLE` | not set | no DFS, no automatic light sleep |
+| `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` | 240 | the idle task spins at full clock |
+| `HAVE_ADJUSTABLE_CPU_FREQ` | undefined | `cpu_boost()` and `set_cpu_frequency()` compile to nothing |
+| `FREERTOS_USE_TICKLESS_IDLE` | not set | `vTaskStepTick` is absent from the kernel archive |
+| `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0` | n | correct already — a blocked Rockbox core is normal |
+
+The Rockbox side of the seam is already wired and already running; only the target
+implementation is missing. `HAVE_SCHEDULER_BOOSTCTRL` is defined for every native
+platform (`config.h:1051-1053`), so the boost state machine executes today:
+`trigger_cpu_boost()`/`cancel_cpu_boost()` are called from `apps/codec_thread.c:403,469,520`
+and `apps/playback.c:2470` (released at `:597,244,3195,3716`), from
+`firmware/backlight.c:340,363,577`, from `dircache.c`, and `cpu_idle_mode(true/false)`
+from `usb.c:374,380` on USB mode entry/exit. All of those reach `cpu_boost()`, which is
+the empty macro. Defining `HAVE_ADJUSTABLE_CPU_FREQ` for this target makes them live
+without touching a core file, and `CPUFREQ_MAX/NORMAL/DEFAULT` (240/160/80 MHz) are
+already declared in `system-target.h`.
+
+Two consequences of DFS that are already accounted for:
+
+- All three ladder points are BBPLL taps, so AHB/APB — GDMA's clock — stays at 80 MHz
+  and I2S, I2C and the timer groups stay on XTAL (`system-target.h:30-38`). Scaling the
+  core moves nothing else.
+- `udelay()` counts core cycles and `system_init()` caches `cpu_frequency`
+  (`system-xtensa.c:129-135`). With DFS that cache is wrong, and the file already says
+  what to do: read `esp_clk_cpu_freq()` and stop caching. This is a prerequisite, not
+  a refinement.
+
+The tick-rate coupling is the one that inverted a plan. `configEXPECTED_IDLE_TIME_BEFORE_SLEEP`
+may not be below 2 (`FreeRTOS.h:874-876`) and IDF defaults it to 8 when
+`FREERTOS_HZ > 200` (`freertos/Kconfig:340`). The shortest period Rockbox needs is the
+10 ms tick, so 1000 Hz gives a floor of 8 ms against 10 ms of expected idle — sleepable,
+with 2 ms of margin — while 100 Hz gives a floor of 80 ms against 10 ms, and light sleep
+would never be attempted. Lowering the tick rate to save 900 interrupts a second is
+therefore not a saving at all. `PM_SLP_IRAM_OPT` drops the default to 3 ticks (3 ms),
+which widens the margin at the cost of ~180 B of RTOS idle code and 2.1 KB of PM code in
+IRAM; IRAM headroom has to be read from the map before that is chosen, because DRAM free
+is 1,020 bytes (§5 item 5) and the region guard will not forgive a guess.
+
+`CONFIG_PM_SLP_SPIRAM_HALFSLEEP_ENABLED` is already `y`, which is the mechanism that lets
+XIP-from-PSRAM survive light sleep (0.5x refresh plus PSRAM halfsleep). Unverified and
+needs a hardware test before S4 is trusted: whether the **MSPI MMU table**
+(`DR_REG_MMU_TABLE`, 512 entries) survives light sleep, since `SOC_PM_SUPPORT_RTC_PERIPH_PD`
+is enabled and `rtc_init.c:114` clears `EXTMEM_CACHE_MMU_MEM_FORCE_ON`. If the table
+loses power, `mmu_init()`'s audiobuffer and framebuffer mappings are gone on wake and
+the first PSRAM access reads the Ext_RAM sentinel. `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` is
+unset, so flash keeps power — keep it that way.
+
+Measurement needs no new instrumentation. `CONFIG_BATTERY_MEASURE` includes
+`CURRENT_MEASURE`, `axp173_discharge_current()` feeds `_battery_current()`, and
+**Debug → View battery** prints `Battery current: N mA` (`apps/debug_menu.c:1244`,
+`view_battery()` case 3) off the same moving average `powermgmt.c` uses for the runtime
+estimate. Enabling the CPU-frequency seam also adds **Debug → CPU frequency**
+(`debug_menu.c:2955`), which is the on-device witness for DFS. Note the AXP173's current
+registers use five low bits, not the four the voltage registers use.
+
+One more thing worth knowing before anything network-ish is ever enabled: `esp_wifi` and
+`bt` are `y` in sdkconfig but unreferenced, so their text is not linked (`esp_wifi_init`
+has no entry in `rockbox.map`). If they were ever pulled in, their tasks run at priority
+18 while every Rockbox task sits at `tskIDLE_PRIORITY + 1` — they would preempt the whole
+player.

@@ -81,16 +81,37 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # FreeRTOS tick rate. Rockbox's HZ is 100 and is not a per-target knob, so the
 # only requirement here is that this be an exact multiple of it: timer-xtensa.c
 # divides xTaskGetTickCount() by kernel_hz/HZ to make current_tick, and
-# tick_start() panics if the division is not exact. 1000 Hz is IDF's default and
-# what its own components -- the wireless stack in particular -- are written
-# against.
+# tick_start() panics if the division is not exact.
+#
+# 1000 is a deliberate choice, not a default: IDF's own default is 100
+# (components/freertos/Kconfig:37). The usual argument for 1000 -- IDF components
+# written against that granularity, the wireless stack in particular -- does not
+# apply to this app as configured: esp_wifi and bt are enabled in sdkconfig but
+# nothing references them, so their text is not linked into the image (checked:
+# esp_wifi_init has no entry in rockbox.map). Their tasks would also be created at
+# priority 18, above every Rockbox task, so they are not something to acquire
+# casually.
 #
 # 500 Hz was tried once as a test of whether the missing isochronous frames were
 # caused by the tick ISR delaying the USB interrupt. It was the wrong test: this
 # app selects CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1, so the tick runs at level 1
 # and chains with the audio GDMA pass rather than blocking the level-2 USB
 # handler. Measured with the rate halved: no change to the drop rate or to what
-# was heard, which is what the level map predicts. Keep 1000.
+# was heard, which is what the level map predicts.
+#
+# 1000 costs 900 tick ISRs and tick-hook calls per second that Rockbox cannot
+# use, and 100 was considered for exactly that reason. It is kept at 1000 because
+# of a coupling measured here: automatic light sleep is expressed in ticks.
+# FreeRTOS refuses a threshold below 2 (FreeRTOS.h:874-876), and IDF's Kconfig
+# defaults it to 8 whenever FREERTOS_HZ > 200 (components/freertos/Kconfig:340).
+# The shortest period anything in Rockbox needs is the 10 ms tick, so:
+#
+#   1000 Hz -> threshold 8 = 8 ms, expected idle 10 ticks = 10 ms  -> sleeps
+#   100 Hz  -> threshold 8 = 80 ms, expected idle 1 tick  = 10 ms  -> never sleeps
+#
+# i.e. dropping the tick rate would buy 900 fewer interrupts per second and
+# forfeit light sleep entirely, which is the much larger saving. See the
+# power-management section in firmware/target/xtensa/MEMORY.md.
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TICK_HOOK=y
 

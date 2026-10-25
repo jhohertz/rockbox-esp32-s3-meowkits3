@@ -4298,3 +4298,31 @@ the file's own comment requires the cache to cover every handle plus a few.
   and no resume-on-boot, so playback only appears after someone presses play.
   Absence of `codec load` / `DMA:` lines says nothing about health; check
   `SD card up`, `entering root_menu` and the absence of `Guru Meditation`.
+
+## Power management requires the non-SMP kernel — do not "upgrade" it
+
+`CONFIG_FREERTOS_SMP` is unset, and that is a dependency rather than a preference:
+`PM_ENABLE` `depends on (!FREERTOS_SMP && SOC_PM_SUPPORTED)`
+(`components/esp_pm/Kconfig:14-17`), and the SMP xtensa `portmacro.h` never defines
+`portSUPPRESS_TICKS_AND_SLEEP`, so the idle task's tickless branch falls back to the
+empty macro in `FreeRTOS.h:866-867` and does nothing. Enabling SMP would remove
+dynamic frequency scaling and light sleep **silently** — the Kconfig symbol simply
+stops being selectable, with no build error. Rockbox here is `NUM_CORES 1` with every
+thread pinned to core 0, so there is nothing to gain.
+
+Two things that look like obvious wins and are not:
+
+- **Lowering `FREERTOS_HZ` from 1000 to 100** to match Rockbox's `HZ`. The sleep
+  threshold is in ticks, may not be below 2 (`FreeRTOS.h:874-876`), and IDF defaults
+  it to 8 when `FREERTOS_HZ > 200` (`freertos/Kconfig:340`). The shortest period
+  Rockbox needs is the 10 ms tick, so 1000 Hz sleeps (8 ms floor, 10 ms available)
+  and 100 Hz never does (80 ms floor).
+- **Gating CPU frequency through Rockbox.** The seam already exists and is already
+  executing — `trigger_cpu_boost()` runs from `codec_thread.c` and `playback.c` today,
+  it just reaches an empty `cpu_boost()` macro because `HAVE_ADJUSTABLE_CPU_FREQ` is
+  undefined. Wire `cpu_boost()` to `esp_pm_lock_acquire(ESP_PM_CPU_FREQ_MAX)` rather
+  than inventing a target-side power state. `udelay()` caches `cpu_frequency`
+  (`system-xtensa.c:129-135`) and has to stop doing that first.
+
+Full inventory, budgets and the open hardware questions (MMU table retention across
+light sleep, PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.
