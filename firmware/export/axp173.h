@@ -141,8 +141,9 @@ unsigned int axp173_input_status(void);
 /* Shut the chip down. Everything loses power, including the SoC. */
 void axp173_power_off(void);
 
-/* True if the PEK power key was pressed since the last call. Consumes the
-   latched status bits so the same press is not reported twice. */
+/* True if the PEK power key has been long-pressed since the last call. Clears the
+   long-press bit it reports, so the same press is not seen twice. The short-press bit is
+   not enabled in IRQEN3 by axp173_init() and therefore never latches. */
 bool axp173_power_key_pressed(void);
 
 /* Enable or disable the PEK auto-off (OFFLEVEL hard cut) without disturbing the
