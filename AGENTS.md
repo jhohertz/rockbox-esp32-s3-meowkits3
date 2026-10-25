@@ -4562,6 +4562,13 @@ Four LaTeX errors remain, all upstream and none in our files: `\item`-less
 explicit pad list, so our key column renders empty. They are left alone because
 fixing them changes other targets' manuals.
 
+`manual/platform/keymap-meowkits3.tex` deliberately renders *not available* for
+actions this target cannot produce, and every mapping in it mirrors
+`apps/keymaps/keymap-meowkits3.c` and `keymap-touchscreen.c`. The gaps that
+surface as a result are tracked in `firmware/target/xtensa/DOC-GAPS.md`: add an
+entry whenever the manual promises something the keymap does not deliver, and
+update the tex file when a mapping is finally implemented.
+
 Two LaTeX gotchas found while writing ours: `\begin{code}` is fancyvrb and
 **cannot appear inside a `\note{}` argument** (runaway argument, then a
 cascading `\begin{code} ended by \end{enumerate}`); and a `description`/`itemize`
