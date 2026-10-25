@@ -46,7 +46,7 @@ void xt_light_sleep_block(bool block);
  * I2C and the timer groups are clocked from XTAL.
  *
  * XTAL (40 MHz) is deliberately not in the ladder: it would drop APB to 40 MHz and
- * invalidate the MSPI core clock selection that psram-xtensa.c programs.
+ * invalidate the MSPI core clock selection that IDF's PSRAM driver programs.
  */
 #define CPUFREQ_MAX     240000000
 #define CPUFREQ_NORMAL  160000000

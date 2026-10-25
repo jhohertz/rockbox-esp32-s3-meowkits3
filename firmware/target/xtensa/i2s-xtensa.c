@@ -1009,8 +1009,9 @@ static void refill(void)
     pend_valid = 1;
 }
 
-/* Runs on the interrupted thread's stack, so it has to stay small. The handler in
- * vectors.S has already saved a0 and a12-a15; this is the C part of the frame. */
+/* Runs on the interrupted thread's stack, so it has to stay small. IDF owns the
+ * vector table and the dispatch on this branch, so by the time this runs the
+ * callee-saved registers are already in a frame; this is the C part of it. */
 
 void ICODE_ATTR gdma_irq(void)
 {

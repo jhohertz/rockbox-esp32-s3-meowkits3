@@ -8,6 +8,13 @@ This document is the spine of a multi-stage change. **Every stage records its
 result here before the next one starts**, because the previous attempt was
 abandoned with no record of what actually went wrong.
 
+**Status: not started, for transmit.** `i2s-xtensa.c` still hand-rolls the TX GDMA layer
+it describes below; the I2S side of TX goes through IDF's HAL (`i2s_hal_init`,
+`i2s_hal_set_tx_clock`, `i2s_hal_std_set_tx_slot`, `i2s_hal_std_enable_tx_channel`) but not
+through `esp_driver_i2s`. The receiver is a different case and already uses
+`esp_driver_i2s`, so this plan is about the transmit half only. `i2s-xtensa.c` points at
+this file from its own header comment, so the two stay together.
+
 ---
 
 ## Scope, measured rather than assumed

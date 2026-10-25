@@ -127,12 +127,12 @@
 #define CACHEALIGN_SIZE         (1 << CACHEALIGN_BITS)
 
 /*
- * The vector table has to be a physical address the core can fetch from, so it goes
- * in internal RAM on the instruction-bus view. The j in the table has an 18-bit
- * signed range, so the handler and the dispatch have to sit right after it - hence a
- * dedicated section placed by app.lds, not the general .icode.
+ * A dedicated vector section used to live here (VEC_ATTR, ".icode.irq"), because the
+ * bare-metal branch wrote its own table and the `j` in it has only an 18-bit signed
+ * range, forcing the handler to sit next to the table. ESP-IDF owns the vectors on this
+ * path and Rockbox installs handlers through esp_intr_alloc(), so there is nothing for
+ * such a section to place and the macro is gone rather than unused.
  */
-#define VEC_ATTR __attribute__((section(".icode.irq")))
 
 /*
  * Timer group registers, per timer n: block at base + 0x24 * n.
