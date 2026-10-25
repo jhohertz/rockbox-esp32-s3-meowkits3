@@ -231,6 +231,12 @@ void i2s_set_frequency(unsigned long rate);
  * nothing; they are incremented in the handler and at the start of a session. */
 void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
                   unsigned int *recover, unsigned int *silence);
+
+/* Whether the transmit engine is carrying real audio rather than the idle
+ * silence ring. This is the only state that covers both playback and USB DAC,
+ * which is what the amp policy needs -- audio_status() says nothing about a
+ * host-driven stream. */
+bool i2s_tx_playing(void);
 #ifdef HAVE_RECORDING
 /* The receiver is a full ESP-IDF I2S channel created per recording session in
  * pcm-xtensa.c, so there is no rx init/start/stop to declare here. What the
