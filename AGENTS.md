@@ -538,7 +538,7 @@ Mapping the board against what Rockbox already has:
 |---|---|---|
 | ST7789 display | `HAVE_LCD_BITMAP`, `HAVE_LCD_ENABLE`, `HAVE_LCD_SLEEP`, `HAVE_LCD_SHUTDOWN` | done |
 | PCA9557 expander | (target-internal) | done |
-| ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done |
+| ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done. The amp is no longer permanently on: it goes off, with the codec muted behind it, when the transmit sink stops carrying real audio -- see the amplifier note under "Power management" |
 | SD card | `STORAGE_SD` via `sdmmc_host.c` | done |
 | Buttons | `CONFIG_KEYPAD` | done |
 | Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
@@ -546,9 +546,12 @@ Mapping the board against what Rockbox already has:
 | AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
-| PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done in `target/xtensa/psram-xtensa.c`, run from `crt0.S` before `mmu_init()`; neither the ROM nor ESP-IDF's bootloader does it |
+| PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done by IDF's own driver: `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_SPEED_80M=y`, CLK GPIO 30, CS GPIO 26. The hand-rolled bring-up on the bare-metal tag never got an answer from the chip; it was never a hardware problem. `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` is what lets `.ext_ram.bss` be claimed at all |
 | USB-OTG | `usbstack` | **Operational.** CDC console, mass storage and the DAC class all work, driven by Rockbox's own stack over the DWC core. The core answers only when *both* clock gates are on (`usb_clk_en` PERIP_CLK_EN0 bit 23 for the wrap/PHY, `usb_device_clk_en` PERIP_CLK_EN1 bit 10 for the DWC) and *both* reset bits are cleared — with one gate, every register reads 0 without faulting. Measured: id `0x4f54400a` rev 10, **7 device endpoints, 4 dedicated IN FIFOs (GHWCFG4, not the 6 `USB_NUM_ENDPOINTS` suggests), 200 words of FIFO RAM**, FS PHY selectable via `GUSBCFG.fsintf`. FIFO split is NPTX 16 / PTX 16 x 4 / RX 120 words, and `ahb_burst_len` is INCR16 — INCR4 made the DAC crackle under a storage flood. `SOC_DPORT_USB_BASE` is referenced by IDF's esp32s3 `usb_reg.h` but never defined there — that file is legacy |
 | WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
+| CPU frequency (DFS) | `HAVE_ADJUSTABLE_CPU_FREQ`, `set_cpu_frequency()` | done: 80 / 160 / 240 MHz ladder through `esp_pm_configure({max == min})`, worth 9 mA at dark idle |
+| Light sleep | `CONFIG_PM_ENABLE`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE` | done: peripheral domain deliberately retained, `ESP_PM_NO_LIGHT_SLEEP` held while USB is armed, worth 2 mA |
+| Sleep and boost telemetry | `Debug -> View HW info` PM row | done: prints the configured min/max MHz, whether sleep is enabled, and the raw cycle/wall counters it measures from |
 
 ### Display power states
 
@@ -2473,13 +2476,23 @@ What IDF actually arms for this build, dumped from the table at `app_main`:
 | 17..144 | **PSRAM** | 0..127 | `.ext_ram.bss` -- 128 pages = exactly the 8 MB |
 | 145..511 | invalid (`0x4000`) | -- | nothing |
 
-`_ext_ram_bss_start = 0x3c110000`, `_ext_ram_bss_end = 0x3c6d127c`. The
+`_ext_ram_bss_start = 0x3c120000`, `_ext_ram_bss_end = 0x3c57290c`. The
 `.ext_ram.dummy` section in `sections.ld` is what pushes PSRAM past the flash
 rodata: `extern_ram_seg` and `drom0_0_seg` share origin `0x3c000020` and the same
 bus, so the dummy advances the location counter by the rodata size and aligns to
-64 KB. Rockbox's buffers land inside the armed range: `audiobuffer` at
-`0x3c14d2c0` (entry 20), `codecbuf` at `0x3c54d2c0` (84), `pluginbuf` at
-`0x3c64d2c0` (100).
+64 KB. Rockbox's objects land inside the armed range: `audiobuffer` at
+`0x3c1612e0` (entry 22, the 4 MB buflib arena), `plugin_text` `0x3c580000` (88),
+`codec_text` `0x3c600000` (96), `codecbuf` `0x3c680000` (104), `pluginbuf` at
+`0x3c780000` (120).
+
+Those numbers are read off the link map, and they move with every build. The MMU dump
+above is from an earlier build and its sizes are stale; `MEMORY.md` is the authoritative
+map and carries the invariant that matters more than any address: **`_ext_ram_bss_end`
+must stay below `XT_PLUGIN_TEXT_ADDR`**, because the codec and plugin text reservations
+are absolute symbols that nothing in the link reserves, and `esp_psram_bss_init()` memsets
+`.ext_ram.bss` at boot -- so growth past that boundary silently zeroes the region plugins
+load into, which is the whole cause of "every plugin crashes on load". The boot guard
+prints the clearance on every boot.
 
 Verified by touching it rather than by reading the linker script: writing
 `0x5a5a5a5a` at `audiobuffer + 0x60` and reading it back works, and a task
@@ -2612,11 +2625,13 @@ parked there is silently lost.
 ### The tick: a hand-rolled gptimer was the last IDF avoidance here
 
 Rockbox's clock used to come from its own gptimer alarm. It now comes from
-FreeRTOS's own tick: `CONFIG_FREERTOS_HZ=100` (Rockbox's `HZ` is 100) plus
-`CONFIG_FREERTOS_USE_TICK_HOOK=y`, and `vApplicationTickHook()` advances
-`current_tick` -- on core 0 only, because SMP FreeRTOS ticks on both cores and
-counting on both would double the clock. `tick_start()` now only checks that
-the kernel agrees with `HZ`.
+FreeRTOS's own tick: `CONFIG_FREERTOS_HZ=1000` plus
+`CONFIG_FREERTOS_USE_TICK_HOOK=y`, and `vApplicationTickHook()` mirrors the kernel
+counter into `current_tick`, divided down to Rockbox's `HZ` (100, which is not a
+per-target knob). 1000 is a deliberate choice, not IDF's default of 100: the sleep
+threshold is expressed in ticks, and at 100 Hz light sleep never gets a window — see
+"Power management requires the non-SMP kernel" below. `tick_start()` only checks that
+the kernel agrees with `HZ` and prints what it found.
 
 Measured, before and after, with the breadcrumb ring:
 
@@ -2827,11 +2842,22 @@ forever: no Rockbox timeout ever expired, every thread blocked and stayed
 blocked, and a live, ticking, healthy core looked idle in `core_sleep()`.
 
 Mirror the kernel's counter instead, which is one global advanced exactly once
-per tick regardless of which core delivers it:
+per tick regardless of which core delivers it, and divide it down to Rockbox's rate:
 
 ```c
-current_tick = (long)xTaskGetTickCount();   /* CONFIG_FREERTOS_HZ = 100 */
+current_tick = (long)(xTaskGetTickCount() / (rb_kernel_tick_hz / HZ));
 ```
+
+The divisor must come from the kernel that is actually running, which is why
+`rb_kernel_tick_hz` is a const defined in `idf-app/main/rockbox_app.c`
+(`= configTICK_RATE_HZ`) rather than the macro read in this translation unit. Rockbox's
+objects are compiled by the Rockbox makefiles against IDF's generated headers, and those
+are not reliably regenerated when `sdkconfig` changes. Measured failure: with the kernel
+at 1000 Hz the macro on the Rockbox side still read 100, the division folded to 1, and
+`current_tick` ran ten times fast -- which looked like a screen timeout firing almost
+immediately and a codec that never started a transfer. A compile-time `#error` cannot
+catch it, because `100 % 100 == 0` is valid; the disagreement is between two build
+systems, not within one.
 
 `freertos/FreeRTOS.h` must precede `freertos/task.h`, and both must come after
 `config.h` or the Rockbox headers get parsed inside FreeRTOS's macro soup.
@@ -2932,10 +2958,12 @@ The resulting map, read out of the 512-entry table at `0x600C5000`:
 | 511 | flash page 1 |
 
 Rockbox's PSRAM objects and the entries they land in: `audiobuffer`
-`0x3c14d2c0` (entries 20..83, 4 MB), `codecbuf` `0x3c54d2c0` (84, 1 MB),
-`pluginbuf` `0x3c64d2c0` (100). All inside the mapped range, and the table is
-still clean while the system runs -- sampled from core 1 every eight ticks over
-fourteen crash cycles, entries 16..143, zero violations.
+`0x3c1612e0` (entry 22, 4 MB), `codecbuf` `0x3c680000` (104, 1 MB), `pluginbuf`
+`0x3c780000` (120). All inside the mapped range.
+
+The table-cleanliness claim below it is a **bare-metal-era measurement**, taken on SMP
+with a watcher on core 1; the kernel here is single-core, so it cannot be reproduced as
+written and should be re-taken before being relied on.
 
 ### What the current crash is, and what it is not
 
@@ -3114,12 +3142,14 @@ successful resume rather than during one.
 > `baremetal-pre-idf`. What still applies is the linker-script contract below.
 
 `apps/plugins/plugin.lds` is a second linker script, run per codec and per plugin.
-It needs a `CPU_XTENSA` branch, and `CODEC_ORIGIN` it computes has to equal the
-`codecbuf` symbol in `app.lds`: `apps/codecs.c` rejects a codec whose header
-`load_addr` is not exactly `codecbuf`. The only way to make two scripts agree is to
-pin the address, so `codecbuf` is placed at the top of the PSRAM part of the
-external cache window and plugin.lds derives the same number from `MEMORYSIZE`,
-`PLUGIN_BUFFER_SIZE` and `CODEC_SIZE`.
+It needs a `CPU_XTENSA` branch, and the `CODEC_ORIGIN` it computes has to equal the
+`codecbuf` symbol: `apps/codecs.c` rejects a codec whose header `load_addr` is not
+exactly `codecbuf`. There is no Rockbox linker script on this branch -- IDF owns it --
+so `codecbuf` is not placed by `app.lds` but defined as an absolute symbol in
+`firmware/target/xtensa/memory-xtensa-syms.S`, alongside `audiobuffer`, `audiobufend`,
+`pluginbuf`, `loadaddress` and the stack bounds. The only way to make the two scripts
+agree is to pin the address, so `plugin.lds` derives the same number from `MEMORYSIZE`,
+`PLUGIN_BUFFER_SIZE` and `CODEC_SIZE` rather than importing it.
 
 `tools/esp-elf2image` produces the ESP32 v1 image: 24-byte header, a table of
 (load address, length) pairs, then segment data, then a checksum byte. Two things
@@ -4316,19 +4346,36 @@ dynamic frequency scaling and light sleep **silently** — the Kconfig symbol si
 stops being selectable, with no build error. Rockbox here is `NUM_CORES 1` with every
 thread pinned to core 0, so there is nothing to gain.
 
-Two things that look like obvious wins and are not:
+One thing that looks like an obvious win and is not, and one that turned out to be
+worth doing:
 
 - **Lowering `FREERTOS_HZ` from 1000 to 100** to match Rockbox's `HZ`. The sleep
   threshold is in ticks, may not be below 2 (`FreeRTOS.h:874-876`), and IDF defaults
   it to 8 when `FREERTOS_HZ > 200` (`freertos/Kconfig:340`). The shortest period
   Rockbox needs is the 10 ms tick, so 1000 Hz sleeps (8 ms floor, 10 ms available)
   and 100 Hz never does (80 ms floor).
-- **Gating CPU frequency through Rockbox.** The seam already exists and is already
-  executing — `trigger_cpu_boost()` runs from `codec_thread.c` and `playback.c` today,
-  it just reaches an empty `cpu_boost()` macro because `HAVE_ADJUSTABLE_CPU_FREQ` is
-  undefined. Wire `cpu_boost()` to `esp_pm_lock_acquire(ESP_PM_CPU_FREQ_MAX)` rather
-  than inventing a target-side power state. `udelay()` caches `cpu_frequency`
-  (`system-xtensa.c:129-135`) and has to stop doing that first.
+- **Gating CPU frequency through Rockbox -- done.** `HAVE_ADJUSTABLE_CPU_FREQ` is now
+  defined and `set_cpu_frequency()` calls `esp_pm_configure()` with `max == min`, so
+  Rockbox owns the clock absolutely and IDF's own PM locks cannot move it. The ladder is
+  80 MHz idle / 160 MHz browsing / 240 MHz boosted, driven by the `cpu_boost()` seam that
+  `codec_thread.c` and `playback.c` already call. Measured on battery, dark idle: **57 mA
+  before the seam, 48 mA with it, 46 mA with light sleep enabled, 42 mA once the speaker
+  amplifier also goes off when nothing is playing.** `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP`
+  is deliberately unset: the hand-written I2S/GDMA/GPSPI2/LEDC/I2C/USB drivers have no IDF
+  sleep callbacks, so retaining the peripheral domain is what makes a sleep safe here --
+  and it is also what caps how deep that sleep can be. `xt_light_sleep_block()` holds
+  `ESP_PM_NO_LIGHT_SLEEP` while USB is armed; SD and I2C need no lock because their
+  transfers run in live threads.
 
-Full inventory, budgets and the open hardware questions (MMU table retention across
-light sleep, PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.
+The amplifier detail is easy to miss and was worth more than light sleep: PCA9557 IO3
+enables the NS4150B, which used to be switched on once at startup and never off. It now
+idles disabled through a `tick_add_task()` policy in `audiohw-xtensa.c`, keyed on
+`i2s_tx_playing()` rather than `audio_status()` -- a USB-DAC stream is the host driving
+the mixer and Rockbox's audio state does not report it, so `audio_status()` would mute a
+stream the user can hear. The amp gates the speaker only; headphones are driven by the
+codec directly and work with it off.
+
+What is left at 42 mA is board current the architecture cannot reclaim without deep sleep
+(which skips the clean shutdown) or cutting rails the expander and card slot need. Full
+inventory, budgets and the open hardware questions (MMU table retention across light sleep,
+PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.

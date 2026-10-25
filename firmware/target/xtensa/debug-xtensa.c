@@ -282,9 +282,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         }
 
         if (esp_pm_get_configuration(&cfg) == ESP_OK)
-            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, %u samples %u cyc / %u us",
+            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, %u samples %lu cyc / %lu us",
                      cfg.min_freq_mhz, cfg.max_freq_mhz,
-                     cfg.light_sleep_enable ? "on" : "off", n_samp, d_cyc, d_us);
+                     cfg.light_sleep_enable ? "on" : "off", n_samp,
+                     (unsigned long)d_cyc, (unsigned long)d_us);
         else
             snprintf(buf, bufsz, "PM: esp_pm_get_configuration failed");
         break;
