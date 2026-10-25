@@ -26,6 +26,7 @@
 #include "es7210.h"
 #include "axp173.h"
 #include "i2s-xtensa.h"
+#include "tick.h"
 #include <stdio.h>
 
 #include "esp_pm.h"      /* esp_pm_config_t, esp_pm_get_configuration() */
@@ -92,6 +93,24 @@ static bool i2c_answers(const struct i2c_device *dev)
     unsigned char val;
 
     return i2c_readmem(dev->addr, dev->reg, &val, 1) == 1;
+}
+
+/* Total core cycles since the PM row started sampling. Sampled from the tick
+ * thread rather than differenced between screen reads: the cycle counter is 32
+ * bits and wraps well inside the interval this row is meant to cover. See the
+ * INFO_PM case below. */
+static uint64_t cycle_total;
+
+static void pm_cycle_tick(void)
+{
+    static uint32_t last;
+    uint32_t now = esp_cpu_get_cycle_count();
+
+    /* One tick between samples, so this modular difference is exact -- at the
+     * fastest clock on this chip a tick is 2.4M cycles, three orders of magnitude
+     * below the wrap point. */
+    cycle_total += (uint32_t)(now - last);
+    last = now;
 }
 
 enum
@@ -210,27 +229,44 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         break;
     case INFO_PM: {
         esp_pm_config_t cfg = { 0 };
-        uint32_t cyc = esp_cpu_get_cycle_count();
         uint64_t us = esp_timer_get_time();
-
-        /* Modular difference: correct for any interval shorter than 2^32 cycles,
-         * which at this chip's slowest clock is 53 s -- far longer than anyone
-         * spends on this screen. */
-        static uint32_t prev_cyc;
-        static uint64_t prev_us;
         unsigned int eff = 0;
-        uint64_t d_us = prev_us ? us - prev_us : 0;
 
-        if (d_us > 0)
-            eff = (unsigned int)((uint32_t)(cyc - prev_cyc) / d_us);
+        /* esp_cpu_get_cycle_count() is 32 bits: it wraps every 17.9 s at 240 MHz
+         * and every 53.7 s at 80 MHz, so differencing two reads of this row
+         * silently drops whole wraps. A core that never slept for a minute at
+         * 80 MHz then computes to ~11 MHz and looks like it slept 90 % of the
+         * interval -- which is exactly the false conclusion this row was written
+         * to avoid. Instead the counter is sampled every tick, where a 10 ms
+         * window cannot wrap, and summed. The first read arms the sampling and
+         * takes a baseline, so it reports no rate; the next one covers the
+         * interval since, which is the dark-idle window worth measuring. */
+        static uint64_t base_us, base_cycles, cycle_total;
+        static bool sampling;
 
-        prev_cyc = cyc;
-        prev_us = us;
+        if (!sampling)
+        {
+            if (tick_add_task(pm_cycle_tick) == 0)
+                sampling = true;
+            base_us = us;
+            base_cycles = cycle_total;
+        }
+        else
+        {
+            uint64_t d_us = us - base_us;
+            uint64_t d_cyc = cycle_total - base_cycles;
+
+            if (d_us > 0)
+                eff = (unsigned int)(d_cyc / d_us);
+            base_us = us;
+            base_cycles = cycle_total;
+        }
 
         if (esp_pm_get_configuration(&cfg) == ESP_OK)
-            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, eff %u MHz since last read",
+            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, eff %u MHz%s",
                      cfg.min_freq_mhz, cfg.max_freq_mhz,
-                     cfg.light_sleep_enable ? "on" : "off", eff);
+                     cfg.light_sleep_enable ? "on" : "off", eff,
+                     sampling ? "" : " (arming)");
         else
             snprintf(buf, bufsz, "PM: esp_pm_get_configuration failed");
         break;
