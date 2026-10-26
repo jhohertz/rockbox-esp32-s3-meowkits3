@@ -111,6 +111,17 @@ will need:
   copying anything else onto the card, or you may end up with a second
   \fname{.rockbox} directory nested inside the first.}
 
+\item \textbf{Or copy files over USB.} Instead of taking the card out, plug the
+  board into a computer and Rockbox exposes the card as a mass-storage device. The USB
+  profiles all live in \fname{Settings --> General Settings --> USB}: USB Mode
+  (\setting{Mass storage} or \setting{Charge only}), USB HID on or off with its keypad
+  mode, and the DAC as \setting{Never}, \setting{Always}, \setting{While charge only}
+  or \setting{While mass storage}. If USB Mode is \setting{Charge only}, holding
+  \emph{any} button while plugging in flips that one connection to mass storage -- the
+  USB stack's insert handler inverts the charge-only decision whenever a button is
+  held, and this target does not narrow the button mask that check uses, so a stick
+  direction or either face button works.
+
 \item \textbf{Start Rockbox.} Insert the card, then press and hold the
   \ButtonPower{} key to turn the board on. The player boots to the main menu.
   Rockbox reads \fname{.rockbox/config.cfg} from the card at startup, so your
