@@ -4057,6 +4057,25 @@ Final register set, matching the painting reference byte for byte:
   put it there wrote raw bytes `F8,00` by hand. Reasoning from that produced a
   pixel byte-order "fix" that swapped both halves of every pixel — yellow came
   out blue — and had to be reverted.
+- **A black video area is not evidence of a broken panel.** mpegplayer played audio
+  with no picture, and the panel looked innocent: the OSD updated through the same
+  `lcd_update_rect()` path and drew fine, and a full `lcd_update()` revealed a
+  correctly placed, correctly coloured frame. The gap was that Rockbox's generic
+  `lcd_blit_yuv` (`drivers/lcd-memframe.c`) only fills the shadow framebuffer, and the
+  plugin never updates the video rectangle — it blits, then pushes its OSD strip and the
+  FPS rect. Targets where video works have CPU-writable display memory or a hardware YUV
+  mode, so the blit reaches the glass on its own. A new architecture has to own this:
+  define `LCD_OPTIMIZED_BLIT_YUV` (the seam `config/3ds.h` uses) and implement
+  `lcd_blit_yuv` so it converts *and* pushes. Convert by calling the shared
+  `lcd_write_yuv420_lines()` from `firmware/asm/lcd-as-memframe.c` rather than writing a
+  local one — packing framebuffer pixels needs `LCD_RGBPACK`, which takes 8-bit channels
+  (`lcd.h:344`), while `LCD_RGBPACK_LCD` takes reduced 5/6/5 ones (`lcd.h:310`) and
+  mixing them draws the right picture in the wrong colours.
+- **Don't let a loop consume the value you need afterwards.** The first version of
+  `lcd_blit_yuv` walked with `while (--height > 0)` and then pushed
+  `height << 1`, i.e. a zero-height rectangle that `lcd_update_rect()` drops — the bug
+  looked exactly like the original symptom. Memframe can consume its counter because it
+  has no push to need it.
 - **Count a signal where it changes.** Counting DC inside `spi_write`'s wait loop
   reported zero forever, because `dc()` moves the pin *before* `spi_write()` is
   entered and holds it for the whole transfer. The transition is structurally

@@ -8,11 +8,13 @@ supported format, you will need to use the \setting{Open With...} context menu
 option and choose \setting{mpegplayer}.
 
 \opt{ESP32S3_PAD}{\note{On this player the plugin needs about 2.6 MB of a
-3.9 MB memory pool that the theme's fonts, the skin and any album art also draw from.
+4.3 MB memory pool that the theme's fonts, the skin and any album art also draw from.
 With a font-heavy theme it will report \emph{Out of memory in \fname{stream\_init}} before a
 file is opened. Switching to the failsafe theme and turning album art off is enough on a
 fresh boot; the directory cache should also be off, as it claims up to 1 MB of the same
-pool.}}
+pool. Expect a low frame rate: a 25 fps source plays at roughly 11 fps, smooth but
+slower than real time. Turn on \setting{Display FPS} in the plugin's settings if you want
+to see what your own files achieve.}}
 
 \subsubsection{File formats and encoding}
 The video is decoded by libmpeg2, so the video track must be \emph{MPEG-1 or MPEG-2
