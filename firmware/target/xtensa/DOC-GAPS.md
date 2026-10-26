@@ -180,9 +180,23 @@ the corresponding spike is done and the manual's keymap file should stop saying
   `HAVE_RTC_ALARM`; `alarmclock` counts down and rings while the player is on,
   which is the practical alarm until the wake path exists. `PLA_SCROLL_FWD/BACK`
   are used only as alternates there, so their absence does not matter.
-- **Status:** driver done and compile-verified; `HAVE_RTC_ALARM` off pending the
-  deep-sleep wake spike. Clock and alarmclock plugins should be exercised on
-  hardware.
+- **Closed as not doing — power-on from the RTC is not possible here.** The
+  ESP32-S3 does have its own RTC and can wake itself from *deep sleep*, but that
+  is not the state our shutdown reaches: `power_off()` sets AXP173 REG 0x32 bit 7,
+  which drops DCDC1 and removes the SoC's supply entirely, so no ESP RTC timer
+  survives to fire. The AXP173 offers no alarm or timeout output of its own — its
+  only re-enable is a PEK press — and the PCF8563 `/INT` is not wired to a GPIO,
+  so there is no external wake source either. Making an alarm boot the player
+  would mean never truly powering off, i.e. substituting a always-on low-power
+  state for shutdown, which is a power-semantics change this port should not
+  invent.
+- **What we keep.** The five driver functions stay in `rtc_pcf8563.c`, compiled
+  out while `HAVE_RTC_ALARM` is undefined — they cost nothing, and they document
+  the contract and the register map for whoever revisits this if the hardware
+  ever gains a wake path. The practical clock and alarm are the `clock` and
+  `alarmclock` plugins, both already shipped and working while the player is on.
+- **Status:** closed as not doing. `HAVE_RTC_ALARM` stays off permanently unless
+  the board changes.
 
 ## 8. The on-screen keyboard is line-mode, not touch-mode
 
@@ -259,9 +273,8 @@ Minor, collected because the macros have to say something:
   `NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_KEYBOARD)`. Adding the chain would change
   behaviour for every touchscreen target, so it was declined; see `UX-PLAN.md`
   S7.
-- **Status:** verify the touch keypad on hardware (mode switch repaint, usages
-  reaching the host). Not a code gap; the host-side descriptor claim is the one
-  thing still unverified.
+- **Status:** closed — verified on hardware, HID enumerates and works with MSC
+  enabled. Not a code gap.
 
 ## 12. Release and tooling infrastructure has no entry for us
 
@@ -318,7 +331,8 @@ Nothing sampled needs them. **Status:** no action unless a theme asks for one.
   Laserhead sprawls. ABI-safe: `apps/plugin.h` has no `HAVE_BMP_SCALING` gate,
   `read_bmp_file`/`read_bmp_fd` are always present, and `apps/features.txt` has
   no bmp entry so the features list is unchanged.
-- **Status:** closed, pending hardware check of the new default.
+- **Status:** closed — verified on hardware. `4` px padding was measured as
+  "so much better" and pinned as the target default.
 
 ## Keeping this log
 
