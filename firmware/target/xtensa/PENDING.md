@@ -13,6 +13,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Needs the board
 
+- **Watch-items after the 2026-10-27 flash** (`439b7866a0`, the core rationalization).
+  The point of that commit is that our behaviour must *not* move, so a failure would be a
+  seam misfiring rather than a feature missing. Normal use will show it: buttons respond
+  to a single press (`HAVE_TARGET_TICK_THREAD` is what keeps the polling thread, and the
+  stick lives on it); the serial console is still reachable (`USB_SERIAL_DEFAULT_ON`);
+  a codec loads and plays (`apps/codecs.c` reverted to upstream); settings survive a
+  reboot and the UI renders (`logfbuffer` and `language_buffer` are now placed by the
+  ldfragment instead of a section attribute — a wrong placement would hang or read
+  `0x0bad0bad`, not fail quietly).
 - **mpegplayer transport.** Keys documented (A tap pause, A held stop, stick
   volume/seek, B menu). Waiting on `.mpg` files: MPEG-1/2 Part 2 video, MP3 audio only
   (libmad — a VCD's MP2 track is silent), no scaling so ≤ 320×240, container `-f mpeg`.
@@ -136,14 +145,14 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,293,648 B | md5 `1c5e23555de13eda481ea78d7519621c`, **flashed 2026-10-26** |
+| `rockbox.esp32s3` | 1,293,648 B | md5 `2a48323b15807c369fa7da3ba0acfad5`, **flashed 2026-10-27** (same size as the previous image — expected, the rationalization changes nothing for this target) |
 | `rockbox.zip` | 9,469,730 B, 414 entries | card content; re-extract after plugin changes |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
 | `rockbox-manual.pdf` | 3,007,703 B | 282 pages; three pre-existing upstream LaTeX errors |
 
 Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox `0x010000`.
-Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, arena ends 53,620 B clear of
+Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, arena ends `0x3c572e94`, 53,612 B clear of
 the plugin/codec reservations (`make esplayer`).
 
 Recipe: `export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1; . $IDF_PATH/export.sh`,
