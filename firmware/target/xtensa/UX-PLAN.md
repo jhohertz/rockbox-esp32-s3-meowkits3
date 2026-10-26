@@ -388,37 +388,25 @@ Keep it everywhere.
   effectively creates a modifier, which would make hotkeys feasible later —
   revisit after S4.
 
-### S12 — RTC alarm: wake by deep sleep, not by the PMU
+### S12 — RTC alarm wake: **dropped, hardware says no**
 
-The driver half is done — see `DOC-GAPS.md` §7 for the five-function contract,
-the register map taken from `rtc_e8564.c`, and why `HAVE_RTC_ALARM` is still
-off.
+The driver half is done and stays compiled out — see `DOC-GAPS.md` §7 for the
+five-function contract and the register map taken from `rtc_e8564.c`.
 
-The integration half is a power-path spike, and it needs your approval before I
-start because it changes what power-off means:
+The integration half is not buildable on this board. The ESP32-S3 can wake
+itself from deep sleep with its own RTC timer, but our shutdown does not reach
+deep sleep: `power_off()` sets AXP173 REG 0x32 bit 7, dropping DCDC1 and
+removing the SoC's supply, so no timer survives to fire. The AXP173 has no alarm
+or timeout output — a PEK press is its only re-enable — and the PCF8563 `/INT`
+is not wired to a GPIO, so there is no external wake source either. The only way
+to boot on an alarm would be to stop truly powering off, which is a power-
+semantics change this port should not invent.
 
-- In `power_off()`, if an alarm is armed, do **not** issue the AXP173 software
-  shutdown. Instead compute the seconds until the alarm from the PCF8563, arm
-  `esp_sleep_enable_timer_wakeup()`, and call `esp_deep_sleep_start()`.
-- The chip keeps time on its own battery-backed rail while the SoC is asleep.
-  On wake, the image restarts from the mask ROM, `crt0` brings the cache, PSRAM
-  and MMU back up, `clean_shutdown()` has already flushed the audiobuffer and
-  settings, and `rtc_check_alarm_started()` at `root_menu.c:896` sees the
-  PCF8563's AF+AIE because we also arm the chip's own alarm. Upstream then
-  routes to the WPS — the documented alarm behaviour, with no core edit.
-- Open questions to measure rather than guess: what the board draws with the
-  AXP rails held on and the SoC in deep sleep (today's dark idle is 42 mA, and
-  the SoC accounts for most of it); whether the AXP's own timeout or PEK
-  behaviour interferes; and whether charging must keep the normal path.
-- Fallback if the numbers are bad: leave power-off as it is and rely on the
-  `alarmclock` plugin, which rings while the player is on and needs nothing new.
-
-Files if we do it: `firmware/target/xtensa/power-xtensa.c`, plus enabling
-`HAVE_RTC_ALARM` (which adds `alarm_wake_up_screen` to `global_settings`, so
-plugins *and* codecs must be rebuilt — `make zip` does, and it must be a fresh
-zip). Manual: the alarm section is gated on `\opt{alarm}`, which
-`apps/features.txt` emits from `HAVE_RTC_ALARM`, so enabling the flag also makes
-the manual pages appear.
+What we ship instead: the `clock` and `alarmclock` plugins, both already in the
+zip, both driven by pluginlib's `ESP32S3_PAD` branch (four directions, A =
+select, B = cancel, held B = exit). `alarmclock` counts down and rings while the
+player is on. `HAVE_RTC_ALARM` stays off permanently unless the board gains a
+wake path.
 
 ---
 
@@ -445,8 +433,9 @@ the manual pages appear.
    artifacts.
 8. **S10** plugin audit as its own multi-part effort.
 9. **S11** tooling and rbutil stubs.
-10. **S12** RTC alarm wake — driver done; the deep-sleep power path is the part
-    that needs a decision, see above.
+10. **S12** RTC alarm wake — **dropped**: the AXP removes the SoC's supply at
+    power-off, so nothing survives to wake. Driver code stays compiled out;
+    `clock`/`alarmclock` plugins are the answer.
 
 Every step updates `manual/platform/keymap-meowkits3.tex` and moves the matching
 entry in `DOC-GAPS.md` to *Closed* with the commit id.
