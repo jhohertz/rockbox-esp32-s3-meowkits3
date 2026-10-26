@@ -60,7 +60,7 @@ static int logdiskfindex;
 #ifdef ROCKBOX_HAS_LOGF
 
 #ifndef __PCTOOL__
-unsigned char logfbuffer[MAX_LOGF_SIZE + 1] PSRAM_BSS_ATTR;
+unsigned char logfbuffer[MAX_LOGF_SIZE + 1];
 int logfindex;
 bool logfwrap;
 bool logfenabled = true;

@@ -84,6 +84,11 @@ archive: libfirmware.a
 entries:
     unicode (rb_psram)
     bidi (rb_psram)
+    # logf.o -- logfbuffer, the ring the serial console replays. Pure data, no thread
+    # stack and never a DMA destination. It used to carry a PSRAM section attribute in
+    # firmware/logf.c; that attribute is gone because this fragment is the mechanism
+    # that owns placement, and a portable .c file should not know about PSRAM.
+    logf (rb_psram)
     # dir.o -- open_streams[] is filestr_base + ns_scan_info + dirent: directory
     # scan cursors plus one parsed entry. Storage reads land in a separate buffer
     # and are parsed into this, so it is not itself a DMA destination. An earlier

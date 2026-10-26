@@ -38,6 +38,11 @@ void memset16(void *dst, int val, size_t len)
 
     while (len--)
         *p++ = v;
+#elif defined(PREFER_SIZE_OVER_SPEED) || defined(__OPTIMIZE_SIZE__)
+    unsigned short *p = (unsigned short *)dst;
+
+    while (len--)
+        *p++ = val;
 #else
     unsigned short *p = (unsigned short *)dst;
     unsigned int i;
@@ -80,5 +85,5 @@ void memset16(void *dst, int val, size_t len)
 
     while (len--)
         *p++ = val;
-#endif
+#endif /* CPU_XTENSA / PREFER_SIZE_OVER_SPEED */
 }

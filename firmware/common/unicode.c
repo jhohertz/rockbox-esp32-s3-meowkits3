@@ -131,7 +131,7 @@ static int volatile cp_table_ref = 0;
 
 /* non-default codepage table buffer (cannot be bufalloced! playback itself
    may be making the load request) */
-static unsigned short codepage_table[MAX_CP_TABLE_SIZE+1] PSRAM_BSS_ATTR; /* XXX convert to ucschar_t if we ever need > 16bit mappings? */
+static unsigned short codepage_table[MAX_CP_TABLE_SIZE+1]; /* XXX convert to ucschar_t if we ever need > 16bit mappings? */
 
 #if defined(APPLICATION) && defined(__linux__)
 static const char * const name_codepages_linux[NUM_CODEPAGES+1] =
