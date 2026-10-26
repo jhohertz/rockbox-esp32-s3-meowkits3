@@ -3,6 +3,13 @@
 
 A simple stopwatch program with support for saving times.
 
+
+\note{This plugin is not installed on the MeowKit player. Its keypad macro chain ends in
+an \emph{no keymap defined} compile error and has no branch for this target, so the binary is not
+built. What ships instead is \fname{stopwatch.lua}, a Lua script reached from the Lua
+scripts list rather than from Plugins, which takes the stick for scrolling and \ButtonA{}
+and \ButtonB{} as its primary and cancel keys.}
+
 \begin{btnmap}
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOff}
     \opt{IPOD_4G_PAD,IPOD_3G_PAD}{\ButtonMenu}
