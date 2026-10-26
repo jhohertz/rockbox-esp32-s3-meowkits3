@@ -46,7 +46,7 @@ will need:
 \item \textbf{Check that \fname{esptool} can see the chip.}
 
 \begin{code}
-    esptool --chip esp32s3 --port /dev/ttyACM0 chip_info
+    esptool --chip esp32s3 --port /dev/ttyACM0 \fname{chip_info}
 \end{code}
 
   This prints the chip revision and the flash size (16~MB on this board). If it fails,
@@ -64,7 +64,7 @@ will need:
   Or write the three pieces directly, at the addresses given above:
 
 \begin{code}
-    esptool --chip esp32s3 --port /dev/ttyACM0 write_flash \
+    esptool --chip esp32s3 --port /dev/ttyACM0 \fname{write_flash} \
         0x000000 bootloader.bin \
         0x008000 partitions.bin \
         0x010000 rockbox.esp32s3
@@ -75,10 +75,10 @@ will need:
     stock image and its partition table.}
 
 \begin{code}
-    esptool --chip esp32s3 --port /dev/ttyACM0 read_flash 0 0x1000000 stock-firmware.bin
+    esptool --chip esp32s3 --port /dev/ttyACM0 \fname{read_flash} 0 0x1000000 stock-firmware.bin
 \end{code}
 
-  With no board attached, \fname{make espverify} runs \fname{esptool image_info} on the
+  With no board attached, \fname{make espverify} runs \fname{esptool \fname{image_info}} on the
   packed image and prints the segment table, load addresses and checksum the loader will
   see.
 
