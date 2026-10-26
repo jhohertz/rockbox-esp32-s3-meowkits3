@@ -352,6 +352,19 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define PONG_RIGHT_UP   BUTTON_MENU
 #define PONG_RIGHT_DOWN BUTTON_POWER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: two paddles and only one stick, so the stick drives the
+ * left paddle and the right column of the touch grid drives the other. That is
+ * the same shape as every other touch target gets from the upstream fallback,
+ * except the left paddle is now a stick rather than two touch cells. */
+
+#define PONG_LEFT_UP    BUTTON_UP
+#define PONG_LEFT_DOWN  BUTTON_DOWN
+#define PONG_RIGHT_UP   BUTTON_TOPRIGHT
+#define PONG_RIGHT_DOWN BUTTON_BOTTOMRIGHT
+#define PONG_PAUSE      BUTTON_A
+#define PONG_QUIT       BUTTON_B|BUTTON_REPEAT
+#define PONG_RC_QUIT    BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

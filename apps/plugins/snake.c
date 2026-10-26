@@ -339,6 +339,19 @@ dir is the current direction of the snake - 0=up, 1=right, 2=down, 3=left;
 #define SNAKE_DOWN      BUTTON_DOWN
 #define SNAKE_PLAYPAUSE BUTTON_SELECT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way stick + A + B, plus a 3x3 touch grid. The convention
+ * used across every MeowKit plugin keymap: directions move, A is the game's
+ * primary action, B taps for pause, and B held quits - which is what PLA_EXIT
+ * does in pluginlib, so games and pluginlib plugins behave alike. */
+
+#define SNAKE_UP        BUTTON_UP
+#define SNAKE_DOWN      BUTTON_DOWN
+#define SNAKE_LEFT      BUTTON_LEFT
+#define SNAKE_RIGHT     BUTTON_RIGHT
+#define SNAKE_PLAYPAUSE BUTTON_A
+#define SNAKE_QUIT      BUTTON_B|BUTTON_REPEAT
+#define SNAKE_RC_QUIT   BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

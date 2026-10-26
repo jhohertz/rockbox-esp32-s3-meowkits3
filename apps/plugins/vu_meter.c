@@ -490,6 +490,20 @@
 #define LABEL_MENU   "Triangle"
 #define LABEL_VOLUME "Up/Down"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick picks the meter, A shows help, B opens the menu,
+ * held B quits. */
+
+#define VUMETER_UP     BUTTON_UP
+#define VUMETER_DOWN   BUTTON_DOWN
+#define VUMETER_HELP   BUTTON_A
+#define VUMETER_MENU   BUTTON_B
+#define VUMETER_MENU2  BUTTON_CENTER
+#define VUMETER_QUIT   BUTTON_B|BUTTON_REPEAT
+#define VUMETER_RC_QUIT BUTTON_TOPLEFT
+#define LABEL_QUIT     "Long B"
+#define LABEL_HELP     "A"
+#define LABEL_MENU     "B"
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

@@ -276,7 +276,33 @@ Minor, collected because the macros have to say something:
   fallback uses `#ifndef` per macro, so anything we define wins and anything we
   leave untouched keeps its touch mapping. No core change, no plugin ABI change,
   one file per game.
-- **Status:** open — per-plugin pass, games first, one at a time.
+- **Done (16 branches added, one build):** `snake`, `snake2`, `spacerocks`,
+  `wormlet`, `pong`, `chopper`, `jewels`, `cube`, `flipit`, `minesweeper`,
+  `sokoban`, `sliding_puzzle`, `rockblox`, `oscilloscope`, `vu_meter`, `chip8`.
+  Convention, matching pluginlib: stick = movement, **A** = primary action,
+  **B tap** = pause/menu/cancel, **B held** = quit (that is `PLA_EXIT`). Verified
+  by re-running the literal scan: all sixteen now reference the stick and A/B in
+  their preprocessed output, where before they referenced only touch cells.
+- **Three things that bit the naive version, all of them real:**
+  - `rockblox`: `ROCKBLOX_OFF` as held B collided with the game's
+    `ROCKBLOX_ROTATE_CCW | BUTTON_REPEAT` switch label, so counter-clockwise went
+    to a touch cell instead.
+  - `sokoban`: several switch labels must stay distinct (`SOKOBAN_QUIT_REPLAY`
+    defaults to `SOKOBAN_MENU`), and its help text needs `*_NAME` strings for
+    every key the branch defines — so the branch defines `SOKOBAN_MENU_NAME`,
+    `SOKOBAN_UNDO_NAME`, `SOKOBAN_PAUSE_NAME`, `SOKOBAN_REDO_NAME` and leaves
+    `LEVEL_REPEAT`/`BUTTON_SAVE` to the touch fallback rather than colliding.
+  - `vu_meter` and `jewels` likewise need `LABEL_*` / `HK_SELECT` / `HK_CANCEL`
+    strings, not just button macros.
+- **Remaining touch-only plugins** are viewers and utilities (`credits`,
+  `rb_info`, `logo`, `matrix`, `starfield`, `fire`, `fireworks`, `snow`,
+  `mosaique`, `oscilloscope` is now fixed, etc.), where a touch grid is the
+  natural input and the upstream mapping is already reasonable. The
+  subdirectory titles with no classified mechanism (`chessbox`, `goban`,
+  `pacbox`, `sudoku`, `zxbox`, `superdom`, `rocklife`) go through pluginlib or
+  the helper libs and need only hardware confirmation, not new keymaps.
+- **Status:** open — the games are done pending a hardware test of the batch;
+  the utility set is deliberately left on touch.
 
 ## 11. USB HID: wired, and the keypad only lives on the USB screen
 
