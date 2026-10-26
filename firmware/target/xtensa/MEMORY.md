@@ -131,8 +131,10 @@ which passes when the grant is *exactly* 2 MiB. In that state `size` wraps (it i
 `size_t`) after subtracting the 64 KiB stream buffer, `enc_buflen` becomes ~357
 million slots, `encbuf_get_write_ptr()`'s bounds test never fires, the ring never
 wraps, and `enc_widx` grows until writes pass `audiobufend` into PSRAM pages the MMU
-does not map. Nothing observed is in that state -- the fault's destination addresses
-have all been inside the arena -- but the check does not exclude it.
+does not map. Nothing observed is in that state. The check now *does* exclude it:
+`on_init_recording()` panics naming both numbers when `rec_buffer_size < PCM_BUF_SIZE`
+(`apps/recorder/pcm_record.c:1422`), so a short grant fails loudly at recording start
+instead of growing down into buflib's handle table.
 
 `xt_arena_dump()` walked the allocator to answer that question and has been removed;
 
