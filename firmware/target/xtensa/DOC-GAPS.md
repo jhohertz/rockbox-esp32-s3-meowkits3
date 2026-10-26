@@ -359,13 +359,20 @@ Minor, collected because the macros have to say something:
   The chapters already had `\opt{touchscreen}` rows, and that option comes from the
   features list rather than from the platform file, so the touch half of every table
   was rendering for us all along — only the stick and A/B column was missing.
-- **Residual doc gap, measured**: 1 shipped chapter has rows with no key for us —
-  `metronome`'s volume and sync-tap rows, which use `PLA_SCROLL_*` and cannot be
-  supplied by a keypad with no wheel. Four more (`chess_clock`, `midiplay`, `rockboy`,
-  `stopwatch`) have the same shape and are not shipped.
+- **Residual doc gap, closed and re-checked against the rendered manual.** `chess_clock`
+  does ship (`chessclock.rock`) and had nine blank rows; they are now filled from its
+  `ESP32S3_PAD` branch. `metronome`'s volume and sync-tap rows remain keyless for the two
+  reasons that are real: `PLA_SCROLL_*` is inside `#ifdef HAVE_SCROLLWHEEL` so a wheel-less
+  keypad cannot supply it, and sync is compiled out. `midiplay`, `rockboy` and `stopwatch`
+  are genuinely not built for this target — stopwatch's macro chain ends in
+  `#error No keymap defined!` — so their chapters say they do not ship rather than
+  describing keys nobody can press.
 - **xworld was already playable.** Its input goes through `apps/plugins/lib/keymaps.h`,
-  which has carried an `ESP32S3_PAD` branch all along (`BTN_UP/DOWN/LEFT/RIGHT` on the
-  stick, `BTN_FIRE` = A, `BTN_PAUSE` = B); the chapter was simply silent. Its comment
+  which has carried an `ESP32S3_PAD` branch all along — but that branch was being
+  **overwritten** by the shared touch fallback, which redefined `BTN_FIRE` to
+  `BUTTON_BOTTOMLEFT` and `BTN_PAUSE` to `BUTTON_TOPLEFT`. So this claim was written before
+  the defect was found and was true only of the source, not of the build. Fixed by adding
+  `CONFIG_KEYPAD != ESP32S3_PAD` to that block's exclusion list; verified on hardware. Its comment
   claimed the touch grid was "wired and polled but not yet exercised" — stale, since
   several plugins use those cells on hardware — so it now says the grid exists and
   `BTN_HAVE_DIAGONAL` is left undefined on purpose, because diagonals would land on
