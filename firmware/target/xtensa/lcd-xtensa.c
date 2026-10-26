@@ -147,19 +147,30 @@ void lcd_update(void)
     lcd_update_rect(0, 0, LCD_WIDTH, LCD_HEIGHT);
 }
 
-/* YUV420 -> RGB565, then push. See LCD_OPTIMIZED_BLIT_YUV in lcd-target.h for
- * why the target has to own this rather than take the generic one.
+/* YUV420 -> the framebuffer, then push. See LCD_OPTIMIZED_BLIT_YUV in
+ * lcd-target.h for why the target has to own this rather than take the generic
+ * drivers/lcd-memframe.c version, whose only difference from this is that it
+ * stops at the framebuffer.
  *
- * The conversion factors and the packing follow drivers/lcd-color-common.c:
- * luma is scaled by 74 from a 16 offset, the chroma terms by 101/-24/-51/128,
- * and the result is clamped into 0..64*256-1 before the >>6 to 8-bit channels.
- * One chroma sample covers a 2x2 luma block, which is why the inner loop steps
- * two columns and the outer two rows.
+ * The conversion is *not* reimplemented here. libmpeg2 hands the plugin three YUV
+ * planes, and the generic line helpers in firmware/asm/lcd-as-memframe.c
+ * (lcd_write_yuv420_lines and its dithered sibling) already turn a 2x2 luma block
+ * into packed RGB565 correctly -- which is demonstrable, because the frame mpegplayer
+ * left in the framebuffer looked right in both colour and geometry when something
+ * happened to do a full update. An earlier version of this function did its own
+ * conversion and got the packing wrong by handing 8-bit channels to
+ * LCD_RGBPACK_LCD, which expects already-reduced 5/6/5 ones (lcd.h:310 vs 344).
+ * Reusing the shared helper keeps this target's pixels identical to what the UI
+ * drawing code produces, and keeps one place where the conversion lives.
  *
- * LCD_YUV_DITHER is deliberately not honoured. The ordered dither in the generic
- * path exists for panels wired for 18-bit colour, where RGB565 has to be
- * approximated with a per-pixel pattern; this panel takes the full 6/6/6 that
- * RGB565 already carries, so dithering would only cost time.
+ * What is added is the push, and the walk that feeds it: same plane offsets as
+ * memframe, one call per two luma rows, then a single lcd_update_rect() over the
+ * whole rectangle rather than one per strip.
+ *
+ * LCD_YUV_DITHER is not honoured: memframe keeps its option in a file-static, so a
+ * target cannot read it, and the ordered dither exists for panels wired for 18-bit
+ * colour. This one carries the full 6/6/6 RGB565 already, so the plain helper is
+ * the right call regardless.
  */
 void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride,
                   int x, int y, int width, int height)
@@ -168,84 +179,49 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
 #error This target is landscape; a portrait panel would need the planes transposed
 #endif
 
-    /* Both dimensions must be even, as the caller is required to pass even ones.
-     * Rounding rather than masking keeps a odd request from writing past the
-     * chroma plane's last line. */
-    width  -= width & 1;
-    height -= height & 1;
+    /* Both dimensions must be even, as the caller is required to pass even ones. */
+    width &= ~1;
+    height >>= 1;      /* the helper writes two luma rows per call */
 
-    if (width <= 0 || height <= 0)
-        return;
-
-    /* Clipping is the drawing code's job elsewhere, but this writes the
-     * framebuffer directly, so bound it here. */
+    /* Bound against the framebuffer: unlike the drawing functions this writes
+     * fb_data directly, so an over-wide rectangle would run into the next row. */
     if (x + width > LCD_WIDTH)
         width = LCD_WIDTH - x;
-    if (y + height > LCD_HEIGHT)
-        height = LCD_HEIGHT - y;
+    if (y + (height << 1) > LCD_HEIGHT)
+        height = (LCD_HEIGHT - y) >> 1;
     if (width <= 0 || height <= 0)
         return;
 
-    const int chroma_stride = stride >> 1;
+    /* Line write helper from firmware/asm/lcd-as-memframe.c, declared extern by
+     * drivers/lcd-memframe.c. */
+    extern void lcd_write_yuv420_lines(fb_data *dst,
+                                       unsigned char const * const src[3],
+                                       int width,
+                                       int stride);
+
+    fb_data *dst = LCD_FRAMEBUF_ADDR(x, y);
     const int z = stride * src_y;
 
-    const unsigned char *yplane = src[0] + z + src_x;
-    const unsigned char *uplane = src[1] + (z >> 2) + (src_x >> 1);
-    const unsigned char *vplane = src[2] + (z >> 2) + (src_x >> 1);
+    unsigned char const * yuv_src[3];
+    yuv_src[0] = src[0] + z + src_x;
+    yuv_src[1] = src[1] + (z >> 2) + (src_x >> 1);
+    yuv_src[2] = src[2] + (yuv_src[1] - src[1]);
 
-    for (int row = 0; row < height; row += 2)
+    do
     {
-        const unsigned char *y0 = yplane + row * stride;
-        const unsigned char *y1 = y0 + stride;
-        const unsigned char *u  = uplane + (row >> 1) * chroma_stride;
-        const unsigned char *v  = vplane + (row >> 1) * chroma_stride;
+        lcd_write_yuv420_lines(dst, yuv_src, width, stride);
 
-        fb_data *d0 = LCD_FRAMEBUF_ADDR(x, y + row);
-        fb_data *d1 = d0 + LCD_WIDTH;
-
-        for (int col = 0; col < width; col += 2)
-        {
-            int cb = u[col >> 1] - 128;
-            int cr = v[col >> 1] - 128;
-
-            /* Shared for the whole 2x2 block. */
-            const int rv  = 101 * cr;
-            const int guv = -24 * cb - 51 * cr;
-            const int bu  = 128 * cb;
-
-            for (int sub = 0; sub < 2; sub++)
-            {
-                int r, g, b;
-
-                r = 74 * (y0[col + sub] - 16) + rv;
-                g = 74 * (y0[col + sub] - 16) + guv;
-                b = 74 * (y0[col + sub] - 16) + bu;
-                if ((unsigned)(r | g | b) > 64 * 256 - 1)
-                {
-                    r = r < 0 ? 0 : (r > 64 * 256 - 1 ? 64 * 256 - 1 : r);
-                    g = g < 0 ? 0 : (g > 64 * 256 - 1 ? 64 * 256 - 1 : g);
-                    b = b < 0 ? 0 : (b > 64 * 256 - 1 ? 64 * 256 - 1 : b);
-                }
-                d0[col + sub] = LCD_RGBPACK_LCD(r >> 6, g >> 6, b >> 6);
-
-                r = 74 * (y1[col + sub] - 16) + rv;
-                g = 74 * (y1[col + sub] - 16) + guv;
-                b = 74 * (y1[col + sub] - 16) + bu;
-                if ((unsigned)(r | g | b) > 64 * 256 - 1)
-                {
-                    r = r < 0 ? 0 : (r > 64 * 256 - 1 ? 64 * 256 - 1 : r);
-                    g = g < 0 ? 0 : (g > 64 * 256 - 1 ? 64 * 256 - 1 : g);
-                    b = b < 0 ? 0 : (b > 64 * 256 - 1 ? 64 * 256 - 1 : b);
-                }
-                d1[col + sub] = LCD_RGBPACK_LCD(r >> 6, g >> 6, b >> 6);
-            }
-        }
+        yuv_src[0] += stride << 1;  /* Skip down two luma lines */
+        yuv_src[1] += stride >> 1;  /* Skip down one chroma line */
+        yuv_src[2] += stride >> 1;
+        dst += 2 * LCD_FBWIDTH;
     }
+    while (--height > 0);
 
-    /* The part this whole function exists for: nothing else sends these pixels.
-     * It runs on the video thread, under the plugin's own vo_lock(), and
+    /* The part this function exists for: nothing else sends these pixels.
+     * Runs on the plugin's video thread under its own vo_lock(), and
      * lcd_update_rect() drops the draw if the panel is off. */
-    lcd_update_rect(x, y, width, height);
+    lcd_update_rect(x, y, width, height << 1);
 }
 
 void lcd_init_device(void)
