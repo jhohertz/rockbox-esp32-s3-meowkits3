@@ -73,6 +73,39 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
+- **Feature-flag batch — built, flashed-ready, not yet verified on hardware.** Four
+  enablements, all target-side, image grew 1,293,856 → **1,295,472** bytes:
+  - *The status bar's disk icon is now driven.* `CONFIG_LED` defaults to `LED_VIRTUAL`, so
+    `apps/gui/statusbar.c:123-129` reserved 12 px and drew `bitmap_icon_disk` from
+    `led_read(HZ/2)` — but nothing on xtensa ever called `led()`, so the icon was dead space.
+    `sd-idf.c` now brackets both sector calls with `led(true)`/`led(false)`, which is the
+    shape every storage driver in the tree uses (`sd-as3525.c:694/854`,
+    `sdmmc-imx233.c:702/801`, `nand-nano2g.c`). Watch: browse a directory and seek — the icon
+    should light during the access and linger up to 0.5 s after, because the read side delays
+    the off edge (`statusbar.c:248`). If it never lights, the accesses are shorter than the
+    redraw interval and the monoflop is doing its job anyway.
+  - *Backlight fading.* `CONFIG_BACKLIGHT_FADING = BACKLIGHT_FADING_SW_SETTING` plus
+    `BRIGHTNESS_STEP 8`, and a target fix: `backlight_hw_on()` used to write the setting's
+    brightness, which is precisely what `backlight-e200v2-fuze.c:40-44` guards against
+    ("fading up is glitchy"), so that line is now conditional. `BACKLIGHT_FADING_PWM` was
+    rejected — it is not a ramp, it is software PWM toggling the lamp fully on/off at a 5 ms
+    cycle (`backlight.c:257-300`), which would fight LEDC's own 5 kHz PWM. `SW_HW_REG` was
+    rejected too: it writes `MIN_BRIGHTNESS_SETTING` *after* `backlight_hw_off()`
+    (`backlight.c:471-474`), and our `hw_off` also drives the panel enable, so that would
+    re-light the LED on a sleeping panel and hand back part of the idle saving. Watch: idle
+    timeout should fade out over ~0.6 s and end fully dark; a press should fade back in; the
+    first light-up at boot is instant by design (the brightness event lands before the panel
+    wakes). Settings → Display gains "Backlight fade in"/"fade out".
+  - *Software tone controls.* `HAVE_SW_TONE_CONTROLS` pulls `dsp/tone_controls.c` in
+    (`lib/rbcodec/SOURCES:23`) and makes Bass/Treble appear in Settings → Tone Controls
+    (`audiohw.h:413` → `settings_list.c:1095`). `tone_set_bass`/`tone_set_treble` are in the
+    image. Watch: play something with bass boosted at 44.1 kHz and 48 kHz and check for
+    glitches — you said you'll ask for a revert if you don't want it, so no measurement was
+    budgeted.
+  - *LCD sleep timeout becomes a user setting.* `HAVE_LCD_SLEEP_SETTING` makes the core use
+    its own variable (default **10 s**) instead of our `LCD_SLEEP_TIMEOUT (2*HZ)`. Watch:
+    dark idle now waits 8 s longer for the panel to sleep unless you lower
+    "LCD Sleep After Backlight Off" — set it to 1 or 2 s if you want the old behaviour back.
 
 ## 2. Verified on hardware — closed
 
@@ -208,6 +241,7 @@ Each of these was checked on the board, not inferred.
 | ES8311 REG 0x08 / 0x0D readback | Written 255 reads 0x00; written 0x01 reads 0x02, over a working I2C master. Assumption is 0x08 is don't-care in slave mode and 0x0D reports status — not measured. `es8311_stat()` is a HW-info row so it stays observable. | A datasheet answer or a measurement. |
 | USB DAC CPU boost | `.needs_cpu_boost = false` plus `cpu_idle_mode(true)` on USB entry means the core idles at the low clock during isochronous frames. Never showed a problem. | Glitches in the TX row (`sess / err / rec / sil`). |
 | rbutil / build-info / themes-server entries (§4) | Depends on infrastructure and upstream acceptance we do not control. | The port goes upstream. |
+| IR remote input (board has a 38 kHz RX on GPIO 5, TX on GPIO 7) | Noted as a maybe-later feature, not a flag: **there is no generic IR abstraction in this tree** — `HAVE_IR_REMOTE` appears nowhere, and every remote in Rockbox is a per-target driver feeding button codes. The useful half of the board's IR hardware is the decoder side, and its output shape is exactly `button_queue_post()` (`firmware/export/button.h:66-68`), which is already public. Needs an NEC-protocol decoder on a real input path (RMT or a capture timer), so it is a feature spike, not a checkbox. | You have a remote you want to use with it. |
 
 ## 4. Deferred — permanent unless the hardware changes
 
@@ -215,7 +249,10 @@ Each of these was checked on the board, not inferred.
 |---|---|
 | `HAVE_RTC_ALARM` wake-from-off | Driver functions exist and compile-verified in `rtc_pcf8563.c`, but Rockbox reads the alarm only at boot, there is no runtime `SYS_ALARM` handler, the PCF8563 `/INT` is unwired, and the AXP173 removes the SoC's supply at power-off. `clock`/`alarmclock` cover it while on. |
 | `HAVE_KBD_POINT_MODE` | `#error`s without a point-mode layout for this screen size. |
-| `HAVE_GENERAL_PURPOSE_LED`, `HAVE_LCD_INVERT` | No such hardware / no need. |
+| The physical WS2812B (GPIO 38) | Not driven, and there is nothing to enable. Rockbox's only LED abstraction is `CONFIG_LED` with `led(bool)` — on or off, no colour, no pattern (`firmware/drivers/led.c`), and `LED_REAL` is Archos-register-specific. `HAVE_GENERAL_PURPOSE_LED` is **not** a core flag in this tree: it appears only in the hosted hiby sim files, so the earlier row naming it was a phantom. The addressable LED would need target code with no Rockbox surface to hang on; if it is ever wanted, the shape you suggested is a *plugin visualisation* using the pin directly, not a target LED driver. |
+| `HAVE_LCD_INVERT`, `HAVE_LCD_FLIP` | Deliberately not exposed, **not** because the hardware can't. Both settings exist generically (`settings_list.c:1302-1308`) and the panel supports them — `st7789.c:10-11` define `CMD_INVOFF`/`CMD_INVON` and send `INVON` at `:130`, and `:129` writes `MADCTL`, whose MX/MY bits are flip. Each is a ~10-line target function plus the flag. Judgement: no user need, and inverting a 320×240 theme's colours is more confusing than useful. |
+| `HAVE_FAT16SUPPORT` | Exists and is pure config (`fat.c:193-212` dispatches 16- vs 32-bit BPB helpers, no target code), so it is cheap — but you said you don't need it, so FAT32 cards only. Related trap, documented instead: **exFAT is supported nowhere in the tree**, and cards ≥ 64 GB are commonly exFAT by default, so the install page tells users to format FAT32. |
+| `HAVE_VOLUME_IN_LIST` | Needs dedicated volume keys, which this board has no equivalent of. The flag only adds `ACTION_LIST_VOLUP`/`VOLDOWN` entries in keymaps for targets that own `BUTTON_VOL_UP`/`VOL_DOWN` hardware (`keymap-zenxfi3.c:114-117`); there is no trick. Our stick is *contextual* — up/down are volume in the WPS (`keymap-meowkits3.c:83-84`) and navigation in lists — so enabling it would steal navigation. If list-context volume is ever wanted, the honest route is unused touch cells in list contexts (keymap work), not this flag. |
 | SMP | Off permanently. The IDF SMP kernel path was rejected; single-core in practice. |
 | USB DAC above 48 kHz | Full-speed isochronous FIFO ceiling, measured. Not a software knob. |
 | Deeper light sleep | `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` is deliberately off: retaining the peripheral domain is what makes our hand-written I2S/GDMA/GPSPI2/LEDC/I2C/USB drivers safe. Going deeper needs save/restore for six subsystems. |

@@ -127,8 +127,17 @@
  */
 #define HAVE_LCD_ENABLE
 #define HAVE_LCD_SLEEP
+/* Only read when HAVE_LCD_SLEEP_SETTING is absent: with the setting enabled,
+ * backlight.c:196 makes the delay a user variable defaulting to 10 s, and this
+ * define is not referenced at all. Kept so the historical fixed value is not
+ * lost from the record. */
 #define LCD_SLEEP_TIMEOUT (2*HZ)
 #define HAVE_LCD_SHUTDOWN
+/* "LCD Sleep After Backlight Off" in Settings -> Display: how long the panel
+ * waits after the backlight goes out before lcd_sleep(). Without this the core
+ * takes the delay from LCD_SLEEP_TIMEOUT above and the user cannot change it.
+ * Requires HAVE_LCD_SLEEP (config.h:1545 errors otherwise). */
+#define HAVE_LCD_SLEEP_SETTING
 
 #define HAVE_BACKLIGHT
 /* GPIO 42 is routed through the GPIO matrix to LEDC channel 7, so the backlight is
@@ -137,6 +146,34 @@
 #define MIN_BRIGHTNESS_SETTING     0
 #define MAX_BRIGHTNESS_SETTING     255
 #define DEFAULT_BRIGHTNESS_SETTING 200
+
+/* Software fading: the backlight thread ramps brightness through
+ * backlight_hw_brightness() one step per FADE_DELAY ticks. SW_SETTING is what
+ * the four other targets with this feature choose, and it is the right variant
+ * here for two reasons. BACKLIGHT_FADING_PWM is *not* a brightness ramp: it is
+ * software PWM, toggling the backlight fully on and off at a 5 ms cycle with a
+ * varying on-portion (backlight.c:257-300), which would fight LEDC's own 5 kHz
+ * PWM and flicker. BACKLIGHT_FADING_SW_HW_REG additionally writes
+ * MIN_BRIGHTNESS_SETTING after backlight_hw_off() (backlight.c:471-474) to make
+ * fade-up glitch free; on this board hw_off also drives the panel enable, so
+ * that write would re-light the LED on a sleeping panel and give back part of
+ * the idle power saving. SW_SETTING skips it.
+ *
+ * With MAX_BRIGHTNESS_SETTING at 255, FADE_DELAY is 2 (20 ms) and one level per
+ * step would fade for ~5 s each way. BRIGHTNESS_STEP is the target knob for
+ * exactly this (backlight-sw-fading.c:29) and 3ds, hibyr3proii and hidizsap80max
+ * all set it for fine-grained ranges; 8 gives 32 steps, about 0.64 s.
+ * This exposes "Backlight fade in" and "Backlight fade out" as on/off settings
+ * via HAVE_BACKLIGHT_FADING_BOOL_SETTING (config.h:897-901). */
+#define CONFIG_BACKLIGHT_FADING BACKLIGHT_FADING_SW_SETTING
+#define BRIGHTNESS_STEP            8
+
+/* Software bass/treble in the mixer's DSP chain (lib/rbcodec/dsp/tone_controls.c,
+ * pulled in by lib/rbcodec/SOURCES only under this define). It makes
+ * AUDIOHW_HAVE_BASS/TREBLE real (audiohw.h:413-417), which is what puts Bass and
+ * Treble in Settings -> Tone Controls (settings_list.c:1095-1100); our ES8311 has
+ * no hardware tone controls of its own. Cost is mixer CPU, not a hardware ask. */
+#define HAVE_SW_TONE_CONTROLS
 
 /*
  * Big statics go to PSRAM.
