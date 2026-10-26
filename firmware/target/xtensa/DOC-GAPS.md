@@ -299,13 +299,28 @@ Minor, collected because the macros have to say something:
     `LEVEL_REPEAT`/`BUTTON_SAVE` to the touch fallback rather than colliding.
   - `vu_meter` and `jewels` likewise need `LABEL_*` / `HK_SELECT` / `HK_CANCEL`
     strings, not just button macros.
-- **Manual coverage followed the code, not the other way round.** 37 plugin
-  chapters now carry an `ESP32S3_PAD` row per key table, 208 rows in total, written
-  from the branches rather than from the plugin headers. The code side turned out to
-  be much further along than the chapter side: 41 plugin sources already contain an
+- **Manual coverage followed the code, not the other way round.** Plugin chapters were
+  written from the branches rather than from the plugin headers. The code side turned out
+  to be much further along than the chapter side: 41 plugin sources already contain an
   `ESP32S3_PAD` branch, including `pacbox`, `sudoku`, `calculator`, `calendar`,
   `chessbox`, `doom`, `fractals`, `imageviewer`, `mpegplayer`'s start-time dialog,
   `text_viewer`, `zxbox` and `chip8` — so the gap was documentation, not bindings.
+
+- **Coverage, re-measured rather than asserted.** The zip ships **161** `.rock`
+  binaries (plus 43 codecs, 6 viewers overlays and 63 lua scripts) out of 119 plugin
+  chapters; **41 chapters** carry `ESP32S3_PAD` rows, ~230 rows in total. Of the 70
+  chapters that have a key-table structure at all, **30 still have no column for us**:
+  `2048`, `alarmclock`, `bubbles`, `chess_clock`, `chip8emulator`, `clock`, `codebuster`,
+  `countdown_timer`, `dart_scorer`, `dice`, `fire`, `goban`, `jackpot`, `lamp`, `logo`,
+  `maze`, `mazezam`, `nim`, `rockblox1d`, `robotfindskitten`, `rocklife`, `snow`,
+  `starfield`, `stopwatch`, `xrick` (`midiplay`, `mosaic` and `wavplay` are codec or
+  non-interactive chapters with nothing to map). Nearly all of those plugins reach input
+  through `pluginlib_getaction()`, which has our `ESP32S3_PAD` branch, so these are rows
+  to write, not bindings to add — the same conclusion as before, now with counts.
+  An attempt to audit the compiled button set by re-preprocessing every plugin source
+  with the host compiler was **inconclusive** and is not relied on: the host front end
+  cannot reproduce the target's include set, and 838 of 1099 files failed. The
+  remaining uncertainty is behavioural and belongs on the device.
   Three things came out of writing it down:
   - The quit gesture was then unified: eight branches (`clix`, `invadrox`,
     `rockpaint`, `star`, `calculator`, `calendar`, `text_viewer`, `fractals`) quit on
