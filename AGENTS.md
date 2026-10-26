@@ -4144,8 +4144,8 @@ Both keypad chains in `apps/plugins/lib/pluginlib_actions.c` end in:
 
 So a target that defines `HAVE_TOUCHSCREEN` but has an unlisted `CONFIG_KEYPAD`
 does **not** fail the build. It gets a `pla_main_ctx` with no directional and no
-select entries, and every plugin using `pluginlib_getaction()` (53 of them)
-loads, draws, and ignores every key. MeowKit hit exactly this: 2048 ran perfectly
+select entries, and every plugin using `pluginlib_getaction()` (48 of the 116
+plugin sources we ship) loads, draws, and ignores every key. MeowKit hit exactly this: 2048 ran perfectly
 and was completely unresponsive, including to the key that would exit it. If
 plugins load but no button works, check for an `ESP32S3_PAD` case here before
 suspecting the loader.
@@ -4170,7 +4170,7 @@ actually proved it.
 ## Plugin keymaps on MeowKit
 
 Every plugin in `apps/plugins/SOURCES` and `SUBDIRS` builds for this target —
-there are no `MEOWKIT_ESP32S3` gates left. 160 `.rock` files. Two mechanisms got
+there are no `MEOWKIT_ESP32S3` gates left. 161 `.rock` files. Two mechanisms got
 us there, and they are different problems that were conflated for a while.
 
 **Most plugins needed no keymap at all.** `apps/plugins/lib/pluginlib_actions.c`
@@ -4201,7 +4201,8 @@ is the set `firmware/export/button.h:124` validates).
 |---|---|
 | 4-way | movement / cursor, always |
 | A | confirm, select, fire |
-| B | quit, back, cancel |
+| B tap | pause, cancel, menu |
+| **B held** | quit / exit — this is `PLA_EXIT`, so games and pluginlib plugins end the same way |
 | `TOPMIDDLE` / `BOTTOMMIDDLE` | the up/down pair: scroll, level, zoom, menu-up/down |
 | `MIDLEFT` / `MIDRIGHT` | the prev/next pair: page, column, precision |
 | `CENTER` | the primary game action: place, draw, coin, pause, slideshow |
@@ -4209,6 +4210,25 @@ is the set `firmware/export/button.h:124` validates).
 
 Where a plugin has more actions than the pad can carry, the rarer one moves to
 the screen and anything used in a continuous gesture stays physical.
+
+**The audit that produced the numbers.** Grepping plugin *sources* for button
+names is misleading: it finds `BUTTON_HOME`, `BUTTON_REC`, `BUTTON_OFF` and
+friends inside `#if CONFIG_KEYPAD == <other pad>` chains for about fifty keypads
+that never compile here. A false report of "53 sources reference buttons we do
+not have" came from exactly that. What measures the build: take each shipped
+plugin's own compile line from `make -n --always-make`, replace `-c/-o` with
+`-E -P -x c -include config.h`, and scan the **preprocessed** text for the
+padded button literals `button-target.h` defines (`0x00000004` is `BUTTON_UP`) —
+macros expand to numbers, so matching names in that output finds nothing.
+`PPCFLAGS` must carry `-DHAVE_SYSTEM_LIBC` and `-DMEOWKIT_ESP32S3` or
+`rbendian.h` and `config.h` both fail. Measured result: all 116 shipped plugin
+sources preprocess, zero reference a button we cannot produce, 48 go through
+pluginlib, and the remaining gap was that **38 sources read only touch cells**
+because the `HAVE_TOUCHSCREEN` fallback filled every action macro the keypad
+chain left undefined. Sixteen of those got a real `ESP32S3_PAD` branch:
+`snake`, `snake2`, `spacerocks`, `wormlet`, `pong`, `chopper`, `jewels`, `cube`,
+`flipit`, `minesweeper`, `sokoban`, `sliding_puzzle`, `rockblox`, `oscilloscope`,
+`vu_meter`, `chip8`. Utilities and viewers stay on touch deliberately.
 
 **Three traps found while doing this:**
 
