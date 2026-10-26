@@ -226,12 +226,17 @@ Minor, collected because the macros have to say something:
 | Action | Manual context | Ours |
 |---|---|---|
 | `ACTION_STD_REC` | start recording from any screen | WPS only (`ACTION_WPS_REC`) — deliberately passed; the std handler exists at `apps/menu.c:495` |
-| `ACTION_STD_SHOWSCREEN` | screen/backlight toggle | none |
+| `ACTION_STD_SHOWSCREEN` | screen/backlight toggle | **no such action in this tree** |
 | `ACTION_SETTINGS_RESET` | reset a setting to default | **no such action in this tree** — not in `apps/action.h` or any keymap |
 | `ACTION_STD_KEYLOCK` | key lock | both face buttons held (see §4) |
 | `ACTION_STD_HOTKEY` | hotkey | none, and correctly undocumented |
 
 - **Status:** open, low severity. Each is one mapping if we decide the gesture.
+- **SHOWSCREEN was never real.** `ACTION_STD_SHOWSCREEN` appears nowhere in this tree:
+  not in `apps/action.h`, not in any handler, not in any target's keymap. The only
+  occurrence anywhere was `\newcommand{\ActionStdShowScreen}{\NotAvail}` in our own
+  platform file, and no chapter referenced it. Removed. It belongs in the same column
+  as `ACTION_SETTINGS_RESET`: a name this log carried forward, not a gap in the port.
 
 ## 10. Plugins: the input gap is touch-only, not missing keys
 
