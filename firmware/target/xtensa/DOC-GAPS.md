@@ -233,25 +233,52 @@ Minor, collected because the macros have to say something:
 
 - **Status:** open, low severity. Each is one mapping if we decide the gesture.
 
-## 10. Plugins: 53 sources reference buttons we don't have
+## 10. Plugins: the input gap is touch-only, not missing keys
 
 - **Claim:** the manual documents many plugins with their own key tables
   (`ButtonHome`, `ButtonPlus`, `ButtonMinus`, `ButtonMode`, `ButtonFn`,
   `ButtonRec`, `ButtonOff` appear throughout `manual/plugins/`).
-- **Reality:** this board has six inputs plus the touch grid. 53 plugin sources
-  under `apps/plugins/` reference at least one button we cannot produce.
-  `apps/plugins/lib/pluginlib_actions.c` has an `ESP32S3_PAD` branch, but it
-  defines only the four directions and their repeats; select/cancel/exit come
-  from the shared `HAVE_TOUCHSCREEN` block.
-- **Why this matters:** that shared block is the reason a comment in our branch
-  warns about a silent failure mode — with `HAVE_TOUCHSCREEN` defined, the
-  `#else` branch compiles a pluginlib list with no `PLA_*` entries at all, so a
-  plugin loads, runs, draws and ignores every key. `2048` was exactly that
-  before the `ESP32S3_PAD` branch existed.
-- **What fixing it means:** a per-plugin audit against our inputs, not a
-  wholesale fix. Worth ranking: which plugins ship in our zip and are
-  unplayable, and whether the touch grid can stand in for the missing keys.
-- **Status:** open, needs an audit pass.
+- **The earlier claim in this log — "53 plugin sources reference buttons we
+  cannot produce" — was wrong**, and the reason is instructive: grepping plugin
+  sources finds those names inside `#if CONFIG_KEYPAD == <other pad>` chains for
+  ~50 keypads that never compile here. Name matching measures the file, not the
+  build.
+- **Method that actually works.** Take each shipped plugin's real compile line
+  from `make -n --always-make`, swap `-c/-o` for `-E -P -x c -include config.h`,
+  and scan the *preprocessed* text for the padded button literals our
+  `button-target.h` defines (`0x00000004` for `BUTTON_UP` etc.) — macros expand
+  to numbers, so matching names in that output finds nothing. `PPCFLAGS` must
+  carry `-DHAVE_SYSTEM_LIBC` and `-DMEOWKIT_ESP32S3`, otherwise `rbendian.h`
+  and `config.h` both fail. All 116 shipped plugin sources preprocess cleanly.
+- **Result: zero plugins reference a button we cannot produce.** The one hit was
+  `keyremap`, whose `"BUTTON_UNKNOWN"` is a string in its own lookup table
+  (`keyremap.c:54, 292`), not a macro.
+- **pluginlib is in better shape than this log said.** Of the 17 `PLA_*` actions
+  it defines, our `ESP32S3_PAD` branch supplies 13: four directions plus their
+  repeats, `PLA_SELECT`, `PLA_SELECT_REL`, `PLA_SELECT_REPEAT`, `PLA_CANCEL`,
+  `PLA_EXIT`. Only `PLA_SCROLL_FWD/BACK` (+ repeats) are missing, and those are
+  scroll-wheel actions that appear in plugin code only as alternates. 48 shipped
+  plugins go through pluginlib, so they already respond to the stick and A/B.
+- **The real gap is different and much more specific.** 38 plugin sources have a
+  `#ifdef HAVE_TOUCHSCREEN` fallback block that fills in any action macro the
+  keypad chain left undefined — which is why they compile here at all. Net
+  effect: they consult **only touch cells**; the stick and A/B are never read.
+  Confirmed by the literal scan for `snake`, `snake2`, `spacerocks`, `wormlet`,
+  `jewels`, `pong`, `chopper`, `flipit`, `minesweeper`, `sliding_puzzle`,
+  `chip8`, `cube`, `oscilloscope`, `vu_meter`, `rockblox`, `pegbox`-adjacent
+  titles and others, including ones that are plainly games where a stick is the
+  natural input.
+- **Already fixed with a real branch (9):** `blackjack`, `brickmania`, `clix`,
+  `invadrox`, `pegbox`, `rockpaint`, `solitaire`, `star`, `xobox` each carry an
+  `ESP32S3_PAD` mapping.
+- **The fix per game, and why it is cheap.** Add an
+  `#elif CONFIG_KEYPAD == ESP32S3_PAD` branch to the existing chain. The touch
+  fallback uses `#ifndef` per macro, so anything we define wins and anything we
+  leave untouched keeps its touch mapping. No core change, no plugin ABI change,
+  one file per game.
+- **Status:** open — per-plugin pass, games first, one at a time.
+
+## 11. USB HID: wired, and the keypad only lives on the USB screen
 
 ## 11. USB HID: wired, and the keypad only lives on the USB screen
 
