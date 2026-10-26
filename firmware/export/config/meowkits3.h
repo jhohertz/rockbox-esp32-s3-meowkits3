@@ -317,18 +317,18 @@
  * unreachable rather than off. */
 #define USB_SERIAL_DEFAULT_ON
 
-/* mpegplayer's libmpeg2 reservation. The default 2 MiB is sized for 352x288 coded
- * frames; this panel is 320x240 and video_out_rockbox.c does no scaling, so a coded
- * frame larger than the screen cannot be shown anyway. What libmpeg2 actually asks for
- * at 320x240 is three YUV frames (115,200 each) and two converted 16-bit frames
- * (153,600 each), about 650 KB plus the decoder struct and conversion tables. 1 MiB is
- * that with room to spare.
- *
- * This matters because the plugin's arena is the 4 MB buflib core region, and mpegplayer
- * reserves this up front before it can even ask for its PCM buffer: at the default 2 MiB
- * the remaining grant was short by roughly the 176 KB its pcm_output_init() needs, which
- * surfaced as "Could not initialize PCM!". */
-#define LIBMPEG2_ALLOC_SIZE (1*1024*1024)
+/* LIBMPEG2_ALLOC_SIZE is deliberately NOT overridden here, and the reasoning is worth
+ * keeping because the obvious override is wrong. mpegplayer reserves this much of the
+ * buflib arena up front and libmpeg2 then asks for YUV and converted frame buffers
+ * sized by the *coded* resolution; mpegplayer only clips at blit time
+ * (`mpegplayer.c:818`, `:851`) and never rejects a stream whose coded frame is larger
+ * than the panel. alloc.c returns NULL when the reservation runs out, and
+ * libmpeg2/header.c assigns those results straight into mpeg2dec->yuv_buf[][] with no
+ * NULL check -- so an under-sized reservation is not a clean failure, it is a write
+ * through a NULL pointer and a watchdog reset. 2 MiB is what covers 352x288 coded
+ * frames; it is still short of 720x576, which is a mpegplayer-wide fragility rather
+ * than something this target can fix by tuning the number. If the arena ever grows,
+ * raising this is the right lever; lowering it is not. */
 
 #define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000
