@@ -242,6 +242,41 @@ Nothing sampled needs them. **Status:** no action unless a theme asks for one.
 
 ---
 
+## 14. Lists were three rows tall — DPI-driven row height on a 2.0" panel
+
+- **Symptom:** themes and cabbiev2 alike looked oversized; the file browser,
+  main menu, settings and playlist showed about three rows.
+- **Cause:** not theme rendering. Rockbox has no scale/DPI/aspect path for
+  skins at all (`ui_scale`, `lcd_scale`, `SCALE`, `zoom` appear nowhere in
+  `settings_list.c`, `lcd.c` or `font.c`), and our geometry matches
+  `ipodvideo`/`ibassodx90` exactly. The size came from
+  `apps/gui/list.c:117`: with `HAVE_TOUCHSCREEN` and the *Line Padding in Lists*
+  setting on "auto", row height is `MAX(lcd_get_dpi()*4/12, font_height)` =
+  **66 px** at our declared 200 dpi, on a 240 px screen.
+- **`LCD_DPI 200` is correct, not a guess:** 400 px diagonal over a measured
+  2.0" glass is exactly 200 dpi. Surveying every target that defines `LCD_DPI`
+  shows touch targets get 50-83 px rows by design — about 8 mm, a finger
+  target. cowond2 (160 dpi, 2.50") gets 4.5 rows, ibassodx90 (166, 2.41") 4.4,
+  us 3.6. We are not wrong, we are the smallest touch panel in the tree.
+- **Fix:** `DEFAULT_LIST_LINE_PADDING`, a weak `#ifndef` seam in
+  `apps/settings_list.c` defaulting to `-1` so every other target is unchanged,
+  set to `4` for this target (~20 px rows, ~11 visible). Pinned as a *default*,
+  deliberately not via `/.rockbox/fixed.cfg` — `settings.c:212` loads that file
+  last on every boot, so it would silently undo a user who preferred bigger
+  rows. The setting is at Settings -> Display -> Touchscreen Settings.
+- **Same number, two smaller consumers:** `apps/gui/bitmap/list.c:164` adds 2 px
+  to the list separator when dpi > 200 (we sit exactly on the boundary), and
+  `firmware/drivers/touchscreen.c:199` sets the scroll threshold to
+  `dpi*32/160` = 40 px of slop, vs 32 px at 160 dpi.
+- **Also enabled: `HAVE_BMP_SCALING`.** Every other 320x240 target has it; it is
+  the scaler in `apps/recorder/bmp.c` that fits album art to the box a skin
+  asked for (`playback_claim_aa_slot()` hands over a `struct dim`). Without it,
+  a `%aa` image is drawn at native size — which is why album art in themes like
+  Laserhead sprawls. ABI-safe: `apps/plugin.h` has no `HAVE_BMP_SCALING` gate,
+  `read_bmp_file`/`read_bmp_fd` are always present, and `apps/features.txt` has
+  no bmp entry so the features list is unchanged.
+- **Status:** closed, pending hardware check of the new default.
+
 ## Keeping this log
 
 When a gap is closed, move the entry to the closed section at the bottom and

@@ -1344,8 +1344,16 @@ const struct settings_list settings[] = {
                 "scrollbar width",UNIT_INT, 3, MAX(LCD_WIDTH/10,25), 1,
                 NULL, NULL, NULL),
 #ifdef HAVE_TOUCHSCREEN
+    /* The default is 'auto', which sizes rows from LCD_DPI (see
+     * list_init_item_height() in apps/gui/list.c:117). That is about 8mm per
+     * row, which is right for a finger but costs a lot of rows on a small
+     * panel, so a target may pin a fixed padding instead. -1 keeps upstream
+     * behaviour for every target that does not define the macro. */
+#ifndef DEFAULT_LIST_LINE_PADDING
+#define DEFAULT_LIST_LINE_PADDING -1
+#endif
     TABLE_SETTING(F_ALLOW_ARBITRARY_VALS, list_line_padding, LANG_LIST_LINE_PADDING,
-                  -1, "list padding", "auto,off", UNIT_PIXEL, list_pad_formatter,
+                  DEFAULT_LIST_LINE_PADDING, "list padding", "auto,off", UNIT_PIXEL, list_pad_formatter,
                   list_pad_getlang, NULL, 16,
                   -1,0,2,4,6,8,10,12,16,20,24,28,32,38,44,50),
 #endif
