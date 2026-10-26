@@ -202,10 +202,13 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  *
  * Because the windows alias, the two halves must occupy *different* physical
  * pages, so the text halves are carved from the gap below codecbuf rather than
- * placed at the same offset as their data. Measured across all 43 codecs the
- * largest .text+.literal+.rodata is 182 KB and the largest .data+.bss is
- * 362 KB, so 512 KB each is comfortable, and rb_ext_ram_end leaves 208 KB
- * below the lower of the two.
+ * placed at the same offset as their data. Sizes come from memory-xtensa.h: the
+ * largest codec .text+.literal+.rodata measured is 182 KB against a 256 KB codec
+ * half, and the largest .rock is 482,560 B against a 512 KB plugin half. THIS_TEXT_LENGTH
+ * below is what makes an oversized image fail at link time rather than at load.
+ * This file is preprocessed into a cached .link, so memory-xtensa.h is a declared
+ * dependency of those rules -- without it a size change here silently links images at
+ * the stale origin.
  *
  * CODEC_ORIGIN and PLUGIN_ORIGIN are deliberately untouched: apps/codecs.c and
  * apps/plugin.c compare a loaded image's load_addr against codecbuf and

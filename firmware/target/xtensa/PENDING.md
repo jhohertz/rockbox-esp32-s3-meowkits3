@@ -27,25 +27,21 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **Card re-extract outstanding.** `rockbox.zip` carries the puzzle exclusion, the
   `keymaps.h` A/B fix and the mpegplayer revert. Firmware on the board is current, so this
   is a card action only.
-- **Arena cleanup — needs your go-ahead, and the motivation is measured.** Our 8 MB PSRAM
-  Ext_RAM window is fully claimed: flash rodata 568,704 + `.ext_ram.bss` 4,225,024 + plugin
-  text 524,288 + codec text 524,288 + codecbuf 1,048,576 + pluginbuf 524,288, leaving the
-  buflib arena at **3,875,072 B**. Plugins compete inside that: mpegplayer needs ~2.57 MB of
-  it contiguous and free, and sgt puzzles, doom and xrick want large arenas too. The two
-  512 KiB *text* reservations are an xtensa-only construct — `CODEC_TEXT_ORIGIN` and
-  `PLUGIN_TEXT_ORIGIN` in `apps/plugins/plugin.lds:209-212` exist solely because plugin and
-  codec images execute through the IROM instruction-cache alias (`+XT_IROM_OFF`); every other
-  target places text inside `CODEC_ORIGIN`/`PLUGIN_ORIGIN` and reserves nothing extra. The
-  largest codec we ship is `aac.codec` at 200,232 B, so `XT_CODEC_TEXT_SIZE` is oversized by
-  roughly 2.5x, and halving it hands 256 KiB to the arena. It touches the audio path, so
-  before changing it confirm how `lc-xtensa.c:111` places images and what page count the IROM
-  mapping expects — `make esplayer` plus `apps/codecs.c`'s exact-`codecbuf` check would catch
-  an error loudly, but only after a build.
-  Measured constraints on the other knobs: `PLUGIN_BUFFER_SIZE` cannot shrink (`clock.rock`
-  is 482,560 B against a 524,288 B buffer, and 66 targets in the tree use the same 512 KiB).
-  **Correction to a claim in this file:** `CODEC_SIZE` 1 MiB is *not* against convention —
-  78 targets define `0x100000`, only 3 use `0x80000` and 3 use `0x48000`. Shrinking it would
-  be unusual, not a tidy-up, and codecs need the remainder as working memory anyway.
+- **Arena grew 256 KiB — needs one boot to verify.** `XT_CODEC_TEXT_SIZE` 512 KiB →
+  256 KiB and `XT_AUDIOBUF_SIZE` `(MEMORYSIZE * 0x80000) - 0x20000` → `+ 0x20000`, so the
+  buflib arena is `0x3c155800..0x3c575800` = **4,325,376 B** (was 4,063,232) and the two
+  images relink at `0x425c0000` (plugin text) / `0x42640000` (codec text), which is what
+  `make esplayer` reports as the reservations plus `XT_IROM_OFF`. Clearance from
+  `_ext_ram_bss_end` (`0x3c5b2e94`) to plugin text is unchanged at 53,612 B. Verify on boot:
+  the `MEMORY:` line should read "53612 bytes clear of 0x3c5c0000", then load one codec
+  (play an AAC) and one plugin (clock, one sgt puzzle) — plugins loading is precisely what a
+  wrong reservation breaks, and it breaks silently. That is also why mpegplayer and chip8
+  might now fit; they stay parked until someone tries them.
+  The change also exposed a build bug worth knowing: `plugin.lds` is preprocessed into cached
+  `.link` files, and those rules did not depend on `memory-xtensa.h`, so the first attempt
+  linked every `.rock` and `.codec` 256 KB below the new reservation with no error at all.
+  `apps/plugins/plugins.make` and `lib/rbcodec/codecs/codecs.make` now declare it; after any
+  layout change, confirm with `readelf -lSW` on one image rather than trusting the build.
 - **Coulometer → real battery percent: where this gets determined.** Two places, and both
   are ours. *Scale*: the counters are raw integers whose LSB depends on the calibration base
   in CC_CTRL bit 6 (`AXP_CC_PIECE_BASE`), which is not documented in this tree — so it is
@@ -120,10 +116,11 @@ Each of these was checked on the board, not inferred.
   | `pcm_output_init()` | grant < grey + 2 MiB + 176,400 | "Could not initialize PCM!" |
   | `disk_buf_init()` | remainder < `MIN_MEMMARGIN` (4 KiB) | "Cannot create buffering thread!" |
 
-  Arena is **3,875,072 B** (re-measured, `MEMORY.md` §6), so the plugin needs ~2.57 MB of
-  it *contiguous and free*, leaving ~1.3 MB for the disk buffer only if nothing else is
-  holding the arena. With dircache off it got past step 1 and failed at step 2, which says
-  free was between 2.33 MB and 2.50 MB — so theme fonts and skin data are holding roughly
+  Arena was **3,875,072 B** when this was measured; it is now **4,325,376 B** (§1 arena
+  change), so the plugin needs ~2.57 MB of it *contiguous and free*, leaving ~1.9 MB for the
+  disk buffer only if nothing else is holding the arena. With dircache off it got past step 1
+  and failed at step 2, which says free was between 2.33 MB and 2.50 MB — so theme fonts and
+  skin data are holding roughly
   1.3–1.5 MB. The `LIBMPEG2_ALLOC_SIZE` override I tried was **reverted**: mpegplayer
   never rejects a coded frame larger than the panel (it only clips at blit,
   `mpegplayer.c:818`/`:951`), `alloc.c` returns NULL on exhaustion, and `libmpeg2/header.c`
