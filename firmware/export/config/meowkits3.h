@@ -330,6 +330,15 @@
  * than something this target can fix by tuning the number. If the arena ever grows,
  * raising this is the right lever; lowering it is not. */
 
+/* Don't ship the three sgt puzzles that live in apps/plugins/puzzles/src/unfinished/:
+ * group, slide and sokoban. All three crash on launch on this board, and upstream's own
+ * README for that directory says its contents are half-written or unready to ship, which
+ * is why its CMake install excludes them. Rockbox's SOURCES.games builds them anyway, so
+ * the exclusion is expressed here rather than as a per-file deletion — the seam is
+ * PUZZLES_SKIP_UNFINISHED in apps/plugins/puzzles/SOURCES.games and other targets are
+ * unaffected. */
+#define PUZZLES_SKIP_UNFINISHED
+
 #define CODEC_SIZE 0x100000 /* 1 MiB */
 #define PLUGIN_BUFFER_SIZE 0x80000
 
