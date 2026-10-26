@@ -42,18 +42,28 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   linked every `.rock` and `.codec` 256 KB below the new reservation with no error at all.
   `apps/plugins/plugins.make` and `lib/rbcodec/codecs/codecs.make` now declare it; after any
   layout change, confirm with `readelf -lSW` on one image rather than trusting the build.
-- **Coulometer → real battery percent: where this gets determined.** Two places, and both
-  are ours. *Scale*: the counters are raw integers whose LSB depends on the calibration base
-  in CC_CTRL bit 6 (`AXP_CC_PIECE_BASE`), which is not documented in this tree — so it is
-  established empirically: clear the counters, run a known discharge (battery_bench already
-  logs `battery_current()` and elapsed seconds every 60 s), integrate mA·h from those
-  samples, and divide by the counter delta to get mAh-per-LSB. Do it while discharging, not
-  charging, since USB contaminates both sides. *Wiring*: `CONFIG_BATTERY_MEASURE` is
-  currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in `config/meowkits3.h:354`; adding
-  `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c:393` and `:467` call `_battery_level()`
-  in `power-xtensa.c` instead of mapping voltage through `percent_to_volt_discharge[]`. That
-  is the whole hook — no core change. Voltage stays as a cross-check (the two can disagree
-  under load sag, which is the reason to prefer the counters).
+- **Coulometer → real battery percent: the readout now exists, the scale does not.**
+  `Debug → View HW info` gained a `CC raw: charge N discharge N` row
+  (`debug-xtensa.c`, `INFO_CC`), one 8-byte burst read of `0xb0-0xb7`. Nothing else
+  displays those counters — `Debug → View battery` shows only `battery_status` fields —
+  which is why the scale had stayed unmeasured. Two places, and both are ours.
+  *Scale*: the LSB depends on the calibration base in CC_CTRL bit 6 (`AXP_CC_PIECE_BASE`),
+  undocumented in this tree, so it is empirical: **reboot** (`axp173_init()` clears the
+  counters, so a fresh boot is a clean zero with no clear UI needed), confirm the row reads
+  0/0, start battery_bench, stay unplugged, and leave it overnight. Dark idle is the best
+  window — `battery_current()` is instantaneous and sampled every 60 s, so integrating it
+  is only trustworthy when the current is steady. In the morning read the row again, stop
+  the bench, and take the log off the card: `mAh per LSB = ∫current·dt ÷ discharge delta`.
+  Free sanity check: 8 h of dark idle at ~42 mA is about 336 mAh, so the delta should make
+  that arithmetic land near 336, and against the known 1400 mAh cell you can see at once
+  whether the implied percentage is credible. A failed I2C read also returns 0/0, which is
+  indistinguishable from a genuine post-boot zero — hence reading the row twice.
+  *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
+  `config/meowkits3.h:354`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c:393`
+  and `:467` call `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
+  `percent_to_volt_discharge[]`. That is the whole hook — no core change. Voltage stays as
+  a cross-check (the two can disagree under load sag, which is the reason to prefer the
+  counters).
 - **Charge target voltage — the battery-lifetime lever we deliberately did not pull.**
   Neither our firmware nor the reference sets it, so the cell charges to the 4.2 V default;
   ~4.1 V is the meaningful cycle-life improvement, but confirming the register on this die
