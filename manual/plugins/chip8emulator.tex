@@ -12,6 +12,17 @@ graphics.
 The only problem is that they are based on a 4$\times$4 keyboard, but since most
 games do not use all of the buttons, this can easily be worked around.
 
+\opt{ESP32S3_PAD}{\note{On this player the sixteen keys are split between the
+five-way stick, the two buttons and a nine-cell touch grid. The stick is
+2/4/6/8, \ButtonA{} is 5, \ButtonB{} is E, long \ButtonA{} is F and long
+\ButtonB{} stops the emulator. The other nine keys sit on the touch grid: the
+corners are 1, 3, 7 and 9, the top and bottom edge midpoints are A and 0, the left
+and right side midpoints are B and C, and the centre is D.\footnote{Nothing draws
+that grid, so the cells have to be remembered -- most games only need the stick
+and \ButtonA{}.} The picture is 64$\times$32 unless the game supports the
+superchip canvas, in which case long \ButtonA{} -- chip8's F key -- switches it to
+128$\times$64.}}
+
 To do this, one may put a \fname{.c8k} file with the same name as the
 original program which contains new key mappings (for \fname{BLINKY.ch8}, one
 writes a \fname{BLINKY.c8k} file). That \fname{.c8k} file contains 16
@@ -47,12 +58,14 @@ The default keymappings are:
         \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonRew}
         \opt{MPIO_HD200_PAD}{\ButtonRec + \ButtonPlay}
         \opt{MPIO_HD300_PAD}{Long \ButtonMenu}
+        \opt{ESP32S3_PAD}{Long \ButtonB{}}
         \end{sideways}
         &
         % Key "0" 
         \begin{sideways}
         \opt{SANSA_FUZEPLUS_PAD}{\ButtonVolDown}
         \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonFF}
+        \opt{ESP32S3_PAD}{\TouchBottomMiddle}
         \end{sideways}
         &
         % "Key "1"
@@ -61,6 +74,7 @@ The default keymappings are:
         \opt{SANSA_FUZEPLUS_PAD}{\ButtonUp}
         \opt{GIGABEAT_PAD,GIGABEAT_S_PAD,MROBE100_PAD}{\ButtonMenu}
         \opt{MPIO_HD200_PAD,MPIO_HD300_PAD}{\ButtonRew}
+        \opt{ESP32S3_PAD}{\TouchTopLeft}
         \end{sideways}
         &
         % Key "2"
@@ -73,6 +87,7 @@ The default keymappings are:
         \opt{IRIVER_H10_PAD}{\ButtonScrollUp}
         \opt{SANSA_C200_PAD}{\ButtonVolUp}
         \opt{MPIO_HD200_PAD,MPIO_HD300_PAD}{\ButtonFF}
+        \opt{ESP32S3_PAD}{\ButtonUp{}}
         \end{sideways}
         &
         % Key "3"
@@ -81,6 +96,7 @@ The default keymappings are:
         \opt{GIGABEAT_PAD,GIGABEAT_S_PAD}{\ButtonVolDown}
         \opt{MPIO_HD200_PAD}{\ButtonFunc}
         \opt{MPIO_HD300_PAD}{\ButtonMenu}
+        \opt{ESP32S3_PAD}{\TouchTopRight}
         \end{sideways}
         &
         % Key "4"
@@ -92,6 +108,7 @@ The default keymappings are:
             ,SAMSUNG_YH820_PAD}{\ButtonLeft}
         \opt{MPIO_HD200_PAD}{\ButtonRec}
         \opt{MPIO_HD300_PAD}{\ButtonEnter}
+        \opt{ESP32S3_PAD}{\ButtonLeft{}}
         \end{sideways}
         &
         % Key "5"
@@ -105,6 +122,7 @@ The default keymappings are:
         \opt{PBELL_VIBE500_PAD}{\ButtonOK}
         \opt{MPIO_HD200_PAD}{\ButtonPlay}
         \opt{MPIO_HD300_PAD}{\ButtonRec}
+        \opt{ESP32S3_PAD}{\ButtonA{}}
         \end{sideways}
         &
         % Key "6"
@@ -116,6 +134,7 @@ The default keymappings are:
             ,SAMSUNG_YH820_PAD}{\ButtonRight}
         \opt{MPIO_HD200_PAD}{\ButtonVolDown}
         \opt{MPIO_HD300_PAD}{\ButtonPlay}
+        \opt{ESP32S3_PAD}{\ButtonRight{}}
         \end{sideways}
         &
         % Key "7"
@@ -125,6 +144,7 @@ The default keymappings are:
         \opt{MPIO_HD200_PAD}{\ButtonVolUp}
         \opt{MPIO_HD300_PAD}{\ButtonScrollUp}
         \opt{SANSA_FUZEPLUS_PAD}{\ButtonBottomLeft}
+        \opt{ESP32S3_PAD}{\TouchBottomLeft}
         \end{sideways}
         &
         % Key "8"
@@ -137,6 +157,7 @@ The default keymappings are:
         \opt{IAUDIO_X5_PAD,SANSA_FUZEPLUS_PAD}{\ButtonDown}
         \opt{IRIVER_H10_PAD,MPIO_HD300_PAD}{\ButtonScrollDown}
         \opt{SANSA_C200_PAD}{\ButtonVolDown}
+        \opt{ESP32S3_PAD}{\ButtonDown{}}
         \end{sideways}
         &
         % Key "9"
@@ -144,23 +165,40 @@ The default keymappings are:
         \opt{GIGABEAT_PAD}{\ButtonA}
         \opt{GIGABEAT_S_PAD}{\ButtonPlay}
         \opt{SANSA_FUZEPLUS_PAD}{\ButtonBottomRight}
+        \opt{ESP32S3_PAD}{\TouchBottomRight}
         \end{sideways}
         &
         % Key "A"
         \begin{sideways}
           \opt{SANSA_FUZEPLUS_PAD}{\ButtonVolUp}
+          \opt{ESP32S3_PAD}{\TouchTopMiddle}
         \end{sideways}
         &
         % Key "B"
+        \begin{sideways}
+        \opt{ESP32S3_PAD}{\TouchMidLeft}
+        \end{sideways}
         &
         % Key "C"
+        \begin{sideways}
+        \opt{ESP32S3_PAD}{\TouchMidRight}
+        \end{sideways}
         &
         % Key "D"
+        \begin{sideways}
+        \opt{ESP32S3_PAD}{\TouchCenter{}}
+        \end{sideways}
         &
         % Key "E"
+        \begin{sideways}
+        \opt{ESP32S3_PAD}{\ButtonB{}}
+        \end{sideways}
         &
         % Key "F"
-    \\\bottomrule
+        \begin{sideways}
+        \opt{ESP32S3_PAD}{Long \ButtonA{}}
+        \end{sideways}
+    \\\\\bottomrule
     \end{tabularx}
     \end{center}
 \end{table}
