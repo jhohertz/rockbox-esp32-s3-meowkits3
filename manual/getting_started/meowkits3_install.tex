@@ -84,6 +84,13 @@ hand. You will need:
   Rockbox reads \fname{.rockbox/config.cfg} from the card at startup, so your
   settings follow the card rather than the board.
 
+  Lists on this player use a line padding of 4 by default. The automatic setting
+  sizes each row from the panel's dot density, which on a 2.0" screen gives rows
+  about 66 pixels tall -- roughly three of them visible. If you prefer larger
+  rows for finger use, set it under
+  \fname{Settings --> Display --> Touchscreen Settings --> Line Padding in
+  Lists}; the list is a setting, so the change survives a reboot.
+
 \end{enumerate}
 
 To update Rockbox later, repeat step 3 with a new image. Settings and the
