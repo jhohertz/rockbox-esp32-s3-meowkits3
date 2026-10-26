@@ -182,6 +182,23 @@ const struct button_mapping pf_context_buttons[] =
     {PF_QUIT,         BUTTON_POWER|BUTTON_REPEAT, BUTTON_POWER},
     {PF_CONTEXT,      BUTTON_MENU|BUTTON_REL,     BUTTON_MENU},
     {PF_TRACKLIST,    BUTTON_MENU|BUTTON_REPEAT,  BUTTON_MENU},
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. The block above already
+ * gives this target Centre for select and BottomRight for back, because those are
+ * in the HAVE_TOUCHSCREEN section; what it never gives us is a quit or a menu, since
+ * every PF_QUIT entry sits inside a #elif for some other keypad. Upstream's generic
+ * branch (the one guarded only by BUTTON_LEFT/BUTTON_RIGHT being defined) is what a
+ * wheel-less pad gets, so the stick follows that and A/B keep the same meaning they
+ * have in every other MeowKit plugin keymap: A is the primary action, B tap goes
+ * back, B held quits. */
+    {PF_QUIT,         BUTTON_B | BUTTON_REPEAT,   BUTTON_B},
+    {PF_BACK,         BUTTON_B,                   BUTTON_NONE},
+    {PF_SELECT,       BUTTON_A,                   BUTTON_NONE},
+    {PF_MENU,         BUTTON_TOPLEFT,             BUTTON_NONE},
+    {PF_PREV,         BUTTON_LEFT,                BUTTON_NONE},
+    {PF_PREV_REPEAT,  BUTTON_LEFT | BUTTON_REPEAT, BUTTON_NONE},
+    {PF_NEXT,         BUTTON_RIGHT,               BUTTON_NONE},
+    {PF_NEXT_REPEAT,  BUTTON_RIGHT | BUTTON_REPEAT, BUTTON_NONE},
 #endif
 #if CONFIG_KEYPAD == IAUDIO_M3_PAD
     LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_STD|CONTEXT_REMOTE)
