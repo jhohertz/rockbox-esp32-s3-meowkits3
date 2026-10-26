@@ -32,8 +32,8 @@ pad=320:240:(ow-iw)/2:(oh-ih)/2" \
 
 Each of those settings is load-bearing: \emph{yuv420p} because the decoder's chroma
 handling assumes 4:2:0; \emph{-bf 0} because B-frames add reordering the output path does
-not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes
-\ActionWpsSeek{} responsive; \emph{-ar 44100} because the plugin's audio clock is
+not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes the
+rewind and fast-forward keys responsive; \emph{-ar 44100} because the plugin's audio clock is
 44.1 kHz; and \emph{-f mpeg} because the demuxer expects a Program Stream.
 
 \begin{btnmap}
