@@ -60,15 +60,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   is the probing you ruled out.
 - **Upstream submissions.** §5 lists 16 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
-- **Plugin code executes from PSRAM, and that is now measured.** mpegplayer presents
-  ~11 fps of a 25 fps source (see §2). The conversion itself is the shared
-  `lcd_write_yuv420_lines()`, the push is 150 KB of SPI per full-screen update, and both
-  run from `XT_PLUGIN_TEXT_ADDR` in the PSRAM cache window — the one performance property
-  of this port that had never been tested. Two ways to buy it back, both needing a
-  decision rather than a measurement: move plugin text into the D/IRAM region (there is
-  1,105 B free in DIRAM, so it would have to displace something), or reduce the work per
-  frame. Audio is unaffected, so this is not urgent — but it is the number that says
-  whether plugin placement is right.
+- **Plugin code executes from PSRAM — and the frame rate may not be ours to fix.**
+  mpegplayer presents ~11 fps, and a differently encoded file measured 3–4 fps higher,
+  which says the cost tracks the content (coded size, bitrate, GOP) rather than a single
+  fixed overhead. Plugin text executes from `XT_PLUGIN_TEXT_ADDR` in the PSRAM cache
+  window — the one performance property of this port that had never been tested — but the
+  variation means libmpeg2's software IDCT and `stretch_image_plane()` are at least part
+  of the picture, so moving plugin text into internal RAM is not obviously the lever.
+  DIRAM has 1,105 bytes free anyway, so that path would displace something. Audio is
+  unaffected. Two things to settle, in order: find the encode settings that suit the panel
+  (yours to play with), and only then decide whether placement is worth touching.
+- **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
+  recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
+  frame should cost less in libmpeg2's buffers and in the scaling pass.
 
 ## 2. Verified on hardware — closed
 
@@ -86,8 +90,10 @@ Each of these was checked on the board, not inferred.
   boundary.
 - **mpegplayer plays video, correctly coloured, at ~11 fps.** With the OSD hidden, the video
   band animates and the picture is right in both geometry and colour; the FPS overlay reads
-  11 against a 25 fps source. This needed one thing from the target: `lcd_blit_yuv` that
-  pushes. Rockbox's generic version in `drivers/lcd-memframe.c` only fills the shadow
+  11 on one file, and a differently encoded file ran 3–4 fps higher, so the rate is bound by
+  the encoded content rather than being a fixed ceiling. Tuning encode settings to find the
+  best combination is yours to do later. This needed one thing from the target: `lcd_blit_yuv`
+  that pushes. Rockbox's generic version in `drivers/lcd-memframe.c` only fills the shadow
   framebuffer, and mpegplayer never issues an update for the video rectangle itself — it
   blits, then pushes its bottom OSD strip (`mpegplayer.c:1665`) and, when enabled, the FPS
   rect. On targets where video works the LCD has CPU-writable display memory or a hardware
