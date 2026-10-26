@@ -46,11 +46,44 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
   log over serial; not diagnosable from source. Other puzzles launch and play, so it is
   per-game rather than the family.
-- **mpegplayer fails at load with insufficient memory.** Matches
-  `mpegplayer/stream_mgr.c:1110` `"Out of memory in stream_init"`. It carves its own
-  arena in `mpegplayer/alloc.c` rather than using the plugin buffers. Our sizes:
-  `CODEC_SIZE 1 MiB`, `PLUGIN_BUFFER_SIZE 512 KiB`. The arithmetic against the requested
-  frame size is the actual question, and it may be answerable without a board.
+- **mpegplayer fails at load — the arithmetic says it is ~0.1–0.3 MB short, not miles
+  short.** `stream_mgr.c:1110` is the message you saw. What happens: `stream_init()`
+  takes the whole free core arena via `plugin_get_audio_buffer()`
+  (`apps/plugin.c:1170` → `core_alloc_maximum()`), subtracts the grey frame buffers, and
+  then `mpeg_alloc_init()` (`alloc.c:142`) demands a flat
+  `CACHEALIGN_UP(LIBMPEG2_ALLOC_SIZE)` = **2,097,152 B** before anything else. Numbers:
+
+  | | bytes |
+  |---|---|
+  | buflib core arena (`audiobuffer`→`audiobufend`, measured in `MEMORY.md`) | 4,128,768 |
+  | grey, 320×240: `width*height*2` display + `width*height` chunky buffer (`GREY_BUFFERED`), per `apps/plugins/lib/grey_core.c:516` | 230,400 |
+  | libmpeg2 reservation, fixed regardless of resolution | 2,097,152 |
+  | audio buffer `AUDIOBUF_ALLOC_SIZE` (64 KiB + `MPA_MAX_FRAME_SIZE` + 2×`MAD_BUFFER_GUARD`) | ~68,000 |
+  | pcmout `PCMOUT_ALLOC_SIZE` (2 × 44100/2×4) | 176,400 |
+  | **mpegplayer fixed demand** | **~2,572,000** |
+  | other arena holders at plugin start: `DIRCACHE_LIMIT` | up to 1,048,576 |
+  | theme fonts (`font.c` allocates per loaded font) + album art (`core_load_bmp`) | ~350,000–550,000 |
+
+  So the margin is **~0–160 KB, not a comfortable gap**. The arena is 4.13 MB, mpegplayer
+  needs 2.57 MB of it *contiguous and free*, and everything else that lives in the arena —
+  a populated dircache (up to 1 MB), the theme's loaded fonts, album art pulled in by
+  `core_load_bmp()` — decides whether it fits. On your player it does not fit. A bare
+  player with no dircache and one font would probably load it. Note `CODEC_SIZE` (1 MiB) is *not*
+  the source; the codec for MP3 audio lives in its own `codecbuf`.
+
+  Levers, cheapest first:
+  1. **No code at all: turn the directory cache off** (Settings → General Settings →
+     Directory Cache) and retry. If it loads, the deficit is confirmed at the small end,
+     and the remaining question is only whether the disk buffer ends up below
+     `DISK_BUF_LOW_WATERMARK` (1 MiB), which would stutter rather than fail.
+  2. `DIRCACHE_LIMIT` 1 MiB → 512 KiB in `config/meowkits3.h` — target-local, +512 KB.
+  3. `LIBMPEG2_ALLOC_SIZE` is sized for 352×288. Our output ceiling is 320×240, where the
+     working set is roughly chunks + 3 YUV frames (115,200 each) + 2 converted frames
+     (153,600 each) ≈ 1.65 MB, so a resolution-conditioned ~1.75 MB reservation saves
+     ~260 KB. Plugin-side, but expressible as an LCD-size conditional.
+  4. Growing the arena needs a layout change (plugin text 1 MiB at `0x3c580000`,
+     codecbuf 1 MiB, only 512 KB spare to the window top). Highest risk; `make esplayer`
+     would catch any overflow.
 - **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
   by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
   not say that. Documentation gap, not firmware.
