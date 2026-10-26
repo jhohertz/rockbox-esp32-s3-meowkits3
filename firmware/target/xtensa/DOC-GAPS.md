@@ -326,13 +326,23 @@ Minor, collected because the macros have to say something:
   The chapters already had `\opt{touchscreen}` rows, and that option comes from the
   features list rather than from the platform file, so the touch half of every table
   was rendering for us all along — only the stick and A/B column was missing.
-- **Residual doc gap, measured**: 3 shipped chapters still have rows with no key for
-  us — `pictureflow` (album jump/sort/menu, whose key table is written per-pad with no
-  MeowKit branch), `xworld` (a Spectrum emulator whose input goes through an on-screen
-  keyboard, not a keypad chain at all), and `metronome` (its tap-tempo, volume and sync
-  rows use `PLA_SCROLL_*`, which no keypad without a wheel can supply). Four more
-  (`chess_clock`, `midiplay`, `rockboy`, `stopwatch`) have the same shape and are not
-  shipped. Documenting those three needs a mechanism read, not a guess, so they are
+- **Residual doc gap, measured**: 2 shipped chapters still have rows with no key for
+  us — `xworld` (a Spectrum emulator whose input goes through an on-screen keyboard,
+  not a keypad chain at all) and `metronome`'s volume/sync rows (`PLA_SCROLL_*`, which
+  no keypad without a wheel can supply). Four more (`chess_clock`, `midiplay`,
+  `rockboy`, `stopwatch`) have the same shape and are not shipped.
+- **pictureflow needed code, not prose.** Its `pf_context_buttons` table puts every
+  `PF_QUIT` entry inside a `#elif CONFIG_KEYPAD == …` for some other keypad, so this
+  target got only the `HAVE_TOUCHSCREEN` pair (Centre = select, BottomRight = back) and
+  nothing else: no quit on a button, no menu, and `PF_PREV`/`PF_NEXT` reachable only
+  through the MidLeft/MidRight cells — which on this board are the stick-pair combos,
+  not a gesture anyone will find. Added an `ESP32S3_PAD` branch that mirrors upstream's
+  generic wheel-less branch (stick left/right scroll, with repeats) plus the MeowKit
+  convention for A/B. `PF_JMP`, `PF_JMP_PREV`, the two sorting actions and
+  `PF_CONTEXT` have no MeowKit key and the chapter says *not available* rather than
+  implying they work; `PF_TRACKLIST` is not mapped for any target that lacks it because
+  the plugin's loop has no `case PF_TRACKLIST` at all — entering the track list goes
+  through `PF_SELECT`. Documenting those three needs a mechanism read, not a guess, so they are
   left rather than filled with plausible keys.
 - **Hardware status**: the plugin batch, the theme pack and the fonts artifact were
   checked on the device. The open plugin item is documentation only (see the residual

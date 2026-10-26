@@ -50,6 +50,7 @@ reduces the time it takes for cover art to be displayed.}}
     \begin{btnmap}
         \opt{scrollwheel,IRIVER_H10_PAD,PBELL_VIBE500_PAD,MPIO_HD300_PAD}{%
             \ActionStdPrev{} / \ActionStdNext
+                \opt{ESP32S3_PAD}{\ButtonLeft{} / \ButtonRight}
                 &
             \opt{HAVEREMOTEKEYMAP}{
                 &}
@@ -63,6 +64,7 @@ reduces the time it takes for cover art to be displayed.}}
             \nopt{IAUDIO_M3_PAD,MPIO_HD200_PAD,touchscreen}{\ButtonLeft{} / \ButtonRight{}}
             \opt{MPIO_HD200_PAD}{FIXME}
             \opt{touchscreen}{\TouchMidLeft{} / \TouchMidRight}
+                \opt{ESP32S3_PAD}{\ButtonLeft}
                 &
             \opt{HAVEREMOTEKEYMAP}{
                 \opt{IAUDIO_M3_PAD,GIGABEAT_RC_PAD}{\ActionRCStdPrev{} / \ActionRCStdNext}
@@ -71,6 +73,7 @@ reduces the time it takes for cover art to be displayed.}}
                 \\
 
             \nopt{IAUDIO_M3_PAD}{\ActionStdPrev{} / \ActionStdNext}
+                \opt{ESP32S3_PAD}{\ButtonRight}
                 &
             \opt{HAVEREMOTEKEYMAP}{
                 % even though the M3 uses an Iaudio remote, mapping differs when used with M/X5
@@ -83,6 +86,7 @@ reduces the time it takes for cover art to be displayed.}}
 
         \opt{FIIO_M3K_PAD}{
                 \ButtonLeft{} / \ButtonRight{}
+                \opt{ESP32S3_PAD}{\textit{not available}}
                 &
                 \opt{HAVEREMOTEKEYMAP}{&}
                 Quickly jump to another album (alphabetically or by year) /
@@ -91,6 +95,7 @@ reduces the time it takes for cover art to be displayed.}}
         }
         \opt{IPOD_4G_PAD,IPOD_3G_PAD,IPOD_1G2G_PAD}{
                 \ButtonLeft{} / \ButtonRight{}
+                \opt{ESP32S3_PAD}{\textit{not available}}
                 &
                 \opt{HAVEREMOTEKEYMAP}{&}
                 Quickly jump to another album (alphabetically or by year)
@@ -101,6 +106,7 @@ reduces the time it takes for cover art to be displayed.}}
                 \opt{IPOD_4G_PAD,IPOD_3G_PAD,IPOD_1G2G_PAD}{
                      \ButtonSelect{} + \ButtonMenu{} / \ButtonSelect{} + \ButtonPlay
                 }
+                \opt{ESP32S3_PAD}{\textit{not available}}
                 &
                 \opt{HAVEREMOTEKEYMAP}{&}
                 Adjust current album sorting
@@ -121,6 +127,7 @@ reduces the time it takes for cover art to be displayed.}}
             \opt{XDUOO_X3_PAD}{\ButtonPlay}
             \opt{RG_NANO_PAD}{\ButtonA}
         }
+            \opt{ESP32S3_PAD}{\ButtonA}
             &
         \opt{HAVEREMOTEKEYMAP}{
             \opt{IAUDIO_M3_PAD}{\ButtonRCPlay}
@@ -133,6 +140,7 @@ reduces the time it takes for cover art to be displayed.}}
         % Ondio & Samsung YH use a different button in album list and track list
         \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{%
             \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonPlay}
+                \opt{ESP32S3_PAD}{\ButtonA}
                 &
             Play album from selected track in track list
                 \\
@@ -147,6 +155,7 @@ reduces the time it takes for cover art to be displayed.}}
         \opt{touchscreen}{
             \opt{COWON_D2_PAD}{\ButtonPower{} or}
             \TouchBottomRight}
+            \opt{ESP32S3_PAD}{\ButtonB}
             &
         \opt{HAVEREMOTEKEYMAP}{
             \opt{IAUDIO_M3_PAD,GIGABEAT_RC_PAD}{\ActionRCStdCancel}
@@ -155,6 +164,7 @@ reduces the time it takes for cover art to be displayed.}}
             \\
 
         \ActionStdContext
+            \opt{ESP32S3_PAD}{\textit{not available}}
             &
         \opt{HAVEREMOTEKEYMAP}{&}
         Enter context menu
@@ -166,6 +176,7 @@ reduces the time it takes for cover art to be displayed.}}
     	\opt{IPOD_4G_PAD,IPOD_3G_PAD}{Long \ButtonMenu}
         \opt{SANSA_FUZEPLUS_PAD}{Long \ButtonSelect}
         \opt{FIIO_M3K_PAD}{\ButtonPower}
+            \opt{ESP32S3_PAD}{\TouchTopLeft}
             &
         \opt{HAVEREMOTEKEYMAP}{
             \opt{IAUDIO_M3_PAD,GIGABEAT_RC_PAD}{\ActionRCStdMenu}
@@ -190,6 +201,7 @@ reduces the time it takes for cover art to be displayed.}}
                 \opt{COWON_D2_PAD}{Long \ButtonPower{} or}
                 \TouchBottomRight{} (in album view)}
         }
+            \opt{ESP32S3_PAD}{Long \ButtonB{}}
             &
         \opt{HAVEREMOTEKEYMAP}{
             \opt{IAUDIO_M3_PAD}{\ButtonRCRec}
