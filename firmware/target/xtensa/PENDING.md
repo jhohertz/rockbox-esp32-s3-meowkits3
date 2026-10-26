@@ -98,28 +98,28 @@ Not being submitted now. Kept so the work can be split for a merge.
 | — | `firmware/usb.h`, `firmware/usb.c` | `usb_host_session()`, overridable MSC default | The USB screen loop ignores everything but `SYS_USB_DISCONNECTED`, so a shutdown request posted while USB is live is dropped. General. |
 | — | `firmware/usbstack/usb_audio.c` | Target hooks for feedback pacing and RX ping-pong (`usb_audio_target_*`), `USB_AUDIO_RX_PINGPONG` default off | Hooks let a target own the feedback-band and buffer shape without core edits. Worth showing upstream; the AC interrupt endpoint at line 290 is still an upstream TODO. |
 | `1a7ecb4aee` | `firmware/drivers/rtc/rtc_pcf8563.c` | New PCF8563 driver on the generic I2C API, alarm functions under `HAVE_RTC_ALARM` | The existing `rtc_e8564.c` is PP-async-only and reads hours from the wrong buffer index. Reusable driver. |
-| — | `apps/codecs.c` | Propagate `CODEC_LOAD`'s return value | Currently the loader discards the entry-point result, so a codec that refuses to load reports success. Arguably core; see §6 for whether we keep it. |
+| `7f9d1f98ce` | `firmware/drivers/i2c-async.c` | `I2C_ASYNC_SUBMIT_UNMASKED` seam defers the idle-bus submit until interrupts are restored | Already a proper opt-in seam with unchanged default behaviour. A target whose `__i2c_async_submit()` polls the controller to completion must not hold `disable_irq_save()` across a 100 kHz transfer. Worth showing upstream. |
 
-## 6. Core touches that belong in the target — rationalize these
+## 6. Core touches rationalized into the target — done
 
-Found by classifying every core hunk against `upstream/master` and asking whether the
-change is justified for other targets or only for us.
+Each was checked against `upstream/master` hunk by hunk, then changed so the shared code
+keeps its default and the target opts in. Verified with an xtensa build **and** a
+simulator build, which exercises the other side of every new seam (hosted path has
+`HAVE_TARGET_TICK_THREAD` undefined and no `PSRAM_BSS_ATTR` consumer).
 
-| File | Commit | Problem | Move |
-|---|---|---|---|
-| `apps/main.c` | `cb71fd2136` | The tick-task thread is gated only on `!(CONFIG_PLATFORM & PLATFORM_HOSTED)`, so **every native target** gets an extra thread that runs `run_tick_tasks()`. It exists because our core timer cannot take an interrupt (`wsr.intlevel` invalid on this core config) and the tick must be polled. | Gate on `CPU_XTENSA`, or introduce a `HAVE_TARGET_TICK_TASK` hook the target defines. Also costs a `DEFAULT_STACK_SIZE` slice in DRAM we are short of. |
-| `firmware/usb.c` | `e8825a8bca` | `usb_serial` default flipped to `true` in shared code. The comment is honest that no other target defines `USB_ENABLE_SERIAL` today, but a default in core is still a core decision. | A target-side default (`DEFAULT_USB_SERIAL` in config, or set it in the target init), keeping the core default `false`. |
-| `apps/language.c`, `firmware/common/unicode.c`, `firmware/logf.c` | various | `PSRAM_BSS_ATTR` (ours, empty for other targets via `config.h:1303`) on core declarations — and for `language.o`/`unicode.o` it duplicates the mechanism we already have: `idf-app/main/rockbox_memory.lf` moves those objects to PSRAM by archive mapping. | Drop the attribute from those core files and let the ldfragment own placement; give `logf.o` a mapping entry too. Keeps a PSRAM concept out of portable code. |
-| `firmware/export/usb-designware.h` | `4132c502e3` | `PHYSEL` (a DWC2 `GUSBCFG` bit meaning specific to the embedded PHYs) added to the shared header. | Move to the target header; the driver already guards its use with `CPU_XTENSA`. |
-| `firmware/drivers/i2c-async.c` | `7f9d1f98ce` | The async core was changed to start the first descriptor when the bus is idle and to run a blocking submit with interrupts enabled — motivated by our `__i2c_async_submit()` completing the transaction before returning. | Express that as a documented target contract (a capability flag or a target hook) rather than a behaviour change in the shared queue. |
-| `apps/codecs.c` | `18ca6599c8` | Return propagation is generically correct, but it was added because our ELF codec loader can fail in ways the flat-binary loaders never hit. | Decide: upstream it as a real fix (§5), or guard it so only targets that opt in change behaviour. Currently undecided. |
-| `firmware/drivers/axp173.c` | board bring-up | A new PMU driver in the shared `firmware/drivers/` tree, used by exactly one board. Upstream does put PMU drivers there, so this is defensible — noted so a reviewer is not surprised. | Keep, or move under `firmware/target/xtensa/` if upstream prefers board-local. |
-| `firmware/asm/memset16.c` | — | The `CPU_XTENSA` counted-store branch is legitimately target-motivated and guarded; the accompanying indentation fix on the generic path is unrelated churn. | Drop the cosmetic hunk from any submission. |
+| File | What it was | What it is now |
+|---|---|---|
+| `apps/main.c` | Tick-task thread and its `DEFAULT_STACK_SIZE` buffer gated on `!(CONFIG_PLATFORM & PLATFORM_HOSTED)` — every native target got a polling thread whose only reason is that this core cannot program an interrupt level (`wsr.intlevel` is not a valid opcode). | `#ifdef HAVE_TARGET_TICK_THREAD`, defined in `config/meowkits3.h`. Confirmed still present in our image (`.text.tick_task_thread` in the map) and absent-but-compiling in the sim. |
+| `firmware/usb.c` | `usb_serial` default flipped to `true` in shared code. | `#ifdef USB_SERIAL_DEFAULT_ON`, defined in `config/meowkits3.h`; core default stays `false`. The reason for opting in is kept in the comment: this build has no debug menu, which is the only switch for the class. |
+| `apps/language.c`, `firmware/common/unicode.c`, `firmware/logf.c` | `PSRAM_BSS_ATTR` on core declarations — a PSRAM concept in portable code, and for two of them duplicating the ldfragment mapping that already moved those objects. | Attributes removed; `idf-app/main/rockbox_memory.lf` owns placement, with a new `logf (rb_psram)` entry. Verified `logfbuffer` still lands at `0x3c53aad0`, inside the PSRAM window. |
+| `firmware/export/usb-designware.h` | `PHYSEL` (a DWC2 `GUSBCFG` bit whose meaning is specific to the embedded PHYs) added to a shared header. | Deleted. It was dead — every reference in the tree is a comment, and the measurement in `USB-SPRINT.md` says the bit is not this core's to set. |
+| `apps/codecs.c` | `ret = entry_point(CODEC_LOAD); return ret;` plus stray blank lines — presented as propagating the return value, but functionally identical to upstream. Pure churn. | Reverted to upstream. The §5 inventory no longer lists it as an upstream candidate. |
+| `firmware/asm/memset16.c` | `#if defined(CPU_XTENSA)` **replaced** the `PREFER_SIZE_OVER_SPEED` branch, silently taking the size-optimised path away from any target that sets it; plus an unrelated indentation fix. | Three branches: `CPU_XTENSA` (counted store loop, because zero-overhead-loop state is not preserved across the level-1 tick), then `PREFER_SIZE_OVER_SPEED`/`__OPTIMIZE_SIZE__` as upstream had it, then the generic path. Cosmetic hunk dropped. |
+| `firmware/drivers/i2c-async.c` | The submit change itself was already a clean seam (`I2C_ASYNC_SUBMIT_UNMASKED`, default unchanged) — my earlier note that it was a behaviour change was wrong. | Only the stray double blank line removed. Moved into the §5 upstream list. |
 
-Verified as **not** errant: every change in `firmware/drivers/usb-designware.c` is inside
-`#if defined(CPU_XTENSA)`, `firmware/export/config.h` additions are arch dispatch and a
-new `RTC_PCF8563` enum entry, and `lib/libsetjmp`, `firmware/asm/xtensa/`,
-`firmware/target/hosted/sdl/` and the plugin keymaps are target-scoped by construction.
+Still target-appropriate but left alone: `firmware/drivers/axp173.c` is a new PMU driver
+in shared `firmware/drivers/`, which matches how upstream places PMU drivers. Noted so a
+reviewer is not surprised.
 
 ## 7. Tooling deliberately untouched, and the adoption hygiene that is maintained
 

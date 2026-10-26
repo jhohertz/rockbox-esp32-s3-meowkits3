@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
     sys_handle_argv(argc, argv);
 #else
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
-#if !(CONFIG_PLATFORM & PLATFORM_HOSTED)
+#ifdef HAVE_TARGET_TICK_THREAD
 /* The xtensa level-1 ISR is a leaf: it only advances current_tick. The registered tick
  * tasks are ordinary C -- button polling does I2C, which ends in a semaphore wait -- and a
  * semaphore wait switches threads, which an exception frame on a core with no REGB option
@@ -199,7 +199,7 @@ static void tick_task_thread(void)
         run_tick_tasks();
     }
 }
-#endif /* !PLATFORM_HOSTED */
+#endif /* HAVE_TARGET_TICK_THREAD */
 
 int main(void)
 {
@@ -556,7 +556,7 @@ static void init(void)
     /* current_tick should be ticking by now */
     CHART("ticking");
 
-#if !(CONFIG_PLATFORM & PLATFORM_HOSTED)
+#ifdef HAVE_TARGET_TICK_THREAD
     /* Started here rather than earlier: enable_irq() above is what makes current_tick
      * advance, so sleep(0) in the loop has something to wait for. Every tick task is
      * registered below this point -- button_init(), usb_init(), powermgmt_init() and the
@@ -565,7 +565,7 @@ static void init(void)
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));
-#endif
+#endif /* HAVE_TARGET_TICK_THREAD */
 
     unicode_init();
     lcd_init();

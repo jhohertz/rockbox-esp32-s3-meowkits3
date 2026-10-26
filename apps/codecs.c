@@ -182,7 +182,6 @@ static struct codec_header *c_hdr = NULL;
 static int codec_load_ram(struct codec_api *api)
 {
     struct lc_header *hdr;
-    int ret;
 
     c_hdr = lc_get_header(curr_handle);
     hdr   = c_hdr ? &c_hdr->lc_hdr : NULL;
@@ -224,9 +223,7 @@ static int codec_load_ram(struct codec_api *api)
     *(c_hdr->api) = api;
 
     logf("Codec: calling entrypoint");
-    ret = c_hdr->entry_point(CODEC_LOAD);
-
-    return ret;
+    return c_hdr->entry_point(CODEC_LOAD);
 }
 
 #if defined(HAVE_CODEC_BUFFERING)
@@ -274,8 +271,6 @@ int codec_run_proc(void)
     }
 
     logf("Codec: entering run state");
-
-
     return c_hdr->run_proc();
 }
 
