@@ -65,6 +65,7 @@
 #include "storage.h"
 #include "sdmmc.h"
 #include "debug.h"
+#include "led.h"
 
 /* Board wiring, from the reference firmware: SDMMC slot 0, 1-bit.
  * CLK 47, CMD 48, D0 21. There is no card-detect and no write-protect line, so
@@ -154,9 +155,20 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
     {
         esp_err_t e;
 
+        /* The status bar's disk icon is a *virtual* LED on this target: nothing
+         * physical drives it, and CONFIG_LED defaults to LED_VIRTUAL, so
+         * apps/gui/statusbar.c draws bitmap_icon_disk from led_read(). Every
+         * storage driver in the tree that has an activity indicator calls led()
+         * around its transfer (sd-as3525.c:694/854, sdmmc-imx233.c:702/801,
+         * nand-nano2g.c), and without that call the icon is reserved space that
+         * can never light. led() here is two plain assignments; the read side
+         * delays the off edge by HZ/2 (statusbar.c:248), so a short access is
+         * still visible for up to half a second. */
+        led(true);
         xtensa_breadcrumb("sdRd", (unsigned long)start, (unsigned long)count);
         e = sdmmc_read_sectors(&card, buf, (uint32_t)start,
                                (uint32_t)count);
+        led(false);
         xtensa_breadcrumb("sdRc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }
@@ -176,9 +188,11 @@ int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *bu
         /* A recording write is the access most likely to be running when the
          * recorder faults, so both edges are marked: "sdWr" present with no
          * "sdWc" means the call itself did not return. */
+        led(true);
         xtensa_breadcrumb("sdWr", (unsigned long)start, (unsigned long)count);
         e = sdmmc_write_sectors(&card, buf, (uint32_t)start,
                                 (uint32_t)count);
+        led(false);
         xtensa_breadcrumb("sdWc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }

@@ -117,17 +117,23 @@ void backlight_hw_on(void)
      */
     lcd_enable(true);
 
-    /* Restore the level Rockbox is asking for, not maximum. With
-     * CONFIG_BACKLIGHT_FADING == BACKLIGHT_NO_FADING -- which is what this target
-     * gets, since it does not define one -- backlight_update_state() calls
-     * backlight_hw_on() and nothing else: there is no follow-up
-     * backlight_hw_brightness() on this configuration. backlight_setup_fade_up()
-     * at backlight.c:456 shows the pattern the fading targets rely on. So on this
-     * target hw_on alone has to produce the right level, and asking for
-     * MAX_BRIGHTNESS_SETTING made every off->on transition flash to full before
-     * the queued BACKLIGHT_BRIGHTNESS_CHANGED landed -- visible as a flicker while
-     * adjusting the setting. */
+#if (CONFIG_BACKLIGHT_FADING != BACKLIGHT_FADING_SW_SETTING)
+    /* Without software fading, backlight_update_state() calls hw_on() and nothing
+     * else: there is no follow-up backlight_hw_brightness() on that configuration
+     * (backlight.c:527-531), so hw_on alone has to produce the right level. Asking
+     * for MAX_BRIGHTNESS_SETTING instead made every off->on transition flash to
+     * full before the queued BACKLIGHT_BRIGHTNESS_CHANGED landed -- visible as a
+     * flicker while adjusting the setting.
+     *
+     * With software fading the core ramps instead: backlight_setup_fade_up()
+     * calls hw_on() to get the lamp lit at whatever the hardware currently holds,
+     * then steps up through backlight_hw_brightness() one BRIGHTNESS_STEP at a
+     * time (backlight-sw-fading.c:49-62). Setting the target level here would
+     * defeat that, which is why backlight-e200v2-fuze.c:40-44 guards the same
+     * line the same way and says so: "if we set the brightness to the settings
+     * value, then fading up is glitchy". */
     backlight_hw_brightness(backlight_brightness);
+#endif
 }
 
 void backlight_hw_off(void)
