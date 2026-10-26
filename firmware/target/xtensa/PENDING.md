@@ -60,6 +60,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   is the probing you ruled out.
 - **Upstream submissions.** §5 lists 16 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
+- **Plugin code executes from PSRAM, and that is now measured.** mpegplayer presents
+  ~11 fps of a 25 fps source (see §2). The conversion itself is the shared
+  `lcd_write_yuv420_lines()`, the push is 150 KB of SPI per full-screen update, and both
+  run from `XT_PLUGIN_TEXT_ADDR` in the PSRAM cache window — the one performance property
+  of this port that had never been tested. Two ways to buy it back, both needing a
+  decision rather than a measurement: move plugin text into the D/IRAM region (there is
+  1,105 B free in DIRAM, so it would have to displace something), or reduce the work per
+  frame. Audio is unaffected, so this is not urgent — but it is the number that says
+  whether plugin placement is right.
 
 ## 2. Verified on hardware — closed
 
@@ -75,6 +84,21 @@ Each of these was checked on the board, not inferred.
 - **GDMA TX row stays clean across sleep/wake.** The TX row (`sess / err / rec / sil`) did
   not move across a long dark idle with a track loaded, so descriptor ownership survives the
   boundary.
+- **mpegplayer plays video, correctly coloured, at ~11 fps.** With the OSD hidden, the video
+  band animates and the picture is right in both geometry and colour; the FPS overlay reads
+  11 against a 25 fps source. This needed one thing from the target: `lcd_blit_yuv` that
+  pushes. Rockbox's generic version in `drivers/lcd-memframe.c` only fills the shadow
+  framebuffer, and mpegplayer never issues an update for the video rectangle itself — it
+  blits, then pushes its bottom OSD strip (`mpegplayer.c:1665`) and, when enabled, the FPS
+  rect. On targets where video works the LCD has CPU-writable display memory or a hardware
+  YUV mode, so the blit lands on the glass by itself. `LCD_OPTIMIZED_BLIT_YUV` in
+  `lcd-target.h` hands the function to the target (the same seam `config/3ds.h` uses) and
+  `lcd-xtensa.c` walks the planes exactly as memframe does, calls the shared line helper, and
+  pushes once per frame. Two things worth remembering: the panel's rect updates were never
+  the problem (the OSD updates through the identical `lcd_update_rect` path and draws fine),
+  and the conversion must stay shared — writing it locally and packing with
+  `LCD_RGBPACK_LCD` (which takes 5/6/5 values, `lcd.h:310`) instead of `LCD_RGBPACK` (8-bit,
+  `lcd.h:344`) produced the right picture in the wrong colours.
 - **USB serial console survives idle/wake — and it is CDC, not USB-JTAG.** Rockbox's CDC
   class stays up while the player idles and still emits after a wake. The IDF console
   (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`) only writes during early boot, which is why a `cat`
@@ -106,9 +130,9 @@ Each of these was checked on the board, not inferred.
 
 ## 3. Deferred — might return
 
-- **mpegplayer: still failing, and the failure has three distinct shapes.** Ordered by
-  what the code actually does, allocation order is grey → libmpeg2 → audio → pcm → disk
-  buffer, and each step has its own message:
+- **mpegplayer: working, with the memory arithmetic still worth knowing.** It plays now
+  (§2), so the earlier failure shapes are closed, but these facts were measured and are not
+  obvious from the code:
 
   | step | fails when | message |
   |---|---|---|
@@ -116,62 +140,26 @@ Each of these was checked on the board, not inferred.
   | `pcm_output_init()` | grant < grey + 2 MiB + 176,400 | "Could not initialize PCM!" |
   | `disk_buf_init()` | remainder < `MIN_MEMMARGIN` (4 KiB) | "Cannot create buffering thread!" |
 
-  Arena was **3,875,072 B** when this was measured; it is now **4,325,376 B** (§1 arena
-  change), so the plugin needs ~2.57 MB of it *contiguous and free*, leaving ~1.9 MB for the
-  disk buffer only if nothing else is holding the arena. With dircache off it got past step 1
-  and failed at step 2, which says free was between 2.33 MB and 2.50 MB — so theme fonts and
-  skin data are holding roughly
-  1.3–1.5 MB. The `LIBMPEG2_ALLOC_SIZE` override I tried was **reverted**: mpegplayer
-  never rejects a coded frame larger than the panel (it only clips at blit,
-  `mpegplayer.c:818`/`:951`), `alloc.c` returns NULL on exhaustion, and `libmpeg2/header.c`
-  assigns those results into `mpeg2dec->yuv_buf[][]` with no NULL check anywhere — so
-  under-sizing it is a write through NULL and a reset, which matches "it starts, then the
-  OS bails".
+  Demand is ~2.57 MB of the **4,325,376 B** arena, contiguous, with theme fonts, skin data
+  and album art competing for the same pool — which is why a font-heavy theme reports
+  `stream_init` failure and the failsafe theme does not. Two hazards that remain true even
+  though the plugin now runs:
 
-  **Hypotheses for the reset, in the order I'd test them, none yet proven:**
-  1. **Coded frame larger than ~352×288.** Now the leading hypothesis, and my earlier
-     documentation was wrong about why: `video_out_rockbox.c:416-428` calls
-     `stretch_image_plane()` to scale the decoded picture to the panel, so mpegplayer
-     does *not* reject a big coded frame — contrary to the "no scaling, ≤ 320×240" claim
-     in the chapter and in earlier notes here. libmpeg2 sizes its buffers from the coded
-     resolution, the plugin's fixed pool is 2 MiB, and `libmpeg2/header.c` checks none of
-     the allocations. So a 640×480 or DVD-sized file exhausts the pool and writes through
-     NULL: the plugin appears to start, then the OS bails. The mpegplayer chapter now
-     carries an encode recipe that caps the coded size at 320×240.
-  2. Thread-stack exhaustion. `video_thread.c:65` gives the decoder `VIDEO_STACKSIZE`
-     = **4 KiB**, and `disk_buf`/`stream_mgr` get `DEFAULT_STACK_SIZE*2` = 8 KiB. Xtensa
-     call frames are wide, and libmpeg2's IDCT plus our 16-bit blit path are not shallow.
-     A stack overflow inside pluginbuf would corrupt adjacent plugin data and fault
-     without a useful address — consistent with "hangs, then bails".
-  3. Light sleep during a stall. Sleep is entered only from the idle task, so it needs the
-     plugin's threads to be blocked — which is what a hang looks like. Note the cheap
-     discriminator: `xt_light_sleep_block(true)` is held while USB is armed
-     (`usb-xtensa.c:348`), so **with a host attached light sleep cannot be the cause**.
-     Testing plugged-in vs unplugged separates this from 1 and 2 for free.
+  - mpegplayer never rejects a coded frame larger than the panel; it clips only at blit
+    (`mpegplayer.c:818`/`:951`) and `video_out_rockbox.c:416-428` scales via
+    `stretch_image_plane()`. libmpeg2 sizes its buffers from the *coded* resolution, the
+    plugin's pool is a fixed 2 MiB, and `libmpeg2/header.c` checks none of those
+    allocations — so a DVD-sized file exhausts the pool and writes through NULL. An
+    under-sized `LIBMPEG2_ALLOC_SIZE` is therefore worse than no file at all, which is why
+    the override tried here was reverted. The chapter's encode recipe caps coded size at
+    320×240 for that reason.
+  - `video_thread.c:65` gives the decoder `VIDEO_STACKSIZE` = **4 KiB**, and
+    `disk_buf`/`stream_mgr` get 8 KiB. Xtensa call frames are wide; libmpeg2's IDCT plus a
+    16-bit blit are not shallow. A stack overflow inside pluginbuf would corrupt adjacent
+    plugin data and fault without a useful address.
 
-  Zero-code tests to run when the board is back: **re-encode at 320×240 with the recipe in
-  the mpegplayer chapter** (that alone separates hypothesis 1 from everything else); keep
-  USB attached; use the failsafe theme (`rockbox_failsafe.wps`, one font) to cut the font
-  claim; read **Debug → View device info**
-  "Prev panic" and "Reset reason / rtc trail" after a crash — reason 1 with a non-zero rtc
-  count means the chip was lost mid-run rather than a clean shutdown.
-
-
-- **mpegplayer now reaches playback but shows audio only** (failsafe theme + dircache off
-  → 2.33 MB fit). So `stream_init`, the disk buffer and the parser all succeeded, and the
-  video stream is being dropped somewhere between parsing and blitting. Two cheap
-  discriminators, both using facilities that already exist:
-  1. **Debug → View log file** after a run. `ROCKBOX_HAS_LOGF` is on for this build, the
-     debug menu includes `logfdisp.h`, and mpegplayer's `DEBUGF` lines are exactly the
-     ones that answer this: `Getting movie size` then `failed` means `VIDEO_GET_SIZE`
-     found no sequence header (an encoding problem), and `stream not found:0xe0` means the
-     parser never saw a video stream id. No instrumentation needed.
-  2. **Encode video-only** (`-an`). If the picture appears, the video path is fine and the
-     MP3-in-Program-Stream combination is the variable; if it stays black, it is our
-     blit/stretch path (`video_out_rockbox.c:416-428`, `rb->lcd_blit_yuv`).
-  Encoding notes worth testing alongside: MPEG-2 video (not MPEG-1) because
-  mpegplayer needs PTS timestamps, which MPEG-1 video in a PS does not carry;
-  `-bf 0`; `-g` smaller than 12 is also fine.
+  Encoding notes the chapter carries: MPEG-2 video rather than MPEG-1 (mpegplayer needs PTS,
+  which MPEG-1 video in a Program Stream does not provide), `-bf 0`, and `-g` below 12.
 
 
 - **chip8.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
