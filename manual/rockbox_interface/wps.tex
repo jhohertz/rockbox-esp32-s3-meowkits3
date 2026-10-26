@@ -233,6 +233,14 @@ Bookmarks can only be used with directories, or playlists stored on
 disk. You'll be asked to provide the name for a file to save the playlist to,
 if necessary.
 
+\opt{ESP32S3_PAD}{On this player both actions live on the WPS screen, as
+combinations with \ButtonB{}: hold \ButtonB{} and press \ButtonUp{} to create a
+bookmark, hold \ButtonB{} and press \ButtonDown{} to list the saved entries.
+They are WPS-only because the handlers are the WPS screen's; from the file
+browser use \ButtonB{} for the context menu instead. A bookmark records the
+playlist it was made from, so one created while a single file is playing
+directly has no playlist to resume into.}
+
 \note{If you've enabled options for queuing tracks (see \reference{ref:queuing}), keep
 in mind that those are not saved to a playlist file.
 When saving, Rockbox will offer to remove queued tracks, so that bookmarking the
