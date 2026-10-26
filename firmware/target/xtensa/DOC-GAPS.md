@@ -37,10 +37,12 @@ the corresponding spike is done and the manual's keymap file should stop saying
   These are reachable from a skin through touch regions — the skin engine has
   `ACTION_TOUCH_SHUFFLE` and `ACTION_TOUCH_REPMODE` (`skin_parser.c:1625`) —
   so they work only if the theme defines a `%T` region with that action. The
-  default cabbiev2 defines none. Measured on the theme pack: **1 of 8**
-  downloaded themes defines any `%T` region at all, so most catalogue themes give
-  only the automatic bar zones (`skin_parser.c:1261`). `tools/rbthemes.py check`
-  reports the count per theme.
+  default cabbiev2 defines none. Measured on the theme pack: two of the ten
+  themes define `%T` regions at all, so most catalogue themes give only the
+  automatic bar zones (`skin_parser.c:1261`). **Pen&Paper Plus has 18**, and its
+  set includes `shuffle` and `repmode` — so on that theme the two actions this
+  section is about are reachable on screen with no firmware change at all.
+  `tools/rbthemes.py check` reports the count per theme.
 - **What fixing it means:** `%T` regions in a theme, not firmware. Deferred: the
   builtin cabbiev2 stays untouched, so these arrive with the third-party theme
   packs that define them (`tools/rbthemes.py` should report which ones do).
