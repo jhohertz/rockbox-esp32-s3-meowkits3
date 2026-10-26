@@ -1,5 +1,11 @@
 # Bluetooth audio out for MeowKit — feasibility and plan
 
+**Status: closed.** The goal is hardware-blocked, not deferred — ESP32-S3 has no BR/EDR
+radio, so A2DP and AVRCP cannot be built on it (evidence in §1) and LE Audio is unavailable
+for the same class of reason. Recorded as permanent in `PENDING.md` §4. Kept because §2 and
+§4 document what Rockbox's core already provides for a non-DAC PCM sink, which stands
+regardless of this chip and would transfer to a classic-capable co-processor unchanged.
+
 Goal as stated: make the player an **A2DP source** with **AVRCP** so Bluetooth
 headphones and speakers can be paired, have the mixer's output switch to the headset on
 connect and back to the ES8311 DAC on disconnect, keep USB audio working independently of
