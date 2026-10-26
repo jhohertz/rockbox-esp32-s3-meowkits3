@@ -71,19 +71,31 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   player with no dircache and one font would probably load it. Note `CODEC_SIZE` (1 MiB) is *not*
   the source; the codec for MP3 audio lives in its own `codecbuf`.
 
-  Levers, cheapest first:
-  1. **No code at all: turn the directory cache off** (Settings → General Settings →
-     Directory Cache) and retry. If it loads, the deficit is confirmed at the small end,
-     and the remaining question is only whether the disk buffer ends up below
-     `DISK_BUF_LOW_WATERMARK` (1 MiB), which would stutter rather than fail.
-  2. `DIRCACHE_LIMIT` 1 MiB → 512 KiB in `config/meowkits3.h` — target-local, +512 KB.
-  3. `LIBMPEG2_ALLOC_SIZE` is sized for 352×288. Our output ceiling is 320×240, where the
-     working set is roughly chunks + 3 YUV frames (115,200 each) + 2 converted frames
-     (153,600 each) ≈ 1.65 MB, so a resolution-conditioned ~1.75 MB reservation saves
-     ~260 KB. Plugin-side, but expressible as an LCD-size conditional.
-  4. Growing the arena needs a layout change (plugin text 1 MiB at `0x3c580000`,
-     codecbuf 1 MiB, only 512 KB spare to the window top). Highest risk; `make esplayer`
-     would catch any overflow.
+  Confirmed by testing: **turning the directory cache off moved the error** from
+  `"Out of memory in stream_init"` to `"Could not initialize PCM!"`. That is
+  `stream_mgr.c:1115`, and it fires only when `pcm_output_init()`'s
+  `mpeg_malloc(PCMOUT_ALLOC_SIZE)` returns NULL (`mpegplayer/pcm_output.c:352`) — so the
+  grey frames and the 2 MiB libmpeg2 reservation *did* fit, and the grant was then short
+  by about 176 KB. The remaining holder is the theme's fonts and skin data, which the
+  config comment around `DIRCACHE_LIMIT` puts at ~1 MB when dircache is on.
+
+  **Applied** (`mpegplayer.h` gained an `#ifndef` seam, `config/meowkits3.h` overrides
+  it): `LIBMPEG2_ALLOC_SIZE` is now 1 MiB for this target. The default 2 MiB is sized for
+  352×288 coded frames; this panel is 320×240 with no scaling in `video_out_rockbox.c`,
+  so libmpeg2 at 320×240 asks for three YUV frames (115,200 B each) and two converted
+  16-bit frames (153,600 B each) — about 650 KB plus decoder state. 1 MiB is that with
+  margin, and it frees ~1 MB into an arena that only had ~2.5 MB free. This should also
+  help every other plugin that wants a big arena (doom, xrick, rockboy, sgt puzzles).
+  **Needs a card re-extract** (mpegplayer.rock changed) and a retest.
+
+  Still open, and it is the user's own insight worth recording: **anything that wants PCM
+  appears to fail**, so this is probably not mpegplayer-specific. `vu_meter` and
+  `oscilloscope` showing *no signal* is a separate question — `oscilloscope.c:1543` and
+  `:1737` bail when `mixer_channel_status(channel) != CHANNEL_PLAYING`, and Rockbox stops
+  playback when a plugin starts, so a flat meter is expected unless the channel is switched
+  to the mic (ES7210) or to USB audio while a host is streaming. Test both of those before
+  treating "no signal" as a bug.
+
 - **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
   by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
   not say that. Documentation gap, not firmware.
