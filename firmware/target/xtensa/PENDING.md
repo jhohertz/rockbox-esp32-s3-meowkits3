@@ -68,9 +68,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   OS bails".
 
   **Hypotheses for the reset, in the order I'd test them, none yet proven:**
-  1. Coded frame larger than 352×288 in the test files → 2 MiB genuinely insufficient on
-     *any* target. Ask which files were used; a 640×480 or 720×576 stream is the simplest
-     explanation and needs no bug in our port.
+  1. **Coded frame larger than ~352×288.** Now the leading hypothesis, and my earlier
+     documentation was wrong about why: `video_out_rockbox.c:416-428` calls
+     `stretch_image_plane()` to scale the decoded picture to the panel, so mpegplayer
+     does *not* reject a big coded frame — contrary to the "no scaling, ≤ 320×240" claim
+     in the chapter and in earlier notes here. libmpeg2 sizes its buffers from the coded
+     resolution, the plugin's fixed pool is 2 MiB, and `libmpeg2/header.c` checks none of
+     the allocations. So a 640×480 or DVD-sized file exhausts the pool and writes through
+     NULL: the plugin appears to start, then the OS bails. The mpegplayer chapter now
+     carries an encode recipe that caps the coded size at 320×240.
   2. Thread-stack exhaustion. `video_thread.c:65` gives the decoder `VIDEO_STACKSIZE`
      = **4 KiB**, and `disk_buf`/`stream_mgr` get `DEFAULT_STACK_SIZE*2` = 8 KiB. Xtensa
      call frames are wide, and libmpeg2's IDCT plus our 16-bit blit path are not shallow.
@@ -82,9 +88,10 @@ Board access: **hold BOOT, tap RESET** for download mode, then
      (`usb-xtensa.c:348`), so **with a host attached light sleep cannot be the cause**.
      Testing plugged-in vs unplugged separates this from 1 and 2 for free.
 
-  Zero-code tests to run when the board is back: keep USB attached; use the failsafe theme
-  (`rockbox_failsafe.wps`, one font) to cut the font claim; try a known-small stream
-  (352×288 or smaller) rather than a DVD-sized one; read **Debug → View device info**
+  Zero-code tests to run when the board is back: **re-encode at 320×240 with the recipe in
+  the mpegplayer chapter** (that alone separates hypothesis 1 from everything else); keep
+  USB attached; use the failsafe theme (`rockbox_failsafe.wps`, one font) to cut the font
+  claim; read **Debug → View device info**
   "Prev panic" and "Reset reason / rtc trail" after a crash — reason 1 with a non-zero rtc
   count means the chip was lost mid-run rather than a clean shutdown.
 
