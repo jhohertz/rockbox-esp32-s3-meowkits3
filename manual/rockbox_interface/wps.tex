@@ -227,6 +227,16 @@ enabled. It allows the assignment of a personal rating value (0 -- 10)
 to a track which can be displayed in the WPS and used in the Database
 browser. The value wraps at 10.
 
+\opt{ESP32S3_PAD}{\subsubsection{Reaching these screens on the MeowKit player}
+The pitch screen is a WPS action, not a menu entry -- there is no \setting{Context
+Menu} item for it on any target. On this player you reach it by touching the WPS
+region the theme assigns, or by a theme that declares a \fname{\%T<pitch>} region.
+The same applies to shuffle and repeat mode: they are set under
+\fname{Settings --> Playback Options}, and the status bar shows the current state;
+a theme can additionally put \fname{\%T<shuffle>} and \fname{\%T<repmode>} tap
+regions on the WPS. The built-in theme does not define those regions, so on a
+default install those two are settings rather than screen controls.}
+
 \subsubsection{\label{ref:createbookmark}Bookmarks}
 Create a bookmark in the currently playing track, or display existing entries.
 Bookmarks can only be used with directories, or playlists stored on
