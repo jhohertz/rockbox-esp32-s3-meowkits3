@@ -1,30 +1,47 @@
-Installing Rockbox on the \dap{} means writing one image to the board's
-flash memory and putting Rockbox's own files on the SD card. There is no
-separate bootloader: the image written at flash offset \fname{0x0} is read and
-loaded by the chip's mask ROM, which is part of the ESP32-S3 itself. This also
-means the stock firmware is replaced outright, and there is nothing to keep or
-back up unless you want to restore it later.
+Installing Rockbox on the \dap{} means writing Rockbox's image into the board's
+flash memory and putting Rockbox's own files on the SD card.
 
-Rockbox Utility does not offer this board yet, so the installation is done by
-hand. You will need:
+The image is an ESP-IDF \emph{application} image, not a stand-alone firmware, so it
+does not go at flash offset \fname{0}. Three pieces occupy the start of the flash:
+
+\begin{code}
+    0x000000   second-stage bootloader   (bootloader.bin)
+    0x008000   partition table           (partitions.bin)
+    0x010000   Rockbox                   (rockbox.esp32s3)
+\end{code}
+
+The chip's mask ROM at offset \fname{0} only copies RAM segments and jumps. It never
+arms a cache MMU entry, never enables the external caches and never releases the
+instruction bus; the second-stage bootloader does all of that, then maps and loads the
+application. Writing Rockbox at \fname{0} therefore boots nothing -- the ROM reads
+Rockbox's header as if it were a bootloader and fails.
+
+Rockbox Utility does not offer this board yet, so the installation is done by hand. You
+will need:
 
 \begin{itemize}
-  \item The \fname{rockbox.esp32s3} image from a Rockbox build for the
-    MeowKit ESP32-S3 target.
-  \item A USB-C cable. The board's USB socket is wired directly to the
-    ESP32-S3, so \fname{esptool} can talk to it over that connection.
+  \item A Rockbox build for the MeowKit ESP32-S3 target. Building from source gives you
+    all three pieces: \fname{rockbox.esp32s3} in the build directory, and
+    \fname{bootloader.bin} plus \fname{partitions.bin} in the IDF application's build
+    directory.
+  \item A USB-C cable. The board's USB socket is wired directly to the ESP32-S3, so
+    \fname{esptool} can talk to it over that connection.
   \item \fname{esptool}, version 4 or later.
-  \item A FAT32-formatted microSD card. Rockbox reads its files from the card,
-    and the player stores no music in internal flash.
+  \item A FAT32-formatted microSD card. Rockbox reads its files from the card, and the
+    player stores no music in internal flash.
 \end{itemize}
 
 \begin{enumerate}
 
-\item \textbf{Connect the board.} Plug the USB-C cable into your computer. If
-  the board is already running Rockbox or the stock firmware, hold the
-  \ButtonPower{} key until it powers off, then connect while it is off. The
-  chip's boot loader reports itself as a serial port; on Linux it usually
-  appears as \fname{/dev/ttyACM0}, and on Windows as a \fname{COM} port.
+\item \textbf{Connect the board, and put it in download mode.} Plug the USB-C cable
+  into your computer. The serial port usually appears as \fname{/dev/ttyACM0} on Linux
+  and as a \fname{COM} port on Windows.
+
+  A board already running Rockbox or the stock firmware will not answer on that port by
+  itself, because that firmware owns the USB connection. Hold \textbf{BOOT}, briefly
+  press \textbf{RESET}, then release \textbf{BOOT}. That puts the chip into the ROM's
+  download mode while the running firmware is still there, which is what reflashing
+  needs.
 
 \item \textbf{Check that \fname{esptool} can see the chip.}
 
@@ -32,27 +49,38 @@ hand. You will need:
     esptool --chip esp32s3 --port /dev/ttyACM0 chip_info
 \end{code}
 
-  This prints the chip revision and the flash size. If it fails, the board is
-  not in download mode; power it off and try again, or use the board's UART
-  pins instead of USB.
+  This prints the chip revision and the flash size (16~MB on this board). If it fails,
+  the board is not in download mode; repeat the BOOT and RESET gesture.
 
-\item \textbf{Write the firmware image.}
+\item \textbf{Write the images.} From a source build, the build's own goal is the
+  simplest route: it knows the layout and the flash mode and frequency the build was
+  configured for.
 
 \begin{code}
-    esptool --chip esp32s3 --port /dev/ttyACM0 write_flash 0 rockbox.esp32s3
+    cd build-meowkits3
+    make flash ESPPORT=/dev/ttyACM0
 \end{code}
 
-  The address matters: the image must start at offset \fname{0}, because that
-  is where the mask ROM looks for it. \fname{esptool} verifies the image header
-  and its checksum as it writes.
+  Or write the three pieces directly, at the addresses given above:
 
-  \note{Writing to offset 0 replaces whatever was there. If you may want the
-    board's original firmware again, read it off before you start and keep the
-    copy. The command below saves the whole 16~MB flash.}
+\begin{code}
+    esptool --chip esp32s3 --port /dev/ttyACM0 write_flash \
+        0x000000 bootloader.bin \
+        0x008000 partitions.bin \
+        0x010000 rockbox.esp32s3
+\end{code}
+
+  \note{This replaces whatever is in those regions. If you may want the board's original
+    firmware again, read the whole flash off first and keep the copy -- 16~MB covers the
+    stock image and its partition table.}
 
 \begin{code}
     esptool --chip esp32s3 --port /dev/ttyACM0 read_flash 0 0x1000000 stock-firmware.bin
 \end{code}
+
+  With no board attached, \fname{make espverify} runs \fname{esptool image_info} on the
+  packed image and prints the segment table, load addresses and checksum the loader will
+  see.
 
 \item \textbf{Prepare the SD card.} Format it as FAT32, then unpack Rockbox's
   files into the root of the card. The main package contains the player's
