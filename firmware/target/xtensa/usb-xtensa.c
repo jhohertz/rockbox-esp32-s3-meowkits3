@@ -8,14 +8,16 @@
  * register layout, and this file supplies the five hooks it declares plus the
  * device configuration.
  *
- * STATUS: the stack is compiled; the hardware is not driven. usb_enable() is a
- * no-op in both directions, so usb_core_init() and therefore usb_drv_init() never
- * run. That is deliberate: usb_dw_check_hw() writes GUSBCFG's PHY field and then
- * compares the whole register back, and on this core GUSBCFG's fields are phyif
- * (bit 3), ulpiutmisel (4), fsintf (5) and physel (6), so the comparison fails and
- * the driver panics with "PHY type not supported" before anything else happens.
- * Making this core enumerable is the first bring-up task; until then nothing here
- * should be reachable.
+ * STATUS: operational. Rockbox's firmware/drivers/usb-designware.c drives the DWC
+ * core through the hooks in this file, and the CDC console, mass storage and the DAC
+ * class all enumerate on this board. The hardware check that used to abort bring-up
+ * (usb_dw_check_hw() comparing GUSBCFG back after writing the PHY field, failing as
+ * "PHY type not supported") no longer fires -- the PHYSEL override that made it pass
+ * was later deleted as dead code, not worked around. IDF's USB-Serial-JTAG keeps the
+ * pads until USB mode takes them over, which is why the console and esptool go quiet
+ * while a transport is attached; nothing in Rockbox's USB path goes through IDF.
+ * See __wrap_usb_enable() below for why the ROM's usb_enable() cannot be borrowed
+ * instead of this bring-up.
  *
  * The pins are the other half of the story. The DWC does not own them: a USB wrap
  * muxes the internal FSLS PHY between the DWC and the USB-Serial-JTAG block, and

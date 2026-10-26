@@ -24,24 +24,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   readings — run unplugged and connect only after stopping. Want: playback screen-on,
   playback screen-off, dark idle, same track and volume, 20+ minutes each, and read the
   slope across samples rather than any single line.
-- **Card re-extract outstanding.** `rockbox.zip` carries the puzzle exclusion, the
-  `keymaps.h` A/B fix and the mpegplayer revert. Firmware on the board is current, so this
-  is a card action only.
-- **Arena grew 256 KiB — needs one boot to verify.** `XT_CODEC_TEXT_SIZE` 512 KiB →
-  256 KiB and `XT_AUDIOBUF_SIZE` `(MEMORYSIZE * 0x80000) - 0x20000` → `+ 0x20000`, so the
-  buflib arena is `0x3c155800..0x3c575800` = **4,325,376 B** (was 4,063,232) and the two
-  images relink at `0x425c0000` (plugin text) / `0x42640000` (codec text), which is what
-  `make esplayer` reports as the reservations plus `XT_IROM_OFF`. Clearance from
-  `_ext_ram_bss_end` (`0x3c5b2e94`) to plugin text is unchanged at 53,612 B. Verify on boot:
-  the `MEMORY:` line should read "53612 bytes clear of 0x3c5c0000", then load one codec
-  (play an AAC) and one plugin (clock, one sgt puzzle) — plugins loading is precisely what a
-  wrong reservation breaks, and it breaks silently. That is also why mpegplayer and chip8
-  might now fit; they stay parked until someone tries them.
-  The change also exposed a build bug worth knowing: `plugin.lds` is preprocessed into cached
-  `.link` files, and those rules did not depend on `memory-xtensa.h`, so the first attempt
-  linked every `.rock` and `.codec` 256 KB below the new reservation with no error at all.
-  `apps/plugins/plugins.make` and `lib/rbcodec/codecs/codecs.make` now declare it; after any
-  layout change, confirm with `readelf -lSW` on one image rather than trusting the build.
 - **Coulometer → real battery percent: the readout now exists, the scale does not.**
   `Debug → View HW info` gained a `CC raw: charge N discharge N` row
   (`debug-xtensa.c`, `INFO_CC`), one 8-byte burst read of `0xb0-0xb7`. Nothing else
@@ -98,6 +80,14 @@ Each of these was checked on the board, not inferred.
 - **GDMA TX row stays clean across sleep/wake.** The TX row (`sess / err / rec / sil`) did
   not move across a long dark idle with a track loaded, so descriptor ownership survives the
   boundary.
+- **Arena change is verified on hardware.** With `XT_CODEC_TEXT_SIZE` halved and
+  `XT_AUDIOBUF_SIZE` grown (image `0x3c155800..0x3c575800`, arena 4,325,376 B), plugins
+  load and run — mpegplayer and clock both work, which is the case a wrong text reservation
+  breaks silently — and music codecs play correctly, which exercises the codec half. The
+  `.rock`/`.codec` images were relinked against the new origins and verified with
+  `readelf -lSW` (`0x425c0000` plugin text, `0x42640000` codec text) because the preprocessed
+  `.link` files cached the old value; the makefile rules now declare `memory-xtensa.h` as a
+  dependency. Card extraction is routine on your side, so it no longer tracks as an item.
 - **mpegplayer plays video, correctly coloured, at ~11 fps.** With the OSD hidden, the video
   band animates and the picture is right in both geometry and colour; the FPS overlay reads
   11 on one file, and a differently encoded file ran 3–4 fps higher, so the rate is bound by
@@ -178,7 +168,13 @@ Each of these was checked on the board, not inferred.
   which MPEG-1 video in a Program Stream does not provide), `-bf 0`, and `-g` below 12.
 
 
-- **chip8.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
+- **Theme packs parked — the one tried renders incorrectly.** The `%T` region work
+  (`DOC-GAPS.md` item 2: shuffle, repeat mode, bookmarks, lock) is still deferred to theme
+  packs, but it is now blocked on something plainer: the theme tested displays wrong, so
+  there is no usable rendering to test regions against. Finding a theme that draws correctly
+  on this panel comes first; the `%T` mapping work after that. Not a firmware gap — the
+  builtin `cabbiev2` continues to render fine.
+- **chip8.** ROMs being sourced; unblocked as soon as one is on the card. The 16-key pad on
   stick + A/B + 3x3 grid is a design call, not a doc fix.
 
 
