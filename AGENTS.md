@@ -4583,14 +4583,25 @@ Mechanics, measured:
 - Resolution comes from the `image` path (`/themes/320x240/...`); for
   `ibassodx90` all 422 entries are 320x240.
 
-Current pack: 8 themes (Bayer, Laserhead, ZX Spectrum Monochrome, ALLCAPS,
-adwaitapod + its dark variant, 1ST_GEN_REMIX, AMusicPod dark) — 348 entries,
-17.5 MB compressed, 68.9 MB unpacked. `check` reports zero problems: every font
-reference resolves against the theme's own fonts plus the 88 in
-`rockbox-fonts.zip`. Only **one** of the eight defines a `%T` region, which is
-the measured answer to the "themes give us shuffle/repmode affordances" idea —
-most catalogue themes rely on the automatic bar zones, so a user wanting the
-visible lock/shuffle buttons needs a theme that happens to define them.
+Current pack: 10 themes — Bayer, ZX Spectrum Monochrome, ALLCAPS, adwaitapod and
+its dark variant, 1ST_GEN_REMIX, AMusicPod dark, Pen&Paper Plus, Rockboxed and
+Terminal. 339 entries, 17.2 MB compressed. `check` reports zero problems: every
+font reference resolves against the theme's own fonts plus the 88 in
+`rockbox-fonts.zip`. Two themes define `%T` regions — **Pen&Paper Plus has 18**
+(`shuffle`, `repmode`, `play`, `prev`, `next`, `menu`, `browse`, `playlist`,
+`progressbar`, volume up/down plus their hold variants, `stop`, `rwd`), and
+AMusicPod dark has one. That is the measured answer to the "themes give us
+shuffle/repmode affordances" idea: true of a minority of the catalogue, not
+most, so `check` reports the region count per theme and selection should use
+it. Laserhead (themeid 4209) was dropped — it animates a CD tray on track start
+and glitched on this panel.
+
+Note `pass_current` differs per target listing, so themes pulled through the
+`ipodvideo` catalogue use that listing's token. Pen&Paper Plus came from
+`ipodvideo` (themeid 997 is absent from `ibassodx90`), which cost one extra
+listing fetch, cached like everything else. Listing names arrive XML-escaped,
+so `parse_listing` unescapes them; `check` treats a cfg value of `-` as "this
+theme sets none" rather than flagging it as a non-absolute path.
 
 Verified additive: the pack shares **no** path with `rockbox.zip` and no font
 basename with `rockbox-fonts.zip`, and carries no `config.cfg` and nothing under
