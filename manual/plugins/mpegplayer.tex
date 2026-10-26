@@ -32,16 +32,37 @@ Encode at or below the panel size:
 ffmpeg -i input.mp4 \
   -vf "scale=320:240:force_original_aspect_ratio=decrease,\
 pad=320:240:(ow-iw)/2:(oh-ih)/2" \
-  -pix_fmt yuv420p -c:v mpeg2video -q:v 8 -g 12 -bf 0 \
+  -r 25 -aspect 4:3 \
+  -c:v mpeg2video -pix_fmt yuv420p -b:v 600k -maxrate 800k -bufsize 1000k \
+  -g 12 -bf 0 \
   -c:a libmp3lame -ar 44100 -ac 2 -b:a 128k \
+  -muxrate cbr -system_header 2 \
   -f mpeg output.mpg
 \end{verbatim}
 
 Each of those settings is load-bearing: \emph{yuv420p} because the decoder's chroma
 handling assumes 4:2:0; \emph{-bf 0} because B-frames add reordering the output path does
 not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes the
-rewind and fast-forward keys responsive; \emph{-ar 44100} because the plugin's audio clock is
-44.1 kHz; and \emph{-f mpeg} because the demuxer expects a Program Stream.
+rewind and fast-forward keys responsive; \emph{-ar 44100} because the plugin's audio clock is 44.1 kHz; \emph{-muxrate cbr} so
+the program-stream pack headers carry a constant reference clock the parser can lock
+onto; \emph{-system_header 2} to repeat the sequence header at the head of the file,
+which the parser probes for in the first few hundred kilobytes; and \emph{-f mpeg}
+because the demuxer expects a Program Stream. Use \emph{MPEG-2} video rather than
+MPEG-1: MPEG-1 video in a program stream carries no presentation timestamps, and the
+plugin needs them to synchronise.
+
+Check the result on the PC before copying it to the card -- the plugin reports nothing
+useful here because its debug output is compiled out of plugin builds:
+
+egin{verbatim}
+ffprobe -v error -show_entries   stream=codec_name,codec_type,width,height,pix_fmt   -of default output.mpg
+ffprobe -v error -show_entries packet=stream_id,pts   -of csv output.mpg | head -20
+\end{verbatim}
+
+The first should show name{mpeg2video} at 320x240 with name{yuv420p}, and
+name{mp3} audio at 44100 Hz. The second should show stream ids 224 (0xe0, video) and
+192 (0xc0, audio) with a non-empty name{pts} column. An empty name{pts} column is
+the failure that produces audio with no picture.
 
 \begin{btnmap}
     \opt{GIGABEAT_S_PAD}{\ButtonSelect{} or \ButtonPlay}
