@@ -32,6 +32,15 @@
 #define AXP_REG_CC_DISCHARGE    0xb4
 #define AXP_REG_CC_CTRL         0xb8
 
+/* CC_CTRL (0xb8). The counters themselves are two 32-bit big-endian values: charge
+   at 0xb0-0xb3, discharge at 0xb4-0xb7. Bit 5 clears both and is self-clearing, so a
+   write of it is a pulse rather than a state. Bit 6 selects the calibration base the
+   chip integrates against; the value is a scale factor for the raw count and is left at
+   the reference firmware's setting rather than guessed at here. */
+#define AXP_CC_ENABLE           (1u << 7)
+#define AXP_CC_PIECE_BASE       (1u << 6)
+#define AXP_CC_CLEAR            (1u << 5)
+
 /* POWERSTATUS (0x00) */
 #define AXP_EXTEN_PRESENT   (1u << 7)
 #define AXP_ACIN_PRESENT    (1u << 6)
@@ -131,6 +140,16 @@ int axp173_battery_voltage(void);
 int axp173_charge_current(void);
 int axp173_discharge_current(void);
 int axp173_vbus_voltage(void);
+int axp173_vbus_current(void);
+int axp173_ts_temperature(void);
+
+/* Coulomb counters. Returned raw: this driver deliberately does not turn them into
+   mAh, because the scale depends on the calibration base in CC_CTRL and there is no
+   measurement here that pins it down. Consumers that want a percentage need to
+   establish the scale against a known capacity first. */
+bool axp173_coulomb_enable(bool on);
+bool axp173_coulomb_clear(void);
+void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge);
 
 bool axp173_charging(void);
 bool axp173_battery_connected(void);
