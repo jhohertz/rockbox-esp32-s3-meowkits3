@@ -1,0 +1,82 @@
+#!/bin/sh
+# Build-time guard for the xtensa external arena.
+#
+# Rockbox pins codecbuf/pluginbuf as absolute symbols (memory-xtensa-syms.S) rather
+# than reserving the range in a section, because ESP-IDF owns the linker script and
+# the ldfragment we feed it (idf-app/main/rockbox_memory.lf) only routes archives to
+# memory regions -- there is no section layout there, so an ASSERT() cannot live in
+# it. The consequence is that nothing at link time notices when .ext_ram.bss grows
+# into the plugin/codec text reservations, and the only thing standing between that
+# and silent corruption of a loaded image used to be a printf in system_init(), i.e.
+# a check that fires once per boot, on a device, after the build already shipped.
+#
+# This is that check moved to where it can fail a build. It computes the same numbers
+# the headers define, reads the same symbols the runtime guard reads, and compares.
+#
+# Usage: esp-layout-check <map> [config-h] [memory-xtensa-h] [makefile]
+set -e
+
+MAP="$1"
+shift
+CONFIG="${1:-firmware/export/config/meowkits3.h}"
+MEMHDR="${2:-firmware/target/xtensa/memory-xtensa.h}"
+MAKEFILE="${3:-Makefile}"
+
+die() { echo "esp-layout-check: $*" >&2; exit 2; }
+
+[ -f "$MAP" ] || die "no linker map: $MAP -- build the firmware first"
+
+# Constants, taken from the same headers the firmware compiles against.
+getdef() {
+    grep -oE "#define[[:space:]]+$1[[:space:]]+0x[0-9a-fA-F]+" "$2" |
+        awk '{print $3}' | head -1
+}
+memsize=$(grep -oE 'MEMORYSIZE=[0-9]+' "$MAKEFILE" | head -1 | cut -d= -f2)
+codecsize=$(getdef CODEC_SIZE "$CONFIG")
+pluginbuf=$(getdef PLUGIN_BUFFER_SIZE "$CONFIG")
+dromorig=$(getdef XT_DROMORIG "$MEMHDR")
+codectext=$(getdef XT_CODEC_TEXT_SIZE "$MEMHDR")
+plugintext=$(getdef XT_PLUGIN_TEXT_SIZE "$MEMHDR")
+
+for v in memsize codecsize pluginbuf dromorig codectext plugintext; do
+    eval "val=\${$v}"
+    [ -n "$val" ] || die "could not read $v from $CONFIG / $MEMHDR / $MAKEFILE"
+done
+
+window_mb=$((memsize * 0x100000))
+codecbuf=$((dromorig + window_mb - 0x20 - pluginbuf - codecsize))
+codec_text=$((codecbuf - codectext))
+plugin_text=$((codec_text - plugintext))
+pluginbuf_addr=$((codecbuf + codecsize))
+arena_top=$((pluginbuf_addr + pluginbuf))
+window_end=$((0x3C000000 + window_mb))
+
+# Both symbols, because neither alone is the section bound: rb_ext_ram_end is a label
+# in memory-xtensa-syms.S marking the end of what *that file* puts in PSRAM, while
+# IDF places its own .ext_ram.bss content around and after it. On one build the two
+# differed by 117,372 bytes, and the section end was the one that mattered.
+# The map prints an address column plus the symbol; assignment forms append
+# "= ABSOLUTE (.)", so match the symbol at the start of the second field.
+sym() { awk -v n="$1" '$1 ~ /^0x[0-9a-f]+$/ && index($2, n) == 1 {print $1; exit}' "$MAP"; }
+ours=$(sym rb_ext_ram_end)
+sect=$(sym _ext_ram_bss_end)
+[ -n "$ours" ] || die "rb_ext_ram_end not in $MAP -- memory-xtensa-syms.S did not link"
+[ -n "$sect" ] || die "_ext_ram_bss_end not in $MAP -- IDF did not emit the section end"
+end=$(( ours > sect ? ours : sect ))
+
+echo "esp-layout-check: .ext_ram.bss ends at $(printf '0x%08x' $end) ($(printf '0x%08x' $ours) ours, $(printf '0x%08x' $sect) section)"
+echo "esp-layout-check: plugin text reserved at $(printf '0x%08x' $plugin_text), codecbuf $(printf '0x%08x' $codecbuf), arena top $(printf '0x%08x' $arena_top) of window $(printf '0x%08x' $window_end)"
+
+rc=0
+if [ "$end" -gt "$plugin_text" ]; then
+    echo "esp-layout-check: FAIL -- .ext_ram.bss is $((end - plugin_text)) bytes into the plugin/codec text reservations. Plugins would load into memory that is zeroed at boot." >&2
+    rc=1
+fi
+# The +0x20 in XT_DROMORIG exists so flash-mapped segments satisfy the cache's page
+# congruence rule, but codecbuf and pluginbuf inherit it, which pushes the arena top
+# past the last mapped MMU entry if the arithmetic ever lets it reach the window end.
+if [ "$arena_top" -gt "$window_end" ]; then
+    echo "esp-layout-check: FAIL -- arena top $(printf '0x%08x' $arena_top) is past the mapped window end $(printf '0x%08x' $window_end); the tail has no MMU entry." >&2
+    rc=1
+fi
+exit $rc

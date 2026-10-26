@@ -28,7 +28,7 @@ else
   IDFPORTOPT :=
 endif
 
-flash: $(BUILDDIR)/$(BINARY)
+flash: $(BUILDDIR)/$(BINARY) esplayer
 	cd $(IDFDIR) && $(IDFPY) $(IDFPORTOPT) flash
 .PHONY: flash
 
@@ -36,6 +36,24 @@ flash: $(BUILDDIR)/$(BINARY)
 # appended hash. Useful without a board, which is what makes it worth running
 # before you have one. `idf.py size` in the same directory gives the per-section
 # breakdown if the image is not fitting.
-espverify: $(BUILDDIR)/$(BINARY)
+espverify: $(BUILDDIR)/$(BINARY) esplayer
 	$(ESPTOOL) --chip $(ESPCHIP) image_info $(BUILDDIR)/$(BINARY)
 .PHONY: espverify
+
+# The external arena has no link-time guard, because ESP-IDF owns the linker script
+# and the ldfragment we feed it only routes archives to memory regions -- an ASSERT()
+# has nowhere to live. tools/esp-layout-check reads the addresses out of the map and
+# compares them against the reservations memory-xtensa.h defines, so an arena that has
+# grown into the plugin/codec text fails the build instead of appearing as a printf on
+# a device after the image shipped. flash and espverify both run it: the point is that
+# you cannot reach a board without having passed it.
+# Spelled from $(BUILDDIR) rather than $(IDFDIR)/$(ROOTDIR): this file is included
+# by root.make before those are set, so a ?= here would expand to an empty path.
+RBROOT := $(patsubst %/,%,$(dir $(BUILDDIR)))
+ESPLELFMAP ?= $(RBROOT)/idf-app/build/rockbox.map
+
+esplayer: $(ESPLELFMAP)
+	$(SILENT)$(RBROOT)/tools/esp-layout-check $(ESPLELFMAP) \
+		$(RBROOT)/firmware/export/config/$(MODELNAME).h \
+		$(RBROOT)/firmware/target/xtensa/memory-xtensa.h $(BUILDDIR)/Makefile
+.PHONY: esplayer
