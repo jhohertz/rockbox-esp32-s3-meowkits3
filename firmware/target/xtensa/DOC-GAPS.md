@@ -133,15 +133,56 @@ the corresponding spike is done and the manual's keymap file should stop saying
   button, and this board has six inputs with no natural modifier.
 - **Status:** deferred by choice, documented as such.
 
-## 7. No wake-up alarm
+## 7. No wake-up alarm — driver implemented, flag deliberately still off
 
 - **Claim:** none — the alarm section is gated on `\opt{alarm}`, and we do not
-  advertise it.
-- **Reality:** `rtc_setalarm()` is not implemented in
-  `firmware/drivers/rtc/rtc_pcf8563.c`, so `HAVE_RTC_ALARM` cannot be enabled.
-  The PCF8563 has a countdown timer register that would support it.
-- **Status:** deferred by choice. Enabling it is a target-driver task, not a
-  config flag.
+  advertise it. That is currently correct.
+- **The contract.** `firmware/export/rtc.h` requires five functions under
+  `HAVE_RTC_ALARM`, not the `rtc_setalarm()` this log used to name:
+  `rtc_set_alarm(h, m)`, `rtc_get_alarm(*h, *m)`, `rtc_enable_alarm(bool)`,
+  `rtc_check_alarm_started(bool release)`, `rtc_check_alarm_flag()`.
+  All five are now implemented in `firmware/drivers/rtc/rtc_pcf8563.c` and
+  verified to build (alarm menu compiles, `apps/features` gains `alarm`, DIRAM
+  free 1089 B). Register map and CTRL2 bit values are copied from
+  `rtc_e8564.c` — same chip family, and the stock MeowKit `PCF8563.hpp` only
+  claims alarm support in a comment while implementing none.
+  One upstream bug not carried over: `rtc_e8564.c:158` reads the *hours* out of
+  `buf[0]`, which is the minute alarm register. Ours reads `buf[1]`.
+- **Why the flag is still off.** Rockbox's alarm means "power on at time X",
+  not "make a noise at time X". `apps/root_menu.c:896` calls
+  `rtc_check_alarm_started(true)` **once at boot**, and `firmware/powermgmt.c:519`
+  merely clears the flag if it is seen while running. A tree-wide grep for
+  `SYS_ALARM`/`SYS_WAKEUP` finds no runtime alarm event anywhere. So without a
+  power-on wake, an armed alarm does nothing at the alarm time.
+- **Wake-from-off is not possible on this board.** Two independent confirmations:
+  - The reference BSP wires only `HAL_PIN_PMU_IRQ = 43` (`HAL_IRQ_PIN` is that
+    same pin). The PCF8563 `/INT` output is not connected to the SoC, so there
+    is no wake source. The AXP173 can be re-enabled only by a PEK press.
+  - Our `power_off()` issues AXP173 REG 0x32 bit 7, which drops DCDC1 — the
+    SoC's own supply. Nothing runs afterwards to be woken.
+  Targets that do wake own the wake in the PMU or SoC: `power-as3525.c:33` calls
+  `rtc_alarm_poweroff()` from the RTC driver, and imx233 has
+  `RTC_PERSISTENT0.ALARM_WAKE_EN`/`ALARM_WAKE` bits. We have neither.
+- **A route that would work without touching core.** In `power_off()`, if an
+  alarm is armed, skip the AXP shutdown and take **ESP32 deep sleep** with
+  `esp_sleep_enable_timer_wakeup()` set to the seconds until the alarm
+  (computed from the PCF8563, which keeps time on its own battery-backed rail).
+  The image then restarts from the mask ROM, our `crt0`/PSRAM/MMU init runs
+  again, `clean_shutdown()` has already flushed, and `rtc_check_alarm_started()`
+  sees AF+AIE because we also arm the chip's own alarm — so `root_menu` jumps to
+  the WPS exactly as upstream intends. Target-only, no core edit. Needs a power
+  measurement: rails held on with the SoC in deep sleep, which should be well
+  under today's 42 mA dark idle.
+- **Meanwhile the device can already be a clock.** Both `clock` (subdir, in the
+  zip) and `alarmclock` (`apps/plugins/SOURCES:73`) are built, and
+  `pluginlib_actions.c` has an `ESP32S3_PAD` branch supplying four directions
+  plus `PLA_SELECT`/`PLA_CANCEL`/`PLA_EXIT` (A, B, held B). Neither needs
+  `HAVE_RTC_ALARM`; `alarmclock` counts down and rings while the player is on,
+  which is the practical alarm until the wake path exists. `PLA_SCROLL_FWD/BACK`
+  are used only as alternates there, so their absence does not matter.
+- **Status:** driver done and compile-verified; `HAVE_RTC_ALARM` off pending the
+  deep-sleep wake spike. Clock and alarmclock plugins should be exercised on
+  hardware.
 
 ## 8. The on-screen keyboard is line-mode, not touch-mode
 
