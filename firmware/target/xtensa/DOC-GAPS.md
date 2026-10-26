@@ -329,6 +329,10 @@ Minor, collected because the macros have to say something:
   (`chess_clock`, `midiplay`, `rockboy`, `stopwatch`) have the same shape and are not
   shipped. Documenting those three needs a mechanism read, not a guess, so they are
   left rather than filled with plausible keys.
+- **Hardware status**: the plugin batch, the theme pack and the fonts artifact were
+  checked on the device. The open plugin item is documentation only (see the residual
+  doc gap below), plus `mpegplayer` transport, whose chapter is written but whose keys
+  have not been exercised -- it needs video files on the card.
 - **Remaining touch-only plugins** are viewers and utilities (`credits`,
   `rb_info`, `logo`, `matrix`, `starfield`, `fire`, `fireworks`, `snow`,
   `mosaique`, `oscilloscope` is now fixed, etc.), where a touch grid is the

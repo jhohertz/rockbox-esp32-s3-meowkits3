@@ -475,12 +475,12 @@ wake path.
    settings reset — **not doing**: `ACTION_SETTINGS_RESET` is not in this tree
    at all. S2 is parked; short PEK stays unused rather than becoming a new
    action.
-7. **Theme pack** — **built**: `tools/rbthemes.py` plus an 8-theme
+7. **Theme pack** — **built and hardware-verified**: `tools/rbthemes.py` plus
    `rockbox-themes.zip`, audited clean against the union of the core and fonts
-   artifacts.
-8. **S10** plugin keymaps — **games landed** (16 branches, convention matching
-   pluginlib); utilities deliberately stay on touch. Needs one hardware test of
-   the batch.
+   artifacts. The fonts artifact installs alongside it.
+8. **S10** plugin keymaps — **games landed and hardware-verified** (16 branches, the
+   quit gesture now uniform); utilities deliberately stay on touch. Theme pack and
+   fonts artifact verified at the same time.
 9. **S11** tooling and rbutil stubs.
 10. **S12** RTC alarm wake — **dropped**: the AXP removes the SoC's supply at
     power-off, so nothing survives to wake. Driver code stays compiled out;
