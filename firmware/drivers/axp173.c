@@ -114,12 +114,28 @@ void axp173_init(void)
 
     axp173_write_reg(AXP_REG_CHARGECTRL, 0x80 | 4);  /* enable, 450 mA */
 
-    /* Only the ADCs we actually read. Sampling more costs I2C bandwidth for
-     * nothing. */
+    /* ADC channels. Battery voltage and current plus chip temperature are what this
+     * port reads for power management. VBUS current and the TS (temperature socket)
+     * channel are enabled to match the reference firmware, which turns on the same set:
+     * VBUS current is the number that tells us whether a 450 mA charge plus the system
+     * load is asking a USB 2.0 port for more than its 500 mA budget, and TS is the cell
+     * temperature input. TS has no NTC on this board's schematic, so its reading is a
+     * floating input rather than a temperature -- enabling it costs the chip's ADC mux
+     * time, not I2C traffic, and nothing treats the value as data.
+     */
     axp173_write_reg(AXP_REG_ADCENABLE1,
-                     AXP_ADC_BATT_V | AXP_ADC_BATT_C | AXP_ADC_VBUS_V);
+                     AXP_ADC_BATT_V | AXP_ADC_BATT_C | AXP_ADC_VBUS_V |
+                     AXP_ADC_VBUS_C | AXP_ADC_TS);
     axp173_write_reg(AXP_REG_ADCENABLE2, AXP_ADC_TEMP);
     axp173_write_reg(AXP_REG_ADCRATE, AXP_ADC_RATE_25HZ);
+
+    /* Charge integration. The reference firmware enables the coulometer and the
+     * 1300 mA calibration base; that is mirrored here, then both counters are cleared
+     * once so the first reading is relative to this boot rather than to whatever the
+     * previous firmware accumulated. Clearing is a pulse: bit 5 self-clears.
+     */
+    axp173_write_reg(AXP_REG_CC_CTRL, AXP_CC_ENABLE | AXP_CC_PIECE_BASE);
+    axp173_coulomb_clear();
 
     /* PEK timings. REG 36H resets to 0x5D: ONLEVEL 512 ms, IRQLEVEL 1.5 s, auto-off on,
      * PWROK 64 ms, OFFLEVEL 6 s. We ask for a 1 s press to power the chip on and a 1 s
@@ -182,6 +198,53 @@ int axp173_discharge_current(void)
 int axp173_vbus_voltage(void)
 {
     return adc_read_pair(0x5a, 17, 10);   /* 1.7 mV per LSB */
+}
+
+int axp173_vbus_current(void)
+{
+    return adc_read_pair(0x5c, 3, 8);     /* 0.375 mA per LSB */
+}
+
+int axp173_ts_temperature(void)
+{
+    return adc_read_pair(0x62, 4, 5);     /* TS input, 0.8 degrees per LSB */
+}
+
+bool axp173_coulomb_enable(bool on)
+{
+    return axp173_modify_reg(AXP_REG_CC_CTRL, AXP_CC_ENABLE,
+                             on ? AXP_CC_ENABLE : 0);
+}
+
+bool axp173_coulomb_clear(void)
+{
+    if (!axp173_write_reg(AXP_REG_CC_CTRL, AXP_CC_CLEAR))
+        return false;
+
+    /* The bit is self-clearing; if it is still set the write did not take. */
+    return (axp173_read_reg(AXP_REG_CC_CTRL) & AXP_CC_CLEAR) == 0;
+}
+
+void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge)
+{
+    unsigned char buf[8];
+
+    if (i2c_readmem(AXP173_ADDR, AXP_REG_CC_CHARGE, buf, sizeof buf) != sizeof buf) {
+        if (charge)
+            *charge = 0;
+        if (discharge)
+            *discharge = 0;
+        return;
+    }
+
+    /* Both counters are big-endian 32-bit: charge at 0xb0-0xb3, discharge at
+     * 0xb4-0xb7, which is one contiguous 8-byte block. */
+    if (charge)
+        *charge = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+                  ((uint32_t)buf[2] << 8) | buf[3];
+    if (discharge)
+        *discharge = ((uint32_t)buf[4] << 24) | ((uint32_t)buf[5] << 16) |
+                     ((uint32_t)buf[6] << 8) | buf[7];
 }
 
 bool axp173_charging(void)
