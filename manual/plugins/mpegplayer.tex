@@ -9,7 +9,7 @@ option and choose \setting{mpegplayer}.
 
 \opt{ESP32S3_PAD}{\note{On this player the plugin needs about 2.6 MB of a
 3.9 MB memory pool that the theme's fonts, the skin and any album art also draw from.
-With a font-heavy theme it will report \emph{Out of memory in stream_init} before a
+With a font-heavy theme it will report \emph{Out of memory in \fname{stream\_init}} before a
 file is opened. Switching to the failsafe theme and turning album art off is enough on a
 fresh boot; the directory cache should also be off, as it claims up to 1 MB of the same
 pool.}}
@@ -45,7 +45,7 @@ handling assumes 4:2:0; \emph{-bf 0} because B-frames add reordering the output 
 not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes the
 rewind and fast-forward keys responsive; \emph{-ar 44100} because the plugin's audio clock is 44.1 kHz; \emph{-muxrate cbr} so
 the program-stream pack headers carry a constant reference clock the parser can lock
-onto; \emph{-system_header 2} to repeat the sequence header at the head of the file,
+onto; \emph{-system\_header 2} to repeat the sequence header at the head of the file,
 which the parser probes for in the first few hundred kilobytes; and \emph{-f mpeg}
 because the demuxer expects a Program Stream. Use \emph{MPEG-2} video rather than
 MPEG-1: MPEG-1 video in a program stream carries no presentation timestamps, and the
@@ -54,14 +54,14 @@ plugin needs them to synchronise.
 Check the result on the PC before copying it to the card -- the plugin reports nothing
 useful here because its debug output is compiled out of plugin builds:
 
-egin{verbatim}
+\begin{verbatim}
 ffprobe -v error -show_entries   stream=codec_name,codec_type,width,height,pix_fmt   -of default output.mpg
 ffprobe -v error -show_entries packet=stream_id,pts   -of csv output.mpg | head -20
 \end{verbatim}
 
-The first should show name{mpeg2video} at 320x240 with name{yuv420p}, and
-name{mp3} audio at 44100 Hz. The second should show stream ids 224 (0xe0, video) and
-192 (0xc0, audio) with a non-empty name{pts} column. An empty name{pts} column is
+The first should show \fname{mpeg2video} at 320x240 with \fname{yuv420p}, and
+\fname{mp3} audio at 44100 Hz. The second should show stream ids 224 (0xe0, video) and
+192 (0xc0, audio) with a non-empty \fname{pts} column. An empty \fname{pts} column is
 the failure that produces audio with no picture.
 
 \begin{btnmap}
