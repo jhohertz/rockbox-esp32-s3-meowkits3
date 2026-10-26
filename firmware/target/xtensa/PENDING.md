@@ -52,9 +52,17 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   chapter now documents the real mapping. **Verified on hardware by the user**
 (2026-10-27): A acts, B opens the pause menu, stick moves, Long B leaves, in the sgt
 puzzles and in xworld. The override defect is closed.
-- **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
-  log over serial; not diagnosable from source. Other puzzles launch and play, so it is
-  per-game rather than the family.
+- **SGT sokoban: marked non-working, and the reason is upstream's.** `src/unfinished/
+  sokoban.c` — `apps/plugins/puzzles/SOURCES.games:54` builds it out of the collection's
+  *unfinished* directory, whose own README says the contents are "half-written,
+  fundamentally flawed, or in other ways unready to be shipped as part of the polished
+  Puzzles collection", and whose CMake build deliberately excludes them from install
+  targets. Rockbox ships them anyway. Two more come from the same directory and are
+  suspect for the same reason: **sgt-group** (`SOURCES.games:48`) and **sgt-slide**
+  (`:51`). Nothing here is a MeowKit bug, and it isn't worth diagnosing further.
+  Cheap check if you want one: launch group and slide and see whether they behave; if
+  they don't, the honest fix is to stop building those three for this target rather than
+  chase per-game faults.
 - **mpegplayer: still failing, and the failure has three distinct shapes.** Ordered by
   what the code actually does, allocation order is grey → libmpeg2 → audio → pcm → disk
   buffer, and each step has its own message:
@@ -227,6 +235,8 @@ Not being submitted now. Kept so the work can be split for a merge.
 | — | `firmware/usbstack/usb_audio.c` | Target hooks for feedback pacing and RX ping-pong (`usb_audio_target_*`), `USB_AUDIO_RX_PINGPONG` default off | Hooks let a target own the feedback-band and buffer shape without core edits. Worth showing upstream; the AC interrupt endpoint at line 290 is still an upstream TODO. |
 | `1a7ecb4aee` | `firmware/drivers/rtc/rtc_pcf8563.c` | New PCF8563 driver on the generic I2C API, alarm functions under `HAVE_RTC_ALARM` | The existing `rtc_e8564.c` is PP-async-only and reads hours from the wrong buffer index. Reusable driver. |
 | `7f9d1f98ce` | `firmware/drivers/i2c-async.c` | `I2C_ASYNC_SUBMIT_UNMASKED` seam defers the idle-bus submit until interrupts are restored | Already a proper opt-in seam with unchanged default behaviour. A target whose `__i2c_async_submit()` polls the controller to completion must not hold `disable_irq_save()` across a 100 kHz transfer. Worth showing upstream. |
+| `6cf0d20da7` | `apps/plugins/lib/keymaps.h` | Add `CONFIG_KEYPAD != ESP32S3_PAD` to the touch-grid fallback's exclusion list | A real upstream bug, not a target quirk: the `HAVE_TOUCHSCREEN` block redefines `BTN_FIRE`/`BTN_PAUSE` unconditionally, so any touchscreen target that also has physical fire/pause keys silently gets plugins that ignore them. GCC warns about the redefinition; nobody reads the warning. Eight targets are already excluded — the list just needed another entry. |
+| — | `apps/plugins/puzzles/SOURCES.games` | Stop building the three games under `src/unfinished/` | Upstream's own README calls them half-written or unready, and its CMake build excludes them from install, yet Rockbox ships `sgt-group`, `sgt-slide` and `sgt-sokoban`. Sokoban crashes on launch here. Removing the three lines is the whole fix. |
 
 ## 6. Core touches rationalized into the target — done
 
