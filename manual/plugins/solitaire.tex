@@ -29,6 +29,7 @@ visit
     \opt{XDUOO_X3_PAD}{\ButtonPrev / \ButtonNext / \ButtonHome / \ButtonOption}
     \opt{MPIO_HD300_PAD}{\ButtonRew / \ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+      \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown{} / \ButtonLeft{} / \ButtonRight}
       & Move Cursor around.\\
     %
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IPOD_4G_PAD,IPOD_3G_PAD,IAUDIO_X5_PAD%
@@ -41,6 +42,7 @@ visit
     \opt{MPIO_HD300_PAD}{\ButtonEnter}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonA}
+      \opt{ESP32S3_PAD}{\ButtonA}
       & Select cards, move cards, reveal hidden cards...\\
     %
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonMode}
@@ -57,8 +59,10 @@ visit
     \opt{RG_NANO_PAD}{\ButtonX}
     \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+      \opt{ESP32S3_PAD}{\ButtonA}
       & If a card was selected -- unselect it, else\\
        \opt{HAVEREMOTEKEYMAP}{& }
+      \opt{ESP32S3_PAD}{\TouchTopMiddle}
       & Draw 3 new cards from the remains stack\\
     %
     \opt{IPOD_4G_PAD,IPOD_3G_PAD}{\ButtonPlay}
@@ -79,6 +83,7 @@ visit
     \opt{SAMSUNG_YH820_PAD}{\ButtonRec{} + \ButtonDown}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonL}
+      \opt{ESP32S3_PAD}{\TouchBottomMiddle}
       & Put the card from the top of the remains stack on top of the cursor\\
     %
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,GIGABEAT_PAD,GIGABEAT_S_PAD%
@@ -96,6 +101,7 @@ visit
     \opt{XDUOO_X3_PAD}{Long \ButtonPlay}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonB}
+      \opt{ESP32S3_PAD}{\TouchMidLeft}
       & Put the card under the cursor on one of the 4 final colour stacks.\\
     %
     \opt{IRIVER_H10_PAD,IPOD_4G_PAD,IPOD_3G_PAD}{Long \ButtonRight}
@@ -113,6 +119,7 @@ visit
     \opt{SAMSUNG_YH820_PAD}{\ButtonRec{} + \ButtonRight}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonR}
+      \opt{ESP32S3_PAD}{\TouchMidRight}
       & Put the card on top of the remains stack on one of the final colour stacks.\\
     %
     \opt{IRIVER_H300_PAD,IRIVER_H100_PAD}{\ButtonOff}
@@ -129,5 +136,6 @@ visit
           \opt{IRIVER_RC_H100_PAD}{\ButtonRCStop}
         }
     \opt{RG_NANO_PAD}{\ButtonStart}
+      \opt{ESP32S3_PAD}{\ButtonB}
       & Show menu\\
 \end{btnmap}

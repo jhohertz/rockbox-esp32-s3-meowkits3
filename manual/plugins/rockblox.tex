@@ -22,6 +22,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
         \opt{SAMSUNG_YH820_PAD}{\ButtonRec}
            \opt{HAVEREMOTEKEYMAP}{& }
         \opt{RG_NANO_PAD}{\ButtonB}
+            \opt{ESP32S3_PAD}{\TouchBottomMiddle}
             & Restart game\\
     }
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD%
@@ -33,6 +34,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{COWON_D2_PAD}{\TouchMidLeft}
     \opt{MPIO_HD300_PAD}{\ButtonRew}
        \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{\ButtonLeft}
         & Move left\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD%
         ,IAUDIO_X5_PAD,SANSA_E200_PAD,SANSA_FUZE_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD%
@@ -43,6 +45,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{COWON_D2_PAD}{\TouchMidRight}
     \opt{MPIO_HD300_PAD}{\ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{\ButtonRight}
         & Move right\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IAUDIO_X5_PAD%
         ,SANSA_E200_PAD,SANSA_FUZE_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD,GIGABEAT_PAD%
@@ -56,6 +59,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{SAMSUNG_YH92X_PAD}{\ButtonRew}
     \opt{SAMSUNG_YH820_PAD}{\ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{\ButtonDown}
         & Move down\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IAUDIO_X5_PAD}{\ButtonSelect}
     \opt{scrollwheel}{\ButtonScrollBack}
@@ -70,6 +74,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonUp}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonX}
+        \opt{ESP32S3_PAD}{\TouchMidLeft}
         & Rotate anticlockwise\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IAUDIO_X5_PAD}
         {\ButtonUp}
@@ -85,6 +90,7 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonDown}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonY}
+        \opt{ESP32S3_PAD}{\ButtonA}
         & Rotate clockwise\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonMode}
     \opt{IPOD_4G_PAD,IPOD_3G_PAD,SANSA_E200_PAD,SANSA_FUZE_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD%
@@ -97,10 +103,12 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
     \opt{SANSA_FUZEPLUS_PAD}{\ButtonDown}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonA}
+        \opt{ESP32S3_PAD}{\TouchCenter}
         & Drop\\
     \opt{hold_button}{
         \ButtonHold{} switch
        \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{\textit{not available}}
         & Pause\\
     }
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOff}
@@ -117,5 +125,6 @@ the blocks fall faster. If the pile of blocks reaches the ceiling, the game is o
        \opt{HAVEREMOTEKEYMAP}{& 
           \opt{IRIVER_RC_H100_PAD}{\ButtonRCStop}
         }
+        \opt{ESP32S3_PAD}{Long \ButtonB{}}
         & Quit\\
 \end{btnmap}
