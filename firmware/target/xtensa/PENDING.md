@@ -187,20 +187,6 @@ Each of these was checked on the board, not inferred.
   long **A** (chip8's F key) actually switches a ROM to the 128×64 superchip canvas — the
   chapter states it as the conventional behaviour, which is worth checking against a ROM
   that supports it before it is treated as fact.
-- **Bluetooth audio out (A2DP source + AVRCP) — blocked by the silicon, not by
-  Rockbox.** Analysed in `firmware/target/xtensa/BT-AUDIO.md`. ESP32-S3 has a BLE-only
-  radio: `SOC_BT_CLASSIC_SUPPORTED` exists in IDF v5.5.5 solely for `esp32`, so
-  `BT_CLASSIC_ENABLED` and everything under it (`BT_A2DP_ENABLE`, the AVRCP options) is
-  unselectable on S3, and IDF's own classic_bt test matrix lists `esp32|esp32` only. LE
-  Audio is not an alternative — no ISO/CIS capability on S3, no LE Audio stack in this IDF.
-  What *is* ready: the core already supports multiple PCM sinks with runtime switching
-  (`firmware/export/pcm_sink.h`, `pcm.c:87-91`, `mixer_switch_sink()`), and IAP
-  (`usbstack/iap/audio.c:189`) is an in-tree non-DAC sink that switches on connect and back
-  on disconnect — the exact lifecycle wanted. Reaching headphones therefore needs a
-  classic-capable co-processor carrying the PCM; the Rockbox side (`PCM_SINK_BT`, ring,
-  `button_queue_post` for AVRCP, pairing UI) transfers unchanged and is specified in that
-  document. Blocked on a hardware decision, so nothing in Rockbox should be written against
-  it yet.
 - **Theme packs parked — the one tried renders incorrectly.** The `%T` region work
   (`DOC-GAPS.md` item 2: shuffle, repeat mode, bookmarks, lock) is still deferred to theme
   packs, but it is now blocked on something plainer: the theme tested displays wrong, so
@@ -234,6 +220,7 @@ Each of these was checked on the board, not inferred.
 | USB DAC above 48 kHz | Full-speed isochronous FIFO ceiling, measured. Not a software knob. |
 | Deeper light sleep | `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` is deliberately off: retaining the peripheral domain is what makes our hand-written I2S/GDMA/GPSPI2/LEDC/I2C/USB drivers safe. Going deeper needs save/restore for six subsystems. |
 | `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` | Must stay unset: flash keeps power, which the XIP-from-PSRAM design depends on. |
+| Bluetooth audio out (A2DP source + AVRCP) | **Closed, not deferred.** ESP32-S3's radio is BLE only: `SOC_BT_CLASSIC_SUPPORTED` exists solely for `esp32` in IDF v5.5.5, so `BT_CLASSIC_ENABLED` and everything beneath it (`BT_A2DP_ENABLE`, the AVRCP options) cannot be selected, and IDF's classic_bt tests run on `esp32` alone. LE Audio is not a fallback — no ISO/CIS capability on S3 and no LE Audio stack in this checkout. Only a co-processor with BR/EDR could carry the audio; the Rockbox design (`PCM_SINK_BT` against the IAP precedent) is written up in `BT-AUDIO.md` and would transfer unchanged. Reopens only with a hardware change. |
 | `HANDOFF.md` | Removed deliberately (`9942277b0c`); this file replaces it. |
 
 ## 5. Upstream inventory — core fixes that stand on their own
