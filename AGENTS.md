@@ -565,16 +565,18 @@ Mapping the board against what Rockbox already has:
 | ST7789 display | `HAVE_LCD_BITMAP`, `HAVE_LCD_ENABLE`, `HAVE_LCD_SLEEP`, `HAVE_LCD_SHUTDOWN` | done |
 | PCA9557 expander | (target-internal) | done |
 | ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done. The amp is no longer permanently on: it goes off, with the codec muted behind it, when the transmit sink stops carrying real audio -- see the amplifier note under "Power management" |
-| SD card | `STORAGE_SD` via `sdmmc_host.c` | done |
+| SD card | `STORAGE_SD` via IDF's `sdmmc_host` driver (`target/xtensa/sd-idf.c`) | done. The bare-metal path through `sdmmc_host.c` was dropped: under IDF that controller accepts every command, clears the start bit, and never completes |
 | Buttons | `CONFIG_KEYPAD` | done |
-| Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS` | done |
+| Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS`, `CONFIG_BACKLIGHT_FADING` | done, with software fade-in/fade-out — see the fading note below |
 | PCF8563 RTC | `CONFIG_RTC` | done |
 | AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
 | ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done by IDF's own driver: `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_SPEED_80M=y`, CLK GPIO 30, CS GPIO 26. The hand-rolled bring-up on the bare-metal tag never got an answer from the chip; it was never a hardware problem. `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` is what lets `.ext_ram.bss` be claimed at all |
 | USB-OTG | `usbstack` | **Operational.** CDC console, mass storage and the DAC class all work, driven by Rockbox's own stack over the DWC core. The core answers only when *both* clock gates are on (`usb_clk_en` PERIP_CLK_EN0 bit 23 for the wrap/PHY, `usb_device_clk_en` PERIP_CLK_EN1 bit 10 for the DWC) and *both* reset bits are cleared — with one gate, every register reads 0 without faulting. Measured: id `0x4f54400a` rev 10, **7 device endpoints, 4 dedicated IN FIFOs (GHWCFG4, not the 6 `USB_NUM_ENDPOINTS` suggests), 200 words of FIFO RAM**, FS PHY selectable via `GUSBCFG.fsintf`. FIFO split is NPTX 16 / PTX 16 x 4 / RX 120 words, and `ahb_burst_len` is INCR16 — INCR4 made the DAC crackle under a storage flood. `SOC_DPORT_USB_BASE` is referenced by IDF's esp32s3 `usb_reg.h` but never defined there — that file is legacy |
-| WS2812B LED, IR, IMU, temp sensor, SPI flash | nothing in Rockbox | not applicable |
+| Virtual LED (status-bar disk icon) | `CONFIG_LED` defaults to `LED_VIRTUAL` | done: `sd-idf.c` brackets both sector calls with `led(true)`/`led(false)`, the same shape `sd-as3525.c` and `sdmmc-imx233.c` use. Without a caller the icon is reserved space that cannot light |
+| WS2812B LED (GPIO 38), IMU, temp sensor | nothing in Rockbox | not applicable. Rockbox's only LED abstraction is `led(bool)` with `CONFIG_LED == LED_REAL`, and that branch is Archos-register-specific. `HAVE_GENERAL_PURPOSE_LED` is *not* a core flag here — it exists only in the hosted hiby sim files |
+| IR TX 7 / RX 5 at 38 kHz | no generic IR layer | open as a feature, not a flag: `HAVE_IR_REMOTE` appears nowhere in the tree and every Rockbox remote is a per-target driver. A decoder would feed `button_queue_post()` (`firmware/export/button.h:66-68`), which is public |
 | CPU frequency (DFS) | `HAVE_ADJUSTABLE_CPU_FREQ`, `set_cpu_frequency()` | done: 80 / 160 / 240 MHz ladder through `esp_pm_configure({max == min})`, worth 9 mA at dark idle |
 | Light sleep | `CONFIG_PM_ENABLE`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE` | done: peripheral domain deliberately retained, `ESP_PM_NO_LIGHT_SLEEP` held while USB is armed, worth 2 mA |
 | Sleep and boost telemetry | `Debug -> View HW info` PM row | done: prints the configured min/max MHz, whether sleep is enabled, and the raw cycle/wall counters it measures from |
@@ -2054,6 +2056,34 @@ reset and the channel outputs the idle level forever. It has to be pulsed.
 With 9-bit resolution the counter runs 0..511, so a duty of 512 is "always high",
 which for an active-low LED means off. That is the same convention the reference
 firmware uses (`ledcWrite(7, 512)` = off).
+
+### Backlight fading is three different mechanisms wearing one name
+
+`CONFIG_BACKLIGHT_FADING` has four values and they are not variations of the same
+thing:
+
+- `BACKLIGHT_FADING_PWM` is **software PWM**: `backlight_isr()` (`backlight.c:257-300`)
+  toggles the lamp fully on and off at a 5 ms cycle and varies the on-portion through
+  `timer_set_period()`. On a board whose backlight is already LEDC-PWM'd at 5 kHz that
+  would fight the hardware and flicker. It is for targets with a binary backlight pin.
+- `BACKLIGHT_FADING_SW_HW_REG` ramps brightness in the backlight thread, but after
+  `backlight_hw_off()` it also writes `MIN_BRIGHTNESS_SETTING` (`backlight.c:471-474`) so
+  that fading up is glitch free. Our `hw_off()` also drives the panel enable, so that write
+  re-lights the LED on a sleeping panel and gives back part of the idle saving.
+- `BACKLIGHT_FADING_SW_SETTING` is the ramp without that write, and is what the four other
+  targets that define it choose. This is the one we use.
+- `BACKLIGHT_FADING_TARGET` leaves fading entirely to the target.
+
+The trap that applies to all ramping variants: with fading enabled,
+`backlight_update_state()` calls `backlight_setup_fade_up()` instead of
+`backlight_hw_on()`+brightness (`backlight.c:527-531`), so **`backlight_hw_on()` must not
+set the setting's brightness** or fade-in starts at full. `backlight-e200v2-fuze.c:40-44`
+guards its equivalent line for exactly that reason and says so in a comment.
+
+The ramp is one `BRIGHTNESS_STEP` per `FADE_DELAY` ticks, and `FADE_DELAY` is chosen from
+`MAX_BRIGHTNESS_SETTING` (`backlight-sw-fading.h:24-30`). With our range of 0..255 and a
+step of 1 the fade would take five seconds each way, so the target sets `BRIGHTNESS_STEP 8`
+- the same knob `3ds`, `hibyr3proii` and `hidizsap80max` use - giving ~0.6 s.
 
 ### Recording is the receiver half of the same I2S bus
 
@@ -3598,8 +3628,17 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   traffic. Keep the surviving record in RTC slow and read it when a human asks.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
   constant is treated as an absolute section address, and the region usage is then
-  computed from that address instead of the section size — a spurious overflow of
+  computed from that address instead of the section size - a spurious overflow of
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
+- The manual's feature list has the same missing-header dependency the cached linker
+  scripts had. `manual/Makefile:54` builds `$(OBJDIR)/features.tex` from
+  `apps/features.txt` alone, but the rule preprocesses that file with
+  `-imacros config.h` - so a target config change that adds or removes a feature name
+  (`backlight_fade_bool`, `lcd_sleep`, `tone_controls`, ...) does **not** regenerate
+  features.tex, and the PDF silently keeps the old option set. Delete
+  `build-<target>/manual/features.tex` before rebuilding the manual after any flag
+  change, then confirm the new text is actually rendered (`pdftotext` and grep) rather
+  than assuming the flag took.
 - Xtensa section headers are 40 bytes, not the 32 an ELF32 reader expects; the first
   24 bytes are still name, type, flags, address, offset, size.
 - Enabling a `HAVE_*` feature flag can cost internal SRAM in a file unrelated to the
