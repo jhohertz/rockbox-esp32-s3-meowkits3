@@ -10,6 +10,32 @@ collection of single-player puzzle games.
   configurations. To prevent this, avoid setting extreme configuration
   values.}
 
+\opt{ESP32S3_PAD}{
+\subsubsection{Controls on the MeowKit player}
+Every game in this collection is driven through the same four inputs, so the
+per-game configuration menus all mean the same thing on this player:
+
+\begin{btnmap}
+    \ButtonUp{} / \ButtonDown{} / \ButtonLeft{} / \ButtonRight{} & Move the cursor or
+    selection \\
+
+    \ButtonA{} & The game's primary action: place a tile, rotate, fill, drag \\
+
+    \ButtonB{} & Pause menu. This is where a game's configuration, \emph{Extensive
+    Help} and \emph{Zoom In} live \\
+
+    Long \ButtonB{} & Leave the game \\
+
+    Touch grid & The 3x3 grid is free for pointer work: in \emph{Zoom In} interaction
+    mode it drags the viewport \\
+\end{btnmap}
+
+\note{Until recently the stick worked here but \ButtonA{} and \ButtonB{} did not: the
+common touch-grid fallback in the plugin keymap header overrode them, because that
+fallback assumes a player has no fire or pause key of their own. This player has both,
+so it is now exempt from the override.}
+}
+
 \subsubsection{Puzzle Documentation}
 For documentation on the games included, please see the ``Extensive
 Help'' menu option from inside the plugin to read puzzle-specific
