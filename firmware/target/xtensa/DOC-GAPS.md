@@ -306,7 +306,20 @@ Minor, collected because the macros have to say something:
   `chessbox`, `doom`, `fractals`, `imageviewer`, `mpegplayer`'s start-time dialog,
   `text_viewer`, `zxbox` and `chip8` — so the gap was documentation, not bindings.
 
-- **Coverage, re-measured rather than asserted.** The zip ships **161** `.rock`
+- **Coverage, measured twice because the first measurement was wrong.** The
+  "30 table-bearing chapters have no column for us" claim was *false*: chapters drive
+  keys through per-target macros (`\PluginUp`, `\PluginCancel`, …), and
+  `platform/keymap-meowkits3.tex` defines the whole set, so those chapters already render
+  "Up or Top-Middle", "B or Bottom-Right", "Long A or Long Centre" in our PDF — confirmed
+  by extracting the rendered manual, not by reading the sources. The real gap, measured by
+  walking every `btnmap` row and asking whether any key in it is reachable for us, is
+  **one row in each of 38 chapters** plus **2 rows in `chess_clock`**, and five chapters
+  that name macros we do not define at all: `\ButtonHome`, `\ButtonOption`
+  (`chessbox`, `fractals`), `\ButtonBack` (`rockpaint`), `\ButtonDisplay`
+  (`rockblox`) — those keys belong to pads we do not have, so the rows need our mapping or
+  an explicit "not available", not a guess.
+
+- **Coverage counts.** The zip ships **161** `.rock`
   binaries (plus 43 codecs, 6 viewers overlays and 63 lua scripts) out of 119 plugin
   chapters; **41 chapters** carry `ESP32S3_PAD` rows, ~230 rows in total. Of the 70
   chapters that have a key-table structure at all, **30 still have no column for us**:
