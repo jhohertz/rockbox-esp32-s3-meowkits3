@@ -15,11 +15,14 @@ touched. There is no UART bridge — the host reaches the SoC through its own US
 
 ## A. Needs the board (blocked on hardware, not on code)
 
-1. **Flash the pending build.** Firmware changed since the last flash (`ed9805f1e8`
-   removed two debug probes from `apps/filetypes.c` and `firmware/font.c`; the image is
-   1,293,648 B, md5 `1c5e23555de13eda481ea78d7519621c`). Plugins and manual content are
-   card-only: pictureflow's keymap, the uniform quit gesture, metronome — re-extract
-   `rockbox.zip`, no flash needed for those.
+1. ~~Flash the pending build~~ **done 2026-10-26.** `make flash ESPPORT=/dev/ttyACM0`
+   wrote bootloader 22,288 B at `0x000000`, partition table 3,072 B at `0x00008000` and
+   Rockbox 1,293,648 B at `0x00010000`, each "Hash of data verified", then hard-reset into
+   the new firmware. The layout guard ran first as a prerequisite and reported the arena
+   ending 53,620 B clear of the plugin/codec reservations. This image carries the core
+   probe removal (`ed9805f1e8`). Card content still needs re-extraction from
+   `rockbox.zip` for pictureflow's keymap, the uniform quit gesture and metronome —
+   plugins are files on the card, not part of the flash.
 2. **mpegplayer transport + PSRAM code execution.** Keys are written and documented (A
    tap pause, A held stop, stick volume/seek, B menu). Blocked on `.mpg` files: MPEG-1/2
    Part 2 video, MP3 audio only (libmad — a VCD's MP2 track will be silent), no scaling
