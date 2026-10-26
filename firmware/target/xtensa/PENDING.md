@@ -29,16 +29,20 @@ touched. There is no UART bridge — the host reaches the SoC through its own US
    so ≤ 320×240, container `-f mpeg`. Playing *any* video also answers the long-standing
    question of whether codec/plugin code executing from the PSRAM window behaves —
    mpegplayer allocates ≥ 2 MB there.
-3. **Does light sleep survive the MSPI MMU table?** `MEMORY.md` §"light sleep":
+3. **Does light sleep survive the MSPI MMU table? (partly evidenced, not proven)** `MEMORY.md` §"light sleep":
    `SOC_PM_SUPPORT_RTC_PERIPH_PD` is enabled and `rtc_init.c:114` clears
    `EXTMEM_CACHE_MMU_MEM_FORCE_ON`, so the 512-entry `DR_REG_MMU_TABLE` may lose power.
    If it does, `mmu_init()`'s audiobuffer and framebuffer mappings are gone on wake and
    the first PSRAM access reads the Ext_RAM sentinel `0x0bad0bad`. S4 (light sleep) is
-   on and unverified against this. `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` stays unset.
+   on and unverified against this specific failure. Observed on 2026-10-26: playback
+   resumes fine after a dark idle period, which means framebuffer and audiobuffer
+   mappings were still valid on wake -- but that is indirect evidence, not a check of the
+   table, and a short idle may not cross a sleep boundary at all. `CONFIG_ESP_SLEEP_-
+   POWER_DOWN_FLASH` stays unset.
 4. **Dark-idle current with sleeping enabled.** The 42 mA floor was measured without
    S4 active. No new instrumentation: `Debug → View battery` prints discharge current
    off the same moving average `powermgmt.c` uses.
-5. **96 kHz local playback.** The TX slot is now sized by `XT_MIX_MULT` (2048 B above
+5. ~~96 kHz local playback~~ **verified on hardware 2026-10-26** -- plays fine. The TX slot is now sized by `XT_MIX_MULT` (2048 B above
    48 kHz, `dma_buf` 4 × 2048), which fixes the 1 KB overflow the old unconditional slot
    caused. Never confirmed audibly on hardware. If it cannot hold, drop
    `HW_SAMPR_CAPS` to `SAMPR_CAP_ALL_48` rather than advertise it — the USB DAC path is
