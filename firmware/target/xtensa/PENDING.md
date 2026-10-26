@@ -129,6 +129,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
   stick + A/B + 3x3 grid is a design call, not a doc fix.
 
+
+
+- **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
+  by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
+  not say that. Documentation gap, not firmware.
+- **`rockpaint` has no `ESP32S3_PAD` branch.** It defines `ROCKPAINT_QUIT/DRAW/MENU/
+  TOOLBAR/TOOLBAR2` per pad (iriver H300, iPod, iAudio, …) and falls through to the
+  generic `#else` for us, which is why it is unusable/confusing. Its drawing model wants
+  pixel addressing, which a 3x3 touch grid cannot give; free-touch drawing is the natural
+  fit but is what the plugin does not do today.
+- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
+  stick + A/B + 3x3 grid is a design call, not a doc fix.
+
 - **mpegplayer transport.** Keys documented (A tap pause, A held stop, stick
   volume/seek, B menu). Waiting on `.mpg` files: MPEG-1/2 Part 2 video, MP3 audio only
   (libmad — a VCD's MP2 track is silent), no scaling so ≤ 320×240, container `-f mpeg`.
