@@ -44,8 +44,14 @@
  * reproducing the original crash figure almost exactly. 128 KB covers one page of
  * growth plus the donated objects. If the image grows another page this moves
  * again, so read the MEMORY: line printed at boot rather than trusting this
- * number. */
-#define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) - 0x20000)
+ * number. The deduction is now 128 KB below half of PSRAM plus the 256 KB the
+ * codec text reservation gave up (see XT_CODEC_TEXT_SIZE): the arena is sized by
+ * this constant alone -- core_alloc.c does buflib_init(start, audiobufend - start)
+ * and audiobufend is the label right after the .space below -- so shrinking the
+ * text reservations without raising this buys nothing but unused slack. Growing it
+ * takes the space straight out of IDF's PSRAM heap, and the boot guard keeps watch
+ * on the boundary either way. */
+#define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) + 0x20000)
 
 /*
  * Codec and plugin load buffers, pinned to the top of the PSRAM part of the
@@ -95,12 +101,15 @@
 #define XT_IROM_BASE        0x40000000
 #define XT_IROM_OFF         0x06000000
 
-/* Text halves carved out of the gap below codecbuf. Measured across all 43
- * codecs the largest .text+.literal+.rodata is 182 KB and the largest
- * .data+.bss is 362 KB, so 512 KB each leaves room to grow. These are the
- * numbers apps/plugins/plugin.lds links against -- it includes this header
- * rather than repeating them. */
-#define XT_CODEC_TEXT_SIZE   0x80000
+/* Text halves carved out of the gap below codecbuf. Measured across all codecs
+ * the largest .text+.literal+.rodata is 182 KB (aac.codec is 200,232 bytes as a
+ * whole image), so the codec half is 256 KB: still ~74 KB of headroom, and
+ * apps/plugins/plugin.lds links against THIS_TEXT_LENGTH, so a codec that outgrows
+ * it fails at link time rather than at load. The plugin half stays at 512 KB
+ * because the largest .rock is 482,560 bytes and shrinking it would put the head of
+ * the plugin text region at risk for no gain -- what this shrink actually funds is
+ * XT_AUDIOBUF_SIZE. These are the numbers plugin.lds includes rather than repeats. */
+#define XT_CODEC_TEXT_SIZE   0x40000
 #define XT_PLUGIN_TEXT_SIZE  0x80000
 
 /* Data-window addresses of those halves, i.e. the addresses they are *written*

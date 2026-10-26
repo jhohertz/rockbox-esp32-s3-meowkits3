@@ -1259,8 +1259,8 @@ and aligns to the 64 KB MMU page. This 24 KB growth moved `_ext_ram_bss_start` f
 `0x3c120000` to `0x3c130000` -- a whole page -- which consumed the entire 64 KB arena
 deduction and left `_ext_ram_bss_end` at `0x3c582e8c`, i.e. **11,916 bytes inside
 plugin_text**, reproducing the plugin-crash condition almost exactly (the original was
-`0x3c58290c`, 10,508 past). `XT_AUDIOBUF_SIZE` is now `(MEMORYSIZE * 0x80000) - 0x20000`,
-giving clearance 53,620 bytes. Read the `MEMORY:` line at boot; do not trust this number
+`0x3c58290c`, 10,508 past). `XT_AUDIOBUF_SIZE` is now `(MEMORYSIZE * 0x80000) + 0x20000`,
+giving clearance 53,612 bytes. Read the `MEMORY:` line at boot; do not trust this number
 surviving the next code growth.
 
 ### Flipping these flags is a plugin ABI change, and one flag is not available at all
@@ -1288,42 +1288,67 @@ Nothing will visibly change from `HAVE_ALBUMART` alone: the shipped `cabbiev2.wp
 no `%aa` token, so album art needs a skin that asks for it. The capability is enabled now
 so it exists when the theme work lands rather than being entangled with it.
 
-## 6. Re-measured: the arena is 3.875 MiB, and what the window actually claims
+## 6. The arena is 4,325,376 bytes, and what the window actually claims
 
-Measured from `idf-app/build/rockbox.map` on the current build, not from the figures
-this file carried:
+Measured from `tools/esp-layout-check` on the current build (it reads the map symbols and
+recomputes the reservations), not from the figures this file carried:
 
 | | bytes | note |
 |---|---|---|
-| `.ext_ram.bss` total | 4,225,024 | three entries only |
-| `memory-xtensa-syms.o` (the buflib arena) | 4,063,232 | `0x3c155800` → `0x3c535800` = `rb_ext_ram_end` |
+| `.ext_ram.bss` total | 4,730,516 | `0x3c130000` (`_ext_ram_bss_start`) size `0x482e94` |
+| `memory-xtensa-syms.o` (the buflib arena) | **4,325,376** | `XT_AUDIOBUF_SIZE` `0x420000`, `0x3c155800` → `0x3c575800` = `rb_ext_ram_end` |
 | `lcd-16bit.o` (one framebuffer) | 153,600 | `0x3c130000`, below the arena |
 | `i2s-xtensa.o` | 8,192 | |
 | flash `.rodata` in the window | 568,704 | from `0x3c090120` |
-| plugin text reservation | 524,288 | `XT_PLUGIN_TEXT_SIZE`, `0x3c580000` |
-| codec text reservation | 524,288 | `XT_CODEC_TEXT_SIZE`, ends where codecbuf begins |
+| plugin text reservation | 524,288 | `XT_PLUGIN_TEXT_SIZE`, `0x3c5c0000` |
+| codec text reservation | **262,144** | `XT_CODEC_TEXT_SIZE`, `0x3c640000` → `0x3c680000` |
+| `_ext_ram_bss_end` (the real section end) | | `0x3c5b2e94`, **53,612 bytes** clear of plugin text |
 | `codecbuf` (`CODEC_SIZE`) | 1,048,576 | `0x3c680000` |
 | `pluginbuf` (`PLUGIN_BUFFER_SIZE`) | 524,288 | |
 
-Earlier text in this file said the arena was 4 MiB at `0x3c1612e0..0x3c5612e0`. Both
-numbers are stale: the window moved when the layout guard landed, and the arena is
-**3,875,072 usable bytes**, which is the number every plugin-sizing argument should use.
+Successive figures this file has carried -- 4 MiB at `0x3c1612e0`, then 4,063,232, then
+"3,875,072 usable" -- are all superseded. The arithmetic is now exact and checkable: the
+buflib context is `buflib_init(&core_ctx, start, audiobufend - start)` at
+`firmware/core_alloc.c:72`, and `audiobufend` is the label directly after
+`.space XT_AUDIOBUF_SIZE` in `memory-xtensa-syms.S`, so **the arena is `XT_AUDIOBUF_SIZE`
+and nothing else**. That is the fact that matters when sizing anything: the text
+reservations, codecbuf and pluginbuf sit above the arena and do not bound it.
 
-### Cleanup candidates, with the payload sizes that constrain them
+### How this grew, and the trap that made the first attempt pointless
+
+`XT_CODEC_TEXT_SIZE` went 512 KiB → 256 KiB (largest codec text measured 182 KB; the
+largest whole codec image is `aac.codec` at 200,232 B) and `XT_AUDIOBUF_SIZE` rose by the
+same 262,144 bytes to spend it. Shrinking the text reservation *alone* accomplishes
+nothing: it only widens the unused gap between `.ext_ram.bss` and plugin text, because the
+arena is sized by its own constant. The two changes have to move together, and the boot
+guard in `system_init()` keeps the pairing honest -- if the arena ever outruns the section
+it reports bytes into the text reservations instead of letting plugins load into zeroed
+memory.
+
+The trap that nearly shipped a silent corruption: **the preprocessed linker scripts are
+cached and did not depend on `memory-xtensa.h`.** `plugin.lds` is run through the target
+compiler (`preprocess2file`) into `apps/plugins/plugin.link`, `lib/rbcodec/codecs/codec.link`
+and `apps/plugins/overlay_ref.link`; the expanded `XT_CODEC_TEXT_SIZE` is baked into those
+outputs. `$(PLUGINLINK_LDS)` depended only on `plugin.lds` and `config/$(MODELNAME).h`, so a
+header change left every `.rock` and `.codec` linked against the *old* text origin -- 256 KB
+below where the firmware now reserves it -- with no error of any kind. Confirmed by reading
+program headers off the rebuilt images (`0x42580000` instead of `0x425c0000`). Both rules now
+list `$(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)` as a dependency, and the check on
+a layout change is `readelf -lSW` on one `.rock` and one `.codec`: the text vaddr must equal
+the guard's `plugin text reserved at` / codec-text address plus `XT_IROM_OFF`.
+
+### Remaining candidates
 
 Measured payload sizes from the current zip: largest plugin `clock.rock` **482,560 B**
-(so `PLUGIN_BUFFER_SIZE` 512 KiB cannot shrink), largest `sgt` puzzle 220,856 B, largest
-codec `aac.codec` **200,232 B**, next `raac` 196,020 B.
+(so `PLUGIN_BUFFER_SIZE` 512 KiB cannot shrink, and 66 targets in the tree use the same
+512 KiB anyway), largest `sgt` puzzle 220,856 B, largest codec `aac.codec` **200,232 B**,
+next `raac` 196,020 B.
 
-- `XT_CODEC_TEXT_SIZE` is 512 KiB for a largest codec of 200 KB. Halving it returns
-  256 KiB to the arena. Needs checking that no codec's *text* span exceeds 256 KiB, and
-  that `plugin.lds` and `memory-xtensa.h` still agree, because `apps/codecs.c` rejects a
-  codec whose `load_addr` is not exactly `codecbuf`.
-- `CODEC_SIZE` is 1 MiB. Targets with `MEMORYSIZE 8` in the tree generally use 512 KiB.
-  Codec images are ~200 KB, but the remainder is codec working memory, so this one needs
-  a runtime measurement before it is touched — the failure mode is a codec refusing to
-  load, which is loud rather than subtle.
-- The arena itself cannot grow without taking bytes from one of the above. It is not
-  "8 MB minus 4 MB"; the window is fully claimed and `tools/esp-layout-check` is what
-  proves it.
+- `CODEC_SIZE` is 1 MiB, and that *is* the tree norm -- 78 targets define `0x100000`, only
+  3 use `0x80000` and 3 use `0x48000`. An earlier note here claimed MEMORYSIZE-8 targets
+  generally use 512 KiB; that was wrong. Codec images are ~200 KB but the remainder is codec
+  working memory, so shrinking it needs a runtime measurement and would be unusual.
+- Growing the arena further means taking bytes from IDF's PSRAM heap (the constant is
+  "half of PSRAM plus what the codec text gave up") or moving the framebuffer/codec buffers.
+  `CONFIG_SPIRAM` heap is the other consumer of the same 8 MB.
 
