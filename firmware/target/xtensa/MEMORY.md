@@ -1287,3 +1287,43 @@ target config. Recorded as a known gap.
 Nothing will visibly change from `HAVE_ALBUMART` alone: the shipped `cabbiev2.wps` contains
 no `%aa` token, so album art needs a skin that asks for it. The capability is enabled now
 so it exists when the theme work lands rather than being entangled with it.
+
+## 6. Re-measured: the arena is 3.875 MiB, and what the window actually claims
+
+Measured from `idf-app/build/rockbox.map` on the current build, not from the figures
+this file carried:
+
+| | bytes | note |
+|---|---|---|
+| `.ext_ram.bss` total | 4,225,024 | three entries only |
+| `memory-xtensa-syms.o` (the buflib arena) | 4,063,232 | `0x3c155800` → `0x3c535800` = `rb_ext_ram_end` |
+| `lcd-16bit.o` (one framebuffer) | 153,600 | `0x3c130000`, below the arena |
+| `i2s-xtensa.o` | 8,192 | |
+| flash `.rodata` in the window | 568,704 | from `0x3c090120` |
+| plugin text reservation | 524,288 | `XT_PLUGIN_TEXT_SIZE`, `0x3c580000` |
+| codec text reservation | 524,288 | `XT_CODEC_TEXT_SIZE`, ends where codecbuf begins |
+| `codecbuf` (`CODEC_SIZE`) | 1,048,576 | `0x3c680000` |
+| `pluginbuf` (`PLUGIN_BUFFER_SIZE`) | 524,288 | |
+
+Earlier text in this file said the arena was 4 MiB at `0x3c1612e0..0x3c5612e0`. Both
+numbers are stale: the window moved when the layout guard landed, and the arena is
+**3,875,072 usable bytes**, which is the number every plugin-sizing argument should use.
+
+### Cleanup candidates, with the payload sizes that constrain them
+
+Measured payload sizes from the current zip: largest plugin `clock.rock` **482,560 B**
+(so `PLUGIN_BUFFER_SIZE` 512 KiB cannot shrink), largest `sgt` puzzle 220,856 B, largest
+codec `aac.codec` **200,232 B**, next `raac` 196,020 B.
+
+- `XT_CODEC_TEXT_SIZE` is 512 KiB for a largest codec of 200 KB. Halving it returns
+  256 KiB to the arena. Needs checking that no codec's *text* span exceeds 256 KiB, and
+  that `plugin.lds` and `memory-xtensa.h` still agree, because `apps/codecs.c` rejects a
+  codec whose `load_addr` is not exactly `codecbuf`.
+- `CODEC_SIZE` is 1 MiB. Targets with `MEMORYSIZE 8` in the tree generally use 512 KiB.
+  Codec images are ~200 KB, but the remainder is codec working memory, so this one needs
+  a runtime measurement before it is touched — the failure mode is a codec refusing to
+  load, which is loud rather than subtle.
+- The arena itself cannot grow without taking bytes from one of the above. It is not
+  "8 MB minus 4 MB"; the window is fully claimed and `tools/esp-layout-check` is what
+  proves it.
+
