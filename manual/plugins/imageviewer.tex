@@ -44,6 +44,7 @@ view a bigger file you may need to stop playback.}
                          \ButtonPlay + \ButtonScrollUp / \ButtonPlay + \ButtonScrollDown}
     \opt{touchscreen}{\TouchTopMiddle{} / \TouchBottomMiddle{}/ \TouchMidLeft{} / \TouchMidRight}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown{} / \ButtonLeft{} / \ButtonRight}
     & Move around in zoomed in image\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,IAUDIO_X5_PAD,SANSA_E200_PAD%
         ,SANSA_FUZE_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD,MROBE100_PAD}{\ButtonSelect}
@@ -56,6 +57,7 @@ view a bigger file you may need to stop playback.}
     \opt{touchscreen}{\TouchTopRight}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonX}
+    \opt{ESP32S3_PAD}{\TouchTopMiddle}
     & Zoom in\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonMode}
     \opt{IPOD_4G_PAD,IPOD_3G_PAD}{\ButtonScrollBack}
@@ -69,6 +71,7 @@ view a bigger file you may need to stop playback.}
     \opt{touchscreen}{\TouchTopLeft}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonY}
+    \opt{ESP32S3_PAD}{\TouchBottomMiddle}
     & Zoom out\\
     \opt{IRIVER_H100_PAD}{\ButtonOn}
     \opt{IRIVER_H300_PAD}{\ButtonRec}
@@ -87,6 +90,7 @@ view a bigger file you may need to stop playback.}
     \opt{touchscreen}{\TouchBottomRight}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonR}
+    \opt{ESP32S3_PAD}{\TouchMidRight}
     & Next image in directory\\
     \opt{IRIVER_H100_PAD,IAUDIO_X5_PAD}{\ButtonRec}
     \opt{IRIVER_H300_PAD}{\ButtonOn}
@@ -104,6 +108,7 @@ view a bigger file you may need to stop playback.}
     \opt{touchscreen}{\TouchBottomLeft}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonL}
+    \opt{ESP32S3_PAD}{\TouchMidLeft}
     & Previous image in directory\\
     \opt{SANSA_E200_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD,SANSA_FUZEPLUS_PAD%
       ,SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{%currently only defined for the sansa pads and samsung yh*
@@ -113,6 +118,7 @@ view a bigger file you may need to stop playback.}
        \opt{SAMSUNG_YH92X_PAD}{\ButtonRec\ switch}
        \opt{SAMSUNG_YH820_PAD}{Long \ButtonPlay}
          \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{\TouchCenter}
         & Toggle slide show mode\\
     }
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOff}
@@ -129,6 +135,7 @@ view a bigger file you may need to stop playback.}
           \opt{IRIVER_RC_H100_PAD}{\ButtonRCStop}
        }
     \opt{RG_NANO_PAD}{\ButtonB}
+    \opt{ESP32S3_PAD}{\ButtonA}
     & Show menu / Abort \\
     \opt{IPOD_4G_PAD,IPOD_3G_PAD,GIGABEAT_PAD,GIGABEAT_S_PAD,MROBE100_PAD,PBELL_VIBE500_PAD%
         ,SAMSUNG_YH820_PAD,RG_NANO_PAD}{
@@ -142,6 +149,7 @@ view a bigger file you may need to stop playback.}
         \opt{SAMSUNG_YH820_PAD}{\ButtonRec+\ButtonPlay}
             \opt{HAVEREMOTEKEYMAP}{& }
         \opt{RG_NANO_PAD}{\ButtonStart}
+        \opt{ESP32S3_PAD}{\ButtonB}
         & Quit the viewer \\
     }
 \end{btnmap}
