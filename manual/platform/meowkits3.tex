@@ -17,9 +17,10 @@
 \newcommand{\daps}{player's}
 \newcommand{\firmwarefilename}{\fname{rockbox.esp32s3}}
 \newcommand{\firmwareextension}{\fname{esp32s3}}
-% There is no separate bootloader file: the image flashed at offset 0x0 is
-% loaded by the chip's mask ROM. These are defined because the generic
-% installation text references them.
+% Rockbox is an ESP-IDF application image at flash offset 0x10000; IDF's second-stage
+% bootloader sits at 0x0 and the partition table at 0x8000, so there is no Rockbox-side
+% bootloader file to name. These are defined because the generic installation text
+% references them, and the MeowKit install page spells out the three-piece layout.
 \newcommand{\bootfilename}{\fname{rockbox.esp32s3}}
 \newcommand{\bootbackupfilename}{\fname{stock-firmware.bin}}
 \newcommand{\originalfirmwarefilename}{\fname{stock-firmware.bin}}
