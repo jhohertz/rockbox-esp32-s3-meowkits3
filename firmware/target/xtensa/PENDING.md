@@ -11,64 +11,82 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ---
 
-## 1. Needs the board
+## 1. Open
 
-- ~~Watch-items after the 2026-10-27 flash~~ — **all four confirmed passed by the user**
-  (`439b7866a0`, the core rationalization): buttons respond to a single press, serial
-  console reachable, a codec loads and plays, settings survive a reboot and the UI
-  renders. Nothing was visibly changed by that commit, which was the point.
-- **Plugin doc rows that give us nothing: 9 fixed, the rest were false positives.** The
-  trustworthy check turned out to be: build the manual for this target, then look at the
-  *rendered* key cell for each row. On that basis only two chapters had genuinely blank
-  rows — `chess_clock` (9 rows, now filled from `chessclock.c`'s `ESP32S3_PAD` branch:
-  stick up/down set values, A starts/pauses, B exits, Centre restarts the round,
-  Mid-Left opens the menu, Top/Bottom-Middle move between screens, Top/Bottom-Right
-  switch players) and `stopwatch` (5 rows, but that plugin **does not ship**: its macro
-  chain ends in `#error No keymap defined!` with no branch for this keypad, so the chapter
-  now says so and points at `stopwatch.lua`, which is what actually installs).
-  The earlier candidate lists were wrong in both directions: 213 rows, then 41 rows in 8
-  chapters, then 29 rows in 6. Goban, nim, midiplay and rockboy were false positives —
-  goban already renders its touch grid correctly, and the other three plugins are not in
-  the zip at all. Lesson kept: the option set for a rendered check has to include the
-  shared `keymap-touchscreen.tex` macros and target feature options, not just
-  `ESP32S3_PAD` and our own keymap file.
+- **Runtime numbers, using the existing tool.** `battery_bench`
+  (`rocks/apps/battery_bench.rock`) samples `battery_current()` with the display off, which
+  is the right instrument here — the debug views need the screen on, and the screen is the
+  largest variable. Worth recording: playback screen-on, playback screen-off, dark idle.
+  **Unplug USB first**: `xt_light_sleep_block(true)` is held while the USB device is armed
+  (`usb-xtensa.c:348`), so a plugged board neither light-sleeps nor gives a representative
+  idle current. The recorded progression 57 → 48 → 46 → 42 mA predates several changes and
+  should be re-measured, not reused.
+- **Card re-extract outstanding.** `rockbox.zip` carries the puzzle exclusion, the
+  `keymaps.h` A/B fix and the mpegplayer revert. Firmware on the board is current, so this
+  is a card action only.
+- **Arena cleanup — needs your go-ahead.** Halving `XT_CODEC_TEXT_SIZE` (512 KiB for a
+  largest codec of 200,232 B) returns 256 KiB to the 3,875,072-byte arena. It moves where
+  codec code executes, so it touches the audio path; `make esplayer` and `apps/codecs.c`'s
+  exact-`codecbuf` check would catch a mistake loudly. `PLUGIN_BUFFER_SIZE` cannot shrink
+  (`clock.rock` is 482,560 B against a 524,288 B buffer). `CODEC_SIZE` 1 MiB vs the tree's
+  512 KiB convention is another half-megabyte but needs runtime measurement of codec
+  working memory first.
+- **Coulometer → real battery percent.** Counters are enabled and readable raw. Converting
+  them needs the scale established against the known 1400 mAh cell — a measurement, not a
+  datasheet lookup — and then a decision on moving `CONFIG_BATTERY_MEASURE` to
+  `PERCENTAGE_MEASURE` with a target-supplied percentage.
+- **Charge target voltage — the battery-lifetime lever we deliberately did not pull.**
+  Neither our firmware nor the reference sets it, so the cell charges to the 4.2 V default;
+  ~4.1 V is the meaningful cycle-life improvement, but confirming the register on this die
+  is the probing you ruled out.
+- **Upstream submissions.** §5 lists 16 items including the `keymaps.h` touch-fallback bug
+  and the unfinished-puzzles gate. None sent; kept for a future split.
 
-- **Plugin documentation pass is finished.** `sgt-puzzles` has a key table for this
-  player (hardware-verified), `chess_clock` has its nine blank rows filled, `rockpaint` has
-  a MeowKit subsection explaining that it paints by cursor rather than by finger, `lua`
-  states which raw button codes scripts receive and points at `print_buttons.lua` for the
-  mapping, and `imageviewer` says it is a file-browser viewer rather than a Plugins menu
-  entry. `stopwatch`, `nim`, `midiplay` and `rockboy` are documented as not shipping on
-  this target (their binaries are not built), so nothing is claimed about them.
-- **SGT puzzles: A and B did nothing — root cause found and fixed.** `lib/keymaps.h`
-  defines `BTN_FIRE = BUTTON_A` and `BTN_PAUSE = BUTTON_B` in our branch, then the shared
-  `HAVE_TOUCHSCREEN` block further down **redefines** them to `BUTTON_BOTTOMLEFT` and
-  `BUTTON_TOPLEFT`, because that fallback is meant for pads with no fire/pause key of
-  their own. GCC said so out loud (`keymaps.h:336: warning: "BTN_FIRE" redefined`) and
-  every `BTN_*` plugin — all 40 sgt puzzles and `xworld` — silently took the touch cells.
-  Fixed by adding `CONFIG_KEYPAD != ESP32S3_PAD` to the block's own exclusion list, which
-  is the idiom it already uses for COWON_D2, DX50, ONDAVX777, ZENXFI2, SHANLING_Q1,
-  HIBY_R3PROII, HIDIZS_AP80MAX and N3DS. Warning gone; plugins rebuilt into the zip; the
-  chapter now documents the real mapping. **Verified on hardware by the user**
-(2026-10-27): A acts, B opens the pause menu, stick moves, Long B leaves, in the sgt
-puzzles and in xworld. The override defect is closed.
-- **SGT unfinished puzzles: excluded for this target, closed.** `src/unfinished/
-  sokoban.c` — `apps/plugins/puzzles/SOURCES.games:54` builds it out of the collection's
-  *unfinished* directory, whose own README says the contents are "half-written,
-  fundamentally flawed, or in other ways unready to be shipped as part of the polished
-  Puzzles collection", and whose CMake build deliberately excludes them from install
-  targets. Rockbox ships them anyway. Two more come from the same directory and are
-  suspect for the same reason: **sgt-group** (`SOURCES.games:48`) and **sgt-slide**
-  (`:51`). Nothing here is a MeowKit bug, and it isn't worth diagnosing further.
-  **Fixed and verified.** `apps/plugins/puzzles/SOURCES.games` now gates the three
-  `src/unfinished/` entries behind `!defined(PUZZLES_SKIP_UNFINISHED)`, matching the
-  conditional style that file already uses for `WIN32` and `PLUGIN_BUFFER_SIZE`, and
-  `config/meowkits3.h` defines the knob. The zip went from 43 `sgt-*.rock` entries to 40
-  — which also corrects an earlier claim here that 40 games shipped *including* these
-  three; the real shipped-and-working count is 40. Note the build gotcha: `make zip`
-  copies whatever `.rock` files exist in the build tree, so excluding a plugin leaves its
-  stale binary behind until you delete it. Card re-extract required; no flash, since
-  nothing in the firmware image changed.
+## 2. Verified on hardware — closed
+
+Each of these was checked on the board, not inferred.
+
+- **MSPI/MMU table survives light sleep.** Debug → View HW info's "External cache MMU: N
+  of 512 pages mapped" read the same after a long dark idle and wake, with playback working
+  afterwards, so `mmu_init()`'s audiobuffer and framebuffer mappings are intact across the
+  sleep boundary. Why it was ever in doubt: `PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y` and
+  `SOC_PM_SUPPORT_RTC_PERIPH_PD`/`VDDSDIO_PD` are supported, but
+  `ESP_SLEEP_PSRAM_LEAKAGE_WORKAROUND`, `ESP_SLEEP_MSPI_NEED_ALL_IO_PU` and
+  `ESP_SLEEP_RTC_BUS_ISO_WORKAROUND` are all set in `idf-app/sdkconfig`.
+- **GDMA TX row stays clean across sleep/wake.** The TX row (`sess / err / rec / sil`) did
+  not move across a long dark idle with a track loaded, so descriptor ownership survives the
+  boundary.
+- **USB serial console survives idle/wake — and it is CDC, not USB-JTAG.** Rockbox's CDC
+  class stays up while the player idles and still emits after a wake. The IDF console
+  (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`) only writes during early boot, which is why a `cat`
+  on the port during idle showed nothing; the post-boot output worth documenting is
+  Rockbox's own CDC path.
+- **Core rationalization watch-items, all four passed** (`439b7866a0`): single-press
+  buttons, serial console reachable, a codec loads and plays, settings survive a reboot and
+  the UI renders. That commit was meant to change nothing on this target, and it didn't.
+- **SGT and xworld A/B fix works** (`6cf0d20da7`): stick moves, A acts, B opens the pause
+  menu, Long B leaves. The shared touch-grid fallback had been redefining `BTN_FIRE` and
+  `BTN_PAUSE` away from our physical keys — GCC warned about the redefinition and nobody had
+  read it.
+- **The three unfinished sgt puzzles are no longer shipped** (`06096f15c6`): group, slide
+  and sokoban all crashed on launch and come from `src/unfinished/`, whose own README calls
+  its contents unready to ship. Gated behind `PUZZLES_SKIP_UNFINISHED`; zip went 43 sgt
+  binaries to 40.
+- **Plugin documentation pass complete** (`4e39ddcee9`, `b53d7719ec`, `a24ee27ee7`):
+  sgt-puzzles key table (verified against the hardware), chess_clock's nine blank rows
+  filled from its own keymap branch, rockpaint described as a cursor painter, lua gesture
+  set documented with `print_buttons.lua` as the live reference, imageviewer's file-browser
+  launch path stated, and stopwatch/nim/midiplay/rockboy recorded as not built for this
+  target rather than described with invented keys.
+- **`battery_update()` was a phantom** — the symbol does not exist here. The power thread
+  polls `_battery_voltage()` every tenth of a second and calls `battery_status_update()`,
+  which maps voltage through the target's `percent_to_volt_*` tables.
+- **Core probe removal and layout guard behave** (`ed9805f1e8`, `727a3efaf7`): playback
+  through the restored `open_pathfmt()` path, and `make esplayer` runs as a prerequisite of
+  `flash`/`espverify`.
+
+## 3. Deferred — might return
+
 - **mpegplayer: still failing, and the failure has three distinct shapes.** Ordered by
   what the code actually does, allocation order is grey → libmpeg2 → audio → pcm → disk
   buffer, and each step has its own message:
@@ -118,6 +136,7 @@ puzzles and in xworld. The override defect is closed.
   "Prev panic" and "Reset reason / rtc trail" after a crash — reason 1 with a non-zero rtc
   count means the chip was lost mid-run rather than a clean shutdown.
 
+
 - **mpegplayer now reaches playback but shows audio only** (failsafe theme + dircache off
   → 2.33 MB fit). So `stream_init`, the disk buffer and the parser all succeeded, and the
   video stream is being dropped somewhere between parsing and blitting. Two cheap
@@ -134,111 +153,11 @@ puzzles and in xworld. The override defect is closed.
   mpegplayer needs PTS timestamps, which MPEG-1 video in a PS does not carry;
   `-bf 0`; `-g` smaller than 12 is also fine.
 
-- **Arena cleanup, ranked by safety.** `XT_CODEC_TEXT_SIZE` 512 KiB covers a largest codec
-  of 200 KB, so halving it returns 256 KiB with a measurable margin and the layout guard
-  catches any mistake. `CODEC_SIZE` 1 MiB vs tree convention 512 KiB at `MEMORYSIZE 8` is
-  the other 512 KiB, but it needs a runtime measurement of codec working memory first —
-  the failure mode is a codec refusing to load, which is at least loud. `PLUGIN_BUFFER_SIZE`
-  cannot shrink: `clock.rock` is 482,560 B against a 524,288 B buffer.
 
-- **`imageviewer` — documented, closed.** It is launched by the file browser on an image
-  file via `apps/plugins/viewers.config`, not from the Plugins menu. The chapter now says
-  so.
-- **`rockpaint` — documented, closed, and my earlier claim was wrong.** It does have an
-  `ESP32S3_PAD` branch (`rockpaint.c:453`: stick moves, A plots, Centre menu,
-  Top/Bottom-Middle toolbars, Long B quit). The problem was that nothing explained it. The
-  chapter now describes it as a cursor painter, which is what a 3x3 grid can do; a dragged
-  stroke is impossible on this panel because the driver reports grid cells, not a
-  position.
-- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
+- **chip8.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
   stick + A/B + 3x3 grid is a design call, not a doc fix.
 
-- **mpegplayer transport.** Keys documented and hardware-verified as far as audio goes
-  (A tap pause, A held stop, stick volume/seek, B menu). Format requirements corrected
-  since this entry was written: mpegplayer *does* scale (`video_out_rockbox.c:416-428`),
-  so the coded-resolution ceiling is a memory constraint rather than a display one.
-  Playing any video also answers whether codec/plugin code executing from the PSRAM
-  window behaves — mpegplayer allocates ≥ 2 MB there. **Waiting on you.**
-- **Board test procedure — MMU retention across light sleep.** All of it is existing
-  facilities, no instrumentation. Go to **Debug → View HW info** and note the
-  **"External cache MMU: N of 512 pages mapped"** row and the **PM** row
-  (`light_sleep_enable`). Then **unplug USB** — `xt_light_sleep_block(true)` is held while
-  the USB device is armed (`usb-xtensa.c:348`), so a plugged board cannot light-sleep and
-  any "after sleep" reading taken while connected is really a before reading. Let it sit
-  dark for several minutes, wake it with a button press, and re-read the MMU row. Same
-  page count plus working playback means the 512-entry table at `0x600C5000` survived;
-  a lower count, or audio/screen reading the `0x0bad0bad` unmapped sentinel, means
-  `mmu_init()`'s audiobuffer and framebuffer entries were lost on wake. Supporting config,
-  confirmed in `idf-app/sdkconfig`: `ESP_SLEEP_PSRAM_LEAKAGE_WORKAROUND`,
-  `ESP_SLEEP_MSPI_NEED_ALL_IO_PU` and `ESP_SLEEP_RTC_BUS_ISO_WORKAROUND` are all on, and
-  `PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` is on — CPU-side power-down is exactly what makes the
-  MSPI/MMU question worth asking.
 
-- **Board test procedure — GDMA TX row across sleep/wake.** Same menu, the TX row prints
-  `sess / err / rec / sil`. Read it, do a long dark idle with a track loaded, wake, read it
-  again. `err` or `sil` climbing across the sleep boundary is the failure; a clean read
-  closes the item. This is also the row that would show trouble if the USB DAC CPU-boost
-  choice (`§3`) ever bites, though that path cannot light-sleep anyway.
-
-- **USB-JTAG console across sleep: not observable as framed, so close it or restate it.**
-  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` and nothing else sets `CONFIG_ESP_CONSOLE_*`, so
-  the IDF console writes only during early boot — which is why a `cat /dev/ttyACM0` on an
-  idle player reads zero bytes, and why there is no post-wake output to watch for. The
-  question that is actually meaningful is whether a **fault after a wake** still produces a
-  readable panic, and that is covered by the panic screen plus the RTC-slow "Prev panic"
-  row in the same menu. I'd restate the item that way rather than chase console liveness.
-
-- **Runtime numbers, with an existing tool.** For playback current and dark-idle current,
-  use **`battery_bench`** (`rocks/apps/battery_bench.rock`): it samples
-  `battery_current()` over time and keeps the display off, which matters here because the
-  debug views need the screen on and the screen is the largest variable. Readings worth
-  recording: playback with screen on, playback with screen off, dark idle. The recorded
-  dark-idle progression (57 → 48 → 46 → 42 mA) predates several changes, so take a fresh
-  number; remember USB must be unplugged or light sleep will be blocked and the reading
-  will be wrong.
-
-- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
-  stick + A/B + 3x3 grid is a design call, not a doc fix.
-
-- **mpegplayer transport.** Keys documented and hardware-verified as far as audio goes
-  (A tap pause, A held stop, stick volume/seek, B menu). Format requirements corrected
-  since this entry was written: mpegplayer *does* scale (`video_out_rockbox.c:416-428`),
-  so the coded-resolution ceiling is a memory constraint rather than a display one.
-  Playing any video also answers whether codec/plugin code executing from the PSRAM
-  window behaves — mpegplayer allocates ≥ 2 MB there. **Waiting on you.**
-- **MSPI MMU table across light sleep.** `SOC_PM_SUPPORT_RTC_PERIPH_PD` is enabled and
-  `rtc_init.c:114` clears `EXTMEM_CACHE_MMU_MEM_FORCE_ON`, so the 512-entry
-  `DR_REG_MMU_TABLE` may lose power; if it does, `mmu_init()`'s audiobuffer and
-  framebuffer mappings are gone on wake and the first PSRAM access reads `0x0bad0bad`.
-  Partially evidenced: playback resumes fine after a dark idle, so the mappings were
-  still valid on wake — indirect, and a short idle may never cross a sleep boundary.
-  `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` stays unset.
-- **Fresh dark-idle reading on the current build.** Recorded progression is 57 → 48
-  (frequency seam) → 46 (automatic light sleep on) → **42 mA** (amp/codec off when idle),
-  so 42 mA already included S4 — an earlier note claiming otherwise was wrong. The core,
-  plugins, USB and power policy have all moved since, so take a new number rather than
-  compare against 57. `Debug → View battery` view 3 prints `battery_current()`, the
-  instantaneous `current_now` (`apps/debug_menu.c:1244`), so repeated readings while
-  waking are meaningful; the 128-sample average (`BATT_CURRENT_AVE_SAMPLES`,
-  `firmware/export/powermgmt.h:100`) feeds the runtime estimate only.
-
-**Answered 2026-10-26:** flash and boot (`ed9805f1e8` probes removed, restored
-`open_pathfmt()` icon path), playback after the flash, playback after dark idle, and
-96 kHz local playback — the `XT_MIX_MULT` slot sizing holds and the old 1 KB overflow at
-96 kHz is gone.
-
-## 2. Break out when we come to it
-
-Crossed off the queue; each is its own small job, not a tracked pending item.
-
-- ~~What actually calls `battery_update()`~~ — closed: the symbol does not exist in this
-  tree. The power thread polls `_battery_voltage()` every tenth of a second and calls
-  `battery_status_update()` (`PENDING` §2b).
-- Whether the GDMA TX row stays clean across sleep/wake boundaries.
-- Whether the USB-JTAG boot console survives an idle sleep (it is the boot log's only
-  output).
-
-## 3. Deferred — might return
 
 | Item | Why deferred | What would reopen it |
 |---|---|---|
