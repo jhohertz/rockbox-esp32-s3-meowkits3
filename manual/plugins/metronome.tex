@@ -34,23 +34,23 @@ on the appropriate button.
         
     \PluginSelectRepeat
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCCancel}
-       \opt{ESP32S3_PAD}{Long \ButtonA{}}
+       \opt{ESP32S3_PAD}{\ButtonA{}}
        & Start \\
 
     \PluginSelect
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCSelect}
-        \opt{ESP32S3_PAD}{\ButtonA}
+        \opt{ESP32S3_PAD}{\ButtonA{} (on release)}
         & Tap tempo \\
 
     \PluginLeft{} / \PluginRight
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCLeft{} / \PluginRCRight}
-        \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown}
+        \opt{ESP32S3_PAD}{\ButtonLeft{} / \ButtonRight}
         & Adjust tempo \\
 
     \opt{scrollwheel}{\PluginScrollFwd{} / \PluginScrollBack}
     \nopt{scrollwheel}{\PluginUp{} / \PluginDown}
         \opt{HAVEREMOTEKEYMAP}{& \PluginRCUp{} / \PluginRCDown}
-        \opt{ESP32S3_PAD}{\textit{not available}}
+        \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown}
         & Adjust volume \\
 
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,SANSA_E200_PAD,SAMSUNG_YH820_PAD}{
