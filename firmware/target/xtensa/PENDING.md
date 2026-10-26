@@ -13,28 +13,51 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Runtime numbers, using the existing tool.** `battery_bench`
-  (`rocks/apps/battery_bench.rock`) samples `battery_current()` with the display off, which
-  is the right instrument here — the debug views need the screen on, and the screen is the
-  largest variable. Worth recording: playback screen-on, playback screen-off, dark idle.
-  **Unplug USB first**: `xt_light_sleep_block(true)` is held while the USB device is armed
-  (`usb-xtensa.c:348`), so a plugged board neither light-sleeps nor gives a representative
-  idle current. The recorded progression 57 → 48 → 46 → 42 mA predates several changes and
-  should be re-measured, not reused.
+- **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
+  60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
+  current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage
+  idle. **A** starts, **B** stops (`ESP32S3_PAD` mapping at `:273-279`), and it keeps running
+  as a TSR after you leave the plugin — that, not display control, is what lets the backlight
+  timeout blank the panel during an idle run. My earlier note saying it samples "with the
+  display off" was wrong about the mechanism. Two caveats: `flush_buffer()` skips writes
+  while USB is attached, and plugging in starts charging, which invalidates discharge
+  readings — run unplugged and connect only after stopping. Want: playback screen-on,
+  playback screen-off, dark idle, same track and volume, 20+ minutes each, and read the
+  slope across samples rather than any single line.
 - **Card re-extract outstanding.** `rockbox.zip` carries the puzzle exclusion, the
   `keymaps.h` A/B fix and the mpegplayer revert. Firmware on the board is current, so this
   is a card action only.
-- **Arena cleanup — needs your go-ahead.** Halving `XT_CODEC_TEXT_SIZE` (512 KiB for a
-  largest codec of 200,232 B) returns 256 KiB to the 3,875,072-byte arena. It moves where
-  codec code executes, so it touches the audio path; `make esplayer` and `apps/codecs.c`'s
-  exact-`codecbuf` check would catch a mistake loudly. `PLUGIN_BUFFER_SIZE` cannot shrink
-  (`clock.rock` is 482,560 B against a 524,288 B buffer). `CODEC_SIZE` 1 MiB vs the tree's
-  512 KiB convention is another half-megabyte but needs runtime measurement of codec
-  working memory first.
-- **Coulometer → real battery percent.** Counters are enabled and readable raw. Converting
-  them needs the scale established against the known 1400 mAh cell — a measurement, not a
-  datasheet lookup — and then a decision on moving `CONFIG_BATTERY_MEASURE` to
-  `PERCENTAGE_MEASURE` with a target-supplied percentage.
+- **Arena cleanup — needs your go-ahead, and the motivation is measured.** Our 8 MB PSRAM
+  Ext_RAM window is fully claimed: flash rodata 568,704 + `.ext_ram.bss` 4,225,024 + plugin
+  text 524,288 + codec text 524,288 + codecbuf 1,048,576 + pluginbuf 524,288, leaving the
+  buflib arena at **3,875,072 B**. Plugins compete inside that: mpegplayer needs ~2.57 MB of
+  it contiguous and free, and sgt puzzles, doom and xrick want large arenas too. The two
+  512 KiB *text* reservations are an xtensa-only construct — `CODEC_TEXT_ORIGIN` and
+  `PLUGIN_TEXT_ORIGIN` in `apps/plugins/plugin.lds:209-212` exist solely because plugin and
+  codec images execute through the IROM instruction-cache alias (`+XT_IROM_OFF`); every other
+  target places text inside `CODEC_ORIGIN`/`PLUGIN_ORIGIN` and reserves nothing extra. The
+  largest codec we ship is `aac.codec` at 200,232 B, so `XT_CODEC_TEXT_SIZE` is oversized by
+  roughly 2.5x, and halving it hands 256 KiB to the arena. It touches the audio path, so
+  before changing it confirm how `lc-xtensa.c:111` places images and what page count the IROM
+  mapping expects — `make esplayer` plus `apps/codecs.c`'s exact-`codecbuf` check would catch
+  an error loudly, but only after a build.
+  Measured constraints on the other knobs: `PLUGIN_BUFFER_SIZE` cannot shrink (`clock.rock`
+  is 482,560 B against a 524,288 B buffer, and 66 targets in the tree use the same 512 KiB).
+  **Correction to a claim in this file:** `CODEC_SIZE` 1 MiB is *not* against convention —
+  78 targets define `0x100000`, only 3 use `0x80000` and 3 use `0x48000`. Shrinking it would
+  be unusual, not a tidy-up, and codecs need the remainder as working memory anyway.
+- **Coulometer → real battery percent: where this gets determined.** Two places, and both
+  are ours. *Scale*: the counters are raw integers whose LSB depends on the calibration base
+  in CC_CTRL bit 6 (`AXP_CC_PIECE_BASE`), which is not documented in this tree — so it is
+  established empirically: clear the counters, run a known discharge (battery_bench already
+  logs `battery_current()` and elapsed seconds every 60 s), integrate mA·h from those
+  samples, and divide by the counter delta to get mAh-per-LSB. Do it while discharging, not
+  charging, since USB contaminates both sides. *Wiring*: `CONFIG_BATTERY_MEASURE` is
+  currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in `config/meowkits3.h:354`; adding
+  `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c:393` and `:467` call `_battery_level()`
+  in `power-xtensa.c` instead of mapping voltage through `percent_to_volt_discharge[]`. That
+  is the whole hook — no core change. Voltage stays as a cross-check (the two can disagree
+  under load sag, which is the reason to prefer the counters).
 - **Charge target voltage — the battery-lifetime lever we deliberately did not pull.**
   Neither our firmware nor the reference sets it, so the cell charges to the 4.2 V default;
   ~4.1 V is the meaningful cycle-life improvement, but confirming the register on this die
