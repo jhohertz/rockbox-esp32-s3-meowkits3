@@ -7,6 +7,35 @@ If your file does not have the \fname{.mpg} extension but is encoded in the
 supported format, you will need to use the \setting{Open With...} context menu
 option and choose \setting{mpegplayer}.
 
+\subsubsection{File formats and encoding}
+The video is decoded by libmpeg2, so the video track must be \emph{MPEG-1 or MPEG-2
+Part 2}. H.264, HEVC, VP9 and MPEG-4 Part 2 (DivX/Xvid) are not decodable here. The
+audio track is decoded by libmad, which means \emph{MP3 only} -- a VCD's MPEG-1 Layer II
+audio track plays silent. Container is MPEG Program Stream, file name
+\fname{.mpg} (also \fname{.mpeg}, \fname{.mpv}, \fname{.m2v}).
+
+The plugin scales the decoded picture to fit the screen, so a large coded frame is not
+rejected outright. It is, however, the single biggest memory cost: libmpeg2 allocates its
+YUV and converted frame buffers from the \emph{coded} resolution, and the plugin reserves
+a fixed pool for them before it knows the stream's size. Coded frames above roughly
+352$\times$288 exhaust that pool, and libmpeg2 does not check for a failed allocation.
+Encode at or below the panel size:
+
+\begin{verbatim}
+ffmpeg -i input.mp4 \
+  -vf "scale=320:240:force_original_aspect_ratio=decrease,\
+pad=320:240:(ow-iw)/2:(oh-ih)/2" \
+  -pix_fmt yuv420p -c:v mpeg2video -q:v 8 -g 12 -bf 0 \
+  -c:a libmp3lame -ar 44100 -ac 2 -b:a 128k \
+  -f mpeg output.mpg
+\end{verbatim}
+
+Each of those settings is load-bearing: \emph{yuv420p} because the decoder's chroma
+handling assumes 4:2:0; \emph{-bf 0} because B-frames add reordering the output path does
+not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes
+\ActionWpsSeek{} responsive; \emph{-ar 44100} because the plugin's audio clock is
+44.1 kHz; and \emph{-f mpeg} because the demuxer expects a Program Stream.
+
 \begin{btnmap}
     \opt{GIGABEAT_S_PAD}{\ButtonSelect{} or \ButtonPlay}
     \opt{GIGABEAT_PAD}{\ButtonSelect{} or \ButtonA}
