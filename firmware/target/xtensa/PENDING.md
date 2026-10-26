@@ -32,6 +32,31 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **`sgt-puzzles` (40 shipped binaries) has no key table at all**, and lua scripts (63
   shipped) get raw buttons with nothing documenting the gesture set. Both are genuine
   doc gaps, unlike the item above.
+- **SGT puzzles: A and B appear to do nothing; stick and touch work.** User report on
+  hardware: Top-Left (touch) exits, Bottom-Left acts, stick moves, A/B unresponsive.
+  `apps/plugins/puzzles/rockbox.c` has **no `CONFIG_KEYPAD` guard at all** — it uses
+  `BTN_UP/DOWN/LEFT/RIGHT/FIRE/PAUSE` from `lib/keymaps.h` (our `ESP32S3_PAD` branch is
+  selected, `BTN_FIRE = A`, `BTN_PAUSE = B`) plus its own touch-grid handling. So the
+  contradiction is in how the plugin asks for buttons, not in the mapping table.
+- **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
+  log over serial; not diagnosable from source. Other puzzles launch and play, so it is
+  per-game rather than the family.
+- **mpegplayer fails at load with insufficient memory.** Matches
+  `mpegplayer/stream_mgr.c:1110` `"Out of memory in stream_init"`. It carves its own
+  arena in `mpegplayer/alloc.c` rather than using the plugin buffers. Our sizes:
+  `CODEC_SIZE 1 MiB`, `PLUGIN_BUFFER_SIZE 512 KiB`. The arithmetic against the requested
+  frame size is the actual question, and it may be answerable without a board.
+- **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
+  by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
+  not say that. Documentation gap, not firmware.
+- **`rockpaint` has no `ESP32S3_PAD` branch.** It defines `ROCKPAINT_QUIT/DRAW/MENU/
+  TOOLBAR/TOOLBAR2` per pad (iriver H300, iPod, iAudio, …) and falls through to the
+  generic `#else` for us, which is why it is unusable/confusing. Its drawing model wants
+  pixel addressing, which a 3x3 touch grid cannot give; free-touch drawing is the natural
+  fit but is what the plugin does not do today.
+- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
+  stick + A/B + 3x3 grid is a design call, not a doc fix.
+
 - **mpegplayer transport.** Keys documented (A tap pause, A held stop, stick
   volume/seek, B menu). Waiting on `.mpg` files: MPEG-1/2 Part 2 video, MP3 audio only
   (libmad — a VCD's MP2 track is silent), no scaling so ≤ 320×240, container `-f mpeg`.
