@@ -24,27 +24,33 @@ on the appropriate button.
     \opt{IPOD_4G_PAD,IPOD_3G_PAD}{\ButtonMenu}
     \nopt{IPOD_4G_PAD,IPOD_3G_PAD}{\PluginExit}
        \opt{HAVEREMOTEKEYMAP}{& }
+        \opt{ESP32S3_PAD}{Long \ButtonB{}}
         & Exit plugin \\
 
     \PluginCancel
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCCancel}
+        \opt{ESP32S3_PAD}{\ButtonB}
         & Stop \\
         
     \PluginSelectRepeat
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCCancel}
+       \opt{ESP32S3_PAD}{Long \ButtonA{}}
        & Start \\
 
     \PluginSelect
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCSelect}
+        \opt{ESP32S3_PAD}{\ButtonA}
         & Tap tempo \\
 
     \PluginLeft{} / \PluginRight
        \opt{HAVEREMOTEKEYMAP}{& \PluginRCLeft{} / \PluginRCRight}
+        \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown}
         & Adjust tempo \\
 
     \opt{scrollwheel}{\PluginScrollFwd{} / \PluginScrollBack}
     \nopt{scrollwheel}{\PluginUp{} / \PluginDown}
         \opt{HAVEREMOTEKEYMAP}{& \PluginRCUp{} / \PluginRCDown}
+        \opt{ESP32S3_PAD}{\textit{not available}}
         & Adjust volume \\
 
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD,SANSA_E200_PAD,SAMSUNG_YH820_PAD}{
