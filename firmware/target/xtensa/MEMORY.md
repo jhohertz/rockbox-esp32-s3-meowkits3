@@ -1120,9 +1120,10 @@ its own (`0x4037f6b4`). The sleep threshold is IDF's computed default of 8 ticks
 1000 Hz, against the 10 ms tick period -- see the note in `sdkconfig.defaults`, which also
 explains why `FREERTOS_HZ` cannot drop to 100.
 
-Not yet measured on the device: dark-idle current with sleeping enabled (baseline after
-the frequency seam was 48 mA), whether the TX row stays clean across sleep/wake
-boundaries, and whether the USB-JTAG console survives a sleep while idle (it is the boot
+Superseded by the two sections below, which measure dark idle with automatic light sleep
+on (46 mA, then 42 mA after the amplifier policy). Still unmeasured: whether the TX row
+stays clean across sleep/wake boundaries, and whether the USB-JTAG console survives a
+sleep while idle (it is the boot
 log's only output, and `CONFIG_ESP_SLEEP_*` handles pad restore for chips that do not
 support USJ in light sleep).
 
