@@ -21,15 +21,18 @@ the \setting{Virtual Keyboard} (see \reference{sec:virtual_keyboard}).
 \begin{btnmap}
     \ActionStdOk 
       \opt{HAVEREMOTEKEYMAP}{& \ActionRCStdOk}
+    \opt{ESP32S3_PAD}{\ButtonA{} or \ButtonRight}
     & Edit Line / Select Character\\
 
     \ActionStdCancel 
       \opt{HAVEREMOTEKEYMAP}{& \ActionRCStdCancel} 
+    \opt{ESP32S3_PAD}{\ButtonLeft}
     & Exit / Abort Editing\\
 
     \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ActionStdContext}
     \nopt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ActionStdMenu}
       \opt{HAVEREMOTEKEYMAP}{& \ActionRCStdMenu} 
+    \opt{ESP32S3_PAD}{\ButtonB}
     & Show Item Menu\\
 
     \nopt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{

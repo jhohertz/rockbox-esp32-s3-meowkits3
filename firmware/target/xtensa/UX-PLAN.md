@@ -390,8 +390,8 @@ macros (`*_NAME`, `LABEL_*`, `HK_SELECT`) alongside the button macros.
 Utility and viewer plugins are left on touch on purpose — the grid is the natural
 input there and upstream already maps it sensibly.
 
-**Manual coverage** (done): 24 plugin chapters now carry an `ESP32S3_PAD` column,
-127 rows in total, generated from the keymap branches rather than from the plugin
+**Manual coverage** (done): 37 plugin chapters now carry an `ESP32S3_PAD` column,
+208 rows in total, generated from the keymap branches rather than from the plugin
 headers, so what the manual says is what the build does. Writing it down surfaced
 three things:
 

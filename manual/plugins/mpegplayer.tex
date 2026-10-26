@@ -12,20 +12,24 @@ option and choose \setting{mpegplayer}.
     \opt{GIGABEAT_PAD}{\ButtonSelect{} or \ButtonA}
     \nopt{GIGABEAT_S_PAD,GIGABEAT_PAD}{\ActionWpsPlay}
        \opt{HAVEREMOTEKEYMAP}{& } 
+    \opt{ESP32S3_PAD}{\TouchCenter}
     & Pause / Resume\\
     \ActionWpsStop
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\TouchTopLeft}
     & Stop\\
     \nopt{GIGABEAT_S_PAD,GIGABEAT_PAD}{\ActionWpsVolUp{} / \ActionWpsVolDown}
     \opt{GIGABEAT_S_PAD,GIGABEAT_PAD}{\ButtonLeft{} or  \ButtonVolDown{} /
         \ButtonRight{} or \ButtonVolUp}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\TouchTopMiddle{} / \TouchBottomMiddle}
     & Adjust volume up / down\\
     \nopt{GIGABEAT_S_PAD,GIGABEAT_PAD,SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{%
           \ActionWpsSkipPrev{} / \ActionWpsSkipNext}
     \opt{GIGABEAT_S_PAD,GIGABEAT_PAD}{\ButtonUp{} / \ButtonDown}
     \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonLeft{} / \ButtonRight}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\TouchMidLeft{} / \TouchMidRight}
     & Rewind / Fast Forward\\
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonMode}
     \opt{IPOD_4G_PAD,IPOD_3G_PAD,GIGABEAT_PAD,GIGABEAT_S_PAD,MROBE100_PAD,PBELL_VIBE500_PAD}
@@ -36,6 +40,7 @@ option and choose \setting{mpegplayer}.
     \opt{SANSA_E200_PAD,SANSA_FUZE_PAD,SANSA_C200_PAD,SANSA_CLIP_PAD}{\ButtonSelect}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonStart}
+    \opt{ESP32S3_PAD}{\TouchTopRight}
     & Open the MPEG Player menu\\
 \end{btnmap}
 
