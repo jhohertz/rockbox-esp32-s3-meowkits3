@@ -181,16 +181,21 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
 
     /* Both dimensions must be even, as the caller is required to pass even ones. */
     width &= ~1;
-    height >>= 1;      /* the helper writes two luma rows per call */
 
     /* Bound against the framebuffer: unlike the drawing functions this writes
-     * fb_data directly, so an over-wide rectangle would run into the next row. */
+     * fb_data directly, so an over-wide rectangle would run into the next row.
+     * height stays the full luma height so the push below can use it; the loop
+     * counts pairs, because the helper writes two luma rows per call.
+     */
     if (x + width > LCD_WIDTH)
         width = LCD_WIDTH - x;
-    if (y + (height << 1) > LCD_HEIGHT)
-        height = (LCD_HEIGHT - y) >> 1;
+    if (y + height > LCD_HEIGHT)
+        height = LCD_HEIGHT - y;
+    height &= ~1;
     if (width <= 0 || height <= 0)
         return;
+
+    int pairs = height >> 1;
 
     /* Line write helper from firmware/asm/lcd-as-memframe.c, declared extern by
      * drivers/lcd-memframe.c. */
@@ -216,12 +221,12 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
         yuv_src[2] += stride >> 1;
         dst += 2 * LCD_FBWIDTH;
     }
-    while (--height > 0);
+    while (--pairs > 0);
 
     /* The part this function exists for: nothing else sends these pixels.
      * Runs on the plugin's video thread under its own vo_lock(), and
      * lcd_update_rect() drops the draw if the panel is off. */
-    lcd_update_rect(x, y, width, height << 1);
+    lcd_update_rect(x, y, width, height);
 }
 
 void lcd_init_device(void)
