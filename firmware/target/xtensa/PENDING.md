@@ -13,15 +13,10 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Needs the board
 
-- **Watch-items after the 2026-10-27 flash** (`439b7866a0`, the core rationalization).
-  The point of that commit is that our behaviour must *not* move, so a failure would be a
-  seam misfiring rather than a feature missing. Normal use will show it: buttons respond
-  to a single press (`HAVE_TARGET_TICK_THREAD` is what keeps the polling thread, and the
-  stick lives on it); the serial console is still reachable (`USB_SERIAL_DEFAULT_ON`);
-  a codec loads and plays (`apps/codecs.c` reverted to upstream); settings survive a
-  reboot and the UI renders (`logfbuffer` and `language_buffer` are now placed by the
-  ldfragment instead of a section attribute — a wrong placement would hang or read
-  `0x0bad0bad`, not fail quietly).
+- ~~Watch-items after the 2026-10-27 flash~~ — **all four confirmed passed by the user**
+  (`439b7866a0`, the core rationalization): buttons respond to a single press, serial
+  console reachable, a codec loads and plays, settings survive a reboot and the UI
+  renders. Nothing was visibly changed by that commit, which was the point.
 - **Plugin doc rows that give us nothing: 9 fixed, the rest were false positives.** The
   trustworthy check turned out to be: build the manual for this target, then look at the
   *rendered* key cell for each row. On that basis only two chapters had genuinely blank
@@ -132,33 +127,22 @@ puzzles and in xworld. The override defect is closed.
   the failure mode is a codec refusing to load, which is at least loud. `PLUGIN_BUFFER_SIZE`
   cannot shrink: `clock.rock` is 482,560 B against a 524,288 B buffer.
 
-- **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
-  by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
-  not say that. Documentation gap, not firmware.
-- **`rockpaint` has no `ESP32S3_PAD` branch.** It defines `ROCKPAINT_QUIT/DRAW/MENU/
-  TOOLBAR/TOOLBAR2` per pad (iriver H300, iPod, iAudio, …) and falls through to the
-  generic `#else` for us, which is why it is unusable/confusing. Its drawing model wants
-  pixel addressing, which a 3x3 touch grid cannot give; free-touch drawing is the natural
-  fit but is what the plugin does not do today.
+- **`imageviewer` — documented, closed.** It is launched by the file browser on an image
+  file via `apps/plugins/viewers.config`, not from the Plugins menu. The chapter now says
+  so.
+- **`rockpaint` — documented, closed, and my earlier claim was wrong.** It does have an
+  `ESP32S3_PAD` branch (`rockpaint.c:453`: stick moves, A plots, Centre menu,
+  Top/Bottom-Middle toolbars, Long B quit). The problem was that nothing explained it. The
+  chapter now describes it as a cursor painter, which is what a 3x3 grid can do; a dragged
+  stroke is impossible on this panel because the driver reports grid cells, not a
+  position.
 - **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
   stick + A/B + 3x3 grid is a design call, not a doc fix.
 
-
-
-- **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
-  by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
-  not say that. Documentation gap, not firmware.
-- **`rockpaint` has no `ESP32S3_PAD` branch.** It defines `ROCKPAINT_QUIT/DRAW/MENU/
-  TOOLBAR/TOOLBAR2` per pad (iriver H300, iPod, iAudio, …) and falls through to the
-  generic `#else` for us, which is why it is unusable/confusing. Its drawing model wants
-  pixel addressing, which a 3x3 touch grid cannot give; free-touch drawing is the natural
-  fit but is what the plugin does not do today.
-- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
-  stick + A/B + 3x3 grid is a design call, not a doc fix.
-
-- **mpegplayer transport.** Keys documented (A tap pause, A held stop, stick
-  volume/seek, B menu). Waiting on `.mpg` files: MPEG-1/2 Part 2 video, MP3 audio only
-  (libmad — a VCD's MP2 track is silent), no scaling so ≤ 320×240, container `-f mpeg`.
+- **mpegplayer transport.** Keys documented and hardware-verified as far as audio goes
+  (A tap pause, A held stop, stick volume/seek, B menu). Format requirements corrected
+  since this entry was written: mpegplayer *does* scale (`video_out_rockbox.c:416-428`),
+  so the coded-resolution ceiling is a memory constraint rather than a display one.
   Playing any video also answers whether codec/plugin code executing from the PSRAM
   window behaves — mpegplayer allocates ≥ 2 MB there. **Waiting on you.**
 - **MSPI MMU table across light sleep.** `SOC_PM_SUPPORT_RTC_PERIPH_PD` is enabled and
@@ -186,8 +170,9 @@ puzzles and in xworld. The override defect is closed.
 
 Crossed off the queue; each is its own small job, not a tracked pending item.
 
-- What actually calls `battery_update()` — no caller found, so the current average's
-  time span is unknown.
+- ~~What actually calls `battery_update()`~~ — closed: the symbol does not exist in this
+  tree. The power thread polls `_battery_voltage()` every tenth of a second and calls
+  `battery_status_update()` (`PENDING` §2b).
 - Whether the GDMA TX row stays clean across sleep/wake boundaries.
 - Whether the USB-JTAG boot console survives an idle sleep (it is the boot log's only
   output).
