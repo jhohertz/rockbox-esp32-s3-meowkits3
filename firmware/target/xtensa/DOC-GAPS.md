@@ -118,7 +118,7 @@ the corresponding spike is done and the manual's keymap file should stop saying
 - **What fixing it means:** one WPS-context mapping. Free stick slots are
   scarce: `Up|REPEAT` and `Down|REPEAT` are volume on the WPS, `A|REPEAT` is
   context there and stop, `B|REPEAT` is quick screen.
-- **Status:** open, low severity. The manual now shows the touch gesture — the
+- **Status:** closed as accepted. The manual now shows the touch gesture — the
   pitch row in `wps.tex` was gated on an explicit pad list that excluded us, and
   `ESP32S3_PAD` has been added, so the entry reads *Long Bottom-Left* instead of
   being missing. The stick slot remains deliberately unclaimed.
@@ -361,8 +361,9 @@ Minor, collected because the macros have to say something:
   subdirectory titles with no classified mechanism (`chessbox`, `goban`,
   `pacbox`, `sudoku`, `zxbox`, `superdom`, `rocklife`) go through pluginlib or
   the helper libs and need only hardware confirmation, not new keymaps.
-- **Status:** open — the games are done pending a hardware test of the batch;
-  the utility set is deliberately left on touch.
+- **Status:** closed except for documentation of the residual rows. The batch, the
+  theme pack and the fonts artifact were verified on the device. See `PENDING.md` for
+  what still needs the board (mpegplayer transport, which needs video files).
 
 ## 11. USB HID: wired, and the keypad only lives on the USB screen
 
