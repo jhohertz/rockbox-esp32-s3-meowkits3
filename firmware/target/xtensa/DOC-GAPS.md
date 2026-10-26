@@ -326,11 +326,17 @@ Minor, collected because the macros have to say something:
   The chapters already had `\opt{touchscreen}` rows, and that option comes from the
   features list rather than from the platform file, so the touch half of every table
   was rendering for us all along — only the stick and A/B column was missing.
-- **Residual doc gap, measured**: 2 shipped chapters still have rows with no key for
-  us — `xworld` (a Spectrum emulator whose input goes through an on-screen keyboard,
-  not a keypad chain at all) and `metronome`'s volume/sync rows (`PLA_SCROLL_*`, which
-  no keypad without a wheel can supply). Four more (`chess_clock`, `midiplay`,
-  `rockboy`, `stopwatch`) have the same shape and are not shipped.
+- **Residual doc gap, measured**: 1 shipped chapter has rows with no key for us —
+  `metronome`'s volume and sync-tap rows, which use `PLA_SCROLL_*` and cannot be
+  supplied by a keypad with no wheel. Four more (`chess_clock`, `midiplay`, `rockboy`,
+  `stopwatch`) have the same shape and are not shipped.
+- **xworld was already playable.** Its input goes through `apps/plugins/lib/keymaps.h`,
+  which has carried an `ESP32S3_PAD` branch all along (`BTN_UP/DOWN/LEFT/RIGHT` on the
+  stick, `BTN_FIRE` = A, `BTN_PAUSE` = B); the chapter was simply silent. Its comment
+  claimed the touch grid was "wired and polled but not yet exercised" — stale, since
+  several plugins use those cells on hardware — so it now says the grid exists and
+  `BTN_HAVE_DIAGONAL` is left undefined on purpose, because diagonals would land on
+  cells a player is not looking at mid-game.
 - **pictureflow needed code, not prose.** Its `pf_context_buttons` table puts every
   `PF_QUIT` entry inside a `#elif CONFIG_KEYPAD == …` for some other keypad, so this
   target got only the `HAVE_TOUCHSCREEN` pair (Centre = select, BottomRight = back) and

@@ -291,10 +291,11 @@
 #define BTN_PAUSE       BUTTON_POWER
 
 #elif CONFIG_KEYPAD == ESP32S3_PAD
-/* MeowKit: the 5-way gives the four directions, A is fire, B pause. Same shape
- * as ECHO_R1. The 3x3 touch grid (BUTTON_TOPLEFT..BUTTON_BOTTOMRIGHT) is wired
- * and polled but not yet exercised, so no BTN_HAVE_DIAGONAL here -- see the
- * touchscreen note before assuming those buttons arrive. */
+/* MeowKit: the 4-way stick gives the four directions, A is fire, B is pause.
+ * Same shape as ECHO_R1. The 3x3 touch grid is real on this board (BUTTON_TOPLEFT
+ * .. BUTTON_BOTTOMRIGHT arrive and plugins use them), but the stick covers xworld
+ * completely, so BTN_HAVE_DIAGONAL is deliberately left undefined: diagonal keys
+ * would land on touch cells a player is not looking at while playing. */
 #define BTN_UP          BUTTON_UP
 #define BTN_DOWN        BUTTON_DOWN
 #define BTN_LEFT        BUTTON_LEFT
