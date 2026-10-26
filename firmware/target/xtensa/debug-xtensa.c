@@ -135,6 +135,18 @@ enum
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
      * screen is opened rather than sampled continuously. */
     INFO_CODEC,
+    /* The AXP173 charge and discharge counters, raw. They are enabled and cleared at
+     * boot by axp173_init(), so a freshly booted board legitimately reads 0/0 -- which
+     * is also what a failed I2C read produces, and the two cannot be told apart from
+     * these numbers alone. That is acceptable here because the point of the row is the
+     * *delta* across an interval, not an absolute value: boot, confirm 0/0, run
+     * battery_bench, and divide the integrated mA-hours from its log by the discharge
+     * delta to get the LSB scale. Until that scale is measured these integers mean
+     * nothing to the user, so the row says so rather than inventing a unit.
+     *
+     * Reading it costs one 8-byte burst read over I2C, drawn when the screen opens.
+     */
+    INFO_CC,
     /* Whether power management is configured, and what the core actually did.
      * esp_pm_dump_locks() is the obvious tool and is unusable here: it takes a
      * newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this measures
@@ -242,6 +254,14 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_CODEC:
         es8311_stat(buf, bufsz);
         break;
+    case INFO_CC: {
+        uint32_t charge, discharge;
+
+        axp173_coulomb_read(&charge, &discharge);
+        snprintf(buf, bufsz, "CC raw: charge %lu discharge %lu",
+                 (unsigned long)charge, (unsigned long)discharge);
+        break;
+    }
     case INFO_PM: {
         esp_pm_config_t cfg = { 0 };
         uint64_t us = esp_timer_get_time();
