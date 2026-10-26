@@ -32,12 +32,17 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **`sgt-puzzles` (40 shipped binaries) has no key table at all**, and lua scripts (63
   shipped) get raw buttons with nothing documenting the gesture set. Both are genuine
   doc gaps, unlike the item above.
-- **SGT puzzles: A and B appear to do nothing; stick and touch work.** User report on
-  hardware: Top-Left (touch) exits, Bottom-Left acts, stick moves, A/B unresponsive.
-  `apps/plugins/puzzles/rockbox.c` has **no `CONFIG_KEYPAD` guard at all** — it uses
-  `BTN_UP/DOWN/LEFT/RIGHT/FIRE/PAUSE` from `lib/keymaps.h` (our `ESP32S3_PAD` branch is
-  selected, `BTN_FIRE = A`, `BTN_PAUSE = B`) plus its own touch-grid handling. So the
-  contradiction is in how the plugin asks for buttons, not in the mapping table.
+- **SGT puzzles: A and B did nothing — root cause found and fixed.** `lib/keymaps.h`
+  defines `BTN_FIRE = BUTTON_A` and `BTN_PAUSE = BUTTON_B` in our branch, then the shared
+  `HAVE_TOUCHSCREEN` block further down **redefines** them to `BUTTON_BOTTOMLEFT` and
+  `BUTTON_TOPLEFT`, because that fallback is meant for pads with no fire/pause key of
+  their own. GCC said so out loud (`keymaps.h:336: warning: "BTN_FIRE" redefined`) and
+  every `BTN_*` plugin — all 40 sgt puzzles and `xworld` — silently took the touch cells.
+  Fixed by adding `CONFIG_KEYPAD != ESP32S3_PAD` to the block's own exclusion list, which
+  is the idiom it already uses for COWON_D2, DX50, ONDAVX777, ZENXFI2, SHANLING_Q1,
+  HIBY_R3PROII, HIDIZS_AP80MAX and N3DS. Warning gone; plugins rebuilt into the zip; the
+  chapter now documents the real mapping. **Needs a card re-extract, then a test** that A
+  acts and B opens the pause menu in a puzzle and in xworld.
 - **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
   log over serial; not diagnosable from source. Other puzzles launch and play, so it is
   per-game rather than the family.

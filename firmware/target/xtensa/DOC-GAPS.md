@@ -305,6 +305,11 @@ Minor, collected because the macros have to say something:
   `ESP32S3_PAD` branch, including `pacbox`, `sudoku`, `calculator`, `calendar`,
   `chessbox`, `doom`, `fractals`, `imageviewer`, `mpegplayer`'s start-time dialog,
   `text_viewer`, `zxbox` and `chip8` — so the gap was documentation, not bindings.
+  **That conclusion had one exception, found later by hardware testing.** A branch being
+  present is not the same as a branch being effective: `lib/keymaps.h` redefines our
+  `BTN_FIRE`/`BTN_PAUSE` in its shared touch-grid fallback block, so the 40 sgt puzzles
+  and `xworld` never saw A or B despite having a branch. The chapter rows for `xworld`
+  said `A` and `B`, which was aspirational rather than measured; the code now matches it.
 
 - **Coverage, measured twice because the first measurement was wrong.** The
   "30 table-bearing chapters have no column for us" claim was *false*: chapters drive
