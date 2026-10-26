@@ -349,17 +349,8 @@ void read_viewer_theme_file(void)
         custom_filetype_icons[i] = filetypes[i].icon;
     }
 
-    /* TEMPORARY bisection. read_viewers_config_init() calls open() with a
-       literal path just above and it returns fine; this is the first
-       open_pathfmt() in the boot -- same subsystem, but the path is built
-       through vsnprintf rather than handed in. Build the path by hand, print
-       it, and open() it directly, so the two halves are separable: if this
-       returns, open_pathfmt() is the problem and not the filesystem. */
-    snprintf(buffer, sizeof(buffer), ICON_DIR "/%s.icons",
-             global_settings.viewers_icon_file);
-    printf("vt: opening '%s'\n", buffer);
-    fd = open(buffer, O_RDONLY);
-    printf("vt: open returned %d\n", fd);
+    fd = open_pathfmt(buffer, sizeof(buffer), O_RDONLY,
+                      ICON_DIR "/%s.icons", global_settings.viewers_icon_file);
     if (fd < 0)
         return;
 
@@ -420,14 +411,10 @@ void filetype_init(void)
     filetype_count = 1;
 
     read_builtin_types_init();
-    printf("filetypes: read_builtin_types_init done\n");
     read_viewers_config_init();
-    printf("filetypes: read_viewers_config_init done\n");
     read_viewer_theme_file();
-    printf("filetypes: read_viewer_theme_file done\n");
 #ifdef HAVE_LCD_COLOR
     read_color_theme_file();
-    printf("filetypes: read_color_theme_file done\n");
 #endif
 }
 
