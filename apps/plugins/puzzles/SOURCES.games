@@ -44,12 +44,17 @@ src/undead.c
 src/unequal.c
 src/unruly.c
 src/untangle.c
-#ifndef WIN32
+/* The three games under src/unfinished/ are gated, not listed. That directory's own
+ * README says its contents are "half-written, fundamentally flawed, or in other ways
+ * unready to be shipped as part of the polished Puzzles collection", and the upstream
+ * CMake build deliberately leaves them out of install targets. A target opts out of them
+ * by defining PUZZLES_SKIP_UNFINISHED; the default is unchanged for everyone else. */
+#if !defined(WIN32) && !defined(PUZZLES_SKIP_UNFINISHED)
 src/unfinished/group.c
 #endif
-#ifndef WIN32
+#if !defined(WIN32) && !defined(PUZZLES_SKIP_UNFINISHED)
 src/unfinished/slide.c
 #endif
-#ifndef WIN32
+#if !defined(WIN32) && !defined(PUZZLES_SKIP_UNFINISHED)
 src/unfinished/sokoban.c
 #endif

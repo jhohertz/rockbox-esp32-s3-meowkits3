@@ -52,7 +52,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   chapter now documents the real mapping. **Verified on hardware by the user**
 (2026-10-27): A acts, B opens the pause menu, stick moves, Long B leaves, in the sgt
 puzzles and in xworld. The override defect is closed.
-- **SGT sokoban: marked non-working, and the reason is upstream's.** `src/unfinished/
+- **SGT unfinished puzzles: excluded for this target, closed.** `src/unfinished/
   sokoban.c` — `apps/plugins/puzzles/SOURCES.games:54` builds it out of the collection's
   *unfinished* directory, whose own README says the contents are "half-written,
   fundamentally flawed, or in other ways unready to be shipped as part of the polished
@@ -60,9 +60,15 @@ puzzles and in xworld. The override defect is closed.
   targets. Rockbox ships them anyway. Two more come from the same directory and are
   suspect for the same reason: **sgt-group** (`SOURCES.games:48`) and **sgt-slide**
   (`:51`). Nothing here is a MeowKit bug, and it isn't worth diagnosing further.
-  Cheap check if you want one: launch group and slide and see whether they behave; if
-  they don't, the honest fix is to stop building those three for this target rather than
-  chase per-game faults.
+  **Fixed and verified.** `apps/plugins/puzzles/SOURCES.games` now gates the three
+  `src/unfinished/` entries behind `!defined(PUZZLES_SKIP_UNFINISHED)`, matching the
+  conditional style that file already uses for `WIN32` and `PLUGIN_BUFFER_SIZE`, and
+  `config/meowkits3.h` defines the knob. The zip went from 43 `sgt-*.rock` entries to 40
+  — which also corrects an earlier claim here that 40 games shipped *including* these
+  three; the real shipped-and-working count is 40. Note the build gotcha: `make zip`
+  copies whatever `.rock` files exist in the build tree, so excluding a plugin leaves its
+  stale binary behind until you delete it. Card re-extract required; no flash, since
+  nothing in the firmware image changed.
 - **mpegplayer: still failing, and the failure has three distinct shapes.** Ordered by
   what the code actually does, allocation order is grey → libmpeg2 → audio → pcm → disk
   buffer, and each step has its own message:
