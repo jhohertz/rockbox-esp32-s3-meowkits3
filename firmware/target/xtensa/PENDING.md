@@ -46,55 +46,54 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
   log over serial; not diagnosable from source. Other puzzles launch and play, so it is
   per-game rather than the family.
-- **mpegplayer fails at load — the arithmetic says it is ~0.1–0.3 MB short, not miles
-  short.** `stream_mgr.c:1110` is the message you saw. What happens: `stream_init()`
-  takes the whole free core arena via `plugin_get_audio_buffer()`
-  (`apps/plugin.c:1170` → `core_alloc_maximum()`), subtracts the grey frame buffers, and
-  then `mpeg_alloc_init()` (`alloc.c:142`) demands a flat
-  `CACHEALIGN_UP(LIBMPEG2_ALLOC_SIZE)` = **2,097,152 B** before anything else. Numbers:
+- **mpegplayer: still failing, and the failure has three distinct shapes.** Ordered by
+  what the code actually does, allocation order is grey → libmpeg2 → audio → pcm → disk
+  buffer, and each step has its own message:
 
-  | | bytes |
-  |---|---|
-  | buflib core arena (`audiobuffer`→`audiobufend`, measured in `MEMORY.md`) | 4,128,768 |
-  | grey, 320×240: `width*height*2` display + `width*height` chunky buffer (`GREY_BUFFERED`), per `apps/plugins/lib/grey_core.c:516` | 230,400 |
-  | libmpeg2 reservation, fixed regardless of resolution | 2,097,152 |
-  | audio buffer `AUDIOBUF_ALLOC_SIZE` (64 KiB + `MPA_MAX_FRAME_SIZE` + 2×`MAD_BUFFER_GUARD`) | ~68,000 |
-  | pcmout `PCMOUT_ALLOC_SIZE` (2 × 44100/2×4) | 176,400 |
-  | **mpegplayer fixed demand** | **~2,572,000** |
-  | other arena holders at plugin start: `DIRCACHE_LIMIT` | up to 1,048,576 |
-  | theme fonts (`font.c` allocates per loaded font) + album art (`core_load_bmp`) | ~350,000–550,000 |
+  | step | fails when | message |
+  |---|---|---|
+  | `mpeg_alloc_init()` | grant < grey + 2 MiB | "Out of memory in stream_init" |
+  | `pcm_output_init()` | grant < grey + 2 MiB + 176,400 | "Could not initialize PCM!" |
+  | `disk_buf_init()` | remainder < `MIN_MEMMARGIN` (4 KiB) | "Cannot create buffering thread!" |
 
-  So the margin is **~0–160 KB, not a comfortable gap**. The arena is 4.13 MB, mpegplayer
-  needs 2.57 MB of it *contiguous and free*, and everything else that lives in the arena —
-  a populated dircache (up to 1 MB), the theme's loaded fonts, album art pulled in by
-  `core_load_bmp()` — decides whether it fits. On your player it does not fit. A bare
-  player with no dircache and one font would probably load it. Note `CODEC_SIZE` (1 MiB) is *not*
-  the source; the codec for MP3 audio lives in its own `codecbuf`.
+  Arena is **3,875,072 B** (re-measured, `MEMORY.md` §6), so the plugin needs ~2.57 MB of
+  it *contiguous and free*, leaving ~1.3 MB for the disk buffer only if nothing else is
+  holding the arena. With dircache off it got past step 1 and failed at step 2, which says
+  free was between 2.33 MB and 2.50 MB — so theme fonts and skin data are holding roughly
+  1.3–1.5 MB. The `LIBMPEG2_ALLOC_SIZE` override I tried was **reverted**: mpegplayer
+  never rejects a coded frame larger than the panel (it only clips at blit,
+  `mpegplayer.c:818`/`:951`), `alloc.c` returns NULL on exhaustion, and `libmpeg2/header.c`
+  assigns those results into `mpeg2dec->yuv_buf[][]` with no NULL check anywhere — so
+  under-sizing it is a write through NULL and a reset, which matches "it starts, then the
+  OS bails".
 
-  Confirmed by testing: **turning the directory cache off moved the error** from
-  `"Out of memory in stream_init"` to `"Could not initialize PCM!"`. That is
-  `stream_mgr.c:1115`, and it fires only when `pcm_output_init()`'s
-  `mpeg_malloc(PCMOUT_ALLOC_SIZE)` returns NULL (`mpegplayer/pcm_output.c:352`) — so the
-  grey frames and the 2 MiB libmpeg2 reservation *did* fit, and the grant was then short
-  by about 176 KB. The remaining holder is the theme's fonts and skin data, which the
-  config comment around `DIRCACHE_LIMIT` puts at ~1 MB when dircache is on.
+  **Hypotheses for the reset, in the order I'd test them, none yet proven:**
+  1. Coded frame larger than 352×288 in the test files → 2 MiB genuinely insufficient on
+     *any* target. Ask which files were used; a 640×480 or 720×576 stream is the simplest
+     explanation and needs no bug in our port.
+  2. Thread-stack exhaustion. `video_thread.c:65` gives the decoder `VIDEO_STACKSIZE`
+     = **4 KiB**, and `disk_buf`/`stream_mgr` get `DEFAULT_STACK_SIZE*2` = 8 KiB. Xtensa
+     call frames are wide, and libmpeg2's IDCT plus our 16-bit blit path are not shallow.
+     A stack overflow inside pluginbuf would corrupt adjacent plugin data and fault
+     without a useful address — consistent with "hangs, then bails".
+  3. Light sleep during a stall. Sleep is entered only from the idle task, so it needs the
+     plugin's threads to be blocked — which is what a hang looks like. Note the cheap
+     discriminator: `xt_light_sleep_block(true)` is held while USB is armed
+     (`usb-xtensa.c:348`), so **with a host attached light sleep cannot be the cause**.
+     Testing plugged-in vs unplugged separates this from 1 and 2 for free.
 
-  **Applied** (`mpegplayer.h` gained an `#ifndef` seam, `config/meowkits3.h` overrides
-  it): `LIBMPEG2_ALLOC_SIZE` is now 1 MiB for this target. The default 2 MiB is sized for
-  352×288 coded frames; this panel is 320×240 with no scaling in `video_out_rockbox.c`,
-  so libmpeg2 at 320×240 asks for three YUV frames (115,200 B each) and two converted
-  16-bit frames (153,600 B each) — about 650 KB plus decoder state. 1 MiB is that with
-  margin, and it frees ~1 MB into an arena that only had ~2.5 MB free. This should also
-  help every other plugin that wants a big arena (doom, xrick, rockboy, sgt puzzles).
-  **Needs a card re-extract** (mpegplayer.rock changed) and a retest.
+  Zero-code tests to run when the board is back: keep USB attached; use the failsafe theme
+  (`rockbox_failsafe.wps`, one font) to cut the font claim; try a known-small stream
+  (352×288 or smaller) rather than a DVD-sized one; read **Debug → View device info**
+  "Prev panic" and "Reset reason / rtc trail" after a crash — reason 1 with a non-zero rtc
+  count means the chip was lost mid-run rather than a clean shutdown.
 
-  Still open, and it is the user's own insight worth recording: **anything that wants PCM
-  appears to fail**, so this is probably not mpegplayer-specific. `vu_meter` and
-  `oscilloscope` showing *no signal* is a separate question — `oscilloscope.c:1543` and
-  `:1737` bail when `mixer_channel_status(channel) != CHANNEL_PLAYING`, and Rockbox stops
-  playback when a plugin starts, so a flat meter is expected unless the channel is switched
-  to the mic (ES7210) or to USB audio while a host is streaming. Test both of those before
-  treating "no signal" as a bug.
+- **Arena cleanup, ranked by safety.** `XT_CODEC_TEXT_SIZE` 512 KiB covers a largest codec
+  of 200 KB, so halving it returns 256 KiB with a measurable margin and the layout guard
+  catches any mistake. `CODEC_SIZE` 1 MiB vs tree convention 512 KiB at `MEMORYSIZE 8` is
+  the other 512 KiB, but it needs a runtime measurement of codec working memory first —
+  the failure mode is a codec refusing to load, which is at least loud. `PLUGIN_BUFFER_SIZE`
+  cannot shrink: `clock.rock` is 482,560 B against a 524,288 B buffer.
 
 - **`imageviewer` looks missing because it is not in the Plugins menu.** It is launched
   by the file browser on an image file, via `apps/plugins/viewers.config`. The manual does
