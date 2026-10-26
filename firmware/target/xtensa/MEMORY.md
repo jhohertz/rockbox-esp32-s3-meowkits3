@@ -109,15 +109,15 @@ and everything else falls to the defaults:
 
 | | value | consequence |
 |---|---|---|
-| `PCM_NUM_CHUNKS` | 256 | default, not overridden |
+| `PCM_NUM_CHUNKS` | **64** | overridden in `config/meowkits3.h`; the default is 256 |
 | `PCM_CHUNK_SAMP` | 2048 | default |
 | `PCM_SAMP_SIZE` | 4 | `2 * sizeof(int16_t)` |
 | `PCM_CHUNK_SIZE` | 8192 | |
-| `PCM_BUF_SIZE` | **2,097,152** (2 MiB) | not 512 KiB |
+| `PCM_BUF_SIZE` | **524,288** (512 KiB) | 64 chunks x 2048 samples x 4 bytes. This file previously said 2 MiB, which is the default the config override exists to avoid |
 | `STREAM_BUF_SIZE` | 65,536 | default |
 | `ENC_HDR_SIZE` | 4 | `union enc_chunk_hdr` is one word on 32-bit |
 | filename block | 264 B | `CHUNK_FILE_COUNT(MAX_PATH) * 4` |
-| layout minimum | 2,162,952 B | ring + stream + filename, before ENCBUF |
+| layout minimum | 589,336 B | ring + stream + filename, before ENCBUF |
 
 `struct enc_chunk_data` is `{ hdr; pcm_count; data[] }`, so the encoder's payload
 starts at offset 8. That matches what `wav_enc`'s `codec_run` computes
