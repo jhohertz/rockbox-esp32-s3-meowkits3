@@ -49,8 +49,9 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   Fixed by adding `CONFIG_KEYPAD != ESP32S3_PAD` to the block's own exclusion list, which
   is the idiom it already uses for COWON_D2, DX50, ONDAVX777, ZENXFI2, SHANLING_Q1,
   HIBY_R3PROII, HIDIZS_AP80MAX and N3DS. Warning gone; plugins rebuilt into the zip; the
-  chapter now documents the real mapping. **Needs a card re-extract, then a test** that A
-  acts and B opens the pause menu in a puzzle and in xworld.
+  chapter now documents the real mapping. **Verified on hardware by the user**
+(2026-10-27): A acts, B opens the pause menu, stick moves, Long B leaves, in the sgt
+puzzles and in xworld. The override defect is closed.
 - **SGT sokoban crashes on launch.** One of 40 shipped puzzle binaries. Needs the panic
   log over serial; not diagnosable from source. Other puzzles launch and play, so it is
   per-game rather than the family.
