@@ -279,7 +279,7 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,293,648 B | md5 `2a48323b15807c369fa7da3ba0acfad5`, **flashed 2026-10-27** (same size as the previous image — expected, the rationalization changes nothing for this target) |
+| `rockbox.esp32s3` | 1,293,696 B | md5 `dc393b48c30369046139f4ca2eea460a`, **flashed 2026-10-27** — carries the PMU parity change (coulometer enabled, VBUS-current and TS ADC channels on). Card content unchanged, so no re-extract needed. |
 | `rockbox.zip` | 9,469,730 B, 414 entries | card content; re-extract after plugin changes |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
