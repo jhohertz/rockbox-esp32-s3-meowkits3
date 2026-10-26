@@ -302,9 +302,16 @@ Minor, collected because the macros have to say something:
   `chessbox`, `doom`, `fractals`, `imageviewer`, `mpegplayer`'s start-time dialog,
   `text_viewer`, `zxbox` and `chip8` — so the gap was documentation, not bindings.
   Three things came out of writing it down:
-  - Nine of the older branches quit on **B tap** while the sixteen newer ones quit on
-    **B held**; each chapter documents what its game actually does and the split is
-    recorded as a preference call rather than unified silently.
+  - The quit gesture was then unified: eight branches (`clix`, `invadrox`,
+    `rockpaint`, `star`, `calculator`, `calendar`, `text_viewer`, `fractals`) quit on
+    **B tap** while pluginlib and the newer branches use **B held**, which is also what
+    most upstream keypads do (`SELECT|REPEAT`, `HOME|REPEAT`). All eight now use held,
+    their chapters say *Long Button B*, and `star`'s on-screen help label went from
+    "B" to "Long B" so the plugin tells the truth. Six games keep B tap because their
+    quit macro opens a menu rather than exiting (`blackjack`, `brickmania`, `xobox`,
+    `solitaire`, `pegbox`, `doom`) -- tapping it is cancel/menu, which is the other half
+    of the convention. `pegbox` was also printing "TOPLEFT" in its help text from an
+    `#ifndef` default because our branch never set `QUIT_TEXT`.
   - `sokoban`'s level-change rows had no key on this target, which is why the branch
     now defines `SOKOBAN_LEVEL_UP`/`SOKOBAN_LEVEL_DOWN`. Three other sokoban rows have
     no macro on any target worth copying and read *not available*.

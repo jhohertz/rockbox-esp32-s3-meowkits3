@@ -728,7 +728,7 @@
  * pair, CENTER the primary game action, corners secondary. */
 
 #define STAR_TOGGLE_CONTROL_NAME   "A"
-#define STAR_QUIT_NAME             "B"
+#define STAR_QUIT_NAME             "Long B"
 #define STAR_LEVEL_DOWN_NAME       "PREV"
 #define STAR_LEVEL_REPEAT_NAME     "RESET"
 #define STAR_LEVEL_UP_NAME         "NEXT"
@@ -741,7 +741,7 @@
 #define STAR_LEVEL_UP   BUTTON_MIDRIGHT
 #define STAR_LEVEL_DOWN BUTTON_MIDLEFT
 #define STAR_LEVEL_REPEAT BUTTON_TOPMIDDLE
-#define STAR_QUIT     BUTTON_B
+#define STAR_QUIT (BUTTON_B | BUTTON_REPEAT)
 #else
 #error No keymap defined!
 #endif

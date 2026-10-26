@@ -563,7 +563,7 @@
 #define FRACTAL_PRECISION_DEC_PRE BUTTON_MIDLEFT
 #define FRACTAL_PRECISION_DEC     (BUTTON_MIDLEFT | BUTTON_REL)
 #define FRACTAL_RESET             BUTTON_CENTER
-#define FRACTAL_QUIT              BUTTON_B
+#define FRACTAL_QUIT (BUTTON_B | BUTTON_REPEAT)
 #else
 #error No keymap defined!
 #endif

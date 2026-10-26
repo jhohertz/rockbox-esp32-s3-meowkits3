@@ -317,7 +317,7 @@ CONFIG_KEYPAD == MROBE500_PAD
  * B quits; TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the
  * prev/next pair, CENTER the primary game action, corners secondary. */
 
-#define QUIT  BUTTON_B
+#define QUIT (BUTTON_B | BUTTON_REPEAT)
 #define LEFT  BUTTON_LEFT
 #define RIGHT BUTTON_RIGHT
 #define FIRE  BUTTON_A
