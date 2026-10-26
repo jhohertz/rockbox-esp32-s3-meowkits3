@@ -168,16 +168,23 @@ Each of these was checked on the board, not inferred.
   which MPEG-1 video in a Program Stream does not provide), `-bf 0`, and `-g` below 12.
 
 
+- **chip8 works on the split keypad.** With ROMs on the card, the `ESP32S3_PAD` branch
+  (`chip8.c:1332-1354`) behaves as described: the stick is chip8 keys 2/4/6/8, **A** is 5,
+  **B** is E, and the remaining nine keys sit on the touch grid (corners 1/3/7/9, top and
+  bottom edge midpoints A/0, side midpoints B/C, centre D). Press and release are both
+  handled, so held keys work as games expect. The chapter
+  (`manual/plugins/chip8emulator.tex`) now carries the full sixteen-key table plus a note
+  saying the grid is **not drawn** — the emulator renders only the 64×32 picture, so the
+  touch cells have to be remembered. Verified: the mapping. Not separately confirmed: that
+  long **A** (chip8's F key) actually switches a ROM to the 128×64 superchip canvas — the
+  chapter states it as the conventional behaviour, which is worth checking against a ROM
+  that supports it before it is treated as fact.
 - **Theme packs parked — the one tried renders incorrectly.** The `%T` region work
   (`DOC-GAPS.md` item 2: shuffle, repeat mode, bookmarks, lock) is still deferred to theme
   packs, but it is now blocked on something plainer: the theme tested displays wrong, so
   there is no usable rendering to test regions against. Finding a theme that draws correctly
   on this panel comes first; the `%T` mapping work after that. Not a firmware gap — the
   builtin `cabbiev2` continues to render fine.
-- **chip8.** ROMs being sourced; unblocked as soon as one is on the card. The 16-key pad on
-  stick + A/B + 3x3 grid is a design call, not a doc fix.
-
-
 
 | Item | Why deferred | What would reopen it |
 |---|---|---|
