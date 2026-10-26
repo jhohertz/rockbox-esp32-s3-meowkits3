@@ -376,9 +376,16 @@ and now `file` are the ones that have moved.
    shrinking dircache, the theme, or the tree caches -- see §3b before assuming
    there is somewhere to put it.
 
-2. **The arena top is only guarded by a printf.** A layout overrun reports
-   itself at boot but does not stop the build. It should arguably be a link-time
-   `ASSERT()` in the same place IDF asserts `_flash_rodata_dummy_start`.
+2. **The arena top is guarded at build time.** `tools/esp-layout-check` reads
+   `_ext_ram_bss_end` and `rb_ext_ram_end` out of IDF's `rockbox.map`, recomputes the
+   reservations from `memory-xtensa.h` and the target config, and fails the build if the
+   section reaches into the plugin/codec text or the arena top passes the mapped window.
+   It runs as `make esplayer` and is a prerequisite of both `flash` and `espverify`, so
+   a board cannot be reached without passing it. A link-time `ASSERT()` is not available:
+   ESP-IDF owns the linker script, and the only thing we feed the link
+   (`idf-app/main/rockbox_memory.lf`) is an ldgen fragment that routes archives to memory
+   regions and carries no section layout. Current build: section ends 0x3c572e8c against
+   plugin text reserved at 0x3c580000 -- 53,620 bytes clear.
 
 3. **`MEMORYSIZE` drives three unrelated things at once** -- the audiobuffer
    size, the external window span, and the codec/plugin origins. Changing it is
