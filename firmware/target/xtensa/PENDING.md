@@ -22,24 +22,25 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   reboot and the UI renders (`logfbuffer` and `language_buffer` are now placed by the
   ldfragment instead of a section attribute — a wrong placement would hang or read
   `0x0bad0bad`, not fail quietly).
-- **Plugin doc rows that give us nothing — 40 rows in 38 chapters, approximate.**
-  Measured by walking every `btnmap` row and asking whether any key in it is reachable for
-  us. A later attempt to enumerate the offending rows by splitting `btnmap` bodies on
-  double-backslash reported 213 rows in 42 chapters and is **wrong**: the split cuts rows
-  mid-block, so each fragment inherits the previous row's tail — including rows that
-  already have an `ESP32S3_PAD` block — and they count as missing. Drive a doc batch from a
-  *rendered* check instead: build the manual for this target and read the key column per
-  chapter out of the PDF, because `\opt{}` blocks do not split cleanly in the source.
+- **Plugin doc rows that give us nothing: 9 fixed, the rest were false positives.** The
+  trustworthy check turned out to be: build the manual for this target, then look at the
+  *rendered* key cell for each row. On that basis only two chapters had genuinely blank
+  rows — `chess_clock` (9 rows, now filled from `chessclock.c`'s `ESP32S3_PAD` branch:
+  stick up/down set values, A starts/pauses, B exits, Centre restarts the round,
+  Mid-Left opens the menu, Top/Bottom-Middle move between screens, Top/Bottom-Right
+  switch players) and `stopwatch` (5 rows, but that plugin **does not ship**: its macro
+  chain ends in `#error No keymap defined!` with no branch for this keypad, so the chapter
+  now says so and points at `stopwatch.lua`, which is what actually installs).
+  The earlier candidate lists were wrong in both directions: 213 rows, then 41 rows in 8
+  chapters, then 29 rows in 6. Goban, nim, midiplay and rockboy were false positives —
+  goban already renders its touch grid correctly, and the other three plugins are not in
+  the zip at all. Lesson kept: the option set for a rendered check has to include the
+  shared `keymap-touchscreen.tex` macros and target feature options, not just
+  `ESP32S3_PAD` and our own keymap file.
 
-  Five
-  chapters name keys from pads we lack (`\ButtonHome`/`\ButtonOption` in `chessbox`
-  and `fractals`, `\ButtonBack` in `rockpaint`, `\ButtonDisplay` in `rockblox`):
-  those need either an ESP32S3 row or an explicit "not available". Everything else
-  already renders correctly through the per-target macros — an earlier claim that 30
-  chapters had no column was wrong and has been corrected in `DOC-GAPS` §10.
-- **`sgt-puzzles` (40 shipped binaries) has no key table at all**, and lua scripts (63
-  shipped) get raw buttons with nothing documenting the gesture set. Both are genuine
-  doc gaps, unlike the item above.
+- **`sgt-puzzles` had no key table for any target** — now has one for this player, and
+  hardware-verified against it. Remaining gap: the 63 shipped lua scripts take raw buttons
+  with nothing documenting the gesture set.
 - **SGT puzzles: A and B did nothing — root cause found and fixed.** `lib/keymaps.h`
   defines `BTN_FIRE = BUTTON_A` and `BTN_PAUSE = BUTTON_B` in our branch, then the shared
   `HAVE_TOUCHSCREEN` block further down **redefines** them to `BUTTON_BOTTOMLEFT` and
