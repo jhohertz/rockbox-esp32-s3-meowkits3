@@ -22,14 +22,16 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   reboot and the UI renders (`logfbuffer` and `language_buffer` are now placed by the
   ldfragment instead of a section attribute — a wrong placement would hang or read
   `0x0bad0bad`, not fail quietly).
-- **Plugin chapters without an ESP32S3 column — 30 of them, measurable now.** The zip
-  ships 161 `.rock` binaries; 41 chapters carry our rows. The 30 that have a key table
-  but no column are listed in `DOC-GAPS` §10. They are documentation work, not bindings:
-  each reaches input through `pluginlib_getaction()`, which already has the
-  `ESP32S3_PAD` branch, so the rows can be written from the branch plus each plugin's
-  `plugin_contexts` list. Batch them (games first) and test together, as with the
-  earlier plugin batches. No firmware change, so no flash needed — but the chapters must
-  be checked against the device behaviour the user reports.
+- **Plugin doc rows that give us nothing — 40 rows in 38 chapters.** Measured by
+  walking every `btnmap` row and asking whether any key in it is reachable for us. Five
+  chapters name keys from pads we lack (`\ButtonHome`/`\ButtonOption` in `chessbox`
+  and `fractals`, `\ButtonBack` in `rockpaint`, `\ButtonDisplay` in `rockblox`):
+  those need either an ESP32S3 row or an explicit "not available". Everything else
+  already renders correctly through the per-target macros — an earlier claim that 30
+  chapters had no column was wrong and has been corrected in `DOC-GAPS` §10.
+- **`sgt-puzzles` (40 shipped binaries) has no key table at all**, and lua scripts (63
+  shipped) get raw buttons with nothing documenting the gesture set. Both are genuine
+  doc gaps, unlike the item above.
 - **mpegplayer transport.** Keys documented (A tap pause, A held stop, stick
   volume/seek, B menu). Waiting on `.mpg` files: MPEG-1/2 Part 2 video, MP3 audio only
   (libmad — a VCD's MP2 track is silent), no scaling so ≤ 320×240, container `-f mpeg`.
