@@ -147,6 +147,107 @@ void lcd_update(void)
     lcd_update_rect(0, 0, LCD_WIDTH, LCD_HEIGHT);
 }
 
+/* YUV420 -> RGB565, then push. See LCD_OPTIMIZED_BLIT_YUV in lcd-target.h for
+ * why the target has to own this rather than take the generic one.
+ *
+ * The conversion factors and the packing follow drivers/lcd-color-common.c:
+ * luma is scaled by 74 from a 16 offset, the chroma terms by 101/-24/-51/128,
+ * and the result is clamped into 0..64*256-1 before the >>6 to 8-bit channels.
+ * One chroma sample covers a 2x2 luma block, which is why the inner loop steps
+ * two columns and the outer two rows.
+ *
+ * LCD_YUV_DITHER is deliberately not honoured. The ordered dither in the generic
+ * path exists for panels wired for 18-bit colour, where RGB565 has to be
+ * approximated with a per-pixel pattern; this panel takes the full 6/6/6 that
+ * RGB565 already carries, so dithering would only cost time.
+ */
+void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride,
+                  int x, int y, int width, int height)
+{
+#if LCD_WIDTH < LCD_HEIGHT
+#error This target is landscape; a portrait panel would need the planes transposed
+#endif
+
+    /* Both dimensions must be even, as the caller is required to pass even ones.
+     * Rounding rather than masking keeps a odd request from writing past the
+     * chroma plane's last line. */
+    width  -= width & 1;
+    height -= height & 1;
+
+    if (width <= 0 || height <= 0)
+        return;
+
+    /* Clipping is the drawing code's job elsewhere, but this writes the
+     * framebuffer directly, so bound it here. */
+    if (x + width > LCD_WIDTH)
+        width = LCD_WIDTH - x;
+    if (y + height > LCD_HEIGHT)
+        height = LCD_HEIGHT - y;
+    if (width <= 0 || height <= 0)
+        return;
+
+    const int chroma_stride = stride >> 1;
+    const int z = stride * src_y;
+
+    const unsigned char *yplane = src[0] + z + src_x;
+    const unsigned char *uplane = src[1] + (z >> 2) + (src_x >> 1);
+    const unsigned char *vplane = src[2] + (z >> 2) + (src_x >> 1);
+
+    for (int row = 0; row < height; row += 2)
+    {
+        const unsigned char *y0 = yplane + row * stride;
+        const unsigned char *y1 = y0 + stride;
+        const unsigned char *u  = uplane + (row >> 1) * chroma_stride;
+        const unsigned char *v  = vplane + (row >> 1) * chroma_stride;
+
+        fb_data *d0 = LCD_FRAMEBUF_ADDR(x, y + row);
+        fb_data *d1 = d0 + LCD_WIDTH;
+
+        for (int col = 0; col < width; col += 2)
+        {
+            int cb = u[col >> 1] - 128;
+            int cr = v[col >> 1] - 128;
+
+            /* Shared for the whole 2x2 block. */
+            const int rv  = 101 * cr;
+            const int guv = -24 * cb - 51 * cr;
+            const int bu  = 128 * cb;
+
+            for (int sub = 0; sub < 2; sub++)
+            {
+                int r, g, b;
+
+                r = 74 * (y0[col + sub] - 16) + rv;
+                g = 74 * (y0[col + sub] - 16) + guv;
+                b = 74 * (y0[col + sub] - 16) + bu;
+                if ((unsigned)(r | g | b) > 64 * 256 - 1)
+                {
+                    r = r < 0 ? 0 : (r > 64 * 256 - 1 ? 64 * 256 - 1 : r);
+                    g = g < 0 ? 0 : (g > 64 * 256 - 1 ? 64 * 256 - 1 : g);
+                    b = b < 0 ? 0 : (b > 64 * 256 - 1 ? 64 * 256 - 1 : b);
+                }
+                d0[col + sub] = LCD_RGBPACK_LCD(r >> 6, g >> 6, b >> 6);
+
+                r = 74 * (y1[col + sub] - 16) + rv;
+                g = 74 * (y1[col + sub] - 16) + guv;
+                b = 74 * (y1[col + sub] - 16) + bu;
+                if ((unsigned)(r | g | b) > 64 * 256 - 1)
+                {
+                    r = r < 0 ? 0 : (r > 64 * 256 - 1 ? 64 * 256 - 1 : r);
+                    g = g < 0 ? 0 : (g > 64 * 256 - 1 ? 64 * 256 - 1 : g);
+                    b = b < 0 ? 0 : (b > 64 * 256 - 1 ? 64 * 256 - 1 : b);
+                }
+                d1[col + sub] = LCD_RGBPACK_LCD(r >> 6, g >> 6, b >> 6);
+            }
+        }
+    }
+
+    /* The part this whole function exists for: nothing else sends these pixels.
+     * It runs on the video thread, under the plugin's own vo_lock(), and
+     * lcd_update_rect() drops the draw if the panel is off. */
+    lcd_update_rect(x, y, width, height);
+}
+
 void lcd_init_device(void)
 {
     /* Forced by the hardware: CS and RST are expander outputs, so the expander
