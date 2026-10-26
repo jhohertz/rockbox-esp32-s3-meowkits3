@@ -472,7 +472,7 @@
 #define ROCKPAINT_LEFT     BUTTON_LEFT
 #define ROCKPAINT_RIGHT    BUTTON_RIGHT
 #define ROCKPAINT_DRAW     BUTTON_A
-#define ROCKPAINT_QUIT     BUTTON_B
+#define ROCKPAINT_QUIT (BUTTON_B | BUTTON_REPEAT)
 /* menu and toolbar are overlays, not part of the drawing gesture, so they go
  * on the screen where they cannot be mistaken for a stroke */
 #define ROCKPAINT_MENU     BUTTON_CENTER
