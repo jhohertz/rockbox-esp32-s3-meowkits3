@@ -113,6 +113,17 @@ Each of these was checked on the board, not inferred.
   and the conversion must stay shared — writing it locally and packing with
   `LCD_RGBPACK_LCD` (which takes 5/6/5 values, `lcd.h:310`) instead of `LCD_RGBPACK` (8-bit,
   `lcd.h:344`) produced the right picture in the wrong colours.
+- **chip8 works on the split keypad.** With ROMs on the card, the `ESP32S3_PAD` branch
+  (`chip8.c:1332-1354`) behaves as described: the stick is chip8 keys 2/4/6/8, **A** is 5,
+  **B** is E, and the remaining nine keys sit on the touch grid (corners 1/3/7/9, top and
+  bottom edge midpoints A/0, side midpoints B/C, centre D). Press and release are both
+  handled, so held keys work as games expect. The chapter
+  (`manual/plugins/chip8emulator.tex`) now carries the full sixteen-key table plus a note
+  saying the grid is **not drawn** — the emulator renders only the 64×32 picture, so the
+  touch cells have to be remembered. Verified: the mapping. Not separately confirmed: that
+  long **A** (chip8's F key) actually switches a ROM to the 128×64 superchip canvas — the
+  chapter states it as the conventional behaviour, which is worth checking against a ROM
+  that supports it before it is treated as fact.
 - **USB serial console survives idle/wake — and it is CDC, not USB-JTAG.** Rockbox's CDC
   class stays up while the player idles and still emits after a wake. The IDF console
   (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`) only writes during early boot, which is why a `cat`
@@ -176,17 +187,6 @@ Each of these was checked on the board, not inferred.
   which MPEG-1 video in a Program Stream does not provide), `-bf 0`, and `-g` below 12.
 
 
-- **chip8 works on the split keypad.** With ROMs on the card, the `ESP32S3_PAD` branch
-  (`chip8.c:1332-1354`) behaves as described: the stick is chip8 keys 2/4/6/8, **A** is 5,
-  **B** is E, and the remaining nine keys sit on the touch grid (corners 1/3/7/9, top and
-  bottom edge midpoints A/0, side midpoints B/C, centre D). Press and release are both
-  handled, so held keys work as games expect. The chapter
-  (`manual/plugins/chip8emulator.tex`) now carries the full sixteen-key table plus a note
-  saying the grid is **not drawn** — the emulator renders only the 64×32 picture, so the
-  touch cells have to be remembered. Verified: the mapping. Not separately confirmed: that
-  long **A** (chip8's F key) actually switches a ROM to the 128×64 superchip canvas — the
-  chapter states it as the conventional behaviour, which is worth checking against a ROM
-  that supports it before it is treated as fact.
 - **Theme packs parked — the one tried renders incorrectly.** The `%T` region work
   (`DOC-GAPS.md` item 2: shuffle, repeat mode, bookmarks, lock) is still deferred to theme
   packs, but it is now blocked on something plainer: the theme tested displays wrong, so
