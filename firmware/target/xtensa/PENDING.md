@@ -62,6 +62,14 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   DIRAM has 1,105 bytes free anyway, so that path would displace something. Audio is
   unaffected. Two things to settle, in order: find the encode settings that suit the panel
   (yours to play with), and only then decide whether placement is worth touching.
+- **The Bluetooth config lines say something that isn't true.** `idf-app/sdkconfig.defaults:110-115`
+  sets `CONFIG_BT_ENABLED=y` and the NimBLE roles (`sdkconfig:698`
+  `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y`), which reads like a Bluetooth capability.
+  It isn't one, and it costs nothing: `bt` is absent from `PRIV_REQUIRES`
+  (`idf-app/main/CMakeLists.txt:36-46`) and `rockbox.map` shows `libbtdm_app.a` and
+  `libbt.a` `LOAD`ed with **zero** contributing sections — `grep 'libbtdm_app.a('` returns
+  nothing. So this is a cleanup of a misleading config, not a RAM reclaim, and deleting it
+  would not create — nor remove — any Bluetooth path. See `BT-AUDIO.md` §7.
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
@@ -179,6 +187,20 @@ Each of these was checked on the board, not inferred.
   long **A** (chip8's F key) actually switches a ROM to the 128×64 superchip canvas — the
   chapter states it as the conventional behaviour, which is worth checking against a ROM
   that supports it before it is treated as fact.
+- **Bluetooth audio out (A2DP source + AVRCP) — blocked by the silicon, not by
+  Rockbox.** Analysed in `firmware/target/xtensa/BT-AUDIO.md`. ESP32-S3 has a BLE-only
+  radio: `SOC_BT_CLASSIC_SUPPORTED` exists in IDF v5.5.5 solely for `esp32`, so
+  `BT_CLASSIC_ENABLED` and everything under it (`BT_A2DP_ENABLE`, the AVRCP options) is
+  unselectable on S3, and IDF's own classic_bt test matrix lists `esp32|esp32` only. LE
+  Audio is not an alternative — no ISO/CIS capability on S3, no LE Audio stack in this IDF.
+  What *is* ready: the core already supports multiple PCM sinks with runtime switching
+  (`firmware/export/pcm_sink.h`, `pcm.c:87-91`, `mixer_switch_sink()`), and IAP
+  (`usbstack/iap/audio.c:189`) is an in-tree non-DAC sink that switches on connect and back
+  on disconnect — the exact lifecycle wanted. Reaching headphones therefore needs a
+  classic-capable co-processor carrying the PCM; the Rockbox side (`PCM_SINK_BT`, ring,
+  `button_queue_post` for AVRCP, pairing UI) transfers unchanged and is specified in that
+  document. Blocked on a hardware decision, so nothing in Rockbox should be written against
+  it yet.
 - **Theme packs parked — the one tried renders incorrectly.** The `%T` region work
   (`DOC-GAPS.md` item 2: shuffle, repeat mode, bookmarks, lock) is still deferred to theme
   packs, but it is now blocked on something plainer: the theme tested displays wrong, so
