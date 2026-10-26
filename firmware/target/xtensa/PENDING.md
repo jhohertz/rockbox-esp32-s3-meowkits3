@@ -95,6 +95,22 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   "Prev panic" and "Reset reason / rtc trail" after a crash — reason 1 with a non-zero rtc
   count means the chip was lost mid-run rather than a clean shutdown.
 
+- **mpegplayer now reaches playback but shows audio only** (failsafe theme + dircache off
+  → 2.33 MB fit). So `stream_init`, the disk buffer and the parser all succeeded, and the
+  video stream is being dropped somewhere between parsing and blitting. Two cheap
+  discriminators, both using facilities that already exist:
+  1. **Debug → View log file** after a run. `ROCKBOX_HAS_LOGF` is on for this build, the
+     debug menu includes `logfdisp.h`, and mpegplayer's `DEBUGF` lines are exactly the
+     ones that answer this: `Getting movie size` then `failed` means `VIDEO_GET_SIZE`
+     found no sequence header (an encoding problem), and `stream not found:0xe0` means the
+     parser never saw a video stream id. No instrumentation needed.
+  2. **Encode video-only** (`-an`). If the picture appears, the video path is fine and the
+     MP3-in-Program-Stream combination is the variable; if it stays black, it is our
+     blit/stretch path (`video_out_rockbox.c:416-428`, `rb->lcd_blit_yuv`).
+  Encoding notes worth testing alongside: MPEG-2 video (not MPEG-1) because
+  mpegplayer needs PTS timestamps, which MPEG-1 video in a PS does not carry;
+  `-bf 0`; `-g` smaller than 12 is also fine.
+
 - **Arena cleanup, ranked by safety.** `XT_CODEC_TEXT_SIZE` 512 KiB covers a largest codec
   of 200 KB, so halving it returns 256 KiB with a measurable margin and the layout guard
   catches any mistake. `CODEC_SIZE` 1 MiB vs tree convention 512 KiB at `MEMORYSIZE 8` is
