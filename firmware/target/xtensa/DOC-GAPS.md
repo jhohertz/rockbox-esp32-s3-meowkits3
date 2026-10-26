@@ -324,21 +324,37 @@ Minor, collected because the macros have to say something:
   (`rockblox`) — those keys belong to pads we do not have, so the rows need our mapping or
   an explicit "not available", not a guess.
 
-- **Coverage counts.** The zip ships **161** `.rock`
-  binaries (plus 43 codecs, 6 viewers overlays and 63 lua scripts) out of 119 plugin
-  chapters; **41 chapters** carry `ESP32S3_PAD` rows, ~230 rows in total. Of the 70
-  chapters that have a key-table structure at all, **30 still have no column for us**:
-  `2048`, `alarmclock`, `bubbles`, `chess_clock`, `chip8emulator`, `clock`, `codebuster`,
-  `countdown_timer`, `dart_scorer`, `dice`, `fire`, `goban`, `jackpot`, `lamp`, `logo`,
-  `maze`, `mazezam`, `nim`, `rockblox1d`, `robotfindskitten`, `rocklife`, `snow`,
-  `starfield`, `stopwatch`, `xrick` (`midiplay`, `mosaic` and `wavplay` are codec or
-  non-interactive chapters with nothing to map). Nearly all of those plugins reach input
-  through `pluginlib_getaction()`, which has our `ESP32S3_PAD` branch, so these are rows
-  to write, not bindings to add — the same conclusion as before, now with counts.
-  An attempt to audit the compiled button set by re-preprocessing every plugin source
-  with the host compiler was **inconclusive** and is not relied on: the host front end
-  cannot reproduce the target's include set, and 838 of 1099 files failed. The
-  remaining uncertainty is behavioural and belongs on the device.
+- **Coverage counts, re-measured from the tree.** The zip ships **158** `.rock` binaries
+  (40 of them `sgt-*`, after the three unfinished puzzles were excluded), **43** codecs and
+  **63** lua scripts across 411 files; **44** of the 119 plugin chapters carry
+  `ESP32S3_PAD` rows.
+
+  The number this log carried before — "of the 70 chapters that have a key-table structure,
+  30 still have no column for us" — was wrong in both halves, and the correction matters
+  because it changes the shape of the remaining work. Only **two** plugin chapters contain a
+  `tabular`/`tabularx` block at all: `chip8emulator` and `metronome`, both of which now have
+  rows for us. So "an empty column in a table" was never the residual gap.
+
+  What is actually true: **24** chapters name other targets' `_PAD` macros while naming
+  neither ours nor the generic touchscreen option — `2048`, `alarmclock`, `bounce`,
+  `bubbles`, `clock`, `codebuster`, `countdown_timer`, `dart_scorer`, `demystify`, `dice`,
+  `fire`, `jackpot`, `lamp`, `logo`, `maze`, `mazezam`, `mosaic`, `plasma`,
+  `robotfindskitten`, `rockblox1d`, `rocklife`, `snow`, `starfield`, `stopwatch`. None of
+  them has a table to leave blank; their `\opt{OTHER_PAD}{...}` lines simply do not render,
+  so the chapter reads as though it never says how to play here. That is a wording gap,
+  closable one chapter at a time, not a rendering defect. `stopwatch` is not even that:
+  the plugin does not build for this target (`#error No keymap defined!`) and only
+  `stopwatch.lua` ships, which the chapter already says.
+
+  Every one of those plugins reaches input through `pluginlib_getaction()`, which has an
+  `ESP32S3_PAD` branch, so they are rows to write rather than bindings to add.
+
+  Attempts to audit the compiled button set by re-preprocessing plugin sources with the host
+  compiler remain **inconclusive** and are not relied on — 838 of 1099 files failed for
+  include-set reasons, and three successive row counts (213, 41, 29) were all wrong. The
+  reliable check is the rendered PDF: extract the chapter's page and look for the button
+  labels, which is how chip8's sixteen rows were confirmed (`Top-Left`, `Middle-Right`,
+  `Centre`, `Long A`, `Long B` on page 163). Behaviour still belongs on the device.
   Three things came out of writing it down:
   - The quit gesture was then unified: eight branches (`clix`, `invadrox`,
     `rockpaint`, `star`, `calculator`, `calendar`, `text_viewer`, `fractals`) quit on
