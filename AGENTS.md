@@ -4535,6 +4535,31 @@ Because content spans three archives, an audit must run against their **union**
 — a theme referencing `20-Terminus-Bold.fnt` is satisfied by the font zip, and
 auditing the theme zip alone would report a false failure.
 
+### Theme-related feature flags, measured
+
+The skin engine gates on eleven things (`skin_parser.c`, `tag_table.c`,
+`wps_files.c`, `statusbar-skinned.c`). Where we stand:
+
+| gate | ours |
+|---|---|
+| `HAVE_TOUCHSCREEN`, `HAVE_LCD_COLOR`, `HAVE_ALBUMART`, `HAVE_JPEG`, `HAVE_QUICKSCREEN`, `CONFIG_RTC`, `HAVE_LCD_SLEEP`, `HAVE_LCD_ENABLE` | on |
+| `HAVE_BACKDROP_IMAGE` (`config.h:874`, needs `LCD_DEPTH > 1`) | on |
+| `HAVE_SKIN_VARIABLES` (`config.h:1372`, needs `HAVE_TOUCHSCREEN`) | on |
+| `HAVE_BMP_SCALING` | **on** — the album-art scaler, see `DOC-GAPS.md` §14 |
+| `HAVE_REMOTE_LCD` | off, no second panel |
+| `CONFIG_TUNER`, `HAVE_TUNER`, `HAVE_RDS_CAP`, `HAVE_RDS`, `HAVE_RADIO_RSSI` | off, no radio |
+
+Nothing else is worth enabling for themes: `HAVE_PEAK_METER` is defined by no
+target and referenced by no code in this tree, so meter tags are inert for
+everyone; `HAVE_BUTTONBAR` needs `gui_dynbutton`, which does not exist here;
+`HAVE_KBD_POINT_MODE` needs 480x640; `HAVE_LCD_INVERT` is moot because INVON is
+baked into the panel init.
+
+Two non-theme flags are cheap if wanted later: `HAVE_MORSE_INPUT` (morse mode
+in `keyboard.c` plus a settings entry — our stick keyboard context already
+dispatches `CONTEXT_MORSE_INPUT`, so it would work immediately) and
+`HAVE_LCD_SLEEP_SETTING` (a user timeout instead of our fixed 2 s).
+
 ### tools/rbthemes.py
 
 `list`, `get`, `check`, `pack`, `fonts`, `show`, `remove`. Stdlib only, no

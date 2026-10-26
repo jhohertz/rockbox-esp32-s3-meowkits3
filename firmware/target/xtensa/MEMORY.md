@@ -142,8 +142,11 @@ console this profile does not have.
 
 ### DRAM is now close enough to the edge to need a guard
 
-A 1 KiB margin means the next internal-SRAM static, or any IDF bump that grows
-`.dram0.data`, fails the link with `region 'dram0_0_seg' overflowed by N bytes`.
+`idf.py size` reports DIRAM 340,655 B of 341,760 — **1,105 B free**, after
+`HAVE_BMP_SCALING` added roughly 500 B of scaler code to `.text` in internal
+RAM. IRAM is at 100% (0 free). A 1 KiB margin means the next internal-SRAM
+static, or any IDF bump that grows `.dram0.data`, fails the link with
+`region 'dram0_0_seg' overflowed by N bytes`.
 That is a build-time failure, so it is not silent -- but it is discovered by
 whoever happens to build, with no hint of which object tipped it. The inventory
 commands at the bottom answer that in one step; run them before adding anything

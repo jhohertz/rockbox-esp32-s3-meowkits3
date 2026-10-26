@@ -67,6 +67,16 @@
 #define LCD_PIXELFORMAT RGB565
 /* 320x240 across a 2.0" diagonal is 400 pixels diagonal, i.e. 200 dpi. */
 #define LCD_DPI    200
+/* That dpi is honest, and it is also the reason lists look enormous here:
+ * with list padding left on 'auto', list_init_item_height() (apps/gui/list.c:117)
+ * makes every row lcd_get_dpi()*4/12 = 66px tall, which is ~8mm -- a good finger
+ * target on a 2.4-2.5" player, but 3.6 rows on a 2.0" one. This target has a
+ * stick for navigation, so it does not need to pay 8mm per row. 4px gives rows
+ * of about 20px with the 15px default font: ~11 rows visible, ~2.5mm tall.
+ * Pinned as a default, not as fixed.cfg, so a user who prefers bigger rows can
+ * change it in Settings -> Display -> Touchscreen Settings and keep the change.
+ */
+#define DEFAULT_LIST_LINE_PADDING 4
 
 /* Album art, and the JPEG decoder behind cover.jpg.
  *
@@ -92,6 +102,22 @@
  */
 #define HAVE_ALBUMART
 #define HAVE_JPEG
+
+/* Bitmap scaling: the scaler in apps/recorder/bmp.c that resizes a BMP to the
+ * box a skin asked for. Every other 320x240 target has it (cowond2, ibassodx90,
+ * 3ds, android); without it a %aa viewport gets the image at its native size
+ * instead of the theme's dimensions, which is what makes album art in themes
+ * like Laserhead cover half the screen.
+ *
+ * This one is ABI-safe, unlike the pair above: struct plugin_api has no
+ * HAVE_BMP_SCALING gate (zero hits in apps/plugin.h) and read_bmp_file /
+ * read_bmp_fd are always present, so no member moves. The only effect on plugins
+ * is apps/plugins/lib/feature_wrappers.h:40, which turns scaled_read_bmp_file
+ * into the API call rather than a direct call -- plugin-side, same signature.
+ * It costs no features entry either: apps/features.txt has no bmp line, so
+ * build-meowkits3/apps/features is unchanged.
+ */
+#define HAVE_BMP_SCALING
 
 /* Three display power states. The backlight dominates the panel, but the panel
  * keeps driving its gates as long as it is enabled, so DISPOFF follows the
