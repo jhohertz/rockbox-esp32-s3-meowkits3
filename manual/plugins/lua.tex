@@ -1,5 +1,15 @@
 \subsection{Lua scripting language}
 
+\opt{ESP32S3_PAD}{\note{Lua scripts receive raw button codes, not pluginlib actions, so
+what a script can use depends on how it was written. On this player the codes that arrive
+are \ButtonUp{}, \ButtonDown{}, \ButtonLeft{} and \ButtonRight{} from the stick (each with
+a repeat flag when held), \ButtonA{} and \ButtonB{} (with release and repeat variants), and
+the nine touch cells \TouchTopLeft{} through \TouchBottomRight{}. There is no hold switch,
+no power or menu key and no scroll wheel, so scripts asking for those never see a matching
+event. \fname{print\_buttons.lua} in the Lua scripts list shows which code each physical
+input produces.}}
+
+
 To quote from the Lua website (\url{http://www.lua.org}), Lua is a ``powerful,
 fast, lightweight, embeddable scripting language''. Select a \fname{.lua} file
 in the \setting{File Browser} to run it. For more information on programming

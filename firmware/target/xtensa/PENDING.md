@@ -38,9 +38,13 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   shared `keymap-touchscreen.tex` macros and target feature options, not just
   `ESP32S3_PAD` and our own keymap file.
 
-- **`sgt-puzzles` had no key table for any target** — now has one for this player, and
-  hardware-verified against it. Remaining gap: the 63 shipped lua scripts take raw buttons
-  with nothing documenting the gesture set.
+- **Plugin documentation pass is finished.** `sgt-puzzles` has a key table for this
+  player (hardware-verified), `chess_clock` has its nine blank rows filled, `rockpaint` has
+  a MeowKit subsection explaining that it paints by cursor rather than by finger, `lua`
+  states which raw button codes scripts receive and points at `print_buttons.lua` for the
+  mapping, and `imageviewer` says it is a file-browser viewer rather than a Plugins menu
+  entry. `stopwatch`, `nim`, `midiplay` and `rockboy` are documented as not shipping on
+  this target (their binaries are not built), so nothing is claimed about them.
 - **SGT puzzles: A and B did nothing — root cause found and fixed.** `lib/keymaps.h`
   defines `BTN_FIRE = BUTTON_A` and `BTN_PAUSE = BUTTON_B` in our branch, then the shared
   `HAVE_TOUCHSCREEN` block further down **redefines** them to `BUTTON_BOTTOMLEFT` and

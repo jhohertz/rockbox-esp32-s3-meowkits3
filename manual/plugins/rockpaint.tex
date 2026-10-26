@@ -102,6 +102,32 @@ The main menu consists of the following:
 \warn{BE CAREFUL. Rockpaint will NOT prompt you to save
 if you select Exit, so any unsaved changes will be lost.}
 
+\opt{ESP32S3_PAD}{
+\subsubsection{Drawing on the MeowKit player}
+RockPaint here works as a \emph{cursor} painter rather than a finger painter: the panel
+reports a 3x3 touch grid, not a stylus position, so a stroke cannot be dragged across the
+canvas. The stick moves the drawing cursor and \ButtonA{} plots at it.
+
+\begin{btnmap}
+    \ButtonUp{} / \ButtonDown{} / \ButtonLeft{} / \ButtonRight{} & Move the drawing
+    cursor \\
+
+    \ButtonA{} & Plot / draw at the cursor \\
+
+    \TouchTopMiddle{} & Show the toolbar (brush, colour) \\
+
+    \TouchBottomMiddle{} & Second toolbar page \\
+
+    \TouchCenter{} & Menu (file operations, clear) \\
+
+    Long \ButtonB{} & Leave the plugin \\
+\end{btnmap}
+
+\note{The overlays are deliberately on the screen rather than on \ButtonA{} or \ButtonB{}:
+those two are the drawing gesture, and a key that sometimes paints and sometimes opens a
+menu is not something you can learn by feel.}
+}
+
 \begin{btnmap}
     \nopt{IPOD_4G_PAD,IPOD_3G_PAD,IPOD_1G2G_PAD}{
         \nopt{IRIVER_H300_PAD,GIGABEAT_S_PAD,SANSA_FUZE_PAD,PBELL_VIBE500_PAD%
