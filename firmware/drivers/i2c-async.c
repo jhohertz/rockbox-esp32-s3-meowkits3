@@ -153,7 +153,6 @@ void __i2c_async_complete_callback(int busnr, int status)
 {
     i2c_async_bus* bus = &i2c_async_busses[busnr];
 
-
     corelock_lock(&bus->cl);
 
     /* Spurious completion with nothing queued, eg. a bus error interrupt

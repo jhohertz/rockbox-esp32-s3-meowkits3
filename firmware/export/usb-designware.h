@@ -52,7 +52,6 @@
     #define DDRSEL          (1<<7)
     #define PHSEL           (1<<6)
     #define FSINTF          (1<<5)
-    #define PHYSEL          (1<<6)   /* 0 = embedded HS PHY, 1 = embedded FS/LS PHY */
     #define ULPI_UTMI_SEL   (1<<4)
     #define PHYIF16         (1<<3)
 
