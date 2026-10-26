@@ -159,6 +159,53 @@ puzzles and in xworld. The override defect is closed.
   so the coded-resolution ceiling is a memory constraint rather than a display one.
   Playing any video also answers whether codec/plugin code executing from the PSRAM
   window behaves — mpegplayer allocates ≥ 2 MB there. **Waiting on you.**
+- **Board test procedure — MMU retention across light sleep.** All of it is existing
+  facilities, no instrumentation. Go to **Debug → View HW info** and note the
+  **"External cache MMU: N of 512 pages mapped"** row and the **PM** row
+  (`light_sleep_enable`). Then **unplug USB** — `xt_light_sleep_block(true)` is held while
+  the USB device is armed (`usb-xtensa.c:348`), so a plugged board cannot light-sleep and
+  any "after sleep" reading taken while connected is really a before reading. Let it sit
+  dark for several minutes, wake it with a button press, and re-read the MMU row. Same
+  page count plus working playback means the 512-entry table at `0x600C5000` survived;
+  a lower count, or audio/screen reading the `0x0bad0bad` unmapped sentinel, means
+  `mmu_init()`'s audiobuffer and framebuffer entries were lost on wake. Supporting config,
+  confirmed in `idf-app/sdkconfig`: `ESP_SLEEP_PSRAM_LEAKAGE_WORKAROUND`,
+  `ESP_SLEEP_MSPI_NEED_ALL_IO_PU` and `ESP_SLEEP_RTC_BUS_ISO_WORKAROUND` are all on, and
+  `PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` is on — CPU-side power-down is exactly what makes the
+  MSPI/MMU question worth asking.
+
+- **Board test procedure — GDMA TX row across sleep/wake.** Same menu, the TX row prints
+  `sess / err / rec / sil`. Read it, do a long dark idle with a track loaded, wake, read it
+  again. `err` or `sil` climbing across the sleep boundary is the failure; a clean read
+  closes the item. This is also the row that would show trouble if the USB DAC CPU-boost
+  choice (`§3`) ever bites, though that path cannot light-sleep anyway.
+
+- **USB-JTAG console across sleep: not observable as framed, so close it or restate it.**
+  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` and nothing else sets `CONFIG_ESP_CONSOLE_*`, so
+  the IDF console writes only during early boot — which is why a `cat /dev/ttyACM0` on an
+  idle player reads zero bytes, and why there is no post-wake output to watch for. The
+  question that is actually meaningful is whether a **fault after a wake** still produces a
+  readable panic, and that is covered by the panic screen plus the RTC-slow "Prev panic"
+  row in the same menu. I'd restate the item that way rather than chase console liveness.
+
+- **Runtime numbers, with an existing tool.** For playback current and dark-idle current,
+  use **`battery_bench`** (`rocks/apps/battery_bench.rock`): it samples
+  `battery_current()` over time and keeps the display off, which matters here because the
+  debug views need the screen on and the screen is the largest variable. Readings worth
+  recording: playback with screen on, playback with screen off, dark idle. The recorded
+  dark-idle progression (57 → 48 → 46 → 42 mA) predates several changes, so take a fresh
+  number; remember USB must be unplugged or light sleep will be blocked and the reading
+  will be wrong.
+
+- **chip8 deferred by you.** No CHIP-8 ROMs on hand to test with. The 16-key pad on
+  stick + A/B + 3x3 grid is a design call, not a doc fix.
+
+- **mpegplayer transport.** Keys documented and hardware-verified as far as audio goes
+  (A tap pause, A held stop, stick volume/seek, B menu). Format requirements corrected
+  since this entry was written: mpegplayer *does* scale (`video_out_rockbox.c:416-428`),
+  so the coded-resolution ceiling is a memory constraint rather than a display one.
+  Playing any video also answers whether codec/plugin code executing from the PSRAM
+  window behaves — mpegplayer allocates ≥ 2 MB there. **Waiting on you.**
 - **MSPI MMU table across light sleep.** `SOC_PM_SUPPORT_RTC_PERIPH_PD` is enabled and
   `rtc_init.c:114` clears `EXTMEM_CACHE_MMU_MEM_FORCE_ON`, so the 512-entry
   `DR_REG_MMU_TABLE` may lose power; if it does, `mmu_init()`'s audiobuffer and
