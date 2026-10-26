@@ -294,7 +294,13 @@
  * Same shape as ECHO_R1. The 3x3 touch grid is real on this board (BUTTON_TOPLEFT
  * .. BUTTON_BOTTOMRIGHT arrive and plugins use them), but the stick covers xworld
  * completely, so BTN_HAVE_DIAGONAL is deliberately left undefined: diagonal keys
- * would land on touch cells a player is not looking at while playing. */
+ * would land on touch cells a player is not looking at while playing.
+ *
+ * The touch block further down must not overwrite these two: this pad has physical
+ * fire and pause keys, which is exactly what that block's exclusion list means. Before
+ * it was added, gcc said so out loud -- "BTN_FIRE redefined", our BUTTON_A at line 303
+ * replaced by BUTTON_BOTTOMLEFT -- and every BTN_* plugin silently took the touch cells
+ * instead of A and B. */
 #define BTN_UP          BUTTON_UP
 #define BTN_DOWN        BUTTON_DOWN
 #define BTN_LEFT        BUTTON_LEFT
@@ -331,7 +337,8 @@
       (CONFIG_KEYPAD != SHANLING_Q1_PAD) && \
       (CONFIG_KEYPAD != HIBY_R3PROII_PAD) && \
       (CONFIG_KEYPAD != HIDIZS_AP80MAX_PAD) && \
-      (CONFIG_KEYPAD != N3DS_PAD)
+      (CONFIG_KEYPAD != N3DS_PAD)       && \
+      (CONFIG_KEYPAD != ESP32S3_PAD)
 #define BTN_FIRE       BUTTON_BOTTOMLEFT
 #define BTN_PAUSE      BUTTON_TOPLEFT
 #endif
