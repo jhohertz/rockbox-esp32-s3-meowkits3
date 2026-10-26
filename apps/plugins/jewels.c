@@ -409,6 +409,21 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define HK_SELECT "A"
 #define HK_CANCEL "POWER"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick moves the cursor, A selects, B cancels, held B
+ * quits; the two level-advance actions go on the touch mid row. */
+
+#define JEWELS_UP        BUTTON_UP
+#define JEWELS_DOWN      BUTTON_DOWN
+#define JEWELS_LEFT      BUTTON_LEFT
+#define JEWELS_RIGHT     BUTTON_RIGHT
+#define JEWELS_SELECT    BUTTON_A
+#define JEWELS_CANCEL    BUTTON_B
+#define JEWELS_RC_CANCEL BUTTON_TOPLEFT
+#define JEWELS_PREV      BUTTON_MIDLEFT
+#define JEWELS_NEXT      BUTTON_MIDRIGHT
+#define HK_SELECT      "A"
+#define HK_CANCEL      "B"
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

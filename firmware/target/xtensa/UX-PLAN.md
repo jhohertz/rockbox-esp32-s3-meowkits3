@@ -344,26 +344,51 @@ and the keyboard hint line: mapping it would mean inventing a core action for
 one target. Reset is available by editing the value, or by deleting
 `/.rockbox/config.cfg` off the card.
 
-### S10 — Plugin button audit  *(its own effort)*
+### S10 — Plugin keymaps: games done, utilities left on touch
 
-53 plugin sources reference `BUTTON_HOME`, `PLUS`, `MINUS`, `MODE`, `FN`, `REC`,
-`OFF` — none of which exist on this board. `pluginlib_actions.c` has our
-`ESP32S3_PAD` branch but only for the four directions; select/cancel come from
-the `HAVE_TOUCHSCREEN` block. This is not a single fix:
+The audit in `DOC-GAPS.md` §10 replaced the old "53 sources reference buttons we
+don't have" claim, which came from grepping sources rather than preprocessing
+them. Measured properly: zero shipped plugins reference an unavailable button,
+pluginlib supplies 13 of 17 `PLA_*`, and the real gap is that 38 plugin sources
+fall back to the shared `HAVE_TOUCHSCREEN` block and therefore read **only touch
+cells** — the stick and A/B were never consulted, including in games.
 
-1. Enumerate the plugins actually shipped in our zip.
-2. For each, determine whether pluginlib covers it, or whether it reads raw
-   buttons.
-3. For raw-button plugins, decide: alias in the plugin (some have per-target
-   button headers, e.g. `apps/plugins/imageviewer/imageviewer_button.h`), or
-   exclude from our build, or map to a combo.
-4. Re-check the failure mode that bit 2048: with `HAVE_TOUCHSCREEN` defined,
-   pluginlib's `#else` branch compiles **no `PLA_*` entries at all**, so a
-   plugin loads, draws and ignores every key silently. Any new pad-specific
-   branch must be verified by running a plugin, not by compiling.
+**Convention, deliberately identical to pluginlib** so every plugin behaves the
+same: stick moves, **A** is the primary action, **B tap** pauses / cancels /
+menus, **B held** quits (that is `PLA_EXIT`). Touch cells keep whatever upstream
+assigns for anything the branch leaves undefined, because the fallback is
+`#ifndef` per macro.
 
-Worth doing as several spikes, grouped by plugin family (games needing SELECT/
-START, viewers needing PLUS/MINUS, etc.).
+16 branches added in one pass — `snake`, `snake2`, `spacerocks`, `wormlet`,
+`pong`, `chopper`, `jewels`, `cube`, `flipit`, `minesweeper`, `sokoban`,
+`sliding_puzzle`, `rockblox`, `oscilloscope`, `vu_meter`, `chip8`. What to expect
+when testing:
+
+| plugin | stick | A | B tap | B held | touch |
+|---|---|---|---|---|---|
+| snake / snake2 | direction | pause | — | quit | Top-Left quit |
+| spacerocks | turn; Up = thrust | fire | pause | quit | Centre hyperspace, Top-Middle alt-pause |
+| wormlet | direction | start/pause | stop/reset | quit | Top-Left quit |
+| pong | left paddle | pause | — | quit | Top-Right / Bottom-Right = right paddle |
+| chopper | — | drop charge | — | quit | Centre second fire |
+| jewels | cursor | select | cancel | — (Top-Left cancel) | Mid-Left / Mid-Right level |
+| cube | next/prev, inc/dec | mode | pause | quit | Centre high-speed |
+| flipit | cursor | flip | shuffle | quit | Top-Middle solve, Top-Right step |
+| minesweeper | cursor | uncover | flag | quit | Centre info, Top/Bottom-Middle second bindings |
+| sokoban | push | menu | undo | quit | Bottom-Left redo, Centre save, Top-Right level repeat |
+| sliding_puzzle | slide tile | shuffle | — | quit | Centre picture |
+| rockblox | move (Down = soft drop is Centre) | rotate CW | — | quit | Mid-Left rotate CCW, Bottom-Middle restart |
+| oscilloscope | menu steps, Right = advance mode | draw mode | pause | quit | Mid row orientation/graph, top/bottom speed and voltage |
+| vu_meter | pick meter | help | menu | quit | Centre second menu |
+| chip8 | keys 2/4/6/8 | key 5 | key E | switch off | grid covers 1,3,7,9,0,A,B,C,D |
+
+Three traps worth remembering for any future branch: two switch labels must never
+share a value (`rockblox`'s held-B quit collided with `ROTATE_CCW | BUTTON_REPEAT`),
+`sokoban`'s `QUIT_REPLAY` defaults to `MENU`, and several games need help-text
+macros (`*_NAME`, `LABEL_*`, `HK_SELECT`) alongside the button macros.
+
+Utility and viewer plugins are left on touch on purpose — the grid is the natural
+input there and upstream already maps it sensibly.
 
 ### S11 — Tooling and release stubs
 
@@ -431,7 +456,9 @@ wake path.
 7. **Theme pack** — **built**: `tools/rbthemes.py` plus an 8-theme
    `rockbox-themes.zip`, audited clean against the union of the core and fonts
    artifacts.
-8. **S10** plugin audit as its own multi-part effort.
+8. **S10** plugin keymaps — **games landed** (16 branches, convention matching
+   pluginlib); utilities deliberately stay on touch. Needs one hardware test of
+   the batch.
 9. **S11** tooling and rbutil stubs.
 10. **S12** RTC alarm wake — **dropped**: the AXP removes the SoC's supply at
     power-off, so nothing survives to wake. Driver code stays compiled out;

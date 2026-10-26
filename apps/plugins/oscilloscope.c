@@ -586,6 +586,24 @@
 #define OSCILLOSCOPE_VOL_UP          BUTTON_UP
 #define OSCILLOSCOPE_VOL_DOWN        BUTTON_DOWN
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick steps the two on-screen menus (it has no free
+ * movement to preserve), A changes the visible mode, B pauses, held B quits;
+ * speed and voltage are the touch mid row and the corners. */
+
+#define OSCILLOSCOPE_UP           BUTTON_UP
+#define OSCILLOSCOPE_DOWN         BUTTON_DOWN
+#define OSCILLOSCOPE_DRAWMODE     BUTTON_A
+#define OSCILLOSCOPE_ADVMODE      BUTTON_RIGHT
+#define OSCILLOSCOPE_ORIENTATION  BUTTON_MIDLEFT
+#define OSCILLOSCOPE_GRAPHMODE    BUTTON_MIDRIGHT
+#define OSCILLOSCOPE_PAUSE        BUTTON_B
+#define OSCILLOSCOPE_SPEED_UP     BUTTON_TOPMIDDLE
+#define OSCILLOSCOPE_SPEED_DOWN   BUTTON_BOTTOMMIDDLE
+#define OSCILLOSCOPE_VOL_UP       BUTTON_TOPRIGHT
+#define OSCILLOSCOPE_VOL_DOWN     BUTTON_BOTTOMRIGHT
+#define OSCILLOSCOPE_QUIT         BUTTON_B|BUTTON_REPEAT
+#define OSCILLOSCOPE_RC_QUIT      BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

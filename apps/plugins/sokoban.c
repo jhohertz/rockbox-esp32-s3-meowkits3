@@ -746,6 +746,28 @@
 #define BUTTON_SAVE          BUTTON_A
 #define BUTTON_SAVE_NAME     "A"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: the stick pushes, A opens the menu, B undoes, held B quits.
+ * Pause is held A and redo is a touch cell; the level-repeat and save actions
+ * are left to the upstream touch fallback so nothing collides - this game has
+ * several switch labels that must stay distinct. Each *_NAME macro is the help
+ * text for its key, so it has to be defined wherever the key is. */
+
+#define SOKOBAN_UP            BUTTON_UP
+#define SOKOBAN_DOWN          BUTTON_DOWN
+#define SOKOBAN_LEFT          BUTTON_LEFT
+#define SOKOBAN_RIGHT         BUTTON_RIGHT
+#define SOKOBAN_MENU          BUTTON_A
+#define SOKOBAN_MENU_NAME     "A"
+#define SOKOBAN_UNDO          BUTTON_B
+#define SOKOBAN_UNDO_NAME     "B"
+#define SOKOBAN_PAUSE         BUTTON_A|BUTTON_REPEAT
+#define SOKOBAN_PAUSE_NAME    "Long A"
+#define SOKOBAN_REDO          BUTTON_BOTTOMLEFT
+#define SOKOBAN_REDO_NAME     "Bottom-Left"
+#define SOKOBAN_QUIT          BUTTON_B|BUTTON_REPEAT
+#define SOKOBAN_RC_MENU       BUTTON_TOPLEFT
+
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

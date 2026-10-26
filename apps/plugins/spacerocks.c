@@ -402,6 +402,20 @@
 #define AST_RIGHT       BUTTON_RIGHT
 #define AST_FIRE        BUTTON_A
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: the stick turns the ship, Up thrusts (that is AST_THRUST,
+ * which every other keypad puts on its own up key), A fires, B held quits, and
+ * hyperspace - the one destructive extra action - goes on the touch centre. */
+
+#define AST_LEFT        BUTTON_LEFT
+#define AST_RIGHT       BUTTON_RIGHT
+#define AST_THRUST      BUTTON_UP
+#define AST_HYPERSPACE  BUTTON_CENTER
+#define AST_FIRE        BUTTON_A
+#define AST_PAUSE       BUTTON_B
+#define AST_QUIT        BUTTON_B|BUTTON_REPEAT
+#define AST_RC_QUIT     BUTTON_TOPLEFT
+#define ALT_PAUSE       BUTTON_TOPMIDDLE
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

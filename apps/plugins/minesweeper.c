@@ -474,6 +474,24 @@ CONFIG_KEYPAD == MROBE500_PAD
 #   define MINESWP_DISCOVER     BUTTON_A
 #   define MINESWP_INFO         BUTTON_START
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick moves the cursor, A uncovers, B toggles a flag, held
+ * B quits. TOGGLE2 and DISCOVER2 are the second bindings each game offers, so
+ * they stay touch cells. */
+
+#define MINESWP_UP         BUTTON_UP
+#define MINESWP_DOWN       BUTTON_DOWN
+#define MINESWP_LEFT       BUTTON_LEFT
+#define MINESWP_RIGHT      BUTTON_RIGHT
+#define MINESWP_DISCOVER   BUTTON_A
+#define MINESWP_TOGGLE     BUTTON_B
+#define MINESWP_INFO       BUTTON_CENTER
+#define MINESWP_QUIT       BUTTON_B|BUTTON_REPEAT
+#define MINESWP_RC_QUIT    BUTTON_TOPLEFT
+#define MINESWP_DISCOVER2  BUTTON_TOPMIDDLE
+#define MINESWP_TOGGLE2    BUTTON_BOTTOMMIDDLE
+#define MINESWP_NEXT       BUTTON_MIDRIGHT
+#define MINESWP_PREV       BUTTON_MIDLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

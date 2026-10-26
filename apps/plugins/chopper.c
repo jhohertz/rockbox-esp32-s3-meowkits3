@@ -218,6 +218,15 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define ACTION2     BUTTON_UP
 #define ACTIONTEXT  "A"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: one-button game - A drops the depth charge, held B quits
+ * (same as PLA_EXIT in pluginlib). ACTION2 stays a touch cell so the panel
+ * keeps a second way to fire. */
+#define QUIT BUTTON_B|BUTTON_REPEAT
+#define ACTION BUTTON_A
+#define ACTION2 BUTTON_CENTER
+#define ACTIONTEXT "A"
+
 #elif !defined(HAVE_TOUCHSCREEN)
 #error No keymap defined!
 #endif

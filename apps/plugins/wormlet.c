@@ -438,6 +438,18 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define BTN_QUIT        BUTTON_POWER
 #define BTN_STOPRESET   BUTTON_SELECT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick drives the worm, A starts/pauses, B resets, held B
+ * quits. */
+
+#define BTN_DIR_UP      BUTTON_UP
+#define BTN_DIR_DOWN    BUTTON_DOWN
+#define BTN_DIR_LEFT    BUTTON_LEFT
+#define BTN_DIR_RIGHT   BUTTON_RIGHT
+#define BTN_STARTPAUSE  BUTTON_A
+#define BTN_STOPRESET   BUTTON_B
+#define BTN_QUIT        BUTTON_B|BUTTON_REPEAT
+#define BTN_RC_QUIT     BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

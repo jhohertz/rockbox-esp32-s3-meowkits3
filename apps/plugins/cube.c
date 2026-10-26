@@ -434,6 +434,19 @@
 #define CUBE_PAUSE         BUTTON_START
 #define CUBE_HIGHSPEED     BUTTON_A
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: this game has no movement, only mode/value actions, so the
+ * stick becomes the two pairs it needs and A/B take mode and pause. */
+
+#define CUBE_NEXT       BUTTON_RIGHT
+#define CUBE_PREV       BUTTON_LEFT
+#define CUBE_INC        BUTTON_UP
+#define CUBE_DEC        BUTTON_DOWN
+#define CUBE_MODE       BUTTON_A
+#define CUBE_PAUSE      BUTTON_B
+#define CUBE_QUIT       BUTTON_B|BUTTON_REPEAT
+#define CUBE_HIGHSPEED  BUTTON_CENTER
+#define CUBE_RC_QUIT    BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
