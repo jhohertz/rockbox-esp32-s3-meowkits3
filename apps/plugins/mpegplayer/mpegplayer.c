@@ -515,6 +515,21 @@ CONFIG_KEYPAD == SANSA_M200_PAD
 #define MPEG_RW         BUTTON_LEFT
 #define MPEG_FF         BUTTON_RIGHT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Same convention as
+ * every other MeowKit plugin keymap: directions move, A is the primary action,
+ * B tap is menu or cancel, B held quits. The transport mapping is deliberately
+ * the same as this target's WPS context (keymap-meowkits3.c): A tap plays and
+ * pauses, A held stops, stick up/down is volume and stick left/right is seek,
+ * so a video and a track are driven identically. */
+#define MPEG_MENU       BUTTON_B
+#define MPEG_PAUSE      BUTTON_A
+#define MPEG_STOP       (BUTTON_A | BUTTON_REPEAT)
+#define MPEG_VOLDOWN    BUTTON_DOWN
+#define MPEG_VOLUP      BUTTON_UP
+#define MPEG_RW         BUTTON_LEFT
+#define MPEG_FF         BUTTON_RIGHT
+
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
