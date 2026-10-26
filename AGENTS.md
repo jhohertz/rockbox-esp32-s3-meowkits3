@@ -4668,6 +4668,9 @@ fixing them changes other targets' manuals.
 actions this target cannot produce, and every mapping in it mirrors
 `apps/keymaps/keymap-meowkits3.c` and `keymap-touchscreen.c`. The gaps that
 surface as a result are tracked in `firmware/target/xtensa/DOC-GAPS.md`: add an
+
+The status list for everything still open is `firmware/target/xtensa/PENDING.md`:
+hardware-verification queue, deferred flags, decisions taken deliberately, upstream-submittable fixes not yet filed, and the current artifact inventory.
 entry whenever the manual promises something the keymap does not deliver, and
 update the tex file when a mapping is finally implemented. The implementation
 plan for those gaps — gesture budget, upstream precedents, spike order — is in

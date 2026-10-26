@@ -240,10 +240,9 @@ which hard-codes keys per pad rather than using that macro — gained
 provide that gesture.
 
 Files: `apps/keymaps/keymap-meowkits3.c`, `manual/platform/keymap-meowkits3.tex`,
-`manual/rockbox_interface/wps.tex`. Status: **landed, needs hardware test** —
-lock in the WPS, confirm stick and touch are both ignored and the screen says
-locked, unlock with the same gesture, then try autolock via Settings ->
-Advanced Key Lock.
+`manual/rockbox_interface/wps.tex`. Status: **landed, verified on hardware** —
+lock in the WPS, stick and touch both ignored, screen reports locked, same gesture
+unlocks, and the combo also arms autolock.
 
 ### S6 — Shuffle, repeat mode and the visible affordances: deferred to theme packs
 
