@@ -31,6 +31,7 @@ information about the level format, see
     {\TouchTopMiddle, \TouchBottomMiddle, \TouchMidLeft, \TouchMidRight}
 \opt{MPIO_HD300_PAD}{\ButtonScrollUp, \ButtonScrollDown, \ButtonRew, \ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\ButtonUp{} / \ButtonDown{} / \ButtonLeft{} / \ButtonRight}
     & Move the ``sokoban'' up, down, left, or right\\
 \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOff}
 \opt{IPOD_4G_PAD,IPOD_3G_PAD}{Long \ButtonSelect}
@@ -45,6 +46,7 @@ information about the level format, see
           \opt{IRIVER_RC_H100_PAD}{\ButtonRCStop}
          }
 \opt{RG_NANO_PAD}{\ButtonStart}
+    \opt{ESP32S3_PAD}{\ButtonA}
     & Menu \\
 \nopt{IAUDIO_X5_PAD,RG_NANO_PAD}{
     \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOn+\ButtonDown}
@@ -60,6 +62,7 @@ information about the level format, see
     \opt{SAMSUNG_YH92X_PAD}{\ButtonPlay+\ButtonDown}
     \opt{SAMSUNG_YH820_PAD}{\ButtonRec+\ButtonDown}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\TouchMidLeft}
     & Back to previous level \\
 }
 \nopt{IPOD_4G_PAD,IPOD_3G_PAD}{
@@ -76,6 +79,7 @@ information about the level format, see
     \opt{SANSA_FUZEPLUS_PAD}{\ButtonBack}
        \opt{HAVEREMOTEKEYMAP}{& }
     \opt{RG_NANO_PAD}{\ButtonR}
+    \opt{ESP32S3_PAD}{\textit{not available}}
     & Restart level \\
 }
 \nopt{IAUDIO_X5_PAD,RG_NANO_PAD}{
@@ -92,6 +96,7 @@ information about the level format, see
     \opt{SAMSUNG_YH92X_PAD}{\ButtonPlay+\ButtonUp}
     \opt{SAMSUNG_YH820_PAD}{\ButtonRec+\ButtonUp}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\TouchMidRight}
     & Go to next level \\
 }
 \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonRec}
@@ -105,6 +110,7 @@ information about the level format, see
 \opt{MPIO_HD300_PAD}{\ButtonRec}
        \opt{HAVEREMOTEKEYMAP}{& }
 \opt{RG_NANO_PAD}{\ButtonB}
+    \opt{ESP32S3_PAD}{\ButtonB}
     & Undo last movement \\
 
 \opt{IAUDIO_X5_PAD}{\ButtonPlay}
@@ -123,6 +129,7 @@ information about the level format, see
 \opt{MPIO_HD300_PAD}{\ButtonPlay}
        \opt{HAVEREMOTEKEYMAP}{& }
 \opt{RG_NANO_PAD}{\ButtonY}
+    \opt{ESP32S3_PAD}{\TouchBottomLeft}
     & Redo previously undone move \\
 \hline
 \multicolumn{2}{c}{\textbf{Solution playback}} \\
@@ -136,6 +143,7 @@ information about the level format, see
 \opt{COWON_D2_PAD}{\TouchCenter}
        \opt{HAVEREMOTEKEYMAP}{& }
 \opt{RG_NANO_PAD}{\ButtonL}
+    \opt{ESP32S3_PAD}{Long \ButtonA{}}
     & Pause/resume \\
 \opt{IRIVER_H100_PAD,IRIVER_H300_PAD%
     ,IAUDIO_X5_PAD,GIGABEAT_PAD,GIGABEAT_S_PAD,MROBE100_PAD,SANSA_E200_PAD%
@@ -146,6 +154,7 @@ information about the level format, see
 \opt{IRIVER_H10_PAD,MPIO_HD300_PAD}{\ButtonScrollUp/\ButtonScrollDown}
 \opt{COWON_D2_PAD}{\TouchTopMiddle/\TouchBottomMiddle}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\textit{not available}}
     & Increase/decrease playback speed \\
 \opt{IAUDIO_X5_PAD,IRIVER_H10_PAD%
     ,IRIVER_H100_PAD,IRIVER_H300_PAD,IPOD_4G_PAD,IPOD_3G_PAD,GIGABEAT_PAD%
@@ -156,6 +165,7 @@ information about the level format, see
 \opt{COWON_D2_PAD}{\TouchMidLeft/\TouchMidRight}
 \opt{MPIO_HD300_PAD}{\ButtonRew/\ButtonFF}
        \opt{HAVEREMOTEKEYMAP}{& }
+    \opt{ESP32S3_PAD}{\textit{not available}}
     & Go backward/forward (while paused) \\
 \opt{IRIVER_H100_PAD,IRIVER_H300_PAD}{\ButtonOff}
 \opt{IPOD_4G_PAD,IPOD_3G_PAD}{\ButtonSelect+\ButtonMenu}
@@ -168,6 +178,7 @@ information about the level format, see
 \opt{SAMSUNG_YH92X_PAD,SAMSUNG_YH820_PAD}{\ButtonRew}
        \opt{HAVEREMOTEKEYMAP}{& }
 \opt{RG_NANO_PAD}{\ButtonStart}
+    \opt{ESP32S3_PAD}{Long \ButtonB{}}
     & Quit \\
 \end{btnmap}
 

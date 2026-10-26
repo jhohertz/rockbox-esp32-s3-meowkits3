@@ -294,6 +294,19 @@ Minor, collected because the macros have to say something:
     `LEVEL_REPEAT`/`BUTTON_SAVE` to the touch fallback rather than colliding.
   - `vu_meter` and `jewels` likewise need `LABEL_*` / `HK_SELECT` / `HK_CANCEL`
     strings, not just button macros.
+- **Manual coverage followed the code, not the other way round.** 24 plugin
+  chapters now carry an `ESP32S3_PAD` row per key table, 127 rows in total, written
+  from the branches rather than from the plugin headers. Two gaps that only showed up
+  while documenting: nine of the older branches quit on **B tap** while the sixteen
+  newer ones quit on **B held**, and `sokoban` had a previous-level and a next-level
+  row that nothing on this target could fill — the branch now defines
+  `SOKOBAN_LEVEL_DOWN`/`SOKOBAN_LEVEL_UP` as MidLeft/MidRight for that reason. Three
+  other sokoban rows (restart level, replay speed, paused step) have no macro on any
+  target worth copying, so the chapter says *not available* rather than inventing a
+  key. `chip8emulator` has no key table in its chapter at all. Note also that the
+  chapters already had `\opt{touchscreen}` rows and that option comes from the
+  features list, not from the platform file, so the touch half of every table was
+  rendering for us all along — only the stick and A/B column was missing.
 - **Remaining touch-only plugins** are viewers and utilities (`credits`,
   `rb_info`, `logo`, `matrix`, `starfield`, `fire`, `fireworks`, `snow`,
   `mosaique`, `oscilloscope` is now fixed, etc.), where a touch grid is the
