@@ -395,12 +395,11 @@ input there and upstream already maps it sensibly.
 headers, so what the manual says is what the build does. Writing it down surfaced
 three things:
 
-- Nine branches (`blackjack`, `brickmania`, `clix`, `invadrox`, `pegbox`,
-  `rockpaint`, `solitaire`, `star`, `xobox`) predate the shared scheme and quit on
-  **B tap**; the sixteen newer ones quit on **B held**, matching pluginlib's
-  `PLA_EXIT`. Each chapter documents its game as it actually behaves. Unifying the
-  nine would change games that already work, so that is a preference call, not a
-  fix.
+- The quit gesture is now uniform: **B held** quits (`PLA_EXIT` and every branch that
+  really exits), **B tap** is cancel/menu. Eight branches that quit on B tap were
+  changed to held, and six games keep B tap because their quit macro opens a menu
+  instead of exiting (`blackjack`, `brickmania`, `xobox`, `solitaire`, `pegbox`,
+  `doom`), which is the other half of the convention.
 - `sokoban`'s table had a previous-level and a next-level row that no key on this
   target could fill, because `SOKOBAN_LEVEL_UP`/`SOKOBAN_LEVEL_DOWN` were left
   undefined. Documenting it forced the question; the answer was MidLeft/MidRight in
