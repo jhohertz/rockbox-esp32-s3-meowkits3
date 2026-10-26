@@ -33,6 +33,7 @@ is a failure and the theme will splash FONT LOAD ERROR on the device.
 """
 
 import argparse
+import html
 import hashlib
 import json
 import os
@@ -134,7 +135,8 @@ def parse_listing(text):
             val = m.group(2)
             if val.startswith('"') and val.endswith('"') and len(val) > 1:
                 val = val[1:-1]
-            kv[m.group(1)] = val
+            # names come back with XML entities (&amp; etc)
+            kv[m.group(1)] = html.unescape(val)
         # anything else is a continuation of a multi-line value; ignored
     flush()
     return themes
@@ -291,7 +293,13 @@ def audit(target, themes, slug, core_zip, fonts_zip):
                 continue
             for line in text.splitlines():
                 m = re.match(r"\s*(wps|sbs|font)\s*:\s*(\S+)", line)
-                if m and not m.group(2).startswith("/.rockbox/"):
+                if not m:
+                    continue
+                # '-' is the theme's way of saying "this theme sets none";
+                # settings_load_config() stores it verbatim and that is fine.
+                if m.group(2) == "-":
+                    continue
+                if not m.group(2).startswith("/.rockbox/"):
                     bad_cfg.append("%s: %s" % (rel, line.strip()))
         row = "%-22s refs:%-3d own:%-2d regions:%-3d cfg:%d" % (
             name, len(refs), len(own), regions, len(cfgs))
