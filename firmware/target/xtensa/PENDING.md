@@ -22,8 +22,16 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   reboot and the UI renders (`logfbuffer` and `language_buffer` are now placed by the
   ldfragment instead of a section attribute — a wrong placement would hang or read
   `0x0bad0bad`, not fail quietly).
-- **Plugin doc rows that give us nothing — 40 rows in 38 chapters.** Measured by
-  walking every `btnmap` row and asking whether any key in it is reachable for us. Five
+- **Plugin doc rows that give us nothing — 40 rows in 38 chapters, approximate.**
+  Measured by walking every `btnmap` row and asking whether any key in it is reachable for
+  us. A later attempt to enumerate the offending rows by splitting `btnmap` bodies on
+  double-backslash reported 213 rows in 42 chapters and is **wrong**: the split cuts rows
+  mid-block, so each fragment inherits the previous row's tail — including rows that
+  already have an `ESP32S3_PAD` block — and they count as missing. Drive a doc batch from a
+  *rendered* check instead: build the manual for this target and read the key column per
+  chapter out of the PDF, because `\opt{}` blocks do not split cleanly in the source.
+
+  Five
   chapters name keys from pads we lack (`\ButtonHome`/`\ButtonOption` in `chessbox`
   and `fractals`, `\ButtonBack` in `rockpaint`, `\ButtonDisplay` in `rockblox`):
   those need either an ESP32S3 row or an explicit "not available". Everything else
