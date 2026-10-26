@@ -73,8 +73,12 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
-- **Feature-flag batch — built, flashed-ready, not yet verified on hardware.** Four
-  enablements, all target-side, image grew 1,293,856 → **1,295,472** bytes:
+- **Feature-flag batch — flashed, awaiting your eyes.** Four enablements, all target-side
+  (`2d550135b2`). Flashed image **1,295,456 B**, md5
+  `3386cc55d25f395c93888d72d8242bcb`. (The build measured 1,295,472 B; `make flash` regenerates
+  the image with build metadata, which moves the size and the digest even when the code is
+  identical — same effect seen on every earlier flash.) Watch items, in the order you'll hit
+  them:
   - *The status bar's disk icon is now driven.* `CONFIG_LED` defaults to `LED_VIRTUAL`, so
     `apps/gui/statusbar.c:123-129` reserved 12 px and drew `bitmap_icon_disk` from
     `led_read(HZ/2)` — but nothing on xtensa ever called `led()`, so the icon was dead space.
@@ -319,15 +323,16 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,293,696 B | md5 `dc393b48c30369046139f4ca2eea460a`, **flashed 2026-10-27** — carries the PMU parity change (coulometer enabled, VBUS-current and TS ADC channels on). Card content unchanged, so no re-extract needed. |
-| `rockbox.zip` | 9,469,730 B, 414 entries | card content; re-extract after plugin changes |
+| `rockbox.esp32s3` | 1,295,456 B | md5 `3386cc55d25f395c93888d72d8242bcb`, **flashed** — carries the feature-flag batch (`2d550135b2`): SD-driven virtual LED, software backlight fading, software tone controls, adjustable LCD sleep timeout. Card content unchanged, so no re-extract needed. `make flash` regenerates the image with build metadata, so the digest and size move between builds even when the code is identical (this build measured 1,295,472 B before the flash rebuilt it). |
+| `rockbox.zip` | 9,318,040 B, 411 files | card content; re-extract after plugin changes |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
-| `rockbox-manual.pdf` | 3,007,703 B | 282 pages; three pre-existing upstream LaTeX errors |
+| `rockbox-manual.pdf` | 3,047,948 B | 286 pages; four pre-existing upstream LaTeX error lines as baseline. Rebuilt after the flag batch — now renders "Backlight Fade In/Out", Bass and Treble. `build-meowkits3/manual/features.tex` must be deleted when target flags change (see `AGENTS.md` §9) |
 
 Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox `0x010000`.
-Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, arena ends `0x3c572e94`, 53,612 B clear of
-the plugin/codec reservations (`make esplayer`).
+Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, `.ext_ram.bss` ends `0x3c5b2e9c`,
+arena `0x3c155800..0x3c575800` = 4,325,376 B, **53,604 B** clear of the plugin-text reservation
+at `0x3c5c0000` (`make esplayer`).
 
 Recipe: `export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1; . $IDF_PATH/export.sh`,
 then `make`, `make zip`, `make manual-pdf`, `make esplayer`,
