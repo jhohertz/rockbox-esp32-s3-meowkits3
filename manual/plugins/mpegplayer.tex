@@ -12,9 +12,10 @@ option and choose \setting{mpegplayer}.
 With a font-heavy theme it will report \emph{Out of memory in \fname{stream\_init}} before a
 file is opened. Switching to the failsafe theme and turning album art off is enough on a
 fresh boot; the directory cache should also be off, as it claims up to 1 MB of the same
-pool. Expect a low frame rate: a 25 fps source plays at roughly 11 fps, smooth but
-slower than real time. Turn on \setting{Display FPS} in the plugin's settings if you want
-to see what your own files achieve.}}
+pool. Expect a low frame rate, roughly 10--15 fps depending on how the file was encoded;
+playback is smooth but slower than real time. Turn on \setting{Display FPS} in the
+plugin's settings to see what your own files achieve, and encode smaller than the panel if
+you want more of it.}}
 
 \subsubsection{File formats and encoding}
 The video is decoded by libmpeg2, so the video track must be \emph{MPEG-1 or MPEG-2
