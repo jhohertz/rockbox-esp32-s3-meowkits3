@@ -390,6 +390,29 @@ macros (`*_NAME`, `LABEL_*`, `HK_SELECT`) alongside the button macros.
 Utility and viewer plugins are left on touch on purpose — the grid is the natural
 input there and upstream already maps it sensibly.
 
+**Manual coverage** (done): 24 plugin chapters now carry an `ESP32S3_PAD` column,
+127 rows in total, generated from the keymap branches rather than from the plugin
+headers, so what the manual says is what the build does. Writing it down surfaced
+three things:
+
+- Nine branches (`blackjack`, `brickmania`, `clix`, `invadrox`, `pegbox`,
+  `rockpaint`, `solitaire`, `star`, `xobox`) predate the shared scheme and quit on
+  **B tap**; the sixteen newer ones quit on **B held**, matching pluginlib's
+  `PLA_EXIT`. Each chapter documents its game as it actually behaves. Unifying the
+  nine would change games that already work, so that is a preference call, not a
+  fix.
+- `sokoban`'s table had a previous-level and a next-level row that no key on this
+  target could fill, because `SOKOBAN_LEVEL_UP`/`SOKOBAN_LEVEL_DOWN` were left
+  undefined. Documenting it forced the question; the answer was MidLeft/MidRight in
+  the branch. Three other sokoban rows (restart level, replay speed, paused step)
+  have no macro on any target worth copying, so they read *not available* rather
+  than inventing keys.
+- `chip8emulator`'s chapter has no key table at all, so there was nothing to extend.
+
+The plugin chapters already had `\opt{touchscreen}` rows, and that option comes from
+the features list rather than from the platform file, so the touch cells were
+rendering for us all along. Only the stick and A/B half of the table was missing.
+
 ### S11 — Tooling and release stubs
 
 Canonical short name is **`meowkits3`** — it matches `MODELNAME`, `builds.pm`,
