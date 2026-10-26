@@ -198,6 +198,32 @@ returning. Its cost is lookahead (~11.6 ms at `desc_num = 2`), not correctness.
 
 ## 5. ESP32-S3 notes
 
+### Bluetooth on this SoC is BLE only — no A2DP, no AVRCP, no LE Audio
+
+A2DP and AVRCP are Bluetooth Classic (BR/EDR) profiles, and ESP32-S3 has no BR/EDR
+baseband. ESP-IDF v5.5.5 encodes that as a capability: `SOC_BT_CLASSIC_SUPPORTED` is
+defined for exactly one SoC in the tree, `components/soc/esp32/include/soc/soc_caps.h:455`,
+and `components/soc/esp32s3/include/soc/soc_caps.h` declares only `SOC_BT_SUPPORTED`,
+`SOC_BLE_SUPPORTED`, `SOC_BLE_MESH_SUPPORTED`, `SOC_BLE_50_SUPPORTED` and
+`SOC_BLE_DEVICE_PRIVACY_SUPPORTED`. `BT_CLASSIC_ENABLED`
+(`components/bt/host/bluedroid/Kconfig.in:44-46`) depends on that symbol, and `BT_A2DP_ENABLE`
+plus every AVRCP option sit beneath it. Espressif's own classic_bt example test matrix
+(`examples/bluetooth/bluedroid/classic_bt/pytest_classic_bt_test.py:20,55`) lists only
+`esp32|esp32`.
+
+Two things that mislead: `CONFIG_BT_BLUEDROID_ENABLED` is selectable on S3 ("Bluedroid -
+Dual-mode"), but with classic unselectable that build is BLE-only Bluedroid; and the S3
+controller library is `libbtdm_app.a` under `lib_esp32c3_family/`, which is the shared
+C3-family build and the C3 is BLE-only too, so the name proves nothing.
+
+LE Audio is not an escape hatch either: it needs isochronous channels (BLE 5.2+) and an LC3
+stack. S3 declares no ISO/CIS capability, `components/bt/host/` contains only `bluedroid`
+and `nimble`, and there is no `le_audio` component in this checkout. So no wireless stereo
+audio output is possible from this chip in any profile. Reaching Bluetooth headphones means
+adding a classic-capable co-processor and treating it as a PCM sink — see
+`firmware/target/xtensa/BT-AUDIO.md`, which also documents the sink seam the core already
+provides (`pcm_sink.h`, `mixer_switch_sink`, the IAP precedent).
+
 ### Use IDF's drivers; do not bit-bang peripherals
 
 This is a standing instruction, and it has been earned twice.
