@@ -190,7 +190,8 @@ CODEC_CRT0 := $(CODECDIR)/codec_crt0.o
 
 $(CODECS): $(CODEC_CRT0) $(CODECLINK_LDS)
 
-$(CODECLINK_LDS): $(CODEC_LDS) $(CONFIGFILE)
+$(CODECLINK_LDS): $(CODEC_LDS) $(CONFIGFILE) \
+                   $(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)
 	$(call PRINTS,PP $(@F))
 	$(shell mkdir -p $(dir $@))
 	$(call preprocess2file, $<, $@, -DCODEC)
