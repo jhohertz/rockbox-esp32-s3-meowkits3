@@ -487,6 +487,16 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define SNAKE2_PLAYPAUSE    BUTTON_SELECT
 #define SNAKE2_PLAYPAUSE_TEXT "Cross"
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick moves, A pauses, B held quits (see snake.c). */
+
+#define SNAKE2_UP        BUTTON_UP
+#define SNAKE2_DOWN      BUTTON_DOWN
+#define SNAKE2_LEFT      BUTTON_LEFT
+#define SNAKE2_RIGHT     BUTTON_RIGHT
+#define SNAKE2_PLAYPAUSE BUTTON_A
+#define SNAKE2_QUIT      BUTTON_B|BUTTON_REPEAT
+#define SNAKE2_RC_QUIT   BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

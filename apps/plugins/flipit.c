@@ -534,6 +534,22 @@
 #define FLIPIT_STEP_BY_STEP BUTTON_POWER
 #define FLIPIT_TOGGLE       BUTTON_SELECT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick moves the cursor, A flips, B shuffles, held B quits;
+ * the two solver modes are touch actions. */
+
+#define FLIPIT_UP           BUTTON_UP
+#define FLIPIT_DOWN         BUTTON_DOWN
+#define FLIPIT_LEFT         BUTTON_LEFT
+#define FLIPIT_RIGHT        BUTTON_RIGHT
+#define FLIPIT_TOGGLE       BUTTON_A
+#define FLIPIT_SHUFFLE      BUTTON_B
+#define FLIPIT_QUIT         BUTTON_B|BUTTON_REPEAT
+#define FLIPIT_RC_QUIT      BUTTON_TOPLEFT
+#define FLIPIT_SOLVE        BUTTON_TOPMIDDLE
+#define FLIPIT_STEP_BY_STEP BUTTON_TOPRIGHT
+#define FLIPIT_NEXT         BUTTON_MIDRIGHT
+#define FLIPIT_PREV         BUTTON_MIDLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

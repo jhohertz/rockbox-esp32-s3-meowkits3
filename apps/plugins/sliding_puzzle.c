@@ -386,6 +386,18 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define PUZZLE_SHUFFLE  BUTTON_SELECT
 #define PUZZLE_PICTURE  BUTTON_MENU
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: the stick slides a tile, A shuffles, B held quits, and the
+ * picture toggle is a touch action. */
+
+#define PUZZLE_UP      BUTTON_UP
+#define PUZZLE_DOWN    BUTTON_DOWN
+#define PUZZLE_LEFT    BUTTON_LEFT
+#define PUZZLE_RIGHT   BUTTON_RIGHT
+#define PUZZLE_SHUFFLE BUTTON_A
+#define PUZZLE_PICTURE BUTTON_CENTER
+#define PUZZLE_QUIT    BUTTON_B|BUTTON_REPEAT
+#define PUZZLE_RC_QUIT BUTTON_TOPLEFT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad

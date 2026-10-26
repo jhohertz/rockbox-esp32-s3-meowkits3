@@ -1333,6 +1333,29 @@ CONFIG_KEYPAD == MROBE500_PAD
 #elif CONFIG_KEYPAD == SHANLING_Q1_PAD || CONFIG_KEYPAD == HIBY_R3PROII_PAD || CONFIG_KEYPAD == HIDIZS_AP80MAX_PAD
 /* use touchscreen */
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* CHIP-8 wants a 16-key hex keypad and this board has fifteen inputs, so the
+ * pad is split rather than faked: the stick is the 2/4/6/8 column that most
+ * CHIP-8 games actually use, A is 5 (the centre), and the remaining keys go on
+ * the touch grid. B held switches the emulator off. */
+
+#define CHIP8_KEY2  BUTTON_UP
+#define CHIP8_KEY4  BUTTON_LEFT
+#define CHIP8_KEY6  BUTTON_RIGHT
+#define CHIP8_KEY8  BUTTON_DOWN
+#define CHIP8_KEY5  BUTTON_A
+#define CHIP8_KEY1  BUTTON_TOPLEFT
+#define CHIP8_KEY3  BUTTON_TOPRIGHT
+#define CHIP8_KEY7  BUTTON_BOTTOMLEFT
+#define CHIP8_KEY9  BUTTON_BOTTOMRIGHT
+#define CHIP8_KEY0  BUTTON_BOTTOMMIDDLE
+#define CHIP8_KEYA  BUTTON_TOPMIDDLE
+#define CHIP8_KEYB  BUTTON_MIDLEFT
+#define CHIP8_KEYC  BUTTON_MIDRIGHT
+#define CHIP8_KEYD  BUTTON_CENTER
+#define CHIP8_KEYE  BUTTON_B
+#define CHIP8_KEYF  BUTTON_A|BUTTON_REPEAT
+#define CHIP8_OFF   BUTTON_B|BUTTON_REPEAT
 #else
 #if !defined(HAVE_TOUCHSCREEN)
 /* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
