@@ -29,47 +29,57 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   dark idle and why `BATTERY_CAPACITY_DEFAULT` stays at 1400 anyway. Still wanted:
   playback screen-on and playback screen-off on the same track and volume, 20+ minutes
   each, reading the slope across samples rather than any single line.
-- **Coulometer → real battery percent: the readout now exists, the scale does not.**
-  `Debug → View HW info` gained a `CC raw: charge N discharge N` row
-  (`debug-xtensa.c`, `INFO_CC`), one 8-byte burst read of `0xb0-0xb7`. Nothing else
-  displays those counters — `Debug → View battery` shows only `battery_status` fields —
-  which is why the scale had stayed unmeasured. Two places, and both are ours.
-  *Scale*: the LSB depends on the calibration base in CC_CTRL bit 6 (`AXP_CC_PIECE_BASE`),
-  undocumented in this tree, so it is empirical: **reboot** (`axp173_init()` clears the
-  counters, so a fresh boot is a clean zero with no clear UI needed), confirm the row reads
-  0/0, start battery_bench, stay unplugged, and leave it overnight. Dark idle is the best
-  window — `battery_current()` is instantaneous and sampled every 60 s, so integrating it
-  is only trustworthy when the current is steady.
-  **The overnight run of 2026-10-27 produced the log but not the pair.** The counters were
-  cleared at boot as designed, and then the board was reset into download mode to flash the
-  release, so no `CC raw` value from that run survives. The corrected procedure is the same
-  except it must not end in a reboot, and it should run to shutdown rather than to a
-  convenient stopping point:
-  1. boot, read `CC raw` (expect 0/0 — over the CDC console if the screen isn't wanted),
-  2. start `battery_bench`, unplug, leave it dark,
-  3. run it **to shutdown**, so `battery_level_shutoff` / `battery_level_disksafe`
+- **Coulometer → real battery percent: the counters now actually run; the scale is
+  documented but unverified.** The row read `0/0` on every visit for one reason, and it was
+  ours: `axp173_coulomb_clear()` wrote REG 0xB8 as a bare whole-register value (`0x20`),
+  which cleared the enable bit along with the counters, so counting was off from boot
+  onward. The header also called bit 6 a "calibration base"; the datasheet calls it a
+  pause, and the reference driver's enum agrees (`COULOMETER_RESET/PAUSE/ENABLE` at bits
+  5/6/7). Both fixed — enable and clear are now read-modify-writes, and `Debug → View HW
+  info` prints the control byte so "nothing happened" is distinguishable from "counting is
+  off".
+  *Scale*: the reference library derives it as
+  `mAh = 65536 × 0.5 mA × counts / 3600 / adc_rate_hz`, which at our 25 Hz is **0.364 mAh
+  per LSB**. That is a vendor derivation, not a datasheet statement, so confirm it before
+  anything builds a percentage on it. The row prints the raw counts and the estimate
+  together for exactly that comparison.
+  **The overnight run of 2026-10-27 produced the log but not the pair** — the counters were
+  cleared at boot as designed, and the board was then reset into download mode to flash the
+  release, so nothing from that run survives. Procedure, and it must not end in a reboot:
+  1. boot, read the CC row (control byte should show the enable bit; counts 0),
+  2. start `battery_bench`, unplug,
+  3. **run it to shutdown**, so `battery_level_shutoff` / `battery_level_disksafe`
      (3300 / 3400 mV, never approached by the idle run) and the bottom of
      `percent_to_volt_discharge[]` get measured instead of assumed,
-  4. read `CC raw` again *before* powering off,
+  4. read the CC row again *before* powering off,
   5. take the log off the card.
-  `mAh per LSB = ∫current·dt ÷ discharge delta`, with the log's integral as the independent
-  cross-check — the dark-idle run's integral was 425.1 mAh, which is the number to expect
-  the counter to agree with. A failed I2C read also returns 0/0, indistinguishable from a
-  genuine post-boot zero, which is why the row is read twice.
+  The dark-idle run's integrated current was **425.1 mAh**, so a run of that length should
+  show ~1,167 discharge counts if 0.364 mAh/LSB is right.
   *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
-  `config/meowkits3.h:354`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c:393`
-  and `:467` call `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
+  `config/meowkits3.h`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c` call
+  `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
   `percent_to_volt_discharge[]`. That is the whole hook — no core change. Voltage stays as
-  a cross-check (the two can disagree under load sag, which is the reason to prefer the
-  counters).
-- **The top of the discharge table is unverified, not wrong.** The idle run's first sample
-  read 3998 mV / 83 % straight after unplugging from a charger. Either the cell had not
-  finished charging, or 100 % for this cell is nearer 4.0 V under load than the table's
-  4200 mV. Settling it needs the PMU to say when charging is done: `AXP_REG_CHARGESTATUS`
-  (0x01) bit 7 is charge-done in this chip family, and we already read bits 6 and 5, but
-  bit 7 has not been observed on this die — so it is a reading to take, not a define to
-  add. Until then the table's top end stays as it is and a run that starts from charge-done
-  is the measurement that would change it.
+  a cross-check, because the two disagree under load sag.
+- **The 83 % "full" reading was our own charge ceiling, not the gauge table.** REG 0x33
+  bits 6:5 set the charge target voltage and reset to `10` = 4.20 V. Our init wrote the
+  register as `0x80 | 4` — "enable, 450 mA" — which zeroed those two bits and set a 4.10 V
+  ceiling, so an overnight charge stopped at ~4.0 V under load and the bar read 83 %. Fixed
+  by naming `AXP_CHG_TARGET_4V20` explicitly; the reference firmware reaches the same place
+  by never touching bits 6:5. Verify on hardware that a charge now runs to ~4.2 V and the
+  gauge reads near 100 %.
+  Two related corrections: **REG 0x01 bit 7 is the chip's over-temperature flag, not
+  charge-done** (this chip has no charge-done bit — bit 6 reads 0 both when idle and when
+  finished, bit 2 only says the charge current fell below the set value), and the previous
+  text here claimed otherwise. Also `Debug → View HW info` now prints the decoded target
+  and set current (`INFO_CHG`), so a wrong REG 0x33 is visible instead of inferred.
+- **Does this board wire an NTC to TS?** Unverified, and it is not a cosmetic question:
+  REG 0x38/0x39 and 0x3C/0x3D are charge and discharge temperature thresholds the chip
+  acts on from the TS voltage, and our init used to write REG 0x84 as a bare `0`, which
+  turned the TS drive current off (bits 1:0) and dropped it to 20 µA (bits 5:4) while
+  setting the rate. Now written as the datasheet default `0x32` — 25 Hz, 80 µA,
+  thermistor mode, drive during sampling, matching the reference firmware's 80 µA.
+  `INFO_TS` prints the raw TS code: a real thermistor moves with handling, a floating pin
+  sits at a rail and does not.
 - **Upstream submissions.** §5 lists 17 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
 - **Plugin code executes from PSRAM — and the frame rate may not be ours to fix.**
@@ -285,7 +295,7 @@ Each of these was checked on the board, not inferred.
 | ES8311 REG 0x08 / 0x0D readback | Written 255 reads 0x00; written 0x01 reads 0x02, over a working I2C master. Assumption is 0x08 is don't-care in slave mode and 0x0D reports status — not measured. `es8311_stat()` is a HW-info row so it stays observable. | A datasheet answer or a measurement. |
 | USB DAC CPU boost | `.needs_cpu_boost = false` plus `cpu_idle_mode(true)` on USB entry means the core idles at the low clock during isochronous frames. Never showed a problem. | Glitches in the TX row (`sess / err / rec / sil`). |
 | rbutil / build-info / themes-server entries (§4) | Depends on infrastructure and upstream acceptance we do not control. | The port goes upstream. |
-| Charge target voltage (~4.1 V) | Neither our firmware nor the reference sets it, so the cell charges to the AXP173's 4.2 V default. ~4.1 V is the meaningful cycle-life lever, but confirming the register on this die is the probing you ruled out, and lowering it wrong would undercharge the pack. | You want the lifetime trade and accept one register check. |
+| Charge target voltage | **Resolved, not deferred.** The register is REG 0x33 bits 6:5 (4.10 / 4.15 / 4.20 / 4.36 V, reset `10` = 4.20 V) — no probing was needed, the datasheet states it. Our init had been *lowering* it to 4.10 V by accident, so the port was already undercharging the cell; it now writes 4.20 V explicitly. ~4.15 V remains the cycle-life trade if you ever want it, and it is now a one-line change with the field named. | You want the lifetime trade. |
 | Playback surviving a huge playlist switch | Investigated, not fixed. The scan loops already yield per entry (`apps/playlist.c:2301`, `:2637`) and hold a CPU boost, and Rockbox's priority bands are correct for playback (`codec_thread.c:662-664` `PRIORITY_PLAYBACK` boosted toward 5, `audio_thread.c:168-171` 15, playlist refresher `PRIORITY_BACKGROUND` 20) — but this port is deliberately cooperative (`thread-idf.c:121-127`, all threads at one FreeRTOS priority), so priorities only bite at yield points. What doesn't yield is `sort_playlist_unlocked()` (`playlist.c:1619`): `qsort()` at `:1625`, the linear index scan at `:1636`, and `update_control_unlocked()` at `:1643` writing the control file to a 1-bit 20 MHz card. Existing levers cover it: shuffle off, lower "Max files in playlist", keep dircache on (turning it off made large collections *more* flaky). `PCM_NUM_CHUNKS` was deliberately not raised — 64→128 takes 512 KiB from the arena. | You want it to survive the unreasonable case, or accept a core yield/clamp as its own spike. |
 | `playlist.max_playlist_size` can outrun its own allocation | Latent hazard, not a bug we hit by accident. `apps/playlist.c:3652-3655` memcpy's `playlist->max_playlist_size * sizeof(*indices)` into `current_playlist.indices`, whose block was allocated in `playlist_init()` (`:1972-1974`) from `global_settings.max_files_in_playlist` **at boot**. The only clamp in the load path is `:2073-2074`, which bounds `num_indices` to the *setting*, not to that block. So raising Settings → Playback → "Max files in playlist" past the boot-time allocation makes the copy walk past the end of the block into whatever buflib neighbour follows it (playback file buffer, dircache). Raised deliberately while testing huge lists; kept to reasonable values now. Same function is also the allocation-failure hazard already documented at `:1983-1989`. | A bounds clamp in `apps/playlist.c` — a bug fix, not a feature, and worth proposing upstream. |
 | IR remote input (board has a 38 kHz RX on GPIO 5, TX on GPIO 7) | Noted as a maybe-later feature, not a flag: **there is no generic IR abstraction in this tree** — `HAVE_IR_REMOTE` appears nowhere, and every remote in Rockbox is a per-target driver feeding button codes. The useful half of the board's IR hardware is the decoder side, and its output shape is exactly `button_queue_post()` (`firmware/export/button.h:66-68`), which is already public. Needs an NEC-protocol decoder on a real input path (RMT or a capture timer), so it is a feature spike, not a checkbox. | You have a remote you want to use with it. |
@@ -403,6 +413,13 @@ ships no esp32s3 stub flasher (`FileNotFoundError: stub_flasher_32s3.json`), so 
 from this host needs IDF's `esptool.py`; and `--after no_reset` is deliberate — RESET is
 a button on this board, not wired to DTR, so esptool cannot reset it and the last step is
 always a power cycle.
+
+**The tagged release undercharges the cell.** `esp32-s3-idf-20261027` carries the REG 0x33
+bug above, so a device flashed from it stops charging at 4.10 V and the gauge tops out near
+83 %. That is a real defect in a published artifact, not a theoretical one: supersede the
+tag once the charge path, the coulometer counting, and the TS reading have been checked on
+hardware, and say so in the follow-up's notes rather than leaving the first release as the
+thing people find from a link.
 
 
 | File | Size | Notes |

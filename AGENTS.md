@@ -1651,6 +1651,58 @@ obvious from the datasheet tables:
 - ADC scaling: battery voltage `(hi<<4 | lo&0x0f) * 1.1` mV; charge and discharge
   current `(hi<<5 | lo&0x1f) * 0.5` mA; VBUS voltage `(hi<<4 | lo&0x0f) * 1.7` mV.
   The current registers use five low bits, the voltage registers four.
+- **REG 0x33 has three fields and the target voltage is the one that gets lost.**
+  Bit 7 charge enable, bits 6:5 target voltage (`00` 4.10 V, `01` 4.15 V, `10` 4.20 V,
+  `11` 4.36 V — resets to `10`), bit 4 the termination threshold (10 % or 15 % of the set
+  current), bits 3:0 the current (100, 190, 280, 360, 450, 550 … 1320 mA). A
+  whole-register write of `0x80 | 4`, which reads as "enable and 450 mA", drives bits 6:5
+  to `00` and sets a 4.10 V ceiling. That is exactly what our init did, and it is why a
+  board charged overnight read 83 % and measured ~4.0 V under load: the chip was never
+  asked to fill the cell. The reference firmware avoids it by setting bit 7 and bits 3:0
+  through two separate read-modify-writes, so its target stays 4.2 V.
+- **REG 0x84 is not only the ADC rate.** Bits 7:6 rate (25/50/100/200 Hz), bits 5:4 the
+  TS pin's output current (20/40/60/80 µA, resets to `11` = 80 µA), bit 2 TS function
+  (`0` thermistor, `1` independent ADC input), bits 1:0 when that current flows
+  (`00` never, `01` while charging, `10` during sampling, `11` always). Writing the bare
+  rate `0` therefore switched the TS drive off as well as selecting 25 Hz. The datasheet
+  default is `0x32`; write it deliberately rather than as a zero.
+- **REG 0x01 bit 7 is the chip's over-temperature flag, not charge-done.** This chip has
+  no charge-done bit at all: bit 6 reads 0 both when the charger is idle and when the cell
+  is finished, and bit 2 only says the actual charge current has fallen below the set
+  value. Anything that needs "full" has to infer it, which is why the charge path's
+  target voltage matters more than a status bit would.
+- **REG 0x00 bit 2 is the battery current direction** (`0` discharging, `1` charging), and
+  it is the authoritative signal for choosing which current register to read. Battery
+  presence is REG 0x01 bit 5. Our header previously called REG 0x00 bit 2
+  `AXP_BATT_PRESENT`, which is a different thing: keying the register choice off
+  `axp173_charging()` samples the discharge register while current is flowing the other
+  way whenever VBUS is present but the charger is idle.
+- **The coulomb counters are real: 0xB0-0xB7, control 0xB8** (charge and discharge are
+  each a big-endian 32-bit count, one contiguous 8-byte block). In the control register
+  bit 7 enables counting, bit 6 pauses and bit 5 clears, and bits 6 and 5 are
+  self-clearing pulses. There is **no calibration-base bit** — the port previously named
+  bit 6 `AXP_CC_PIECE_BASE` on an assumption taken from the reference driver's enum, and
+  writing 1 there pauses counting. The trap is that the clear pulse written as a whole
+  register value (`0x20`) also clears the enable bit, so the counters read 0 forever and
+  look like a dead chip or a failed I2C read; clearing has to be a read-modify-write that
+  keeps bit 7, and the debug row prints the control byte because the counters alone cannot
+  distinguish "nothing happened" from "counting is off".
+  The counters sum ADC samples, so the conversion depends on the sample rate:
+  `mAh = 65536 * 0.5 mA * counts / 3600 / rate`, i.e. ~0.364 mAh per LSB at 25 Hz. That
+  derivation comes from the reference library's `getCoulometerData()`, not the datasheet,
+  so it is a scale to confirm against an integrated current before anything builds a
+  percentage on it.
+- **Temperature is not an unread channel.** REG 0x38/0x39 (charge low/high) and 0x3C/0x3D
+  (discharge low/high) are thresholds the chip acts on from the TS voltage, and REG 0x8F
+  bit 2 is internal over-temp shutdown (default `0` = do not shut down). Whether this
+  board actually wires an NTC to TS is unverified — the schematic shows none, but the
+  reference firmware drives TS at 80 µA and enables it — so a floating TS input could
+  suspend charge or discharge on a reading that means nothing. `Debug → View HW info`
+  prints the raw TS code to settle it on the device.
+- The reference firmware's own voltage→percent curve (`getBatLevel()`, piecewise linear):
+  3.2 V → 0 %, 3.5 V → 20 %, 3.7 V → 40 %, 3.9 V → 70 %, 4.1 V → 90 %, 4.2 V → 100 %. Our
+  `percent_to_volt_discharge[]` is close in shape; at 4.0 V it says 83 % where the vendor
+  curve says ~80 %, which is well inside the disagreement between any two li-ion curves.
 - The power button is the chip's PEK input, and it is readable over I2C. The IRQ
   enables are REG 0x40-0x43 plus 0x4A, and the matching status registers are
   0x44-0x47 plus 0x4D. **The PEK bits are in REG 0x46** (IRQ STATUS3): bit 0 is the

@@ -112,29 +112,58 @@ void axp173_init(void)
     axp173_write_reg(AXP_REG_OUTPUTCTRL,
                      AXP_OUT_DCDC1 | AXP_OUT_LDO2 | AXP_OUT_LDO3 | AXP_OUT_LDO4);
 
-    axp173_write_reg(AXP_REG_CHARGECTRL, 0x80 | 4);  /* enable, 450 mA */
+    /* REG 33H has three fields and the middle one is easy to lose. Bits 6:5 are the
+     * charge target voltage (00: 4.10 V, 01: 4.15 V, 10: 4.20 V, 11: 4.36 V) and reset to
+     * 10; writing `0x80 | 4` looked like "enable, 450 mA" but drove those two bits to 00,
+     * i.e. a 4.10 V ceiling. That is what made an overnight charge end at ~4.0 V under
+     * load and the gauge read 83 % -- the chip was never asked to fill the cell. The
+     * reference firmware sidesteps it by setting bit 7 and bits 3:0 through two separate
+     * read-modify-writes; naming the target explicitly is shorter and shows intent.
+     */
+    axp173_write_reg(AXP_REG_CHARGECTRL,
+                     AXP_CHG_ENABLE | AXP_CHG_TARGET_4V20 | AXP_CHG_CURRENT_450MA);
 
     /* ADC channels. Battery voltage and current plus chip temperature are what this
      * port reads for power management. VBUS current and the TS (temperature socket)
      * channel are enabled to match the reference firmware, which turns on the same set:
      * VBUS current is the number that tells us whether a 450 mA charge plus the system
-     * load is asking a USB 2.0 port for more than its 500 mA budget, and TS is the cell
-     * temperature input. TS has no NTC on this board's schematic, so its reading is a
-     * floating input rather than a temperature -- enabling it costs the chip's ADC mux
-     * time, not I2C traffic, and nothing treats the value as data.
+     * load is asking a USB 2.0 port for more than its 500 mA budget.
+     *
+     * TS is the thermistor input. Whether this board actually wires one is unverified --
+     * the schematic does not show an NTC, but the datasheet's charge and discharge
+     * temperature thresholds (REG 38H/39H and 3CH/3DH) act on that input, so a floating
+     * TS pin is not a harmless unread channel: it feeds the chip's charge-suspend and
+     * discharge-suspend decisions. Nothing here treats the value as data, and Debug ->
+     * View HW info prints the raw reading so the question can be settled on the device
+     * instead of by argument.
      */
     axp173_write_reg(AXP_REG_ADCENABLE1,
                      AXP_ADC_BATT_V | AXP_ADC_BATT_C | AXP_ADC_VBUS_V |
                      AXP_ADC_VBUS_C | AXP_ADC_TS);
     axp173_write_reg(AXP_REG_ADCENABLE2, AXP_ADC_TEMP);
-    axp173_write_reg(AXP_REG_ADCRATE, AXP_ADC_RATE_25HZ);
 
-    /* Charge integration. The reference firmware enables the coulometer and the
-     * 1300 mA calibration base; that is mirrored here, then both counters are cleared
-     * once so the first reading is relative to this boot rather than to whatever the
-     * previous firmware accumulated. Clearing is a pulse: bit 5 self-clears.
+    /* REG 84H is not just the sample rate. Bits 7:6 are the rate, but bits 5:4 set the
+     * TS pin's output current (00: 20 uA, 01: 40, 10: 60, 11: 80), bit 2 selects between
+     * thermistor and independent ADC input, and bits 1:0 say when that current flows
+     * (00: never, 01: while charging, 10: during sampling, 11: always). Writing the bare
+     * rate -- 0 -- therefore asked for 25 Hz and also switched the TS drive off and its
+     * current down to 20 uA, which is the datasheet default of 0x32 restated as 0x00.
+     * Write the default explicitly: 25 Hz, 80 uA, thermistor mode, drive during sampling.
+     * The reference firmware drives TS at 80 uA too.
      */
-    axp173_write_reg(AXP_REG_CC_CTRL, AXP_CC_ENABLE | AXP_CC_PIECE_BASE);
+    axp173_write_reg(AXP_REG_ADCRATE, (AXP_ADC_RATE_25HZ << 6) | (3u << 4) | 2u);
+
+    /* Charge integration: enable counting, then clear both counters once so the first
+     * reading is relative to this boot rather than to whatever the previous firmware
+     * accumulated.
+     *
+     * Both writes have to preserve the enable bit. Bit 6 is a pause, not a calibration
+     * base -- the earlier name for it was an assumption, and the pulse on bit 5 that
+     * clears the counters, written as a whole-register value of 0x20, also cleared bit 7
+     * and switched the coulometer off for the rest of the boot. That is the whole reason
+     * CC read 0/0 no matter what the device had been doing.
+     */
+    axp173_coulomb_enable(true);
     axp173_coulomb_clear();
 
     /* PEK timings. REG 36H resets to 0x5D: ONLEVEL 512 ms, IRQLEVEL 1.5 s, auto-off on,
@@ -218,11 +247,112 @@ bool axp173_coulomb_enable(bool on)
 
 bool axp173_coulomb_clear(void)
 {
-    if (!axp173_write_reg(AXP_REG_CC_CTRL, AXP_CC_CLEAR))
+    int r = axp173_read_reg(AXP_REG_CC_CTRL);
+
+    if (r < 0)
         return false;
 
-    /* The bit is self-clearing; if it is still set the write did not take. */
-    return (axp173_read_reg(AXP_REG_CC_CTRL) & AXP_CC_CLEAR) == 0;
+    /* Keep bit 7. Writing AXP_CC_CLEAR alone is a whole-register write and drops the
+     * enable, which stops counting from that moment onward. */
+    if (!axp173_write_reg(AXP_REG_CC_CTRL,
+                          (unsigned char)((r & AXP_CC_ENABLE) | AXP_CC_CLEAR)))
+        return false;
+
+    /* Bit 5 is self-clearing, and bit 7 must still be set: a clear that turned the
+     * counter off is worse than no clear at all. */
+    r = axp173_read_reg(AXP_REG_CC_CTRL);
+    return r >= 0 && (r & AXP_CC_CLEAR) == 0 && (r & AXP_CC_ENABLE) != 0;
+}
+
+int axp173_coulomb_control(void)
+{
+    return axp173_read_reg(AXP_REG_CC_CTRL);
+}
+
+/* The coulomb count is a sum of ADC samples, so converting it needs the sample rate.
+ * REG 84H bits 7:6 select 25/50/100/200 Hz; read it rather than assume axp173_init()'s
+ * choice, because a different rate changes the scale by the same factor. */
+static int coulomb_adc_rate_hz(void)
+{
+    int r = axp173_read_reg(AXP_REG_ADCRATE);
+
+    if (r < 0)
+        return 25;
+
+    switch ((r >> 6) & 3)
+    {
+        case 0:  return 25;
+        case 1:  return 50;
+        case 2:  return 100;
+        default: return 200;
+    }
+}
+
+static int coulomb_counts_to_mAh(uint32_t counts)
+{
+    /* Reference driver's derivation: mAh = 65536 * 0.5 mA * counts / 3600 / rate. */
+    return (int)((uint64_t)counts * 65536 / 2 / (3600 * coulomb_adc_rate_hz()));
+}
+
+int axp173_coulomb_charge_mAh(void)
+{
+    uint32_t charge, discharge;
+
+    axp173_coulomb_read(&charge, &discharge);
+    return coulomb_counts_to_mAh(charge);
+}
+
+int axp173_coulomb_discharge_mAh(void)
+{
+    uint32_t charge, discharge;
+
+    axp173_coulomb_read(&charge, &discharge);
+    return coulomb_counts_to_mAh(discharge);
+}
+
+int axp173_charge_target_mV(void)
+{
+    int r = axp173_read_reg(AXP_REG_CHARGECTRL);
+
+    if (r < 0)
+        return -1;
+
+    switch ((r >> AXP_CHG_TARGET_SHIFT) & 3)
+    {
+        case 0:  return 4100;
+        case 1:  return 4150;
+        case 2:  return 4200;
+        default: return 4360;
+    }
+}
+
+int axp173_charge_current_setting_mA(void)
+{
+    static const short mA[16] = { 100, 190, 280, 360, 450, 550, 630, 700,
+                                  780, 880, 960, 1000, 1080, 1160, 1240, 1320 };
+    int r = axp173_read_reg(AXP_REG_CHARGECTRL);
+
+    if (r < 0)
+        return -1;
+
+    return mA[r & 0x0f];
+}
+
+bool axp173_current_is_charging(void)
+{
+    int r = axp173_read_reg(AXP_REG_POWERSTATUS);
+
+    if (r < 0)
+        return axp173_charging();
+
+    return (r & AXP_BATT_CHARGING_DIR) != 0;
+}
+
+bool axp173_over_temp(void)
+{
+    int r = axp173_read_reg(AXP_REG_CHARGESTATUS);
+
+    return r >= 0 && (r & AXP_OVER_TEMP) != 0;
 }
 
 void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge)
