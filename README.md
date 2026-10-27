@@ -361,6 +361,7 @@ this is a seed rather than a one-off.
 | | |
 |---|---|
 | Branch | `esp32-s3-idf`, at <https://gitea.max.optiplexus.org/jhohertz/rockbox> |
+| First release | tag [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027), with [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261027.md) — flashed at `0x0` and verified |
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |
