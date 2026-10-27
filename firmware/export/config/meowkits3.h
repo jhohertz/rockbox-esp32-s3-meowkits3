@@ -846,6 +846,18 @@
 /* The NS4150B amplifier sits between the codec and the speaker and is enabled from
  * the PCA9557 expander. Without it there is no sound at all. */
 #define HAVE_SPEAKER
+/* On this board the amplifier is the only thing that makes sound from the speaker,
+ * and Settings -> Speaker is the only lever a headphone user has, because the jack
+ * breaks the amp's input path electrically and nothing tells the SoC it happened
+ * (there is no detect line -- see AGENTS.md). Upstream's default of Off would make
+ * the first boot silent, so the target states On here.
+ *
+ * With Speaker On the amp is enabled while audio is moving and dropped at idle, as
+ * before. With Speaker Off the amp stays dark and the codec is *not* muted: the jack
+ * is fed from the ES8311's headphone driver, which is the same pin the amp feeds
+ * from, so cutting the amp must not cut the DAC.
+ */
+#define DEFAULT_SPEAKER_MODE 1
 
 /* One volume register for both channels, so the codec has mono volume. The
  * AUDIOHW_SETTING itself lives in es8311.h, which audiohw.h includes after

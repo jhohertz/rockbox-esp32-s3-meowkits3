@@ -56,7 +56,19 @@ void audiohw_init(void)
  * audible instead of clipping it.
  */
 #define PA_IDLE_TICKS (HZ / 4)   /* 250 ms at HZ */
+/* Two separate states, because on this board they mean different things:
+ * pa_wanted is what the core asked for through audiohw_enable_speaker() -- i.e.
+ * Settings -> Speaker -- and pa_on is what the expander actually holds. Keeping
+ * them apart is what makes the setting mean something: the policy used to
+ * re-enable the amp on every playback start regardless of the user's choice, so
+ * "Speaker: Off" was display-only. It also matters for recording,
+ * apps/recorder/recording.c:1018 asks for the speaker off while the mic is open
+ * and restores it at :1818, and the old policy undid that as soon as the transmit
+ * path carried a frame. */
+static bool pa_wanted = true;
 static bool pa_on = true;
+/* Inverted name so the initial state reads true with the codec open at boot. */
+static bool codec_open = true;
 static unsigned int pa_idle_ticks;
 
 static void audiohw_pa_idle_tick(void)
@@ -64,9 +76,16 @@ static void audiohw_pa_idle_tick(void)
     if (i2s_tx_playing())
     {
         pa_idle_ticks = 0;
-        if (!pa_on)
+        /* The codec has to be open whenever audio is moving, whether or not the
+         * amplifier is: the jack is fed from the same headphone driver, so
+         * muting the codec would take the headphones down with the amp. */
+        if (!codec_open)
         {
             es8311_mute(0);
+            codec_open = true;
+        }
+        if (pa_wanted && !pa_on)
+        {
             pca9557_write(IOEXP_PA_EN, 1);
             pa_on = true;
         }
@@ -79,8 +98,12 @@ static void audiohw_pa_idle_tick(void)
     if (pa_on)
     {
         pca9557_write(IOEXP_PA_EN, 0);
-        es8311_mute(1);
         pa_on = false;
+    }
+    if (codec_open)
+    {
+        es8311_mute(1);
+        codec_open = false;
     }
 }
 #endif /* HAVE_SPEAKER */
@@ -90,6 +113,7 @@ void audiohw_postinit(void)
     /* Volume is applied by the sound settings, not here. */
     es8311_mute(0);
 #ifdef HAVE_SPEAKER
+    codec_open = true;
     tick_add_task(audiohw_pa_idle_tick);
 #endif
 }
@@ -118,13 +142,27 @@ void audiohw_set_frequency(int fsel)
  */
 void audiohw_enable_speaker(bool on)
 {
-    pca9557_write(IOEXP_PA_EN, on ? 1 : 0);
-#ifdef HAVE_SPEAKER
-    /* Keep the idle policy's idea of the state honest, or its next transition
-     * would be decided from a stale flag. */
-    pa_on = on;
+    /* The core decides when; the target only obeys. imx233-codec.c:104 and
+     * speaker-onda_vx747.c:26 are both pure -- neither has a policy of its own --
+     * so recording the request rather than acting-and-forgetting is the shape that
+     * keeps the idle policy from overriding it later.
+     *
+     * Turning the amp off does not mute the codec: with Speaker set to Off the
+     * jack still has to carry sound.
+     */
+    pa_wanted = on;
     pa_idle_ticks = 0;
-#endif
+
+    if (on && !pa_on)
+    {
+        pca9557_write(IOEXP_PA_EN, 1);
+        pa_on = true;
+    }
+    else if (!on && pa_on)
+    {
+        pca9557_write(IOEXP_PA_EN, 0);
+        pa_on = false;
+    }
 }
 #endif /* HAVE_SPEAKER */
 

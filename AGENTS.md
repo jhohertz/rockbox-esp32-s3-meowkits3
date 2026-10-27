@@ -1793,6 +1793,102 @@ A target with a speaker but no recording or radio therefore references a functio
 that is never compiled. `audio_path.c` now guards the input-source selection with
 `#if INPUT_SRC_CAPS != 0` so the file can be built for speaker-only targets.
 
+**The jack cannot be detected, so `speaker_mode` is the only lever.** The jack is a
+plain switched connector on the DAC output; the schematic gives the SoC no signal for
+it - there is no jack-detect line on the GPIOs, on the PCA9557, or from the NS4150B.
+`HAVE_HEADPHONE_DETECTION` is therefore correctly absent, and the user-facing control
+is Settings -> Speaker (Off/On), which reaches us through
+`audio_enable_speaker()` -> `audiohw_enable_speaker()`.
+
+Two things about that setting that are easy to get wrong:
+
+- **The choice values are not the cfg token strings.** `apps/settings_list.c:2432` passes
+  `cfg_vals` of `"on,off"`, which are the *config-file* tokens; the displayed labels come
+  from the trailing `ID2P(LANG_OFF), ID2P(LANG_ON)` arguments. And `audio_enable_speaker()`
+  (apps/audio_path.c:188-191) "treats any nonzero value as enable". So the values are
+  0 = Off, 1 = On, matching the labels and not the cfg strings. Upstream's default is 0,
+  which on a board whose speaker is the primary output means a silent first boot, so
+  `apps/settings_list.c` now has a weak `#ifndef DEFAULT_SPEAKER_MODE` seam (default 0,
+  every existing target unchanged) and `config/meowkits3.h` sets it to 1. No simulator
+  target defines `HAVE_SPEAKER` (`sim.h:86` explicitly `#undef`s it), so the simulator
+  cannot exercise that line - the seam was verified by preprocessing through the real
+  config chain instead: `DEFAULT_SPEAKER_MODE` expands to 1 for `MEOWKIT_ESP32S3`.
+- **The target's idle policy must not override the user.** `audiohw-xtensa.c` drops the amp
+  and mutes the codec 250 ms after the transmit sink stops carrying audio, which is a real
+  idle saving - but it used to re-enable the amp on every playback start regardless of
+  `speaker_mode`, so "Off" was display-only. It now tracks the requested state separately
+  from the expander state (`pa_wanted` vs `pa_on`). Two consequences: a headphone user can
+  actually turn the amp off and stop paying its quiescent current, and recording's
+  `audio_enable_speaker(0)` (`apps/recorder/recording.c:1018`, restored at `:1818`) survives
+  the whole recording instead of being undone by the first played frame.
+
+Muting is the other half of that distinction: `es8311_mute()` writes REG `0x31` and stops
+the **DAC**, so it takes the jack down with the speaker. Turning the amp off must therefore
+never mute the codec - the idle policy only mutes when nothing is playing.
+
+### ES8311 output configuration, levels, and what the chip does not have
+
+Established by reading our init against ESP-IDF's `esp_codec_dev` ES8311 driver and the
+board's stock driver (`/tmp/meowkit/src/bsp/audio/`), which are byte-identical on the
+output-side registers:
+
+| Register | Value | Meaning |
+|---|---|---|
+| `0x0D` | `0x01` | analog circuitry powered up |
+| `0x12` | `0x00` | DAC powered up |
+| `0x13` | `0x10` | **output to the HP drive** - the only analog output the chip has, and the one the jack is wired to |
+| `0x1C` / `0x37` | `0x6A` / `0x08` | ADC/DAC "equalizer" bypass plus DC-offset cancellation |
+| `0x31` | mute bits `0x60` | DAC mute (both channels) |
+| `0x32` | 0..255 | DAC volume: `-95.5 dB` at 0, `0.5 dB` per step, so 191 = 0 dB and 255 = +32 dB |
+
+There is **no headphone gain register and no separate speaker path register** - the
+vendor's own map (`es8311_reg.h`, 42 defines) has no output stage gain at all. So there is
+nothing per-output to tune: the jack and the amp receive the same HP driver, and the only
+level control is REG `0x32`. That is why Rockbox's `AUDIOHW_SETTING` for this codec is an
+identity mapping:
+
+```c
+AUDIOHW_SETTING(VOLUME, "dB", 1, 5, -955, 0, -250)
+```
+
+`numdecimals 1` means the unit Rockbox passes to `audiohw_set_volume()` is 0.1 dB - which is
+the centibel `audiohw.h:89-93` says VOLUME always uses, whatever scale you declare - and
+`steps 5` makes one keypress exactly one hardware quantum. The declared ceiling is **0 dB,
+not the register's +32 dB**, deliberately: the stock firmware caps this amplifier at
+register 191 for the NS4150B's 1 W rating (`SPK_VOLUME_MAX 75`, "NS4150B 1W speaker
+ceiling"), so it ships with no digital boost available. Advertising +32 dB would let
+Rockbox - and any USB host, because a USB Feature Unit writes straight into the player's own
+volume - command 32 dB past full scale, clipping the DAC and then the amp, with the result
+surviving the DAC session and showing up on local playback.
+
+**No hardware tone controls exist on this codec**, which is why `HAVE_SW_TONE_CONTROLS` is
+the right answer rather than a workaround: `audiohw.h:413-417` turns it into
+`AUDIOHW_HAVE_BASS`/`TREBLE` and `lib/rbcodec/dsp/tone_controls.c` implements them in the
+mixer's DSP at fixed cutoffs (200 Hz bass, 3500 Hz treble). The precedent for *hardware*
+tone controls is codecs that actually have them - `firmware/drivers/audio/uda1380.c:154`
+writes REG_EQ for bass (0-12) and treble (0-3), and `imx233-codec.h:30` carries the
+`HAVE_SW_TONE_CONTROLS` comment for the case where the codec cannot. Because ours cannot,
+bass and treble apply identically to headphones and speaker - the processing is upstream of
+the DAC.
+
+Chip features with no Rockbox surface, left alone:
+
+| Register | Feature | Why it stays untouched |
+|---|---|---|
+| `0x34`/`0x35` | DAC DRC (enable, window, max/min level) | Rockbox has no codec-DRC API. Its equivalent is the DSP compressor, which is already exposed (Settings -> Sound: threshold, makeup gain, ratio - `apps/settings_list.c:2066-2076`) |
+| `0x33` | DAC DC offset | Vendor driver leaves it at reset; `0x1C`/`0x37` already cancel DC in the digital domain |
+| `0x37` ramp-rate bits | Volume change ramping | We write `0x08` for the EQ bypass and share the register. If volume keypresses ever click audibly on headphones, this is where the fix lives - but the bit layout needs the datasheet, which is not on this machine |
+| `0x18`-`0x1A`, `0x1B`/`0x1C` | ADC ALC and HPF | Recording-side; Rockbox exposes recording gain through `audiohw_set_recvol()` and the mic PGA (`AUDIOHW_HAVE_MIC_GAIN`) instead |
+
+The general precedent for "DAC attuned to output levels" in this tree is not a config
+knob: drivers declare the codec's dB range in `AUDIOHW_SETTING` and, when the codec has
+several gain stages, *split the requested dB across them*. `wm8978.c:298-302` calls
+`get_headphone_levels()` to derive DAC, HP, mixer and boost values together ("Mixers are
+synced to provide full volume range on both the analogue and digital pathways"), and
+`tlv320.c:191-208` maps tenth-dB to register and uses a `HEADPHONE_MUTE` threshold to
+toggle `DAP_DACM`. ES8311 has a single stage, so there is nothing to split - the identity
+mapping is the correct form of that precedent, not a shortcut.
+
 ### The PCA9557 is on LDO4, and it is invisible until that rail is at 3.3 V
 
 Established by measurement on the ESP-IDF spike, and it explains a failure that

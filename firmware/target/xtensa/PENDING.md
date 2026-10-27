@@ -110,6 +110,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     its own variable (default **10 s**) instead of our `LCD_SLEEP_TIMEOUT (2*HZ)`. Watch:
     dark idle now waits 8 s longer for the panel to sleep unless you lower
     "LCD Sleep After Backlight Off" — set it to 1 or 2 s if you want the old behaviour back.
+- **Speaker mode now actually works — needs a flash.** Found while answering "is the DAC
+  right for headphones": the jack is taken straight off the ES8311 HP output and the
+  schematic gives the SoC **no jack-detect signal** (confirmed against the schematic, so
+  `HAVE_HEADPHONE_DETECTION` is correctly absent), which leaves Settings → Speaker as the
+  only lever a headphone user has. It had two problems:
+  - the idle policy re-enabled the amp on every playback start whatever the user had set, so
+    "Off" was display-only. `audiohw-xtensa.c` now keeps `pa_wanted` (the request) separate
+    from `pa_on` (the expander), and never mutes the codec when only the amp is off —
+    `es8311_mute()` stops the DAC, which would take the jack down with the speaker.
+  - upstream's default for `speaker_mode` is `0` = Off, which on a board whose speaker is the
+    primary output means a silent first boot. `apps/settings_list.c` gained a weak
+    `#ifndef DEFAULT_SPEAKER_MODE` seam (0 everywhere else) and our config sets 1.
+  Watch: Speaker On behaves as before (amp while playing, dark at idle); Speaker Off silences
+  the speaker but **not** the headphones, and stays off across play/stop; starting a recording
+  drops the amp and it returns afterwards (`recording.c:1018`/`:1818`). Verified by
+  preprocessing rather than a simulator run: `sim.h:86` `#undef`s `HAVE_SPEAKER`, so no sim
+  compiles that line — `DEFAULT_SPEAKER_MODE` expands to 1 under `-DMEOWKIT_ESP32S3`.
 
 ## 2. Verified on hardware — closed
 
@@ -272,6 +289,7 @@ Not being submitted now. Kept so the work can be split for a merge.
 |---|---|---|---|
 | `56681eaf5f` | `apps/gui/skin_engine/{skin_engine.c,.h,skin_render.c,skin_display.c}` | `skin_is_loaded()` guard, and "no tree" is `INVALID_OFFSET` (-1) not 0 | An unloaded skin was rendered anyway, walking a stale buffer-relative offset through a NULL-based tree. Fails identically on any target; the offset-0 case is a real allocated tree at the buffer start. |
 | `9d9581a612` | `apps/audio_path.c`, `apps/SOURCES` | Guard input-source selection with `#if INPUT_SRC_CAPS != 0` | A target with a speaker but no recording/radio references `audio_enable_speaker()`, which `apps/SOURCES` only builds when `INPUT_SRC_CAPS != 0`. Shape problem, not ours. |
+| uncommitted | `apps/settings_list.c` | `#ifndef DEFAULT_SPEAKER_MODE` seam for the Speaker choice default | The hardcoded default is 0 = Off, which is only correct for targets where the speaker is an extra. A weak seam defaulting to today's value; the target that needs On states it in its own config, the way `DEFAULT_TOUCHSCREEN_MODE` already does one block above. |
 | `9cb4f7325a` | `tools/functions.make` + every codec `.make` | `make_archive` removes the archive before `ar` adds | `ar` only replaces members it is handed, so a stale object survives a rebuild. Generic build bug. |
 | `d4092053ed` | `apps/keymaps/keymap-touchscreen.c` | Chain `CONTEXT_RECSCREEN` to the target keymap | The recording screen fell to the default table, so no touchscreen target could produce `ACTION_REC_PAUSE`. **Changes behaviour for every touchscreen target** — must be flagged in the message. |
 | `f270c29b11` | `firmware/rolo.c` | Use `ICODE_ATTR` instead of forcing `.section(".icode")` | `ICODE_ATTR` is deliberately null on targets low on IRAM, and the hard-coded section ignored that. |
