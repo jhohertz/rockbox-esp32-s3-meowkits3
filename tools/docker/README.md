@@ -136,10 +136,23 @@ instead of shipping.
 
 ## Measured
 
-Cold build (no caches): ~19 min for the toolchain stage (168 MB archive + IDF clone
-+ `install.sh esp32s3`), warm ~110 s. Image 10.4 GB. One container run end to end,
-firmware through manual: ~9 min, exit 0. `espverify.txt` reports the app partition
-16 % free and a valid checksum and validation hash.
+On a 32-core host:
+
+| What | Time |
+|---|---|
+| toolchain stage, cold (168 MB archive + IDF clone + `install.sh esp32s3`) | ~19 min |
+| toolchain stage, warm (`RBDEV_DOWNLOAD` cache populated) | ~110 s |
+| image size | 10.4 GB |
+| `docker run` end to end — configure, firmware, `esplayer`, `espverify`, voice, zip, fonts, manual, copy | 93 s, exit 0 |
+| `rb-artifacts` build with `SKIP_MANUAL=1` | 80 s, exit 0 |
+
+`espverify.txt` reports the app partition 16 % free with a valid checksum and
+validation hash. The payload matches a host build exactly in shape: 411 files, and a
+`diff` of the two zip listings is empty. `english.voice` is 2,512,515 B on both
+sides. It started out 6,158 B apart, which turned out to be the container finding a
+real defect: the host's pack predated the feature-flag batch and had no prompts for
+the settings that batch added. Re-running `make voice` closed it. Both sides use
+espeak-ng 1.52.0, so the encoder is identical either way.
 
 ## Not included
 
