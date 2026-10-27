@@ -107,6 +107,20 @@
 #endif
 #endif /* HAVE_TOUCHSCREEN */
 
+#ifdef HAVE_SPEAKER
+/* audio_enable_speaker() treats any nonzero value as enable
+ * (apps/audio_path.c:188-191), so the choice values are 0 = Off and 1 = On, which
+ * is also how the jack-detection variant labels them (ID2P(LANG_OFF),
+ * ID2P(LANG_ON)). The cfg token strings are a separate list and do not decide
+ * that. A target whose primary output is the on-board amplifier needs On as the
+ * default or its first boot is silent; every other target keeps upstream's 0.
+ * A weak seam rather than a target name in here, so the default stays with the
+ * target that needs it. */
+#ifndef DEFAULT_SPEAKER_MODE
+#define DEFAULT_SPEAKER_MODE 0
+#endif
+#endif /* HAVE_SPEAKER */
+
 /* in all the following macros the args are:
     - flags: bitwise | or the F_ bits in settings_list.h
     - var: pointer to the variable being changed (usually in global_settings)
@@ -2429,7 +2443,8 @@ const struct settings_list settings[] = {
                   false, "shortcuts instead of quickscreen", NULL),
 #endif
 #ifdef HAVE_SPEAKER
-    CHOICE_SETTING(0, speaker_mode, LANG_ENABLE_SPEAKER, 0, "speaker mode",
+    CHOICE_SETTING(0, speaker_mode, LANG_ENABLE_SPEAKER, DEFAULT_SPEAKER_MODE,
+                   "speaker mode",
 # ifdef HAVE_HEADPHONE_DETECTION
                    "on,off,auto", audio_enable_speaker, 3, ID2P(LANG_OFF), ID2P(LANG_ON), ID2P(LANG_AUTO)),
 #else /* HAVE_HEADPHONE_DETECTION */
