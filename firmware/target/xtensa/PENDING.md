@@ -306,6 +306,9 @@ Not being submitted now. Kept so the work can be split for a merge.
 | `7f9d1f98ce` | `firmware/drivers/i2c-async.c` | `I2C_ASYNC_SUBMIT_UNMASKED` seam defers the idle-bus submit until interrupts are restored | Already a proper opt-in seam with unchanged default behaviour. A target whose `__i2c_async_submit()` polls the controller to completion must not hold `disable_irq_save()` across a 100 kHz transfer. Worth showing upstream. |
 | `6cf0d20da7` | `apps/plugins/lib/keymaps.h` | Add `CONFIG_KEYPAD != ESP32S3_PAD` to the touch-grid fallback's exclusion list | A real upstream bug, not a target quirk: the `HAVE_TOUCHSCREEN` block redefines `BTN_FIRE`/`BTN_PAUSE` unconditionally, so any touchscreen target that also has physical fire/pause keys silently gets plugins that ignore them. GCC warns about the redefinition; nobody reads the warning. Eight targets are already excluded — the list just needed another entry. |
 | — | `apps/plugins/puzzles/SOURCES.games` | Stop building the three games under `src/unfinished/` | Upstream's own README calls them half-written or unready, and its CMake build excludes them from install, yet Rockbox ships `sgt-group`, `sgt-slide` and `sgt-sokoban`. Sokoban crashes on launch here. Removing the three lines is the whole fix. |
+| `931cb55135` | `tools/rockboxdev.sh` | Strip the release tag's `esp-` prefix when composing the Xtensa archive name | Upstream-facing only if the ESP target lands upstream, but the underlying fact is worth recording: Espressif's release *tag* is `esp-14.2.0_20260121` while the published asset is `xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz`, so building the file name from the tag verbatim asks for a doubled prefix and the CDN answers 404. Verified against the release API (35 assets; for this triple only `riscv32-esp-elf-14.2.0_...` and `xtensa-esp-elf-14.2.0_...`). |
+| `931cb55135` | `tools/rockboxdev.sh` | `getfile_ex()` must exit non-zero when every mirror failed | A bare `exit` takes the status of the last command, and the two `echo`s above it always succeed — so a failed download printed "couldn't download the file!" and returned 0. Any build system driving this script continues with no toolchain. Affects every arch, not just Xtensa. |
+| — | `tools/configure` | Include `-` in the `--target=` class when rebuilding `CONFIGURE_OPTIONS` | The five sed patterns that strip the options configure re-sets unconditionally cover `--voice=[-_./a-zA-Z0-9]*` but not `-` for `--target`, so a hyphenated target spelling is only half stripped and `make reconf` re-runs configure with a stray `-esp32s3` and dies on "Option '-esp32s3' unsupported". Only our alias triggers it today, which is exactly why the asymmetry is a bug rather than a rule. |
 
 ## 6. Core touches rationalized into the target — done
 
@@ -357,3 +360,21 @@ at `0x3c5c0000` (`make esplayer`).
 Recipe: `export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1; . $IDF_PATH/export.sh`,
 then `make`, `make zip`, `make manual-pdf`, `make esplayer`,
 `make flash ESPPORT=/dev/ttyACM0`.
+
+Container: `tools/docker/Dockerfile` + `tools/docker/rb-build-artifacts.sh`.
+
+```sh
+docker build -f tools/docker/Dockerfile --build-arg RB_REFRESH=$(date +%s) -t rockbox-meowkits3 .
+docker run --rm -v "$PWD/out:/out" rockbox-meowkits3
+```
+
+Measured, not assumed: `ubuntu:26.04` resolves (codename `resolute`, Python 3.14.4,
+cmake 4.2.3 — IDF 5.5.5 builds fine with cmake 4); the toolchain stage installs
+xtensa-esp-elf plus ESP-IDF in ~110 s once the download cache is warm (~19 min cold,
+168 MB archive + IDF clone + `install.sh esp32s3`); the image is 10.4 GB; the entrypoint
+builds the firmware, passes `esplayer` and `espverify`, and reports the app partition
+16 % free. Three defects it found are fixed above and in `tools/` — see §5.
+`tools/espflash.make` now derives paths from `$(ROOTDIR)` rather than
+`dir $(BUILDDIR)`, which is what makes an out-of-tree build (the container builds into
+`/work`) work at all; in-tree `make esplayer` and `make reconf` were both re-verified on
+the host afterwards.
