@@ -110,6 +110,14 @@ copy "$IDF_BUILD/flash_args"
 copy "$IDF_BUILD/rockbox.map"
 
 echo "-- card payload (rockbox.zip)"
+# `make zip` only copies voice clips it finds: buildzip.pl:686-689 globs *.voice and
+# *.talk out of the build directory. Configuring --type=AV is not enough on its own,
+# so the voice pass has to run before the zip or the payload comes out two files and
+# 2.5 MB short of what the device gets -- silently.
+if [ "$RB_VOICE" = "1" ]; then
+    echo "-- voice clips (make voice)"
+    make voice
+fi
 make zip
 copy "$BUILD_DIR/rockbox.zip"
 copy "$BUILD_DIR/rockbox-info.txt"
