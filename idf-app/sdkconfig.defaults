@@ -106,13 +106,15 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # CLK 47, CMD 48, D0 21. Only D0 is wired, so 1-bit is the ceiling, not a
 # fallback. Without the GPIO matrix these pins are unreachable.
 
-# ---- Bluetooth: the reason for this whole exercise ----
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# ---- Bluetooth: not enabled, and not enableable for audio ----
+# There used to be a CONFIG_BT_ENABLED=y / CONFIG_BT_NIMBLE_ENABLED=y block here,
+# left over from the A2DP feasibility work. It was inert -- `bt` is absent from
+# main/CMakeLists.txt PRIV_REQUIRES, so libbtdm_app.a and libbt.a were LOADed with
+# zero contributing sections -- but it read like a capability the board does not
+# have. ESP32-S3 has no BR/EDR radio, so A2DP/AVRCP cannot be built on it at all,
+# and there is no consumer for BLE either. See firmware/target/xtensa/BT-AUDIO.md.
+# Re-enable here only if a classic-capable co-processor arrives or something on the
+# board actually needs BLE.
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
