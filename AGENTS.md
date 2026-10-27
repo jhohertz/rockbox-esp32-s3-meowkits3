@@ -4694,6 +4694,7 @@ the rest populate the card or document the target.
 | Artifact | How it is made | Contents |
 |---|---|---|
 | `rockbox.esp32s3` | `make` (IDF link) | ESP *app* image, flashed at `0x10000`; the stage-2 bootloader is `bootloader.bin` at `0x000000` and the partition table at `0x008000` (`idf-app/build/flash_args` lists all three) |
+| `rockbox-flash.bin` | `make espfull` | the three pieces merged by `esptool merge_bin --target-offset 0x0` into one file, for a single-offset flash (web installer, plain `esptool write_flash 0x0`). Gaps between the regions are filled with `0xFF`, which is what erased flash holds |
 | `rockbox.zip` | `make zip` | card payload **without** fonts: default theme + failsafe cfg, icons, backdrops, plugins, codecs, languages, the image itself |
 | `rockbox-fonts.zip` | `tools/buildzip.pl … -f 1` | 88 `.fnt` files converted from `fonts/*.bdf` by `tools/convbdf` |
 | `rockbox-themes.zip` | `tools/rbthemes.py pack` | third-party themes pulled from the themes server through a proxy target; each archive is already `.rockbox/`-rooted |

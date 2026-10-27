@@ -350,6 +350,7 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 | `rockbox.zip` | 9,318,431 B, 411 files | card content; re-extract after plugin changes. Regenerated after the container found the voice pack was stale — `english.voice` is now 2,512,515 B, byte-identical in size to the container's |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
+| `rockbox-flash.bin` | 1,357,072 B | all-in-one image at `0x0` (`make espfull`): bootloader + partition table + app merged by esptool. Verified structurally — `0xE9` at `0x0` and `0x10000`, `0xAA` at `0x8000`, app bytes equal to `rockbox.esp32s3` |
 | `rockbox-manual.pdf` | 3,047,948 B (container: 3,047,405 B — same 286 pages, differs only in embedded build metadata) | 286 pages; four pre-existing upstream LaTeX error lines as baseline. Rebuilt after the flag batch — now renders "Backlight Fade In/Out", Bass and Treble. `build-meowkits3/manual/features.tex` must be deleted when target flags change (see `AGENTS.md` §9) |
 
 Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox `0x010000`.
@@ -358,7 +359,7 @@ arena `0x3c155800..0x3c575800` = 4,325,376 B, **53,604 B** clear of the plugin-t
 at `0x3c5c0000` (`make esplayer`).
 
 Recipe: `export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1; . $IDF_PATH/export.sh`,
-then `make`, `make zip`, `make manual-pdf`, `make esplayer`,
+then `make`, `make zip`, `make manual-pdf`, `make esplayer`, `make espfull`,
 `make flash ESPPORT=/dev/ttyACM0`.
 
 `tools/configure` has to run with that environment sourced. Without
