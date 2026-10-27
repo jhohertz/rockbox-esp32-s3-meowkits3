@@ -203,8 +203,10 @@ $releasenotes="/wiki/ReleaseNotes400";
     'meowkits3' => {
         name => 'MeowKit ESP32-S3',
         # status: 0=retired, 1=unusable, 2=unstable, 3=stable. It builds, boots to
-        # the root menu, plays audio and runs plugins, so 1 ("unusable") was false.
-        # Not 3: recording, USB and long-running stability are still open.
+        # the root menu, plays audio, records and runs plugins over USB, so 1
+        # ("unusable") was false. Still not 3: nothing here has been soaked for hours
+        # unattended, and the battery gauge reports voltage rather than a calibrated
+        # percentage, which is the kind of thing a "stable" label implies.
         status => 2,
         ram => 8,
         # There is no hosted Xtensa target, so a simulator build for this model
