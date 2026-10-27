@@ -345,3 +345,6 @@ __pycache__
 /idf-spike/build/
 /idf-spike/sdkconfig
 /idf-spike/sdkconfig.old
+
+# release output folders: mounted artifacts, never committed
+/release/
