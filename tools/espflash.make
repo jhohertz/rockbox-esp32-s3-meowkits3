@@ -15,7 +15,16 @@
 #
 # espverify inspects the app image without a board attached.
 
-ESPTOOL ?= esptool
+# esptool's name depends on where it came from. A distribution package installs
+# `esptool`, but ESP-IDF's own Python environment installs it as `esptool.py`
+# (4.12.0 in v5.5.5) with the `esptool` module behind it, and puts only that name
+# on PATH. Resolving it here rather than hard-coding one spelling is what makes
+# `make espverify` work both on a host with esptool installed and inside the IDF
+# environment; ESPTOOL= still overrides either way.
+ESPTOOL ?= $(shell command -v esptool 2>/dev/null || command -v esptool.py 2>/dev/null)
+ifeq (,$(ESPTOOL))
+$(warning espverify: neither esptool nor esptool.py is on PATH -- set ESPTOOL=)
+endif
 
 # The packed image is named rockbox.<chip>, so the chip falls out of the artifact
 # name. Override ESPCHIP for a different module on the same arch.
