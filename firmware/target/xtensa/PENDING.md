@@ -110,7 +110,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     its own variable (default **10 s**) instead of our `LCD_SLEEP_TIMEOUT (2*HZ)`. Watch:
     dark idle now waits 8 s longer for the panel to sleep unless you lower
     "LCD Sleep After Backlight Off" — set it to 1 or 2 s if you want the old behaviour back.
-- **Speaker mode now actually works — needs a flash.** Found while answering "is the DAC
+- **Speaker mode now actually works — flashed, awaiting your check.** Found while answering "is the DAC
   right for headphones": the jack is taken straight off the ES8311 HP output and the
   schematic gives the SoC **no jack-detect signal** (confirmed against the schematic, so
   `HAVE_HEADPHONE_DETECTION` is correctly absent), which leaves Settings → Speaker as the
@@ -341,7 +341,7 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,295,456 B | md5 `3386cc55d25f395c93888d72d8242bcb`, **flashed** — carries the feature-flag batch (`2d550135b2`): SD-driven virtual LED, software backlight fading, software tone controls, adjustable LCD sleep timeout. Card content unchanged, so no re-extract needed. `make flash` regenerates the image with build metadata, so the digest and size move between builds even when the code is identical (this build measured 1,295,472 B before the flash rebuilt it). |
+| `rockbox.esp32s3` | 1,295,584 B | md5 `292debd757186fc632531293fe67c6c2`, **flashed** — carries the feature-flag batch (`2d550135b2`) plus the speaker-mode fix (`635959d93a`). Card content unchanged, so no re-extract needed. The digest only moves when the embedded build metadata does, so a rebuild of the same commit at the same time reproduces it (`make flash` measured 1,295,456 B for the flag batch, 1,295,584 B now). |
 | `rockbox.zip` | 9,318,040 B, 411 files | card content; re-extract after plugin changes |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
