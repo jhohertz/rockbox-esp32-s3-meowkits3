@@ -62,6 +62,7 @@ without `git cmake ninja python3`, and `tools/buildzip.pl` calls `zip` and
 | `RBDEV_ESP_TOOLCHAIN` | `esp-14.2.0_20260121` | matches `rockboxdev.sh`'s default pin |
 | `RBDEV_ESP_IDF` | `v5.5.5` | same release the port is developed against |
 | `RBDEV_ESP_IDF_CORE` | `esp32s3` | |
+| `RB_REFRESH` | `0` | BuildKit keys the clone layer on its ARG values, not on the remote, so a cached clone survives every push. Pass `--build-arg RB_REFRESH=$(date +%s)` to force a fresh checkout |
 | `BUILD_AT_IMAGE_BUILD` | `no` | `yes` builds during the image build, which is what `--target=rb-artifacts` requires |
 | `OUT_DIR` | `/artifacts` at build time, `/out` at run time | |
 
@@ -97,5 +98,13 @@ instead of shipping.
 - **Voice packs.** `tools/configure --type=AV` needs a TTS engine (espeak,
   festival, piper or mimic). Left out; the default `--type=N` build does not ask
   for one.
+- **A cached `IDF_TOOLS_PATH`.** ESP-IDF's `install.sh` extracts its tools and
+  creates its Python virtualenv *inside* `IDF_TOOLS_PATH`, so that path is
+  installed state and must be part of the image. Mounting a BuildKit cache there
+  makes the build succeed and the run fail, because cache content is never
+  committed: `export.sh` then reports `ESP-IDF Python virtual environment ...
+  not found`. Only `RBDEV_DOWNLOAD` is a cache mount, and only because that
+  directory genuinely is scratch.
+
 - **Flashing.** There is no device in a container. `flash_args` plus the three
   binaries are what a host needs to do it.
