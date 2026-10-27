@@ -346,41 +346,52 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ### Release `esp32-s3-idf-20261027`
 
-Tag at `a1a3ece0b180854e5539ad89e3967c6e203d7241`, notes committed at
-`firmware/target/xtensa/releases/esp32-s3-idf-20261027.md` and copied into the release
-folder. Built by the container against the tag (`--build-arg RB_BRANCH=<tag>`), which is
-why the embedded version is clean: `a1a3ece0b1-261027`, no `M` suffix — `tools/version.sh`
-appends `M` when the working tree has uncommitted changes, so a release build wants a
-fresh checkout rather than a developer's tree.
+Tag at `d83ce28c3fd32608a666001b4575b22db0bbacf2` — retagged once from `a1a3ece0b1` so
+the tag itself carries `firmware/target/xtensa/releases/esp32-s3-idf-20261027.md`. Built
+by the container against the tag (`--build-arg RB_BRANCH=<tag>`) into
+`release/esp32-s3-idf-20261027/`, which is gitignored. Embedded version is clean —
+`d83ce28c3f-261027`, no `M` suffix, because `tools/version.sh` marks a dirty working tree
+and a release wants a fresh checkout rather than a developer's tree.
 
 | File | Size | SHA-256 (first 16) |
 |---|---|---|
-| `rockbox-flash.bin` | 1,356,880 B | `97447445d3b9f414` — all-in-one image at `0x0` |
+| `rockbox-flash.bin` | 1,356,880 B | `f3fa097bc54cb031` — all-in-one image at `0x0` |
 | `rockbox.esp32s3` | 1,291,344 B | app image; `espverify` reports valid checksum and validation hash |
-| `rockbox.zip` | 9,319,725 B | 387 files: 43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack |
+| `rockbox.zip` | 9,334,603 B | 387 files: 43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts |
-| `rockbox-manual.pdf` | 3,047,571 B | 286 pages |
+| `rockbox-manual.pdf` | 3,049,050 B | 286 pages |
 
-Emitted with `build-manifest.txt` (release label, commit, `dirty=0`, IDF/toolchain/host
-compiler versions, embedded version) and `SHA256SUMS`.
+Plus `bootloader.bin`, `partition-table.bin`, `flash_args`, `espverify.txt`,
+`rockbox.map`, `rockbox-info.txt`, `build-manifest.txt` (release label, commit,
+`dirty=0`, IDF/toolchain/host compiler versions, embedded version) and `SHA256SUMS`.
+`README.md` and the release notes are copied in so the folder stands alone.
 
-**The remaining gate before publishing: this exact image has not been flashed.** The
-single-file route the README documents is verified structurally (`0xE9` at `0x0` and
-`0x10000`, `0xAA` at `0x8000`, app bytes equal to `rockbox.esp32s3`), and the device is
-currently running the previous build `292debd757186fc632531293fe67c6c2`, which differs
-only by the dead Bluetooth host code and the build metadata. Flashing once closes that.
+**Reproducibility, measured rather than assumed.** Rebuilding the same tag produced a
+payload with an identical file listing and identical per-file sizes — two runs compared:
+387 entries, zero size differences — but the archive's own bytes differ, because
+`.rockbox/langs/voicestrings.zip` is a nested zip and records timestamps. So `SHA256SUMS`
+identifies a build, not a content fingerprint.
+
+**Flashed.** `esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 --after
+no_reset write_flash 0x0 rockbox-flash.bin` wrote 1,356,880 bytes at `0x0` and reported
+"Hash of data verified". Two facts learned doing it: the distribution's `esptool` 4.7.0
+ships no esp32s3 stub flasher (`FileNotFoundError: stub_flasher_32s3.json`), so flashing
+from this host needs IDF's `esptool.py`; and `--after no_reset` is deliberate — RESET is
+a button on this board, not wired to DTR, so esptool cannot reset it and the last step is
+always a power cycle.
 
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,291,536 B | md5 `94ab361620c32bea76161a10914ded22` (rebuilt; the digest moved with the embedded build metadata, as expected), **built but not flashed** — differs from the flashed image only by the Bluetooth config removal (`4,048 B` of never-called NimBLE host code). No functional change, so the board running `292debd757186fc632531293fe67c6c2` / 1,295,584 B is behaviourally current. The digest moves whenever the embedded build metadata does; `make flash` regenerates the image, so build and flash sizes can differ by a few bytes. |
+| `rockbox.esp32s3` | 1,291,536 B (host tree) / 1,291,344 B (release build) | The board now runs the release app from `rockbox-flash.bin` at tag `d83ce28c3f`; the host build carries `M` in its version string because its working tree was dirty when it was built, which is why releases go through a fresh checkout. md5 of the host build `94ab361620c32bea76161a10914ded22` — the digest moves whenever the embedded build metadata does, so build and flash sizes can differ by a few bytes. |
 | `rockbox.zip` | 9,318,431 B, 411 files | card content (387 files); re-extract after plugin changes. Regenerated after the container found the voice pack was stale — `english.voice` is now 2,512,515 B, byte-identical in size to the container's |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
 | `rockbox-flash.bin` | 1,357,072 B | all-in-one image at `0x0` (`make espfull`): bootloader + partition table + app merged by esptool. Verified structurally — `0xE9` at `0x0` and `0x10000`, `0xAA` at `0x8000`, app bytes equal to `rockbox.esp32s3` |
 | `rockbox-manual.pdf` | 3,047,948 B (container: 3,047,405 B — same 286 pages, differs only in embedded build metadata) | 286 pages; four pre-existing upstream LaTeX error lines as baseline. Rebuilt after the flag batch — now renders "Backlight Fade In/Out", Bass and Treble. `build-meowkits3/manual/features.tex` must be deleted when target flags change (see `AGENTS.md` §9) |
 
-Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox `0x010000`.
+Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox app `0x010000`.
+`make espfull` merges all three into `rockbox-flash.bin`, which goes at `0x0` as one file.
 Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, `.ext_ram.bss` ends `0x3c5b2e9c`,
 arena `0x3c155800..0x3c575800` = 4,325,376 B, **53,604 B** clear of the plugin-text reservation
 at `0x3c5c0000` (`make esplayer`).
