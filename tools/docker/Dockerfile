@@ -51,6 +51,10 @@ RUN apt-get update \
 #   - tools/rockboxdev.sh:511-517, which refuses to install ESP-IDF without
 #     git, cmake, ninja and python3
 #   - tools/buildzip.pl, which calls `zip` and the `install` command
+#   - tools/voice.pl:29, which `use`s Encode::Locale. That is not in the base
+#     `perl` package, and without it the voice pass dies with "Can't locate
+#     Encode/Locale.pm in @INC" after having already built rbspeexenc, voicefont
+#     and wavtrim -- so the failure looks like a codec build problem.
 #   - tools/configure, which needs no downloads for this target and calls the
 #     host compiler to build tools/. espeak-ng is here because the default build
 #     is a voice build: configure's --tts=espeak falls back to espeak-ng when the
@@ -76,6 +80,7 @@ RUN apt-get update \
       bison \
       git \
       perl \
+      libencode-locale-perl \
       zip \
       unzip \
       wget \
