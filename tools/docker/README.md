@@ -121,7 +121,7 @@ Runtime environment for the entrypoint:
 | `bootloader.bin` | flashed at `0x000000` |
 | `partition-table.bin` | flashed at `0x008000` |
 | `flash_args` | the address list IDF's own flash step uses, so a receiver can flash without guessing |
-| `rockbox.zip` | card payload (`.rockbox/`: fonts excluded, plugins/codecs/voice included) |
+| `rockbox.zip` | card payload (`.rockbox/`: fonts excluded, plugins, codecs and voice clips included — `make voice` runs before `make zip`, because `buildzip.pl` only copies clips it finds in the build directory) |
 | `rockbox-fonts.zip` | the font payload, built with `make fontzip` |
 | `rockbox-manual.pdf` | target manual for `meowkits3` |
 | `rockbox-info.txt` | build info string |

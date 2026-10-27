@@ -193,6 +193,10 @@ FROM rb-toolchain AS rb-env
 
 ARG BUILD_AT_IMAGE_BUILD=no
 ARG OUT_DIR=/artifacts
+# Passed through as ENV so it applies to both paths: the build-time RUN below and
+# the entrypoint at container run time.
+ARG SKIP_MANUAL=
+ENV SKIP_MANUAL=${SKIP_MANUAL}
 
 # The build script travels with the repository, so the container uses the copy
 # from the checked-out branch rather than a file from the build context -- the
