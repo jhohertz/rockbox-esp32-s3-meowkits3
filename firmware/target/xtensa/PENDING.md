@@ -46,10 +46,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   `percent_to_volt_discharge[]`. That is the whole hook — no core change. Voltage stays as
   a cross-check (the two can disagree under load sag, which is the reason to prefer the
   counters).
-- **Charge target voltage — the battery-lifetime lever we deliberately did not pull.**
-  Neither our firmware nor the reference sets it, so the cell charges to the 4.2 V default;
-  ~4.1 V is the meaningful cycle-life improvement, but confirming the register on this die
-  is the probing you ruled out.
 - **Upstream submissions.** §5 lists 17 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
 - **Plugin code executes from PSRAM — and the frame rate may not be ours to fix.**
@@ -62,14 +58,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   DIRAM has 1,105 bytes free anyway, so that path would displace something. Audio is
   unaffected. Two things to settle, in order: find the encode settings that suit the panel
   (yours to play with), and only then decide whether placement is worth touching.
-- **The Bluetooth config lines say something that isn't true.** `idf-app/sdkconfig.defaults:110-115`
-  sets `CONFIG_BT_ENABLED=y` and the NimBLE roles (`sdkconfig:698`
-  `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y`), which reads like a Bluetooth capability.
-  It isn't one, and it costs nothing: `bt` is absent from `PRIV_REQUIRES`
-  (`idf-app/main/CMakeLists.txt:36-46`) and `rockbox.map` shows `libbtdm_app.a` and
-  `libbt.a` `LOAD`ed with **zero** contributing sections — `grep 'libbtdm_app.a('` returns
-  nothing. So this is a cleanup of a misleading config, not a RAM reclaim, and deleting it
-  would not create — nor remove — any Bluetooth path. See `BT-AUDIO.md` §7.
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
@@ -130,6 +118,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 Each of these was checked on the board, not inferred.
 
+- **Bluetooth config lines removed — and my earlier cost claim was wrong.**
+  `idf-app/sdkconfig.defaults` carried `CONFIG_BT_ENABLED=y` plus the NimBLE roles and a
+  4 KiB host-task allocation, left over from the A2DP feasibility work. Nothing called them
+  and no Bluetooth path exists on this silicon (`BT-AUDIO.md`), so they were misleading
+  rather than useful — but they were **not** free: deleting them shrank the image
+  1,295,584 → **1,291,536 B**, i.e. **4,048 bytes** of linked code. My earlier conclusion
+  that they contributed nothing came from grepping `rockbox.map` for `libbtdm_app.a(` and
+  `libbt.a(`, which returned nothing — correct for those two archives, wrong as a
+  conclusion, because the NimBLE host objects come from elsewhere in the `bt` component
+  build. Measured now: `grep -c nimble rockbox.map` is **0**, and the only Bluetooth archive
+  left is `libbtbb.a`, the baseband PHY library the WiFi coex pulls in. Re-seeding works
+  automatically (`tools/root.make:485-495` removes `sdkconfig` when the defaults are newer);
+  verified `# CONFIG_BT_ENABLED is not set` in the regenerated file.
 - **MSPI/MMU table survives light sleep.** Debug → View HW info's "External cache MMU: N
   of 512 pages mapped" read the same after a long dark idle and wake, with playback working
   afterwards, so `mmu_init()`'s audiobuffer and framebuffer mappings are intact across the
@@ -260,6 +261,9 @@ Each of these was checked on the board, not inferred.
 | ES8311 REG 0x08 / 0x0D readback | Written 255 reads 0x00; written 0x01 reads 0x02, over a working I2C master. Assumption is 0x08 is don't-care in slave mode and 0x0D reports status — not measured. `es8311_stat()` is a HW-info row so it stays observable. | A datasheet answer or a measurement. |
 | USB DAC CPU boost | `.needs_cpu_boost = false` plus `cpu_idle_mode(true)` on USB entry means the core idles at the low clock during isochronous frames. Never showed a problem. | Glitches in the TX row (`sess / err / rec / sil`). |
 | rbutil / build-info / themes-server entries (§4) | Depends on infrastructure and upstream acceptance we do not control. | The port goes upstream. |
+| Charge target voltage (~4.1 V) | Neither our firmware nor the reference sets it, so the cell charges to the AXP173's 4.2 V default. ~4.1 V is the meaningful cycle-life lever, but confirming the register on this die is the probing you ruled out, and lowering it wrong would undercharge the pack. | You want the lifetime trade and accept one register check. |
+| Playback surviving a huge playlist switch | Investigated, not fixed. The scan loops already yield per entry (`apps/playlist.c:2301`, `:2637`) and hold a CPU boost, and Rockbox's priority bands are correct for playback (`codec_thread.c:662-664` `PRIORITY_PLAYBACK` boosted toward 5, `audio_thread.c:168-171` 15, playlist refresher `PRIORITY_BACKGROUND` 20) — but this port is deliberately cooperative (`thread-idf.c:121-127`, all threads at one FreeRTOS priority), so priorities only bite at yield points. What doesn't yield is `sort_playlist_unlocked()` (`playlist.c:1619`): `qsort()` at `:1625`, the linear index scan at `:1636`, and `update_control_unlocked()` at `:1643` writing the control file to a 1-bit 20 MHz card. Existing levers cover it: shuffle off, lower "Max files in playlist", keep dircache on (turning it off made large collections *more* flaky). `PCM_NUM_CHUNKS` was deliberately not raised — 64→128 takes 512 KiB from the arena. | You want it to survive the unreasonable case, or accept a core yield/clamp as its own spike. |
+| `playlist.max_playlist_size` can outrun its own allocation | Latent hazard, not a bug we hit by accident. `apps/playlist.c:3652-3655` memcpy's `playlist->max_playlist_size * sizeof(*indices)` into `current_playlist.indices`, whose block was allocated in `playlist_init()` (`:1972-1974`) from `global_settings.max_files_in_playlist` **at boot**. The only clamp in the load path is `:2073-2074`, which bounds `num_indices` to the *setting*, not to that block. So raising Settings → Playback → "Max files in playlist" past the boot-time allocation makes the copy walk past the end of the block into whatever buflib neighbour follows it (playback file buffer, dircache). Raised deliberately while testing huge lists; kept to reasonable values now. Same function is also the allocation-failure hazard already documented at `:1983-1989`. | A bounds clamp in `apps/playlist.c` — a bug fix, not a feature, and worth proposing upstream. |
 | IR remote input (board has a 38 kHz RX on GPIO 5, TX on GPIO 7) | Noted as a maybe-later feature, not a flag: **there is no generic IR abstraction in this tree** — `HAVE_IR_REMOTE` appears nowhere, and every remote in Rockbox is a per-target driver feeding button codes. The useful half of the board's IR hardware is the decoder side, and its output shape is exactly `button_queue_post()` (`firmware/export/button.h:66-68`), which is already public. Needs an NEC-protocol decoder on a real input path (RMT or a capture timer), so it is a feature spike, not a checkbox. | You have a remote you want to use with it. |
 
 ## 4. Deferred — permanent unless the hardware changes
@@ -339,7 +343,7 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,295,584 B | md5 `292debd757186fc632531293fe67c6c2`, **flashed** — carries the feature-flag batch (`2d550135b2`) plus the speaker-mode fix (`635959d93a`). Card content unchanged, so no re-extract needed. The digest only moves when the embedded build metadata does, so a rebuild of the same commit at the same time reproduces it (`make flash` measured 1,295,456 B for the flag batch, 1,295,584 B now). |
+| `rockbox.esp32s3` | 1,291,536 B | md5 `c9e9dfbf76d0b2307ac464e3c62f3b22`, **built but not flashed** — differs from the flashed image only by the Bluetooth config removal (`4,048 B` of never-called NimBLE host code). No functional change, so the board running `292debd757186fc632531293fe67c6c2` / 1,295,584 B is behaviourally current. The digest moves whenever the embedded build metadata does; `make flash` regenerates the image, so build and flash sizes can differ by a few bytes. |
 | `rockbox.zip` | 9,318,040 B, 411 files | card content; re-extract after plugin changes |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |

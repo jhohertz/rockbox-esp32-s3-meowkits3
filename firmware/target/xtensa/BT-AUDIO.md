@@ -40,9 +40,10 @@ Two things that look like counter-evidence and are not:
   Note that `CONFIG_BT_BLUEDROID_ENABLED` is selectable on S3 ("Bluedroid - Dual-mode",
   `components/bt/Kconfig:16-20`) — but with `BT_CLASSIC_ENABLED` impossible, a Bluedroid
   build on S3 is BLE-only Bluedroid.
-- **Our `sdkconfig` enables Bluetooth.** `idf-app/sdkconfig.defaults:110-115` sets
-  `CONFIG_BT_ENABLED=y` and the NimBLE roles. That is configuration, not a capability and
-  not a footprint — see §7 for why nothing Bluetooth is actually in the image.
+- **Our `sdkconfig` used to enable Bluetooth.** `idf-app/sdkconfig.defaults` carried
+  `CONFIG_BT_ENABLED=y` and the NimBLE roles. That was configuration for a capability this
+  chip does not have, and it has since been removed — see §7, which also corrects an
+  incorrect cost estimate made earlier in this document.
 
 There is no LE Audio escape hatch either. LE Audio needs isochronous channels (BLE 5.2+)
 and an LC3/Audio stack. ESP32-S3 declares BLE 5.0 with **no ISO/CIS capability** anywhere
@@ -260,8 +261,10 @@ feature interact.
   100% (`MEMORY.md:147-149`). The internal *heap* has roughly 149 KB
   (`MEMORY.md:408`). Any ring, link buffers and task stacks for a BT path must come from
   that heap or from PSRAM with cache maintenance, and DMA-facing buffers must be internal.
-  The existing NimBLE configuration is not a donor either: nothing Bluetooth is linked at
-  all (§7), so there is nothing there to reclaim.
+  The NimBLE configuration was a small donor — it accounted for 4,048 bytes of linked code,
+  and it is gone (§7) — but the link buffers and task stacks for a BT path must come from
+  that heap or from PSRAM with cache maintenance, and DMA-facing buffers must be internal.
+  There is nothing further there to reclaim.
 - **Sleep.** Light sleep must be blocked while a link is active, exactly as
   `xt_light_sleep_block(true)` does while USB is armed (`usb-xtensa.c:348`). A BT link that
   isn't blocked means the core powers down mid-stream (`CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y`).
@@ -276,21 +279,24 @@ feature interact.
 
 ## 7. Housekeeping this investigation turned up
 
-`CONFIG_BT_ENABLED=y` and the NimBLE stack are configured in
-`idf-app/sdkconfig.defaults:110-115` (`CONFIG_BT_NIMBLE_ENABLED=y`, three roles, and
-`sdkconfig:698` `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` with a 4096-byte host task),
-but **nothing in Rockbox uses BLE and the stack is not linked**. `idf-app/main/CMakeLists.txt`
-deliberately omits `bt` from `PRIV_REQUIRES`, and `idf-app/build/rockbox.map` shows
-`libbtdm_app.a` and `libbt.a` as `LOAD`ed archives (lines 24038, 32837) with **zero
-contributing sections** — a `grep 'libbtdm_app.a('` and `grep 'libbt.a('` over the map both
-return nothing.
+`CONFIG_BT_ENABLED=y` and the NimBLE stack were configured in `idf-app/sdkconfig.defaults`
+(`CONFIG_BT_NIMBLE_ENABLED=y`, three roles, `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1`, and the
+derived `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` with a 4096-byte host task). Rockbox has
+no BLE consumer and no Bluetooth path exists on this silicon, so those lines were removed.
 
-So there is no RAM or boot cost today, and the earlier worry that we were paying for an
-unused stack was wrong: it was a config line read as a footprint. What remains true is that
-these lines are **misleading** — they look like a Bluetooth capability being present when no
-Bluetooth code is in the image at all. Either delete them so the config says what the
-firmware does, or leave them as the seed for a future classic-capable transport (§3) and
-say so. Neither choice creates an A2DP path.
+**An earlier version of this section said they cost nothing. That was wrong, and the way it
+was wrong is worth recording.** The evidence was `grep 'libbtdm_app.a(' rockbox.map` and
+`grep 'libbt.a(' rockbox.map` both returning nothing, and the conclusion drawn was "zero
+contributing sections". The greps were accurate and the conclusion was not: they covered two
+archives, while the NimBLE host is built from sources inside the `bt` component and lands
+elsewhere, so a name-scoped search for the controller archives says nothing about the host.
+The measured answer is that removing the configuration **shrank the image by 4,048 bytes**
+(1,295,584 → 1,291,536). After the removal `grep -c nimble rockbox.map` is 0, and the only
+Bluetooth archive left is `libbtbb.a`, the baseband PHY library the WiFi coexistence layer
+pulls in — which stays whatever this file says.
+
+Lesson for anyone else auditing a link footprint here: measure the artifact size across the
+change, not the presence of an archive name in the map.
 
 ---
 
