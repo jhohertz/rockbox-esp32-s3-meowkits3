@@ -97,10 +97,17 @@ echo "-- image verification (esptool image_info)"
 make espverify > "$OUT_DIR/espverify.txt" 2>&1
 tail -4 "$OUT_DIR/espverify.txt"
 
+echo "-- all-in-one image (make espfull)"
+make espfull > /dev/null
+
 echo "-- flash set"
 copy "$BUILD_DIR/rockbox.esp32s3"
 copy "$IDF_BUILD/bootloader/bootloader.bin"
 copy "$IDF_BUILD/partition_table/partition-table.bin"
+# The three-piece set plus the all-in-one image: bootloader, partition table and app
+# merged by esptool into one file that starts with the bootloader's header, so it goes
+# at offset 0x0 with a single line -- which is what a web flasher wants.
+copy "$BUILD_DIR/rockbox-flash.bin"
 # The address list IDF's own flash step uses, so a receiver can flash without
 # guessing: bootloader 0x000000, partition table 0x008000, app 0x010000.
 copy "$IDF_BUILD/flash_args"

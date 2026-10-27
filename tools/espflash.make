@@ -76,3 +76,22 @@ esplayer: $(BUILDDIR)/$(BINARY)
 		$(ROOTDIR)/firmware/export/config/$(MODELNAME).h \
 		$(ROOTDIR)/firmware/target/xtensa/memory-xtensa.h $(BUILDDIR)/Makefile
 .PHONY: esplayer
+
+# The all-in-one image: bootloader, partition table and app merged into one file
+# that starts with the bootloader's image header, so there is one file and one
+# offset. This is what a web flasher wants, and what a vendor release image looks
+# like -- `esptool write_flash 0x0 rockbox-full.bin`, or the same file at offset
+# 0x0 in a browser. esptool's own merger does the assembling, so the three pieces
+# are byte-identical to what `make flash` hands to idf.py; the gaps between them
+# are filled with 0xFF, which is what erased flash already holds.
+#
+# It depends on esplayer for the same reason flash and espverify do: an image whose
+# external arena has grown into the plugin/codec reservation must not reach a board.
+ESPFULL ?= $(BUILDDIR)/rockbox-flash.bin
+
+espfull: $(BUILDDIR)/$(BINARY) esplayer
+	$(ESPTOOL) --chip $(ESPCHIP) merge_bin --output $(ESPFULL) --target-offset 0x0 \
+		0x0 $(IDFDIR)/build/bootloader/bootloader.bin \
+		0x8000 $(IDFDIR)/build/partition_table/partition-table.bin \
+		0x10000 $(BUILDDIR)/$(BINARY)
+.PHONY: espfull

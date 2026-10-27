@@ -348,7 +348,7 @@ veryclean: clean
 clean::
 	$(SILENT)echo Cleaning build directory
 	$(SILENT)rm -rf rockbox.zip rockbox.7z rockbox.tar rockbox.tar.gz \
-		rockbox.tar.xz rockbox-full.* rockbox-fonts.* TAGS apps \
+		rockbox.tar.xz rockbox-full.* rockbox-flash.* rockbox-fonts.* TAGS apps \
 		firmware tools comsim sim lang lib manual \
 		*.pdf *.a credits.raw rockbox.ipod bitmaps \
 		pluginbitmaps UI256.bmp rockbox-full.zip html txt \
