@@ -1229,6 +1229,61 @@ General lesson for this tree: **a function-local `static` that shares a name wit
 file-scope `static` compiles silently.** Anything reading a value another function
 maintains must not be re-declared in the reader.
 
+## Overnight dark-idle run: what the 42 mA floor actually buys (2026-10-27)
+
+`battery_bench` on an idle, unlit device: 582 samples at one-minute intervals, 9.68 h,
+ended by a power-key press rather than by the battery running out. Columns are clock,
+seconds since start, percent, estimated remaining, mV, mA — the percent and mV columns are
+Rockbox's own voltage-derived reading, so they are a statement about the target's table,
+not an independent measurement. The mA column is the PMU's ADC and is independent.
+
+| | |
+|---|---|
+| current, panel lit | 80 mA at the first sample, decaying 80 → 62 → 50 → 46 → 44 mA over ~4 min as the panel darkened |
+| current, dark idle | 43–45 mA throughout, mean **43.9 mA** — agrees with the 42 mA floor measured on the bench |
+| percent | 83 % → 56 %, i.e. 27 points, monotonic, 27 steps in 582 samples |
+| voltage | 3998 → 3768 mV; slope flattens through the plateau (40 mV/h in the first hour, 9 mV/h at hour five, 30 mV/h at hour nine) |
+| mAh delivered | integrating the current column: **425.1 mAh** for those 27 points |
+| implied capacity at this load | 425 mAh being 27 % ⇒ **~1,574 mAh** deliverable at 44 mA, against the cell's 1,400 mAh rating |
+| projected dark-idle life | 100/27 × 9.68 h ≈ **35.9 h** |
+
+**Remaining time is pessimistic at dark idle, by ~25–33 %.** At one hour in Rockbox said
+25:46 left; the true figure on this curve was ~34.9 h. At the end it said 17:39 against
+~26.1 h. The arithmetic is `capacity × percent / recent current`, so the error is
+entirely `BATTERY_CAPACITY_DEFAULT`: 1400 (the vendor's rating) against ~1574 delivered at
+44 mA. The decision is to **leave 1400**. The deliverable capacity of a li-ion cell depends
+on discharge rate, and this run is the lightest load the device will ever see — playback
+and a lit panel draw more, and closer to the rating is the right answer for the case users
+actually watch. Raising it to the light-load number would make the estimate wrong in the
+opposite direction, in the situation that matters.
+
+**The voltage table holds up in the middle and is untested at both ends.** 27 points of
+percent over a window where the coulometric estimate says 27.0 % is as close as this data
+can get to independent confirmation, and it covers only 3768–4004 mV. `battery_level_shutoff`
+(3300) and `battery_level_disksafe` (3400) were never approached, so they remain bench
+numbers rather than measured ones. The top of the table is ambiguous rather than wrong: the
+first sample read 3998 mV / 83 % immediately after unplugging from a charger, which would
+mean the cell was not fully charged — or that the table's 100 % point (4200 mV) is too high
+for this cell under load. `AXP_REG_CHARGESTATUS` bit 7 is charge-done in this chip family,
+but that has not been verified on this die, so the run cannot be assumed to have started at
+100 %.
+
+**The coulometer calibration pair this run was supposed to produce is gone.**
+`axp173_init()` clears both counters once per boot, and the board was reset into download
+mode afterwards to flash the release, so no `CC raw` value from the run survives. The next
+run closes the gauge and the low end in one pass:
+
+1. boot, then read `CC raw` from Debug (should be 0 / 0) — over the CDC console if the
+   screen isn't wanted,
+2. start `battery_bench`, unplug, leave it dark,
+3. **run it to shutdown**, so the 3300 / 3400 thresholds and the bottom of
+   `percent_to_volt_discharge` get measured rather than assumed,
+4. read `CC raw` again before powering off — no reboot in between,
+5. copy the log.
+
+The discharge counter then pairs with the log's integrated current as a cross-check, which
+is what makes the LSB→mAh scale a measurement instead of a datasheet reading.
+
 ## Enabling feature flags costs DRAM in a place unrelated to the feature (2026-10-25)
 
 `HAVE_ALBUMART`, `HAVE_JPEG`, `HAVE_QUICKSCREEN` and `AB_REPEAT_ENABLE` were turned on in

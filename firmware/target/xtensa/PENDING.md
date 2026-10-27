@@ -21,9 +21,14 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   timeout blank the panel during an idle run. My earlier note saying it samples "with the
   display off" was wrong about the mechanism. Two caveats: `flush_buffer()` skips writes
   while USB is attached, and plugging in starts charging, which invalidates discharge
-  readings — run unplugged and connect only after stopping. Want: playback screen-on,
-  playback screen-off, dark idle, same track and volume, 20+ minutes each, and read the
-  slope across samples rather than any single line.
+  readings — run unplugged and connect only after stopping.
+  **Dark idle is measured** (2026-10-27, 582 samples over 9.68 h, ended by a power-key
+  press): 43–45 mA, mean 43.9 mA, 425.1 mAh delivered for a 27-point percent drop, so
+  ~35.9 h of dark-idle life projected and ~1,574 mAh deliverable at that load. See
+  `MEMORY.md` for the full read, including why remaining time runs 25–33 % pessimistic at
+  dark idle and why `BATTERY_CAPACITY_DEFAULT` stays at 1400 anyway. Still wanted:
+  playback screen-on and playback screen-off on the same track and volume, 20+ minutes
+  each, reading the slope across samples rather than any single line.
 - **Coulometer → real battery percent: the readout now exists, the scale does not.**
   `Debug → View HW info` gained a `CC raw: charge N discharge N` row
   (`debug-xtensa.c`, `INFO_CC`), one 8-byte burst read of `0xb0-0xb7`. Nothing else
@@ -34,18 +39,37 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   counters, so a fresh boot is a clean zero with no clear UI needed), confirm the row reads
   0/0, start battery_bench, stay unplugged, and leave it overnight. Dark idle is the best
   window — `battery_current()` is instantaneous and sampled every 60 s, so integrating it
-  is only trustworthy when the current is steady. In the morning read the row again, stop
-  the bench, and take the log off the card: `mAh per LSB = ∫current·dt ÷ discharge delta`.
-  Free sanity check: 8 h of dark idle at ~42 mA is about 336 mAh, so the delta should make
-  that arithmetic land near 336, and against the known 1400 mAh cell you can see at once
-  whether the implied percentage is credible. A failed I2C read also returns 0/0, which is
-  indistinguishable from a genuine post-boot zero — hence reading the row twice.
+  is only trustworthy when the current is steady.
+  **The overnight run of 2026-10-27 produced the log but not the pair.** The counters were
+  cleared at boot as designed, and then the board was reset into download mode to flash the
+  release, so no `CC raw` value from that run survives. The corrected procedure is the same
+  except it must not end in a reboot, and it should run to shutdown rather than to a
+  convenient stopping point:
+  1. boot, read `CC raw` (expect 0/0 — over the CDC console if the screen isn't wanted),
+  2. start `battery_bench`, unplug, leave it dark,
+  3. run it **to shutdown**, so `battery_level_shutoff` / `battery_level_disksafe`
+     (3300 / 3400 mV, never approached by the idle run) and the bottom of
+     `percent_to_volt_discharge[]` get measured instead of assumed,
+  4. read `CC raw` again *before* powering off,
+  5. take the log off the card.
+  `mAh per LSB = ∫current·dt ÷ discharge delta`, with the log's integral as the independent
+  cross-check — the dark-idle run's integral was 425.1 mAh, which is the number to expect
+  the counter to agree with. A failed I2C read also returns 0/0, indistinguishable from a
+  genuine post-boot zero, which is why the row is read twice.
   *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
   `config/meowkits3.h:354`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c:393`
   and `:467` call `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
   `percent_to_volt_discharge[]`. That is the whole hook — no core change. Voltage stays as
   a cross-check (the two can disagree under load sag, which is the reason to prefer the
   counters).
+- **The top of the discharge table is unverified, not wrong.** The idle run's first sample
+  read 3998 mV / 83 % straight after unplugging from a charger. Either the cell had not
+  finished charging, or 100 % for this cell is nearer 4.0 V under load than the table's
+  4200 mV. Settling it needs the PMU to say when charging is done: `AXP_REG_CHARGESTATUS`
+  (0x01) bit 7 is charge-done in this chip family, and we already read bits 6 and 5, but
+  bit 7 has not been observed on this die — so it is a reading to take, not a define to
+  add. Until then the table's top end stays as it is and a run that starts from charge-done
+  is the measurement that would change it.
 - **Upstream submissions.** §5 lists 17 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
 - **Plugin code executes from PSRAM — and the frame rate may not be ours to fix.**
