@@ -106,7 +106,7 @@ Everything below was tested on the device, not just compiled.
 | **Themes** | Built-in `cabbiev2` plus failsafe, album art (with BMP scaling), touch regions on skin bars, and third-party themes from the theme server |
 | **Fonts** | 88 fonts buildable from the tree; DPI-correct list row heights |
 | **Voice** | 950-clip English voice pack generated from this tree, playable from the card |
-| **Plugins** | 236 plugin binaries shipped, games mapped to the stick and buttons, key-lock, and the usual convention: stick moves, `A` acts, `B` taps for menu/pause, `B` held quits |
+| **Plugins** | 158 compiled plugin binaries plus 63 Lua ones, games mapped to the stick and buttons, key-lock, and the usual convention: stick moves, `A` acts, `B` taps for menu/pause, `B` held quits |
 | **Video plugins** | `mpegplayer` with working YUV blit, `pictureflow` |
 | **Power management** | Backlight timeout → LCD sleep, CPU frequency scaling, light sleep, amp off when idle |
 | **Manual** | `make manual-pdf` builds a 286-page PDF that covers this target's keys, settings and quirks |
@@ -218,13 +218,17 @@ unzip rockbox-themes.zip  -d /mnt/card      # optional: extra themes
 
 Then put your music anywhere on the card.
 
-What's in `rockbox.zip` (411 files, ~9.3 MB):
+What's in `rockbox.zip` (387 files, ~9.3 MB):
 
-- `.rockbox/rockbox.cfg`, the built-in themes and the failsafe theme, icons and
-  backdrops
-- 43 codecs, 236 plugins, WPS files, codepages, documentation
-- `.rockbox/langs/english.voice` — the English voice pack
-- the firmware image itself, for convenience
+- the built-in themes — `cabbiev2`, the failsafe theme and the default icon set — with
+  their WPS files, icons and backdrops
+- 43 codecs, 158 plugin binaries plus 63 Lua plugins, codepages and documentation
+- `.rockbox/langs/english.voice` — the English voice pack, alongside 48 language files
+- the firmware image itself, so the card carries a copy of what the device runs
+
+There is no `rockbox.cfg` in the archive: Rockbox writes its own settings file on
+first boot, which is also why a card with a stale `.rockbox/` from another build can
+be left in place if you only want to update codecs and plugins.
 
 Fonts are deliberately **not** in `rockbox.zip` (`tools/root.make:712`); they come
 from `rockbox-fonts.zip`. Themes from the theme server
@@ -360,7 +364,7 @@ this is a seed rather than a one-off.
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |
-| Card payload | ~9.3 MB, 411 files |
+| Card payload | ~9.3 MB, 387 files (43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack) |
 | Not yet done | coulometer → battery percent calibration, a theme that renders correctly at 320×240, upstream submissions |
 
 Bugs, questions and patches welcome — and if any of this looks like something that

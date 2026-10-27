@@ -347,7 +347,7 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 | File | Size | Notes |
 |---|---|---|
 | `rockbox.esp32s3` | 1,291,536 B | md5 `94ab361620c32bea76161a10914ded22` (rebuilt; the digest moved with the embedded build metadata, as expected), **built but not flashed** — differs from the flashed image only by the Bluetooth config removal (`4,048 B` of never-called NimBLE host code). No functional change, so the board running `292debd757186fc632531293fe67c6c2` / 1,295,584 B is behaviourally current. The digest moves whenever the embedded build metadata does; `make flash` regenerates the image, so build and flash sizes can differ by a few bytes. |
-| `rockbox.zip` | 9,318,431 B, 411 files | card content; re-extract after plugin changes. Regenerated after the container found the voice pack was stale — `english.voice` is now 2,512,515 B, byte-identical in size to the container's |
+| `rockbox.zip` | 9,318,431 B, 411 files | card content (387 files); re-extract after plugin changes. Regenerated after the container found the voice pack was stale — `english.voice` is now 2,512,515 B, byte-identical in size to the container's |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
 | `rockbox-flash.bin` | 1,357,072 B | all-in-one image at `0x0` (`make espfull`): bootloader + partition table + app merged by esptool. Verified structurally — `0xE9` at `0x0` and `0x10000`, `0xAA` at `0x8000`, app bytes equal to `rockbox.esp32s3` |
@@ -387,10 +387,12 @@ configures `--type=AV` by default (`RB_VOICE=0` for the plain build) so the payl
 matches what the device gets: 411 files including `english.voice`, versus 409 and
 7.1 MB without it. The run emitted all 12 files (image, bootloader, partition table,
 `flash_args`, zip, fonts zip, PDF, info, map, espverify log, manifest, SHA256SUMS)
-and exited 0. Timings on a 32-core host: 93 s for a full run (configure, firmware,
-`esplayer`, `espverify`, voice, zip, fonts, manual, copy), 80 s for the artifacts-only
+and exited 0, emitting 13 files including the all-in-one `rockbox-flash.bin` (verified in the
+container's own output: `0xE9` at `0x0` and `0x10000`, `0xAA` at `0x8000`, app bytes equal
+to the shipped image). Timings on a 32-core host: ~2 min for a full run (configure,
+firmware, `esplayer`, `espverify`, `espfull`, voice, zip, fonts, manual, copy), 80 s for the artifacts-only
 image with `SKIP_MANUAL=1`, ~110 s for a warm toolchain stage and ~19 min cold. Payload
-shape matches a host build exactly: 411 files, empty `diff` of the two zip listings.
+shape matches a host build exactly: 387 files, empty `diff` of the two zip listings.
 `english.voice` came out at 2,512,515 B on both sides once the host pack was
 regenerated — the container had found the host's pack stale by 6,158 B, missing
 prompts for the settings the feature-flag batch added. `make voice` + `make zip` on
