@@ -189,7 +189,10 @@ getfile_ex() {
 
     echo "ROCKBOXDEV: couldn't download the file!"
     echo "ROCKBOXDEV: check your internet connection"
-    exit
+    # A bare `exit` takes the status of the last command, and the two echoes above
+    # it always succeed -- so a failed download used to end the script with status
+    # 0, which a build system reads as success. Report the failure instead.
+    exit 1
 }
 
 #$1 file
@@ -403,7 +406,12 @@ build_xtensa_toolchain () {
         exit
     fi
 
-    file="xtensa-esp-elf-$tag-$host.tar.xz"
+    # Espressif's release *tag* carries an "esp-" prefix that the asset name does
+    # not: tag "esp-14.2.0_20260121" publishes
+    # "xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz". Composing the file
+    # name from the tag verbatim asks for a doubled prefix and the CDN answers 404.
+    filetag="${tag#esp-}"
+    file="xtensa-esp-elf-$filetag-$host.tar.xz"
     getfile_ex "$file" "$file" "$ESP_MIRROR/$tag"
 
     # extract() assumes the archive and the directory it creates share a name,

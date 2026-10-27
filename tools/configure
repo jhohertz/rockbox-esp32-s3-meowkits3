@@ -4307,7 +4307,14 @@ fi
     sysfont="20-Terminus"
     ;;
 
-  133|meowkit-esp32s3)
+  # Three tokens here, and deliberately: `133` is the numeric selector, and
+  # `meowkits3` is the modelname, which is what every other entry's second token
+  # is and what the generated Makefile passes on `make reconf` (`--target=$(MODELNAME)`).
+  # The `meowkit-esp32s3` board-style spelling is kept as a third alias because
+  # configure only had `133|meowkit-esp32s3` before, and dropping it would break
+  # every existing `tools/configure --target=meowkit-esp32s3` invocation -- including
+  # a fresh clone's, which is the one a build container runs.
+  133|meowkits3|meowkit-esp32s3)
     target_id=126
     modelname="meowkits3"
     target="MEOWKIT_ESP32S3"
