@@ -1687,11 +1687,16 @@ obvious from the datasheet tables:
   look like a dead chip or a failed I2C read; clearing has to be a read-modify-write that
   keeps bit 7, and the debug row prints the control byte because the counters alone cannot
   distinguish "nothing happened" from "counting is off".
-  The counters sum ADC samples, so the conversion depends on the sample rate:
-  `mAh = 65536 * 0.5 mA * counts / 3600 / rate`, i.e. ~0.364 mAh per LSB at 25 Hz. That
-  derivation comes from the reference library's `getCoulometerData()`, not the datasheet,
-  so it is a scale to confirm against an integrated current before anything builds a
-  percentage on it.
+  The counters sum ADC samples, so the conversion depends on the sample rate. Each sample
+  adds one LSB per 0.5 mA, so **1 LSB = 0.5 mA / rate = 0.02 mA.s at 25 Hz, and 180,000
+  LSB per mAh** — 44 mA for an hour is ~7.9e6 counts. The datasheet says nothing about the
+  counter's resolution; the number follows from the ADC LSB and the rate. The reference
+  library's `getCoulometerData()` multiplies by 65536 instead, which is wrong by four
+  orders of magnitude, and **nothing in the stock firmware calls those conversions** —
+  `devices.cpp` enables the counter and no code reads it, so the constant has never been
+  exercised. The hardware settled it: minutes of charging already show six and seven
+  figure counts, which the 65536 version would need hours to reach. Confirm the scale
+  against an integrated current before building a percentage on it.
 - **Temperature is not an unread channel.** REG 0x38/0x39 (charge low/high) and 0x3C/0x3D
   (discharge low/high) are thresholds the chip acts on from the TS voltage, and REG 0x8F
   bit 2 is internal over-temp shutdown (default `0` = do not shut down). Whether this

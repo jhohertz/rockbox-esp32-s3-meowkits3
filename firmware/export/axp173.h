@@ -179,13 +179,16 @@ int axp173_ts_temperature(void);
    calibration measurement needs. The conversion below is the reference driver's
    derivation, not a datasheet statement:
 
-     mAh = 65536 * current_LSB(0.5 mA) * counts / 3600 / adc_rate_hz
+     LSB = current_LSB(0.5 mA) / adc_rate_hz, so 1 LSB = 0.02 mA.s at the 25 Hz
+   axp173_init() selects, and **180,000 LSB per mAh**. axp173_coulomb_*_mAh() reads the
+   ADC-rate field of REG 84H rather than assuming it, because the count is a sum of
+   samples: the same charge reads differently at 25 Hz and 100 Hz.
 
-   which at the 25 Hz rate axp173_init() selects is ~0.364 mAh per LSB. axp173_coulomb_*_mAh()
-   reads the ADC-rate field of REG 84H rather than assuming it, because the count is a sum
-   of samples: the same charge reads differently at 25 Hz and 100 Hz. Treat the result as
-   a scaled estimate until a run has confirmed it against an integrated current; the debug
-   row prints both the raw count and the estimate for exactly that reason. */
+   The reference library's version of this conversion multiplies by 65536, which the
+   hardware contradicts by four orders of magnitude; see axp173.c. Nothing in the stock
+   firmware calls those getters at all, so that constant has never been exercised. The
+   debug row prints the raw counts beside the estimate so the scale can be confirmed
+   against a known current rather than trusted. */
 bool axp173_coulomb_enable(bool on);
 bool axp173_coulomb_clear(void);
 void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge);

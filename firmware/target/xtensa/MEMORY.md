@@ -1303,10 +1303,18 @@ contiguous, control at 0xB8. Bit 6 is a **pause**, self-clearing — the port ha
 enum ordering and not from any register description; the datasheet has no calibration-base
 bit and no `1300` anywhere in it.
 
-Scale, from the reference library rather than the datasheet:
-`mAh = 65536 * 0.5 mA * counts / 3600 / adc_rate_hz` — **0.364 mAh per LSB at 25 Hz**. The
-count is a sum of ADC samples, which is why the rate is in the denominator. The overnight
-idle run integrated to 425.1 mAh, so ~1,167 counts is what a matching run should show.
+Scale, derived rather than quoted: each ADC sample adds one LSB per 0.5 mA, so
+**1 LSB = 0.5 mA / rate = 0.02 mA.s at 25 Hz, and 180,000 LSB per mAh**. The overnight
+dark-idle run's 425.1 mAh is therefore **~7.7e7 counts**, and an hour of idle at 44 mA is
+~7.9e6. The datasheet says nothing about the counter's resolution — only the 0.5 mA ADC LSB
+and the 25/50/100/200 Hz rates — so this follows from those two.
+
+The reference library's `getCoulometerData()` multiplies by 65536 instead, giving 0.364 mAh
+per LSB. That is wrong by four orders of magnitude, and the proof is on the device: minutes
+of charging already show six- and seven-figure counts, which that version would take hours
+to reach. **Nothing in the stock firmware calls those getters** — `devices.cpp:127` enables
+the counter and no code reads it — so the constant was never exercised there, and copying it
+into a driver that does use it is how the wrong number got as far as a debug row.
 
 Two other register facts worth having written down, because both were assumed wrong at some
 point in this project: **REG 0x01 bit 7 is over-temperature**, and there is no charge-done
