@@ -118,6 +118,7 @@ Runtime environment for the entrypoint:
 | File | What it is |
 |---|---|
 | `rockbox.esp32s3` | the app image, flashed at `0x010000` |
+| `rockbox-flash.bin` | the all-in-one image: bootloader + partition table + app merged by `make espfull`, one file at `0x0` |
 | `bootloader.bin` | flashed at `0x000000` |
 | `partition-table.bin` | flashed at `0x008000` |
 | `flash_args` | the address list IDF's own flash step uses, so a receiver can flash without guessing |
@@ -143,7 +144,7 @@ On a 32-core host:
 | toolchain stage, cold (168 MB archive + IDF clone + `install.sh esp32s3`) | ~19 min |
 | toolchain stage, warm (`RBDEV_DOWNLOAD` cache populated) | ~110 s |
 | image size | 10.4 GB |
-| `docker run` end to end — configure, firmware, `esplayer`, `espverify`, voice, zip, fonts, manual, copy | 93 s, exit 0 |
+| `docker run` end to end — configure, firmware, `esplayer`, `espverify`, `espfull`, voice, zip, fonts, manual, copy | ~2 min, exit 0, 13 files |
 | `rb-artifacts` build with `SKIP_MANUAL=1` | 80 s, exit 0 |
 
 `espverify.txt` reports the app partition 16 % free with a valid checksum and
