@@ -1452,3 +1452,53 @@ next `raac` 196,020 B.
   "half of PSRAM plus what the codec text gave up") or moving the framebuffer/codec buffers.
   `CONFIG_SPIRAM` heap is the other consumer of the same 8 MB.
 
+
+## The receiver owns its rate; the transmitter owns the pads it is not driving (2026-10-27)
+
+Play and record are exclusive on this board, so the I2S bus needs one owner at a time
+rather than a negotiation. That used to be expressed by a single variable, `rx_rate`,
+written by `i2s_program_clock()` and read by both directions, and the consequences were
+two separate bugs:
+
+- **The capture rate was playback's.** `pcm_init_recording()` calls `pcm_rec_dma_init()`,
+  which ran *before* `pcm_apply_settings()` — and `pcm_apply_settings()` is the only thing
+  that pushes a requested rate into the sink (`sink->ops.set_freq()` when
+  `pending_freq != configured_freq`). So the IDF receiver channel was configured from
+  whatever playback last programmed, while the ADC was programmed for the rate the caller
+  actually asked for. `pitch_detector` is the only caller in the tree that asks for a rate
+  playback has not already had (`round_value_to_list32(9000, rec_freq_sampr, …)` against
+  `SAMPR_CAP_ALL_96` lands on 8 kHz), which is why it stopped music and then never saw a
+  frame while the file recorder, whose default matches playback, worked.
+- **A playback rate change reprogrammed an ADC that was being clocked by the other port.**
+  `i2s_set_frequency()` did ES8311 and ES7210 in one call unconditionally.
+
+The state is now split, in `i2s-xtensa.c`: `tx_rate` (what pcm.c last asked for) and
+`rx_owns_bus` + `rx_bus_rate` (what the receiver is actually clocking the codecs at).
+`i2s_rx_take_bus(rate)` runs `es7210_init(rate)`, `es7210_start()` and takes the pads in
+one place, and refuses the pads if the ADC did not answer on I2C — a dead ADC cannot leave
+playback unable to clock. `i2s_rx_release_bus()` is idempotent and is called on both the
+stopped and the never-started path, because pads left pointing at I2S0 mean the transmitter
+can never clock the codecs again for the rest of the boot.
+
+Two IDF constraints that stay load-bearing:
+
+- `i2s_channel_reconfig_std_clock()` needs the channel **disabled**, and the channel is
+  never rebuilt: `i2s_new_channel()` gates a `gdma_ll_reset_register()` over the whole
+  block (which our raw-register TX channel is invisible to) and `i2s_del_channel()` drops
+  the group refcount to zero and gates the block's bus clock. So a rate change is
+  disable → reconfig → re-enable, and `rx_chan_set_rate()` returns the `esp_err_t` rather
+  than printing it: a refused configuration looks downstream exactly like an absent ADC.
+- `rx_update`/`tx_update` latching: a configuration written to the APB domain without the
+  update pulse never reaches the sampling domain. IDF pulses it; anything hand-written
+  here must.
+
+The debug screen now has an `RX` row (`RX <rate>Hz en<n> bus<n> rd<n> to<n> e<n> <bytes>B`).
+Timeouts and errors are counted apart because the two silent-recorder failure modes —
+nothing arriving versus being refused — are otherwise indistinguishable from a plugin that
+never paints.
+
+The capture DMA stays **stereo interleaved**, deliberately: `pcm_record.c`'s mono path
+(`copy_buffer_mono_lr`) consumes `PCM_SAMP_SIZE` = 4 bytes per output sample and assumes
+stereo input, and `pitchyin()` and `buffer_magnitude()` both step by two and use channel L
+only. Making the receiver mono would break the file recorder's mono conversion and the
+tuner at the same time.

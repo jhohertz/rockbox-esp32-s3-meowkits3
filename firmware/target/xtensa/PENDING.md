@@ -13,6 +13,33 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **Capture path re-isolated; `pitch_detector` needs a hardware pass.** The receiver and
+  the transmitter no longer share one rate variable. `i2s-xtensa.c` now owns a bus flag
+  (`tx_rate` vs `rx_owns_bus`/`rx_bus_rate`), `i2s_rx_take_bus(rate)` brings the ADC up
+  and takes the clock pads in one place, `i2s_rx_release_bus()` gives them back
+  idempotently on both session paths, `i2s_set_frequency()` refuses to reprogram the ADC
+  while the receiver owns the bus, and the IDF channel's clock is set in
+  `pcm_rec_dma_start()` — after `pcm_apply_settings()` has put the requested rate on the
+  sink, which is the first moment that rate exists. It used to be set in
+  `pcm_init_recording()`, which runs before that, so the receiver kept whatever playback
+  last asked for. `pitch_detector` was the only caller asking for a rate playback had not
+  already had (8 kHz), which is why it stopped playback and then never got a frame.
+  New debug row `RX <rate>Hz en<n> bus<n> rd<n> to<n> e<n> <bytes>B` separates "reader
+  asked, nothing arrived" from "reader asked, refused". **To confirm on the board:**
+  1. `Debug → View HW info`: the RX row should read `8000Hz` while the tuner is open,
+     with `rd` climbing and `to` near zero. `to` climbing while `rd` stays 0 means the
+     clocks are not reaching the ADC; a non-zero `e` means the channel configuration was
+     refused.
+  2. Play into the mic: the tuner should paint a note. An octave-low reading would be a
+     format problem rather than a flow one — `pitchyin()` and `buffer_magnitude()` both
+     step by two and use channel L only, so interleaved stereo DMA frames are what the
+     plugin expects.
+  3. Record a WAV at Settings → Recording → 8 kHz and then at 44.1 kHz, stopping each
+     with **Back**, never Reset. Both must produce audible files; the first is the case
+     that exercised the reconfigure path this change replaces.
+  4. Leave the tuner and play a file: playback must still work, i.e. the pads made it
+     back to the transmitter.
+
 - **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
   60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
   current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage

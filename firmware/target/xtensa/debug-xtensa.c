@@ -130,6 +130,15 @@ enum
      * being starved and recovered. Counted always rather than behind a probe, because
      * the moment worth catching is shorter than any sampling interval. */
     INFO_TXSTAT,
+    /* The same idea for the capture path, and it exists because the two ways a
+     * recorder can go silent look identical from the UI: the reader can be asking
+     * and getting nothing (no clocks reaching the ADC, so timeouts), or asking and
+     * being refused (a bad configuration, so an error code). The rate is printed
+     * because it is the one number that says whether the receiver is running at
+     * what the caller asked for -- pitch_detector requests 8 kHz, the file recorder
+     * requests whatever Settings says, and playback requests the file's rate.
+     * Reading it is free; the counters are incremented per read. */
+    INFO_RXSTAT,
     /* What the codec itself reports. The transmit counters can say the transport is
      * healthy while nothing audible comes out, because the chip's state is only
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
@@ -267,6 +276,15 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         i2s_tx_stats(&sessions, &err, &recover, &silence);
         snprintf(buf, bufsz, "TX sess %u err %u rec %u sil %u",
                  sessions, err, recover, silence);
+        break;
+    }
+    case INFO_RXSTAT: {
+        struct pcm_rx_stats s;
+
+        pcm_rec_dma_stats(&s);
+        snprintf(buf, bufsz, "RX %luHz en%d bus%d rd%d to%d e%d %uB",
+                 s.rate, s.enabled, s.bus, s.reads, s.timeouts,
+                 s.last_err, s.bytes);
         break;
     }
     case INFO_CODEC:

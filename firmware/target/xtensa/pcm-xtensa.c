@@ -75,6 +75,18 @@ static volatile bool rx_wanted;
 static volatile bool rx_running;
 static volatile bool rx_thread_idle = true;
 
+/* Receive-path counters, read by the debug screen's RX row. The distinction that
+ * matters is between "the reader asked and nothing arrived" and "the reader asked
+ * and the port reported an error": from the outside both look like a plugin that
+ * never gets audio, and which one it is decides whether the clock is missing or
+ * the configuration is. */
+static unsigned int stat_sessions;
+static unsigned int stat_reads;
+static unsigned int stat_bytes;
+static unsigned int stat_timeouts;
+static unsigned int stat_errors;
+static int stat_last_err;
+
 static struct semaphore rx_sem;
 static long rx_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 static const char rx_thread_name[] = "i2srx";
@@ -106,10 +118,20 @@ static void i2s_rx_thread(void)
                 /* A timeout during teardown is normal; a timeout while the
                  * recorder still wants data is retried, not treated as the end of
                  * the capture. */
+                stat_last_err = (int)err;
+
+                if (err == ESP_ERR_TIMEOUT || got == 0)
+                    stat_timeouts++;
+                else
+                    stat_errors++;
+
                 if (!rx_wanted)
                     break;
                 continue;
             }
+
+            stat_reads++;
+            stat_bytes += got;
 
             rec_ptr += got;
             rec_left -= got;
@@ -205,7 +227,7 @@ bool i2s_rx_chan_create(void)
     }
 
     i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(i2s_rx_sample_rate()),
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(i2s_rx_default_rate()),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
@@ -233,15 +255,45 @@ bool i2s_rx_chan_create(void)
         return false;
     }
 
-    rx_chan_rate = i2s_rx_sample_rate();
+    rx_chan_rate = i2s_rx_default_rate();
 
     return true;
+}
+
+/* Program the IDF channel's clock. The channel is never rebuilt -- see
+ * i2s_rx_chan_create() -- so a rate change has to be a reconfig, and IDF only
+ * accepts that with the channel disabled. The error is returned rather than
+ * printed because the caller has to know: a rate the port could not be made to
+ * run at shows up downstream as a reader that never receives a frame, which looks
+ * exactly like an absent ADC. */
+static esp_err_t rx_chan_set_rate(unsigned long rate)
+{
+    if (!rx_chan)
+        return ESP_ERR_INVALID_STATE;
+
+    if (rx_chan_rate == rate)
+        return ESP_OK;
+
+    if (rx_chan_enabled)
+    {
+        i2s_channel_disable(rx_chan);
+        rx_chan_enabled = false;
+    }
+
+    i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+    esp_err_t e = i2s_channel_reconfig_std_clock(rx_chan, &clk);
+
+    if (e == ESP_OK)
+        rx_chan_rate = rate;
+
+    return e;
 }
 
 void pcm_rec_dma_init(void)
 {
     /* Normally already created at boot by sink_init(); this is the fallback for a
-       rate change or a boot that skipped it. */
+       boot that skipped it. It does not configure anything about the rate: see the
+       note at the end of this function. */
     if (!i2s_rx_chan_create())
         return;
 
@@ -253,28 +305,12 @@ void pcm_rec_dma_init(void)
                                      sizeof(rx_thread_stack), 0, rx_thread_name
                                      IF_PRIO(, PRIORITY_USER_INTERFACE));
     }
-    else if (rx_chan_rate != i2s_rx_sample_rate())
-    {
-        /* Same channel, different rate. Reconfigure the clock rather than
-           rebuilding the channel -- rebuilding resets the whole GDMA block. */
-        i2s_std_clk_config_t clk =
-            I2S_STD_CLK_DEFAULT_CONFIG(i2s_rx_sample_rate());
-
-        if (rx_chan_enabled)
-            i2s_channel_disable(rx_chan);
-
-        esp_err_t e = i2s_channel_reconfig_std_clock(rx_chan, &clk);
-
-        if (e != ESP_OK)
-            printf("RX i2s_channel_reconfig_std_clock(%lu) failed: %d\n",
-                   i2s_rx_sample_rate(), (int)e);
-        else
-            rx_chan_rate = i2s_rx_sample_rate();
-    }
-
-    /* The ADC is started before the channel is enabled so it has its clocks
-     * already present when the first frame is clocked out of us. */
-    es7210_start();
+    /* Nothing here touches the channel's clock or the ADC. pcm_init_recording()
+       runs before pcm_apply_settings() puts the requested capture rate on the
+       sink, so the rate is not yet known at this point -- reading it here is what
+       left the receiver clocked at whatever playback last asked for while the ADC
+       was configured for something else. pcm_rec_dma_start() does both, in that
+       order, once the rate exists. */
 }
 
 void pcm_rec_dma_close(void)
@@ -301,7 +337,7 @@ void pcm_rec_dma_close(void)
 
     if (rx_chan && rx_chan_enabled)
     {
-        /* Disable, but never delete: see pcm_rec_dma_init(). Deleting this
+        /* Disable, but never delete: see rx_chan_set_rate(). Deleting this
            channel gates the clock on the whole GDMA block and kills the
            transmitter for the rest of the boot. */
         i2s_channel_disable(rx_chan);
@@ -311,8 +347,7 @@ void pcm_rec_dma_close(void)
     /* Belt and braces: pcm_close_recording() always calls this, so making the
      * handback idempotent here means the transmitter can never be left without
      * its clocks however the session ended. */
-    i2s_rx_pads_release();
-
+    i2s_rx_release_bus();
 }
 
 void pcm_rec_dma_start(void *addr, size_t size)
@@ -325,22 +360,34 @@ void pcm_rec_dma_start(void *addr, size_t size)
 
     rec_ptr = (unsigned char *)addr;
     rec_left = size;
+    stat_sessions++;
 
-    /* Bring the ADC up for this session, at the rate the bus is already running.
-     * It used to be reset and clock-programmed from sink_init(), i.e. on every
-     * boot and every playback rate change, which is the wrong layer and two 10ms
-     * bus holds before the UI is even up. The result is checked: with the return
-     * value dropped, an ADC that never answered on the bus is indistinguishable
-     * from one that configured perfectly, and every symptom downstream reads as a
-     * fault in the capture path rather than an absent device. */
-    if (!es7210_init(i2s_rx_sample_rate()))
+    /* The rate pcm.c just applied. pcm_record_data() calls pcm_apply_settings()
+     * immediately before this, which is the first moment the requested capture
+     * rate exists as hardware state rather than as a mixer field: a file at
+     * 44.1 kHz, a recorder set to 16 kHz, or pitch_detector asking for 8 kHz.
+     * Programming the receiver here -- and the ADC at the same rate, in the same
+     * call -- is what makes the capture rate the caller's rather than a side
+     * effect of whatever playback last did.
+     */
+    unsigned long rate = i2s_rx_default_rate();
+
+    esp_err_t e = rx_chan_set_rate(rate);
+
+    if (e != ESP_OK)
+        printf("RX clock %lu Hz failed: %d\n", rate, (int)e);
+
+    /* Brings the ADC up at `rate` and hands the receiver the clock pads with it.
+     * The result is checked: with the return value dropped, an ADC that never
+     * answered on the bus is indistinguishable from one that configured
+     * perfectly, and every symptom downstream reads as a fault in the capture
+     * path rather than an absent device. The pads come with it because the
+     * receiver cannot clock anything out of pads it does not own, and both must
+     * happen before the channel is enabled. */
+    if (!i2s_rx_take_bus(rate))
         printf("ES7210: init FAILED (no answer at 0x41?)\n");
 
-    /* The receiver cannot clock anything out of pads it does not own, so take
-     * them before enabling the channel. */
-    i2s_rx_pads_take();
-
-    esp_err_t e = i2s_channel_enable(rx_chan);
+    e = i2s_channel_enable(rx_chan);
     if (e != ESP_OK)
         printf("RX i2s_channel_enable failed: %d\n", (int)e);
     else
@@ -363,7 +410,7 @@ void pcm_rec_dma_stop(void)
          * can never clock the codecs again, which kills playback for the rest of
          * the session. Releasing is just rewriting three OUT_SEL registers, so
          * doing it unconditionally is free. */
-        i2s_rx_pads_release();
+        i2s_rx_release_bus();
         return;
     }
 
@@ -400,8 +447,7 @@ void pcm_rec_dma_stop(void)
     }
 
     rx_running = false;
-    i2s_rx_pads_release();
-
+    i2s_rx_release_bus();
 }
 
 const void *pcm_rec_dma_get_peak_buffer(void)
@@ -422,4 +468,19 @@ void pcm_rec_unlock(void)
 {
     if (rec_locked > 0)
         rec_locked--;
+}
+
+void pcm_rec_dma_stats(struct pcm_rx_stats *s)
+{
+    s->sessions = stat_sessions;
+    s->reads    = stat_reads;
+    s->bytes    = stat_bytes;
+    s->timeouts = stat_timeouts;
+    s->errors   = stat_errors;
+    s->last_err = stat_last_err;
+    s->rate     = rx_chan_rate;
+    s->chan     = rx_chan != NULL;
+    s->enabled  = rx_chan_enabled;
+    s->running  = rx_running;
+    s->bus      = i2s_rx_owns_bus();
 }

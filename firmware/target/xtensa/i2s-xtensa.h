@@ -238,17 +238,60 @@ void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
  * host-driven stream. */
 bool i2s_tx_playing(void);
 #ifdef HAVE_RECORDING
-/* The receiver is a full ESP-IDF I2S channel created per recording session in
- * pcm-xtensa.c, so there is no rx init/start/stop to declare here. What the
- * capture path does need from this file is the rate the session must be created
- * at, and the shared clock pads. */
-unsigned long i2s_rx_sample_rate(void);
-/* The board shares one MCLK/BCLK/WS set between both codecs, so only one I2S port
- * may drive those pads at a time. Recording makes the receiver the master, so the
- * pads are handed over for the duration and given back afterwards. Sound only
- * because Rockbox makes play and record exclusive. */
-void i2s_rx_pads_take(void);
-void i2s_rx_pads_release(void);
-#endif
+/* The receiver is a full ESP-IDF I2S channel, owned by pcm-xtensa.c, so there is
+ * no rx init/start/stop declared here. What this file owns is the bus: which port
+ * drives the three clock pads, and what the ADC has been told about the rate.
+ *
+ * The two directions never overlap (audiohw_set_input_source() stops the sink
+ * before a capture starts), so "who owns the bus" is a single flag rather than a
+ * negotiation, and everything that would otherwise reprogram the other side can
+ * be refused instead of racing it.
+ */
+
+/* The rate pcm.c last asked the sink for, i.e. the transmitter's rate. This is
+ * only the rate a capture session defaults to -- the receiver does not inherit it
+ * silently, it is programmed to it explicitly at session start. */
+unsigned long i2s_rx_default_rate(void);
+
+/* The rate the receiver is clocked at right now, or the default when it does not
+ * own the bus. */
+unsigned long i2s_rx_bus_rate(void);
+
+/* Whether the receiver currently drives the clock pads. While this is true,
+ * i2s_set_frequency() leaves the ADC alone: the ADC is being clocked by the
+ * receiver's generator, not by the transmitter's, so following a playback rate
+ * change would misconfigure a chip that is not on that bus. */
+bool i2s_rx_owns_bus(void);
+
+/* Take the bus for a capture session at `rate` (0 = i2s_rx_default_rate()):
+ * bring the ADC up against that rate, then hand MCLK/BCLK/WS to the receiver.
+ * Returns false if the ADC did not answer on I2C, leaving the pads where they
+ * were -- the caller decides whether an absent ADC is worth continuing for. */
+bool i2s_rx_take_bus(unsigned long rate);
+
+/* Give the bus back. Idempotent, and cheap: three OUT_SEL writes. Called on both
+ * the stopped and the never-started paths of a session, because pads left pointing
+ * at the receiver mean the transmitter can never clock the codecs again. */
+void i2s_rx_release_bus(void);
+
+/* Cumulative receive-path counters plus the state the reader is in, for the debug
+ * screen. Implemented in pcm-xtensa.c, declared here because that is where the
+ * capture path's users look. Reading them changes nothing. */
+struct pcm_rx_stats
+{
+    unsigned int sessions;    /* capture sessions started */
+    unsigned int reads;       /* i2s_channel_read() calls that returned data */
+    unsigned int bytes;       /* bytes handed to the recorder, cumulative */
+    unsigned int timeouts;    /* reads that returned nothing while wanted */
+    unsigned int errors;      /* reads that returned a non-OK, non-timeout error */
+    int last_err;             /* esp_err_t of the last non-OK read */
+    unsigned long rate;       /* rate the IDF channel is programmed to */
+    bool chan;                /* the IDF channel exists */
+    bool enabled;             /* the IDF channel is enabled */
+    bool running;             /* a session wants data */
+    bool bus;                 /* the receiver holds the clock pads */
+};
+void pcm_rec_dma_stats(struct pcm_rx_stats *s);
+#endif /* HAVE_RECORDING */
 
 #endif /* I2S_XTENSA_H */
