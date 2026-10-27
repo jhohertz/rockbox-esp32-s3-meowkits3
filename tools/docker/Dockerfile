@@ -52,7 +52,11 @@ RUN apt-get update \
 #     git, cmake, ninja and python3
 #   - tools/buildzip.pl, which calls `zip` and the `install` command
 #   - tools/configure, which needs no downloads for this target and calls the
-#     host compiler to build tools/
+#     host compiler to build tools/. espeak-ng is here because the default build
+#     is a voice build: configure's --tts=espeak falls back to espeak-ng when the
+#     old name is absent (tools/configure:1423-1424), and without it the card
+#     payload silently ships without the .voice file -- 2.5 MB and two files
+#     shorter than what the device actually gets.
 ###############################################################################
 FROM rb-base AS rb-deps
 
@@ -88,6 +92,7 @@ RUN apt-get update \
       cmake \
       ninja-build \
       ccache \
+      espeak-ng \
       libusb-1.0-0 \
       libudev1 \
  && rm -rf /var/lib/apt/lists/*

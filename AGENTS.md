@@ -4693,11 +4693,11 @@ the rest populate the card or document the target.
 
 | Artifact | How it is made | Contents |
 |---|---|---|
-| `rockbox.esp32s3` | `make` (IDF link) | ESP image, flashed at offset `0x0` |
+| `rockbox.esp32s3` | `make` (IDF link) | ESP *app* image, flashed at `0x10000`; the stage-2 bootloader is `bootloader.bin` at `0x000000` and the partition table at `0x008000` (`idf-app/build/flash_args` lists all three) |
 | `rockbox.zip` | `make zip` | card payload **without** fonts: default theme + failsafe cfg, icons, backdrops, plugins, codecs, languages, the image itself |
 | `rockbox-fonts.zip` | `tools/buildzip.pl … -f 1` | 88 `.fnt` files converted from `fonts/*.bdf` by `tools/convbdf` |
 | `rockbox-themes.zip` | `tools/rbthemes.py pack` | third-party themes pulled from the themes server through a proxy target; each archive is already `.rockbox/`-rooted |
-| `rockbox-manual.pdf` | `make manual-pdf` | 281-page per-target manual |
+| `rockbox-manual.pdf` | `make manual-pdf` | 286-page per-target manual |
 
 `make zip` deliberately excludes fonts (`tools/root.make:712`); `fullzip` and
 `fontzip` are the upstream goals that include them. `fontzip` sets `NODEPS=1`
@@ -4846,10 +4846,15 @@ the same file with different bytes rather than silently picking one.
 ### The manual
 
 `make manual-pdf` needs `texlive-latex-extra` (a4wide, enumitem, multirow,
-optional, scrhack, and `inputenx`'s `ix-utf8enc.dfu`) and `texlive-plain-generic`
-(`soul.sty`, which lives in `tex/generic/`, not `tex/latex/`). PDF needs no
-`hevea`/`htlatex` (those are the HTML and text routes) and no SVG rasterizer —
-`pdflatex` takes PNG directly.
+optional, scrhack, and `inputenx`'s `ix-utf8enc.dfu`), `texlive-plain-generic`
+(`soul.sty`, which lives in `tex/generic/`, not `tex/latex/`) and `lmodern` —
+both distributions split `lmodern.sty` out of `texlive-latex-recommended` into a
+package of its own, and without it `pdflatex` stops at "File `lmodern.sty' not
+found" with no PDF. `texlive-latex-recommended` and `texlive-fonts-recommended`
+cover the rest of `preamble.tex`; that set is what `tools/docker/Dockerfile`
+installs, verified by building the PDF in the container. PDF needs no `hevea`/
+`htlatex` (those are the HTML and text routes) and no SVG rasterizer — `pdflatex`
+takes PNG directly.
 
 A new target must provide `manual/platform/<modelname>.tex`: `preamble.tex:46`
 does `\input{platform/\platform.tex}` and `tools/configure:4536` sets
@@ -4908,6 +4913,12 @@ nothing, which surfaces much later as `/bin/sh: 1: idf.py: not found` from
 export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1
 . $IDF_PATH/export.sh
 ```
+
+`tools/docker/Dockerfile` packages this environment: bare Ubuntu, APT layers for the
+build and the manual, then `tools/rockboxdev.sh --target=e` for the toolchain and
+ESP-IDF, and `tools/docker/rb-build-artifacts.sh` as the entrypoint, which builds and
+writes the artifacts above plus `espverify.txt`, a provenance manifest and SHA256SUMS
+to a mounted `/out`. See `tools/docker/README.md`.
 
 
 

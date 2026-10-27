@@ -381,7 +381,12 @@ cmake 4.2.3 — IDF 5.5.5 builds fine with cmake 4); the toolchain stage install
 xtensa-esp-elf plus ESP-IDF in ~110 s once the download cache is warm (~19 min cold,
 168 MB archive + IDF clone + `install.sh esp32s3`); the image is 10.4 GB; the entrypoint
 builds the firmware, passes `esplayer` and `espverify`, and reports the app partition
-16 % free. Three defects it found are fixed above and in `tools/` — see §5.
+16 % free. Three defects it found are fixed above and in `tools/` — see §5. It
+configures `--type=AV` by default (`RB_VOICE=0` for the plain build) so the payload
+matches what the device gets: 411 files including `english.voice`, versus 409 and
+7.1 MB without it. The run emitted all 12 files (image, bootloader, partition table,
+`flash_args`, zip, fonts zip, PDF, info, map, espverify log, manifest, SHA256SUMS)
+and exited 0.
 `tools/espflash.make` now derives paths from `$(ROOTDIR)` rather than
 `dir $(BUILDDIR)`, which is what makes an out-of-tree build (the container builds into
 `/work`) work at all; in-tree `make esplayer` and `make reconf` were both re-verified on
