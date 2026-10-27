@@ -111,7 +111,8 @@ Runtime environment for the entrypoint:
 | `RB_VOICE` | `1` | `--type=AV --tts=espeak`, i.e. the voice payload the device actually gets. `0` gives `--type=N` and a card set without `.voice`. Only honoured when `BUILD_DIR` is fresh |
 | `RB_LANGUAGE` | `english` | voice/language for the AV build |
 | `IDF_PATH` | `/opt/rockbox-dev/esp-idf` | ESP-IDF checkout to source `export.sh` from |
-| `SKIP_MANUAL` | unset | set to `1` to skip the LaTeX pass
+| `SKIP_MANUAL` | unset | set to `1` to skip the LaTeX pass |
+| `RELEASE` | unset | a label written into `build-manifest.txt`. The clone is shallow, so `git describe --tags` cannot see the tag it was cloned at — pass it explicitly for a release run |
 
 ## What lands in the output directory
 
