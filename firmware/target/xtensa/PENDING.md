@@ -346,11 +346,11 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 | File | Size | Notes |
 |---|---|---|
-| `rockbox.esp32s3` | 1,291,536 B | md5 `c9e9dfbf76d0b2307ac464e3c62f3b22`, **built but not flashed** — differs from the flashed image only by the Bluetooth config removal (`4,048 B` of never-called NimBLE host code). No functional change, so the board running `292debd757186fc632531293fe67c6c2` / 1,295,584 B is behaviourally current. The digest moves whenever the embedded build metadata does; `make flash` regenerates the image, so build and flash sizes can differ by a few bytes. |
-| `rockbox.zip` | 9,318,040 B, 411 files | card content; re-extract after plugin changes |
+| `rockbox.esp32s3` | 1,291,536 B | md5 `94ab361620c32bea76161a10914ded22` (rebuilt; the digest moved with the embedded build metadata, as expected), **built but not flashed** — differs from the flashed image only by the Bluetooth config removal (`4,048 B` of never-called NimBLE host code). No functional change, so the board running `292debd757186fc632531293fe67c6c2` / 1,295,584 B is behaviourally current. The digest moves whenever the embedded build metadata does; `make flash` regenerates the image, so build and flash sizes can differ by a few bytes. |
+| `rockbox.zip` | 9,318,431 B, 411 files | card content; re-extract after plugin changes. Regenerated after the container found the voice pack was stale — `english.voice` is now 2,512,515 B, byte-identical in size to the container's |
 | `rockbox-fonts.zip` | 8,478,936 B | 88 fonts, built from the tree |
 | `rockbox-themes.zip` | 17,237,059 B | audited clean, additive |
-| `rockbox-manual.pdf` | 3,047,948 B | 286 pages; four pre-existing upstream LaTeX error lines as baseline. Rebuilt after the flag batch — now renders "Backlight Fade In/Out", Bass and Treble. `build-meowkits3/manual/features.tex` must be deleted when target flags change (see `AGENTS.md` §9) |
+| `rockbox-manual.pdf` | 3,047,948 B (container: 3,047,405 B — same 286 pages, differs only in embedded build metadata) | 286 pages; four pre-existing upstream LaTeX error lines as baseline. Rebuilt after the flag batch — now renders "Backlight Fade In/Out", Bass and Treble. `build-meowkits3/manual/features.tex` must be deleted when target flags change (see `AGENTS.md` §9) |
 
 Flash layout: bootloader `0x000000`, partition table `0x008000`, Rockbox `0x010000`.
 Memory: DIRAM 340,655 / 341,760 (1,105 B free), IRAM full, `.ext_ram.bss` ends `0x3c5b2e9c`,
@@ -386,7 +386,15 @@ configures `--type=AV` by default (`RB_VOICE=0` for the plain build) so the payl
 matches what the device gets: 411 files including `english.voice`, versus 409 and
 7.1 MB without it. The run emitted all 12 files (image, bootloader, partition table,
 `flash_args`, zip, fonts zip, PDF, info, map, espverify log, manifest, SHA256SUMS)
-and exited 0.
+and exited 0. Timings on a 32-core host: 93 s for a full run (configure, firmware,
+`esplayer`, `espverify`, voice, zip, fonts, manual, copy), 80 s for the artifacts-only
+image with `SKIP_MANUAL=1`, ~110 s for a warm toolchain stage and ~19 min cold. Payload
+shape matches a host build exactly: 411 files, empty `diff` of the two zip listings.
+`english.voice` came out at 2,512,515 B on both sides once the host pack was
+regenerated — the container had found the host's pack stale by 6,158 B, missing
+prompts for the settings the feature-flag batch added. `make voice` + `make zip` on
+the host closed it; the firmware is unaffected (it was already an AV build), so the
+fix is a card re-extract, not a reflash.
 `tools/espflash.make` now derives paths from `$(ROOTDIR)` rather than
 `dir $(BUILDDIR)`, which is what makes an out-of-tree build (the container builds into
 `/work`) work at all; in-tree `make esplayer` and `make reconf` were both re-verified on
