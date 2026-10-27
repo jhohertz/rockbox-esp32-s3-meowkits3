@@ -309,10 +309,21 @@ static void gdma_tx_isr(void *arg)
 static i2s_hal_context_t tx_hal;
 
 #ifdef HAVE_RECORDING
-/* The rate i2s_set_frequency() last programmed; the recording session's IDF
- * channel has to be created at this rate. Declared here because i2s_set_frequency
- * is where it is written, which precedes the receive section of this file. */
-static unsigned long rx_rate;
+/* Two separate pieces of state, because the two directions of this bus are not
+ * the same question:
+ *
+ *   tx_rate     what pcm.c last asked the sink for. Written by i2s_program_clock(),
+ *               which is also where it is written for the capture path's benefit,
+ *               so it is declared ahead of the receive section of this file.
+ *   rx_bus_rate what the receiver is actually clocking the codecs at, valid only
+ *               while rx_owns_bus.
+ *
+ * They used to be one variable, which meant a capture session could only ever run
+ * at whatever rate playback last set, and a playback rate change could silently
+ * reprogram an ADC that was being clocked by the other port. */
+static unsigned long tx_rate;
+static unsigned long rx_bus_rate;
+static bool rx_owns_bus;
 #endif
 
 
@@ -423,10 +434,11 @@ static void i2s_program_clock(unsigned long rate)
     tx_frame_len = MIX_FRAME_SAMPLES * 4 * XT_MIX_MULT(rate);
 
 #ifdef HAVE_RECORDING
-    /* The rate the recording session's IDF channel must be created at. Recorded
-       here rather than in the codec section so it is set even when only the port is
-       being programmed. */
-    rx_rate = rate;
+    /* Recorded here rather than in the codec section so it is set even when only
+       the port is being programmed. This is the transmitter's rate and therefore
+       the default a capture session starts from -- it is not the capture rate, and
+       i2s_rx_take_bus() is what decides that. */
+    tx_rate = rate;
 #endif
 }
 
@@ -440,15 +452,19 @@ void i2s_set_frequency(unsigned long rate)
        are not in i2s_program_clock(). */
     es8311_set_clock(rate, rate * MCLK_MULTIPLE);
 
-    /* The ADC shares the transmitter's MCLK, so it has to be reprogrammed
-     * whenever the rate changes.
+    /* The ADC shares the transmitter's MCLK, so it follows the playback rate --
+     * except while the receiver owns the bus, when the ADC is clocked by the
+     * receiver's generator at the capture rate and a playback rate change has
+     * nothing to do with it. Reprogramming it in that state is the entanglement
+     * this used to hide: the chip would be told to expect a frame that the port
+     * driving its pins is not producing.
      *
-     * The receiver is no longer configured here. It is a full ESP-IDF I2S channel
-     * created per recording session in pcm-xtensa.c, which sets its own clock and
-     * slot. All this file still owes the capture path is the sample rate the
-     * session must match, recorded below, and the shared clock pads. */
+     * The receiver itself is not configured here. It is a full ESP-IDF I2S channel
+     * in pcm-xtensa.c, which sets its own clock and slot at session start.
+     */
 #ifdef HAVE_RECORDING
-    es7210_set_frequency(rate);
+    if (!rx_owns_bus)
+        es7210_set_frequency(rate);
 #endif
 
     /* The clock has just moved under whatever the FIFO still holds, and the port
@@ -761,21 +777,24 @@ void i2s_init(void)
 
 #ifdef HAVE_RECORDING
 
-/* The recording session's IDF channel has to be created at the rate the bus is
- * running: the codecs share one MCLK, so a receiver configured for a different
- * one would be clocked against a frame the ADC was not expecting. */
-unsigned long i2s_rx_sample_rate(void)
+unsigned long i2s_rx_default_rate(void)
 {
-    return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+    return tx_rate ? tx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
-/* The rate the transmitter was last programmed to. rx_rate is written by
- * i2s_set_frequency(), which programs both ports from one call, so this is the
- * playback bus rate as much as the recording one -- what matters when comparing
- * against the mixer's idea of the sample rate. */
+unsigned long i2s_rx_bus_rate(void)
+{
+    return rx_owns_bus ? rx_bus_rate : i2s_rx_default_rate();
+}
+
+bool i2s_rx_owns_bus(void)
+{
+    return rx_owns_bus;
+}
+
 unsigned long i2s_tx_sample_rate(void)
 {
-    return rx_rate ? rx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+    return tx_rate ? tx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
 void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
@@ -789,8 +808,9 @@ void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
 
 /* Hand the three shared clock pads to whichever port is master right now.
  * esp_rom_gpio_connect_out_signal() just rewrites the pad's OUT_SEL, so this is
- * cheap and can be done on every mode switch. See the note in i2s_set_frequency()
- * for why the two ports cannot both drive these pads. */
+ * cheap and can be done on every mode switch. The board wires one MCLK/BCLK/WS set
+ * to both codecs, so the two ports cannot both drive them; see the note in
+ * i2s_set_frequency(). */
 static void i2s_route_clock_pads(int mclk_sig, int bck_sig, int ws_sig)
 {
     esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK, mclk_sig, false, false);
@@ -798,14 +818,38 @@ static void i2s_route_clock_pads(int mclk_sig, int bck_sig, int ws_sig)
     esp_rom_gpio_connect_out_signal(PIN_I2S_WS,   ws_sig,   false, false);
 }
 
-void i2s_rx_pads_take(void)
+/* Bring the ADC up and hand it the clocks it was just configured for.
+ *
+ * Order matters and is the order the reference firmware uses: configure the slave
+ * chip, then produce the clocks. The ADC is a slave on pins somebody else drives,
+ * and the receiver only starts generating them when the caller enables the channel
+ * after this returns. es7210_init() holds the chip in reset for 10 ms and writes
+ * its clock dividers over I2C, so doing it before the pads move also keeps two
+ * long bus holds out of the moment the transmitter goes dark.
+ */
+bool i2s_rx_take_bus(unsigned long rate)
 {
+    if (!rate)
+        rate = i2s_rx_default_rate();
+
+    if (!es7210_init(rate))
+        return false;   /* leave the pads where they are */
+
+    es7210_start();
+
     i2s_route_clock_pads(SIG_I2S0_MCLK_OUT, SIG_I2S0I_BCK_OUT, SIG_I2S0I_WS_OUT);
+
+    rx_bus_rate = rate;
+    rx_owns_bus = true;
+    return true;
 }
 
-void i2s_rx_pads_release(void)
+void i2s_rx_release_bus(void)
 {
     i2s_route_clock_pads(SIG_I2S1_MCLK_OUT, SIG_I2S1O_BCK_OUT, SIG_I2S1O_WS_OUT);
+
+    rx_owns_bus = false;
+    rx_bus_rate = 0;
 }
 #endif /* HAVE_RECORDING */
 
