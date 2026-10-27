@@ -149,8 +149,12 @@ int _battery_voltage(void)
 #if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
 int _battery_current(void)
 {
-    return charging_state() ? axp173_charge_current()
-                            : axp173_discharge_current();
+    /* The chip's current-direction bit rather than charging_state(): REG 01H bit 6 reads
+     * 0 both when the charger is idle and when the cell is finished, so keying the
+     * register choice off it can sample the discharge register while current is flowing
+     * the other way, and report a negative-looking charge as a discharge. */
+    return axp173_current_is_charging() ? axp173_charge_current()
+                                        : axp173_discharge_current();
 }
 #endif
 

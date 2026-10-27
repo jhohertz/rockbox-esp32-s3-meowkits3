@@ -135,18 +135,34 @@ enum
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
      * screen is opened rather than sampled continuously. */
     INFO_CODEC,
-    /* The AXP173 charge and discharge counters, raw. They are enabled and cleared at
-     * boot by axp173_init(), so a freshly booted board legitimately reads 0/0 -- which
-     * is also what a failed I2C read produces, and the two cannot be told apart from
-     * these numbers alone. That is acceptable here because the point of the row is the
-     * *delta* across an interval, not an absolute value: boot, confirm 0/0, run
-     * battery_bench, and divide the integrated mA-hours from its log by the discharge
-     * delta to get the LSB scale. Until that scale is measured these integers mean
-     * nothing to the user, so the row says so rather than inventing a unit.
+    /* The AXP173 coulomb counters. They are enabled and cleared at boot by
+     * axp173_init(), so a freshly booted board legitimately reads 0/0 -- which is also
+     * what a failed I2C read produces, and what a clear that dropped the enable bit
+     * produces. Hence the control byte on the same row: it is the only thing on screen
+     * that separates "nothing has happened" from "counting is off".
+     *
+     * The mAh figures are the reference driver's derivation (65536 * 0.5 mA * counts /
+     * 3600 / adc_rate), not a datasheet statement, and the raw counts are printed beside
+     * them so the scale can be checked against an independent measurement instead of
+     * trusted: run battery_bench, divide the integrated mA-hours from its log by the raw
+     * discharge delta, and see whether it lands on 0.364 mAh per LSB at 25 Hz.
      *
      * Reading it costs one 8-byte burst read over I2C, drawn when the screen opens.
      */
     INFO_CC,
+    /* What the charger was actually told to do. REG 33H carries the enable, the target
+     * voltage and the current setting in three separate fields, and a whole-register write
+     * that omits the target silently lowers the charge ceiling from 4.2 V to 4.1 V --
+     * which is how a board that had been charging overnight came to read 83 % and measure
+     * ~4.0 V. "charging" here is REG 01H bit 6, which reads 0 both when idle and when the
+     * cell is finished (this chip has no charge-done bit), and "overtemp" is bit 7 of the
+     * same register, which is what suspends charging on this chip's own temperature. */
+    INFO_CHG,
+    /* The TS pin. Whether a thermistor is wired on this board is unverified; the pin's
+     * drive current and mode live in REG 84H alongside the ADC sample rate, and the
+     * chip's charge/discharge temperature thresholds act on this input, so a floating
+     * reading is worth seeing rather than arguing about. Prints the raw ADC code. */
+    INFO_TS,
     /* Whether power management is configured, and what the core actually did.
      * esp_pm_dump_locks() is the obvious tool and is unusable here: it takes a
      * newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this measures
@@ -256,12 +272,32 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         break;
     case INFO_CC: {
         uint32_t charge, discharge;
+        int ctrl;
 
         axp173_coulomb_read(&charge, &discharge);
-        snprintf(buf, bufsz, "CC raw: charge %lu discharge %lu",
-                 (unsigned long)charge, (unsigned long)discharge);
+        /* The control byte is printed because the counters alone cannot distinguish
+         * "nothing has happened yet" from "counting is switched off": a clear written as
+         * a bare whole-register value drops the enable bit, and both cases read 0. */
+        ctrl = axp173_coulomb_control();
+        snprintf(buf, bufsz, "CC ctrl %02X dis %lu=%dmAh chg %lu=%dmAh",
+                 ctrl < 0 ? 0 : ctrl & 0xff,
+                 (unsigned long)discharge, axp173_coulomb_discharge_mAh(),
+                 (unsigned long)charge, axp173_coulomb_charge_mAh());
         break;
     }
+    case INFO_CHG: {
+        int tgt = axp173_charge_target_mV();
+        int set = axp173_charge_current_setting_mA();
+
+        snprintf(buf, bufsz, "CHG tgt %dmV set %dmA chg %s ot %s",
+                 tgt < 0 ? 0 : tgt, set < 0 ? 0 : set,
+                 axp173_charging() ? "yes" : "no",
+                 axp173_over_temp() ? "yes" : "no");
+        break;
+    }
+    case INFO_TS:
+        snprintf(buf, bufsz, "TS adc %d", axp173_ts_temperature());
+        break;
     case INFO_PM: {
         esp_pm_config_t cfg = { 0 };
         uint64_t us = esp_timer_get_time();

@@ -1284,6 +1284,43 @@ run closes the gauge and the low end in one pass:
 The discharge counter then pairs with the log's integrated current as a cross-check, which
 is what makes the LSB→mAh scale a measurement instead of a datasheet reading.
 
+## Three AXP173 register fields the port had written wrong (2026-10-27)
+
+Read out of the datasheet (`/tmp/axp.txt`, section 9.11 and the per-register bit lists)
+rather than inferred, and cross-checked against the reference firmware's own setup
+(`meowkit-s3-firmware/src/bsp/devices.cpp:64-140`, `src/bsp/power/AXP173.cpp`). All three
+were whole-register writes that quietly clobbered fields the write wasn't about.
+
+| Field | What we did | What it cost |
+|---|---|---|
+| REG 0x33 bits 6:5 — charge target voltage (`00` 4.10 V … `10` 4.20 V, reset `10`) | wrote `0x80 \| 4` as "enable, 450 mA" | a 4.10 V ceiling: an overnight charge stopped at ~4.0 V under load and the gauge read 83 %. This is the explanation for the "full charge reads 83 %" observation, and it is our bug, not the cell or the table |
+| REG 0x84 bits 5:4 and 1:0 — TS pin current and drive mode (reset `0x32`: 80 µA, drive during sampling) | wrote the bare rate `0` to set 25 Hz | TS drive switched off and its current dropped to 20 µA, on a pin the chip's charge and discharge temperature thresholds act on |
+| REG 0xB8 bit 7 — coulomb counter enable; bit 5 is a self-clearing clear pulse | wrote the clear as a whole-register `0x20` | the enable bit went with it, so the counters read 0 forever. That is why `CC` read 0/0 no matter what the device had been doing — not a dead chip, not a failed read |
+
+The counters do exist on this chip: 0xB0-0xB3 charge, 0xB4-0xB7 discharge, big-endian and
+contiguous, control at 0xB8. Bit 6 is a **pause**, self-clearing — the port had named it
+`AXP_CC_PIECE_BASE` ("1300 mA calibration base"), which came from the reference driver's
+enum ordering and not from any register description; the datasheet has no calibration-base
+bit and no `1300` anywhere in it.
+
+Scale, from the reference library rather than the datasheet:
+`mAh = 65536 * 0.5 mA * counts / 3600 / adc_rate_hz` — **0.364 mAh per LSB at 25 Hz**. The
+count is a sum of ADC samples, which is why the rate is in the denominator. The overnight
+idle run integrated to 425.1 mAh, so ~1,167 counts is what a matching run should show.
+
+Two other register facts worth having written down, because both were assumed wrong at some
+point in this project: **REG 0x01 bit 7 is over-temperature**, and there is no charge-done
+bit on this chip (bit 6 reads 0 both when idle and when finished; bit 2 only says the charge
+current fell below the set value). **REG 0x00 bit 2 is the battery current direction**, not
+a presence flag — battery presence is REG 0x01 bit 5 — and choosing the current register from
+`axp173_charging()` instead reads the discharge register while current flows the other way
+whenever VBUS is present and the charger is idle.
+
+The reference firmware's own voltage→percent curve, for comparison with ours:
+3.2 V → 0 %, 3.5 → 20 %, 3.7 → 40 %, 3.9 → 70 %, 4.1 → 90 %, 4.2 → 100 %. At 4.0 V our
+table says 83 % and theirs ~80 %, so the tables agree to within the spread between any two
+li-ion curves; the 83 % figure was never a table problem.
+
 ## Enabling feature flags costs DRAM in a place unrelated to the feature (2026-10-25)
 
 `HAVE_ALBUMART`, `HAVE_JPEG`, `HAVE_QUICKSCREEN` and `AB_REPEAT_ENABLE` were turned on in
