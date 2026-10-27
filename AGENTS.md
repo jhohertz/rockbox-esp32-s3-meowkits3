@@ -2249,11 +2249,15 @@ Two constraints shape the wiring:
   port one data signal: `I2S1I_SD_IN` and `I2S1O_SD_OUT` are both 30. The ADC's data
   therefore has to come in on I2S0, whose own signals are `I2S0I_SD_IN` 25,
   `I2S0I_BCK_IN` 26, `I2S0I_WS_IN` 27.
-- **The receiver needs a clock.** Rather than run a second divider that merely agrees
-  with the first, I2S0's RX is put in slave mode (`RX_SLAVE_MOD`, bit 3 of RX_CONF) and
-  fed the transmitter's BCLK and WS back through the GPIO matrix IN_SEL, from pins 14
-  and 13. A pad can drive a matrix input while still being driven as an output, so
-  those pins do double duty.
+- **The receiver needs a clock, and only one port may drive it.** While recording,
+  I2S0 is the master: IDF's `i2s_new_channel(I2S_NUM_0, NULL, &rx_chan)` plus
+  `i2s_channel_init_std_mode()` generate MCLK/BCLK/WS, and the three pads are routed
+  to I2S0's signals for the duration. The pins are deliberately **not** handed to
+  IDF's `gpio_cfg` (it would claim MCLK/BCLK/WS for I2S0 permanently at init, and the
+  transmitter needs them whenever we are not recording); only DIN goes over. The
+  hand-rolled GDMA IN ring this file used to describe is gone - IDF owns that channel
+  now, and `pcm-xtensa.c` only converts a blocking `i2s_channel_read()` into the
+  `pcm_rec_dma_*` contract.
 
 `rx_stop_mode` is two bits, not one: 0 = stop only when `rx_start` is cleared, 1 = also
 stop on `in_suc_eof`, 2 = also stop when the RX FIFO is full. We leave it at 1; with a
@@ -2277,6 +2281,46 @@ clock has to be 512 * rate in single-speed mode and 256 * rate in double-speed m
 (REG08 bit 6), and `LRCK_DIV = MCLK / rate`. That forces `adc_div = 1`, `dll = 1`, and
 `doubler = 1` below 64 kHz, `0` above it. Every entry in the reference firmware's
 table whose MCLK is 256 * rate agrees.
+
+### Bus ownership: TX and RX are exclusive, so make the switch explicit
+
+Rockbox never plays and records at once (`audiohw_set_input_source()` stops the sink
+before a capture starts), so "which port owns the three clock pads" is a flag, not a
+negotiation. `i2s-xtensa.c` holds that flag:
+
+| State | Meaning |
+|---|---|
+| `tx_rate` | what pcm.c last asked the sink for, written by `i2s_program_clock()` |
+| `rx_owns_bus` / `rx_bus_rate` | the receiver is driving the pads at this rate |
+
+Rules that follow from it:
+
+- `i2s_set_frequency()` reprograms the ES8311 always and the ES7210 **only when the
+  receiver does not own the bus**. Following a playback rate change while the ADC is
+  being clocked by the other port tells a chip to expect a frame its pins are not
+  producing.
+- `i2s_rx_take_bus(rate)` is the single place the ADC is brought up for capture: it
+  runs `es7210_init(rate)`, `es7210_start()`, then takes the pads. It refuses the pads
+  if the ADC did not answer, so a dead ADC cannot leave playback unable to clock.
+- `i2s_rx_release_bus()` is called on **both** the stopped and the never-started paths,
+  and is idempotent. Pads left pointing at I2S0 mean playback can never clock the
+  codecs again for the rest of the boot.
+- **The capture rate is not the playback rate.** They used to be one variable, and
+  `pcm_init_recording()` - which runs *before* `pcm_apply_settings()` puts the
+  requested rate on the sink - read it. Result: the receiver stayed at whatever
+  playback last set while the ADC was programmed for something else. The IDF channel's
+  clock is now set in `pcm_rec_dma_start()`, after `pcm_apply_settings()`, via
+  `rx_chan_set_rate(i2s_rx_default_rate())`. This is why `pitch_detector`, which asks
+  for 8 kHz, could never work: it was the only caller that requested a rate playback
+  had not already had.
+- `pcm_apply_settings()` calls `sink->ops.set_freq()` only when `pending_freq !=
+  configured_freq`, so a rate the caller asks for that already matches playback's last
+  rate never reprograms anything - which is fine here because `pcm_rec_dma_start()`
+  reads the *resulting* rate rather than relying on being called.
+- Debug screen row `INFO_RXSTAT` prints `RX <rate>Hz en<n> bus<n> rd<n> to<n> e<n>
+  <bytes>B`. Timeouts and errors are counted separately because "the reader asked and
+  nothing arrived" (no clocks reaching the ADC) and "the reader asked and was refused"
+  (bad configuration) look identical from a plugin that never paints.
 
 REG00 is a reset **hold**, not a pulse: 0xff holds every block in reset and the chip
 only starts when it is released with 0x41.
