@@ -38,11 +38,14 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   5/6/7). Both fixed — enable and clear are now read-modify-writes, and `Debug → View HW
   info` prints the control byte so "nothing happened" is distinguishable from "counting is
   off".
-  *Scale*: the reference library derives it as
-  `mAh = 65536 × 0.5 mA × counts / 3600 / adc_rate_hz`, which at our 25 Hz is **0.364 mAh
-  per LSB**. That is a vendor derivation, not a datasheet statement, so confirm it before
-  anything builds a percentage on it. The row prints the raw counts and the estimate
-  together for exactly that comparison.
+  *Scale*: derived from the datasheet's two stated facts — the battery-current ADC LSB is
+  0.5 mA and the rate is 25/50/100/200 Hz — because the datasheet says nothing about the
+  counter's own resolution. Each sample adds one LSB per 0.5 mA, so **1 LSB = 0.02 mA.s at
+  25 Hz and 180,000 LSB per mAh**. The reference library's `getCoulometerData()` multiplies
+  by 65536 instead; that is wrong by four orders of magnitude and the hardware says so —
+  minutes of charging already show six- and seven-figure counts. Nothing in the stock
+  firmware calls those getters, so its constant has never been exercised. The row prints
+  raw counts beside the estimate so the scale can be confirmed against a known current.
   **The overnight run of 2026-10-27 produced the log but not the pair** — the counters were
   cleared at boot as designed, and the board was then reset into download mode to flash the
   release, so nothing from that run survives. Procedure, and it must not end in a reboot:
@@ -54,7 +57,9 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   4. read the CC row again *before* powering off,
   5. take the log off the card.
   The dark-idle run's integrated current was **425.1 mAh**, so a run of that length should
-  show ~1,167 discharge counts if 0.364 mAh/LSB is right.
+  show ~76.5 million discharge counts if 180,000 LSB/mAh is right — and an hour of idle at
+  44 mA should be ~7.9e6. Read the row twice around a measured interval and the scale is
+  settled.
   *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
   `config/meowkits3.h`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c` call
   `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
