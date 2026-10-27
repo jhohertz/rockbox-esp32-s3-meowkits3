@@ -4501,13 +4501,37 @@ Consequences that are easy to get wrong:
 ## The sector cache is sized from the wrong number
 
 `fs_defines.h` picks `DC_NUM_ENTRIES` and `MAX_OPEN_FILES` from `MEMORYSIZE`,
-which on this board is 16 — **the flash size**, not the DMA-capable RAM.
-`cache_buffer[]` is an SDHOST read destination and therefore cannot leave DRAM,
-so the input should be internal SRAM. `fs_defines.h` now guards both pairs with
-`#ifndef` (defaults unchanged for every other target) and `meowkits3.h` selects
-the small-memory figures: 32 entries and 11 handles, which frees 16 KB of
-`cache_buffer` plus ~2 KB of map bitarrays. `MAX_OPEN_FILES` has to move with it:
-the file's own comment requires the cache to cover every handle plus a few.
+which on this target is **8** — the PSRAM size `tools/configure` passes as
+`memory=8` for `133|meowkit-esp32s3`. It is not the DMA-capable RAM, which is the
+341 KB static region; `cache_buffer[]` is an SD read destination and therefore
+cannot leave DRAM, so the input should be internal SRAM. `fs_defines.h` now guards
+both pairs with `#ifndef` (defaults unchanged for every other target) and
+`meowkits3.h` selects the small-memory figures: 32 entries and 11 handles, which
+frees 16 KB of `cache_buffer` plus ~2 KB of map bitarrays. `MAX_OPEN_FILES` has to
+move with it: the file's own comment requires the cache to cover every handle plus
+a few.
+
+## Settings whose value is consumed once, at boot
+
+`playlist_init()` (`apps/playlist.c:1972-1981`) sizes the index table and the
+dircache fileref table from `global_settings.max_files_in_playlist` **once**, at
+startup. The setting remains changeable afterwards
+(`apps/settings_list.c:1400`), and nothing reallocates. That matters because
+`apps/playlist.c:3652-3655` copies
+`playlist->max_playlist_size * sizeof(*indices)` into `current_playlist.indices`,
+and the only clamp in the load path (`:2073-2074`) bounds the count by the
+*setting*, not by the block that was allocated at boot. Raising the setting past
+the boot-time allocation therefore makes that copy run off the end of the block
+into whatever buflib neighbour follows it — the playback file buffer or the
+dircache. Measured while deliberately testing huge lists; the correct posture on
+this target is to set "Max files in playlist" to the value you want **and reboot**,
+so the allocation and the bound agree. The same function is also where
+`core_alloc()` reporting failure as a negative code (rather than zero) shows up as
+a NULL pointer several frames later — documented at `:1983-1989`.
+
+The general shape to watch for on this port: any allocation taken from the arena
+in an init path, sized by a user setting, is a fixed ceiling that the setting can
+later exceed.
 
 ## Build hygiene on the IDF-backed link
 
