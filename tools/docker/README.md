@@ -51,6 +51,40 @@ libtool autoconf flex bison`), `rockboxdev.sh:511-517` refuses to install IDF
 without `git cmake ninja python3`, and `tools/buildzip.pl` calls `zip` and
 `install`.
 
+## Using it as an environment rather than a build
+
+The entrypoint *is* the build script, so a shell needs `--entrypoint`:
+
+```sh
+docker run --rm -it --entrypoint bash rockbox-meowkits3
+# inside: . /opt/rockbox-dev/esp-idf/export.sh && cd /work/build-meowkits3 && make
+```
+
+To build a working tree instead of the clone, mount it over the checkout. The
+build directory lives outside the source tree, so `tools/configure` there is
+re-run and the tree stays clean:
+
+```sh
+docker run --rm -it --entrypoint bash   -v "$PWD:/src/rockbox" -v "$PWD/out:/out" rockbox-meowkits3
+```
+
+Out-of-tree builds work because `tools/espflash.make` derives its paths from
+`$(ROOTDIR)` rather than from the build directory's parent — which used to make
+`make esplayer` look for `<build-dir>/../idf-app/build/rockbox.map` and fail with
+`No rule to make target`.
+
+`SKIP_MANUAL=1` leaves the PDF out; everything else is still emitted and
+verified.
+
+## Failure behaviour
+
+The script copies each artifact as its goal completes, so a late failure still
+leaves the earlier ones in the output directory. It exits non-zero in that case,
+and the manifest plus `SHA256SUMS` are only written when everything arrived -- a
+partial directory can never pass as a release set. `esplayer` and `espverify` run
+before the image is copied out, so an arena that grew into the plugin/codec
+reservation fails the run instead of shipping.
+
 ## Build arguments
 
 | ARG | Default | Notes |
