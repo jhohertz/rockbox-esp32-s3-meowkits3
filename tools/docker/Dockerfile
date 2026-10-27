@@ -98,9 +98,13 @@ RUN apt-get update \
 # manual/preamble.tex uses scrreprt (Koma), inputenc/fontenc/lmodern, tabularx,
 # multirow, multicol, scrhack, float, hyperref, enumitem, optional, xcolor with
 # [table], fancyhdr, graphicx, verbatim, makeidx, fancyvrb, booktabs, longtable
-# and url. That spread is texlive-latex-recommended + texlive-latex-extra +
-# texlive-fonts-recommended. Only `manual-pdf` needs this, so it is separable:
-# build --target=rb-deps if you want an image without 600 MB of TeX.
+# and url. Mapping each of those against a host that builds the manual cleanly
+# lands on texlive-latex-recommended + texlive-latex-extra +
+# texlive-fonts-recommended -- plus `lmodern`, which both distributions split out
+# of texlive-latex-recommended into its own package. Without it pdflatex stops at
+# "File `lmodern.sty' not found" and produces no PDF. Only `manual-pdf` needs this
+# layer, so it is separable: build --target=rb-deps if you want an image without
+# several hundred MB of TeX.
 ###############################################################################
 FROM rb-deps AS rb-deps-manual
 
@@ -109,6 +113,7 @@ RUN apt-get update \
       texlive-latex-recommended \
       texlive-latex-extra \
       texlive-fonts-recommended \
+      lmodern \
  && rm -rf /var/lib/apt/lists/*
 
 ###############################################################################
