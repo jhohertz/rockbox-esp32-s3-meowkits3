@@ -50,7 +50,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   Neither our firmware nor the reference sets it, so the cell charges to the 4.2 V default;
   ~4.1 V is the meaningful cycle-life improvement, but confirming the register on this die
   is the probing you ruled out.
-- **Upstream submissions.** §5 lists 16 items including the `keymaps.h` touch-fallback bug
+- **Upstream submissions.** §5 lists 17 items including the `keymaps.h` touch-fallback bug
   and the unfinished-puzzles gate. None sent; kept for a future split.
 - **Plugin code executes from PSRAM — and the frame rate may not be ours to fix.**
   mpegplayer presents ~11 fps, and a differently encoded file measured 3–4 fps higher,
@@ -73,21 +73,17 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
-- **Feature-flag batch — flashed, awaiting your eyes.** Four enablements, all target-side
-  (`2d550135b2`). Flashed image **1,295,456 B**, md5
-  `3386cc55d25f395c93888d72d8242bcb`. (The build measured 1,295,472 B; `make flash` regenerates
-  the image with build metadata, which moves the size and the digest even when the code is
-  identical — same effect seen on every earlier flash.) Watch items, in the order you'll hit
-  them:
+## 2. Verified on hardware — closed
+
+- **Feature-flag batch — verified on hardware** (`2d550135b2`). Four enablements, all
+  target-side, flashed as part of `292debd757186fc632531293fe67c6c2`:
   - *The status bar's disk icon is now driven.* `CONFIG_LED` defaults to `LED_VIRTUAL`, so
     `apps/gui/statusbar.c:123-129` reserved 12 px and drew `bitmap_icon_disk` from
     `led_read(HZ/2)` — but nothing on xtensa ever called `led()`, so the icon was dead space.
     `sd-idf.c` now brackets both sector calls with `led(true)`/`led(false)`, which is the
     shape every storage driver in the tree uses (`sd-as3525.c:694/854`,
-    `sdmmc-imx233.c:702/801`, `nand-nano2g.c`). Watch: browse a directory and seek — the icon
-    should light during the access and linger up to 0.5 s after, because the read side delays
-    the off edge (`statusbar.c:248`). If it never lights, the accesses are shorter than the
-    redraw interval and the monoflop is doing its job anyway.
+    `sdmmc-imx233.c:702/801`, `nand-nano2g.c`). **Confirmed on hardware**: the activity icon
+    shows during access, including inside themes.
   - *Backlight fading.* `CONFIG_BACKLIGHT_FADING = BACKLIGHT_FADING_SW_SETTING` plus
     `BRIGHTNESS_STEP 8`, and a target fix: `backlight_hw_on()` used to write the setting's
     brightness, which is precisely what `backlight-e200v2-fuze.c:40-44` guards against
@@ -96,25 +92,25 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     cycle (`backlight.c:257-300`), which would fight LEDC's own 5 kHz PWM. `SW_HW_REG` was
     rejected too: it writes `MIN_BRIGHTNESS_SETTING` *after* `backlight_hw_off()`
     (`backlight.c:471-474`), and our `hw_off` also drives the panel enable, so that would
-    re-light the LED on a sleeping panel and hand back part of the idle saving. Watch: idle
-    timeout should fade out over ~0.6 s and end fully dark; a press should fade back in; the
-    first light-up at boot is instant by design (the brightness event lands before the panel
-    wakes). Settings → Display gains "Backlight fade in"/"fade out".
+    re-light the LED on a sleeping panel and hand back part of the idle saving. **Confirmed on
+    hardware**: fade in and fade out both look right and boot brightness is correct — the first
+    light-up is instant by design, since the brightness event lands before the panel wakes.
+    Settings → Display gained "Backlight fade in"/"fade out".
   - *Software tone controls.* `HAVE_SW_TONE_CONTROLS` pulls `dsp/tone_controls.c` in
     (`lib/rbcodec/SOURCES:23`) and makes Bass/Treble appear in Settings → Tone Controls
     (`audiohw.h:413` → `settings_list.c:1095`). `tone_set_bass`/`tone_set_treble` are in the
-    image. Watch: play something with bass boosted at 44.1 kHz and 48 kHz and check for
-    glitches — you said you'll ask for a revert if you don't want it, so no measurement was
-    budgeted.
+    image. **Confirmed on hardware**: no audio concerns at either rate, so it stays. The ES8311
+    has no hardware tone controls at all, so this DSP path is the only one there is, and it sits
+    upstream of the DAC — bass and treble affect the jack and the speaker identically.
   - *LCD sleep timeout becomes a user setting.* `HAVE_LCD_SLEEP_SETTING` makes the core use
-    its own variable (default **10 s**) instead of our `LCD_SLEEP_TIMEOUT (2*HZ)`. Watch:
-    dark idle now waits 8 s longer for the panel to sleep unless you lower
-    "LCD Sleep After Backlight Off" — set it to 1 or 2 s if you want the old behaviour back.
-- **Speaker mode now actually works — flashed, awaiting your check.** Found while answering "is the DAC
-  right for headphones": the jack is taken straight off the ES8311 HP output and the
+    its own variable (default **10 s**) instead of our `LCD_SLEEP_TIMEOUT (2*HZ)`, so dark idle
+    waits 8 s longer for the panel to sleep unless "LCD Sleep After Backlight Off" is lowered.
+    That is the intended trade: it is a user setting now rather than a compile-time constant.
+- **Speaker mode really does control the amplifier** (`635959d93a`). Found while answering "is
+  the DAC right for headphones": the jack is taken straight off the ES8311 HP output and the
   schematic gives the SoC **no jack-detect signal** (confirmed against the schematic, so
-  `HAVE_HEADPHONE_DETECTION` is correctly absent), which leaves Settings → Speaker as the
-  only lever a headphone user has. It had two problems:
+  `HAVE_HEADPHONE_DETECTION` is correctly absent), which leaves Settings → Speaker as the only
+  lever a headphone user has. It had two problems:
   - the idle policy re-enabled the amp on every playback start whatever the user had set, so
     "Off" was display-only. `audiohw-xtensa.c` now keeps `pa_wanted` (the request) separate
     from `pa_on` (the expander), and never mutes the codec when only the amp is off —
@@ -122,13 +118,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   - upstream's default for `speaker_mode` is `0` = Off, which on a board whose speaker is the
     primary output means a silent first boot. `apps/settings_list.c` gained a weak
     `#ifndef DEFAULT_SPEAKER_MODE` seam (0 everywhere else) and our config sets 1.
-  Watch: Speaker On behaves as before (amp while playing, dark at idle); Speaker Off silences
-  the speaker but **not** the headphones, and stays off across play/stop; starting a recording
-  drops the amp and it returns afterwards (`recording.c:1018`/`:1818`). Verified by
-  preprocessing rather than a simulator run: `sim.h:86` `#undef`s `HAVE_SPEAKER`, so no sim
-  compiles that line — `DEFAULT_SPEAKER_MODE` expands to 1 under `-DMEOWKIT_ESP32S3`.
-
-## 2. Verified on hardware — closed
+  **Confirmed on hardware**: the option is present in the UI and drives the amp. That also
+  settles the doubt I raised about reachability — nothing in `apps/` enumerates `speaker_mode`
+  by ID and the manual has no `HAVE_SPEAKER` option anywhere, yet the entry appears.
+  The control is `PCA9557 IO3` only; no AXP173 rail is involved, and none can be: DCDC1 feeds
+  the SoC, LDO2/LDO3 feed the board including the card slot, and LDO4 feeds the expander that
+  carries the enable.
+  Checked by preprocessing as well as on hardware: `sim.h:86` `#undef`s `HAVE_SPEAKER`, so no
+  simulator compiles that line, and `DEFAULT_SPEAKER_MODE` expands to 1 under
+  `-DMEOWKIT_ESP32S3`.
 
 Each of these was checked on the board, not inferred.
 
