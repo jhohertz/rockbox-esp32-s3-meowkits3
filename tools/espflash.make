@@ -47,13 +47,23 @@ espverify: $(BUILDDIR)/$(BINARY) esplayer
 # grown into the plugin/codec text fails the build instead of appearing as a printf on
 # a device after the image shipped. flash and espverify both run it: the point is that
 # you cannot reach a board without having passed it.
-# Spelled from $(BUILDDIR) rather than $(IDFDIR)/$(ROOTDIR): this file is included
-# by root.make before those are set, so a ?= here would expand to an empty path.
-RBROOT := $(patsubst %/,%,$(dir $(BUILDDIR)))
-ESPLELFMAP ?= $(RBROOT)/idf-app/build/rockbox.map
+# Spelled from $(ROOTDIR), not from $(BUILDDIR): `tools/configure` puts the build
+# directory wherever the caller asked for it, and deriving the source root as
+# `dir $(BUILDDIR)` only happens to be right when the build directory sits inside
+# the tree. An out-of-tree build (a container building into its own scratch path)
+# then looked for a map file that was never written there:
+#   make: *** No rule to make target '/work/idf-app/build/rockbox.map', needed by 'esplayer'
+# ROOTDIR is set by the generated Makefile before it includes root.make, so it is
+# available here even though IDFDIR (root.make:432) is not -- that is why idf-app
+# is spelled out rather than referenced through IDFDIR.
+ESPLELFMAP ?= $(ROOTDIR)/idf-app/build/rockbox.map
 
-esplayer: $(ESPLELFMAP)
-	$(SILENT)$(RBROOT)/tools/esp-layout-check $(ESPLELFMAP) \
-		$(RBROOT)/firmware/export/config/$(MODELNAME).h \
-		$(RBROOT)/firmware/target/xtensa/memory-xtensa.h $(BUILDDIR)/Makefile
+# The map is a build product with no rule of its own, so depending on it directly
+# makes `make esplayer` in a clean tree fail with "No rule to make target" instead
+# of building first. Depending on the packed image gives the ordering we want: the
+# guard runs after there is something to guard.
+esplayer: $(BUILDDIR)/$(BINARY)
+	$(SILENT)$(ROOTDIR)/tools/esp-layout-check $(ESPLELFMAP) \
+		$(ROOTDIR)/firmware/export/config/$(MODELNAME).h \
+		$(ROOTDIR)/firmware/target/xtensa/memory-xtensa.h $(BUILDDIR)/Makefile
 .PHONY: esplayer
