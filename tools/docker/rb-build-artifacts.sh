@@ -17,6 +17,9 @@
 #   RB_LANGUAGE voice/language for the AV build    (default english)
 #   IDF_PATH   ESP-IDF checkout                   (default /opt/rockbox-dev/esp-idf)
 #   SKIP_MANUAL=1  omit the PDF manual (saves several minutes of LaTeX)
+#   RELEASE        a label recorded in build-manifest.txt. The clone is shallow, so
+#                  `git describe --tags` cannot see the tag; pass it explicitly for a
+#                  release build rather than hoping the checkout knows it
 #
 # BUILD_DIR's *name* matters: tools/autoconf.pl infers the target from the build
 # directory name, so it must end in the model name.
@@ -150,6 +153,9 @@ fi
 
 echo "-- provenance"
 {
+    if [ -n "${RELEASE:-}" ]; then
+        echo "release=$RELEASE"
+    fi
     echo "commit=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "branch=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
     echo "dirty=$(git -C "$REPO" status --porcelain 2>/dev/null | wc -l)"
@@ -158,6 +164,9 @@ echo "-- provenance"
     echo "host_cc=$(cc -dumpversion 2>/dev/null || echo unknown)"
     echo "target=$RB_TARGET"
     echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # The version string embedded in the image itself, so a receiver can match an
+    # artifact to this manifest from the device's own About screen.
+    echo "embedded_version=$(grep -m1 '^Version:' "$BUILD_DIR/rockbox-info.txt" 2>/dev/null | cut -d' ' -f2 || echo unknown)"
 } > "$OUT_DIR/build-manifest.txt"
 cat "$OUT_DIR/build-manifest.txt"
 

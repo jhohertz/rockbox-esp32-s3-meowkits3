@@ -31,7 +31,7 @@ Two consequences of that intention:
   the theme server or the build farm, because those depend on infrastructure that
   only exists on the other side of acceptance. What *is* maintained is the hygiene
   acceptance would require: a target id in `tools/configure`, an entry in
-  `tools/builds.pm`, a row in `tools/list_targets.pl`, a config header, a platform
+  `tools/builds.pm` (which is what `tools/list_targets.pl` reads), a config header, a platform
   manual chapter, and a simulator config that keeps building.
 
 If you want to see where things stand, `firmware/target/xtensa/PENDING.md` is the
