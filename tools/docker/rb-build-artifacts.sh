@@ -12,6 +12,9 @@
 #   BUILD_DIR  build directory                   (default /work/build-meowkits3)
 #   OUT_DIR    where artifacts are written        (default /out)
 #   RB_TARGET  argument for tools/configure       (default meowkits3)
+#   RB_VOICE   1 = voice build, 0 = plain          (default 1, only honoured when
+#              the build directory is fresh: configure is what sets the build type)
+#   RB_LANGUAGE voice/language for the AV build    (default english)
 #   IDF_PATH   ESP-IDF checkout                   (default /opt/rockbox-dev/esp-idf)
 #   SKIP_MANUAL=1  omit the PDF manual (saves several minutes of LaTeX)
 #
@@ -28,6 +31,8 @@ REPO="${REPO:-/src/rockbox}"
 BUILD_DIR="${BUILD_DIR:-/work/build-meowkits3}"
 OUT_DIR="${OUT_DIR:-/out}"
 RB_TARGET="${RB_TARGET:-meowkits3}"
+RB_VOICE="${RB_VOICE:-1}"
+RB_LANGUAGE="${RB_LANGUAGE:-english}"
 IDF_PATH="${IDF_PATH:-/opt/rockbox-dev/esp-idf}"
 IDF_BUILD="$REPO/idf-app/build"
 
@@ -36,6 +41,7 @@ echo "  repo      : $REPO"
 echo "  build dir : $BUILD_DIR"
 echo "  out dir   : $OUT_DIR"
 echo "  target    : $RB_TARGET"
+echo "  voice     : $RB_VOICE ($([ "$RB_VOICE" = "1" ] && echo "--type=AV, language $RB_LANGUAGE" || echo "--type=N"))"
 
 copy() {
     if [ -f "$1" ]; then
@@ -63,8 +69,19 @@ cd "$BUILD_DIR"
 # configure must be run from inside the build directory, and it writes Makefile and
 # autoconf.h here. Re-running it is harmless, so a container that keeps its build
 # dir rebuilds incrementally.
+#
+# Voice is on by default because that is what this port ships: `make zip` only puts
+# .rockbox/langs/<lang>.voice in the payload when the build was configured with
+# --type=AV, so a plain build emits a card set 2.5 MB and two files short of the one
+# the device gets -- and nothing says so. RB_VOICE=0 is the lean build for someone
+# who only wants the firmware image.
 if [ ! -f Makefile ]; then
-    "$REPO/tools/configure" --target="$RB_TARGET"
+    if [ "$RB_VOICE" = "1" ]; then
+        "$REPO/tools/configure" --target="$RB_TARGET" --language="$RB_LANGUAGE" \
+            --tts=espeak --type=AV
+    else
+        "$REPO/tools/configure" --target="$RB_TARGET"
+    fi
 fi
 
 echo "-- firmware, host tools and codecs"

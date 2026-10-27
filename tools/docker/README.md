@@ -100,8 +100,18 @@ reservation fails the run instead of shipping.
 | `BUILD_AT_IMAGE_BUILD` | `no` | `yes` builds during the image build, which is what `--target=rb-artifacts` requires |
 | `OUT_DIR` | `/artifacts` at build time, `/out` at run time | |
 
-Runtime environment for the entrypoint: `REPO`, `BUILD_DIR`, `OUT_DIR`,
-`RB_TARGET`, `IDF_PATH`, and `SKIP_MANUAL=1` to leave the PDF out.
+Runtime environment for the entrypoint:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `REPO` | `/src/rockbox` | checkout to build |
+| `BUILD_DIR` | `/work/build-meowkits3` | must end in the model name — `tools/autoconf.pl` infers the target from the build directory name |
+| `OUT_DIR` | `/out` | where artifacts are written; mount it from the host |
+| `RB_TARGET` | `meowkits3` | argument to `tools/configure` |
+| `RB_VOICE` | `1` | `--type=AV --tts=espeak`, i.e. the voice payload the device actually gets. `0` gives `--type=N` and a card set without `.voice`. Only honoured when `BUILD_DIR` is fresh |
+| `RB_LANGUAGE` | `english` | voice/language for the AV build |
+| `IDF_PATH` | `/opt/rockbox-dev/esp-idf` | ESP-IDF checkout to source `export.sh` from |
+| `SKIP_MANUAL` | unset | set to `1` to skip the LaTeX pass
 
 ## What lands in the output directory
 
@@ -124,14 +134,24 @@ Runtime environment for the entrypoint: `REPO`, `BUILD_DIR`, `OUT_DIR`,
 image whose arena has grown into the plugin/codec reservation fails the build
 instead of shipping.
 
+## Measured
+
+Cold build (no caches): ~19 min for the toolchain stage (168 MB archive + IDF clone
++ `install.sh esp32s3`), warm ~110 s. Image 10.4 GB. One container run end to end,
+firmware through manual: ~9 min, exit 0. `espverify.txt` reports the app partition
+16 % free and a valid checksum and validation hash.
+
 ## Not included
 
 - **Theme packs.** `tools/rbthemes.py` pulls from the volunteer theme server; a
   reproducible container build should not depend on somebody else's uptime, and
   the result is not a build artifact.
-- **Voice packs.** `tools/configure --type=AV` needs a TTS engine (espeak,
-  festival, piper or mimic). Left out; the default `--type=N` build does not ask
-  for one.
+- Nothing, for the default run: the image carries `espeak-ng` so the voice pack is
+  built, which is what the device ships. Measured parity — the AV build's
+  `rockbox.zip` is 411 files and includes `.rockbox/langs/english.voice`
+  (2,506,357 B); with `RB_VOICE=0` it is 409 files and 7,144,205 B, i.e. 2.2 MB
+  shorter, which is exactly the difference that used to make a container payload
+  quietly not match a flashed card.
 - **A cached `IDF_TOOLS_PATH`.** ESP-IDF's `install.sh` extracts its tools and
   creates its Python virtualenv *inside* `IDF_TOOLS_PATH`, so that path is
   installed state and must be part of the image. Mounting a BuildKit cache there
