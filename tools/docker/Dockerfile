@@ -152,13 +152,14 @@ ENV RBDEV_PREFIX=${RBDEV_PREFIX} \
     IDF_TOOLS_PATH=/opt/esp/tools \
     RB_TARGET=meowkits3
 
-# The two cache mounts hold *downloads*, not installed state: the 168 MB
-# toolchain archive and IDF's own tool archives. Everything installed lands in
-# RBDEV_PREFIX and is part of the layer. With them, re-cloning the source (which
-# invalidates this stage) costs minutes rather than the ~18 minutes a full
-# download-and-install takes the first time.
-RUN --mount=type=cache,target=/opt/esp/tools \
-    --mount=type=cache,target=/var/cache/rbdev-dl \
+# Only the *download scratch* is a cache mount. IDF_TOOLS_PATH is not scratch:
+# install.sh extracts its tools and creates its Python virtualenv there, so it is
+# installed state, and a cache mount on that path would leave the image without a
+# venv -- `export.sh` then fails at run time with
+# "ESP-IDF Python virtual environment ... not found". RBDEV_DOWNLOAD really is
+# scratch (rockboxdev extracts into a build dir and installs into RBDEV_PREFIX),
+# so caching it is safe and saves the 168 MB archive on every re-clone.
+RUN --mount=type=cache,target=/var/cache/rbdev-dl \
     RBDEV_ESP_TOOLCHAIN=${RBDEV_ESP_TOOLCHAIN} \
     RBDEV_ESP_IDF=${RBDEV_ESP_IDF} \
     RBDEV_ESP_IDF_CORE=${RBDEV_ESP_IDF_CORE} \
