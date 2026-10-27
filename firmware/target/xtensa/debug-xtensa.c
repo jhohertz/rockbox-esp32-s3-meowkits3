@@ -141,11 +141,13 @@ enum
      * produces. Hence the control byte on the same row: it is the only thing on screen
      * that separates "nothing has happened" from "counting is off".
      *
-     * The mAh figures are the reference driver's derivation (65536 * 0.5 mA * counts /
-     * 3600 / adc_rate), not a datasheet statement, and the raw counts are printed beside
-     * them so the scale can be checked against an independent measurement instead of
-     * trusted: run battery_bench, divide the integrated mA-hours from its log by the raw
-     * discharge delta, and see whether it lands on 0.364 mAh per LSB at 25 Hz.
+     * The mAh figures come from the counter's own arithmetic -- one LSB per 0.5 mA per
+     * ADC sample, so 0.02 mA.s at 25 Hz and 180,000 LSB per mAh -- not from the datasheet,
+     * which says nothing about the counter's resolution. The raw counts are printed beside
+     * them so the scale can be confirmed rather than trusted: read the row, note the
+     * interval, and divide the integrated mA-hours (44 mA is dark idle) by the delta.
+     * The reference driver's variant of this formula multiplies by 65536 and is wrong by
+     * four orders of magnitude, which is exactly what made this row read implausibly.
      *
      * Reading it costs one 8-byte burst read over I2C, drawn when the screen opens.
      */

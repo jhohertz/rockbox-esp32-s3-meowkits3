@@ -290,8 +290,29 @@ static int coulomb_adc_rate_hz(void)
 
 static int coulomb_counts_to_mAh(uint32_t counts)
 {
-    /* Reference driver's derivation: mAh = 65536 * 0.5 mA * counts / 3600 / rate. */
-    return (int)((uint64_t)counts * 65536 / 2 / (3600 * coulomb_adc_rate_hz()));
+    /* Each ADC sample advances the counter by one LSB per 0.5 mA of current, so
+     * 1 LSB = 0.5 mA / rate_hz = 0.02 mA.s at 25 Hz, i.e. **180,000 LSB per mAh**
+     * (0.00556 mAh per LSB). A dark-idle hour at 44 mA is ~7.9e6 counts; the overnight
+     * run's 425.1 mAh would be ~7.7e7, and five minutes of a 450 mA charge ~6.8e6.
+     *
+     * The reference library multiplies by 65536 at this point
+     * (`65536 * current_LSB * counts / 3600 / ADC_rate`), which is off by 65536^2 in the
+     * wrong direction: it makes 1 LSB 0.364 mAh, so a 450 mA charge would take ~2.5 hours
+     * to reach a million counts. On hardware a few minutes of charging already shows six
+     * and seven figures -- that reading is what rules the constant out. Nothing in the
+     * stock firmware ever calls those conversions (`setCoulometer(COULOMETER_ENABLE,
+     * true)` is enabled in the board setup and the getters have no callers anywhere), so
+     * the formula was never exercised there either.
+     *
+     * Still derived rather than measured. The debug row prints the raw counts beside the
+     * estimate so a paired reading can confirm 180,000 LSB/mAh against a known current.
+     */
+    int rate = coulomb_adc_rate_hz();
+
+    /* mAh = counts * 0.5 / (rate * 3600), rounded: denominator is 2 * rate * 3600,
+     * so half of it is rate * 3600. */
+    return (int)((uint64_t)counts + (uint64_t)rate * 3600) /
+           ((uint64_t)2 * rate * 3600);
 }
 
 int axp173_coulomb_charge_mAh(void)
