@@ -3697,6 +3697,16 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   `gdma_tx_isr()` or `sink_play()` — `usb_audio.c` reaches the latter inside
   `disable_irq_save()`, where a `printf()` takes the stdout lock and the core cannot
   drain it.
+- `tools/configure` for this target must run with the ESP-IDF environment sourced
+  (`. $IDF_PATH/export.sh`). If `xtensa-esp-elf-cpp` is not on PATH it only *warns*
+  ("Could not determine target arch") and writes `autoconf.h` with
+  `#define ARCH arch_none`; the build then fails far from the cause, with
+  `field 'context' has incomplete type` in `thread-internal.h` and
+  `DEFAULT_STACK_SIZE undeclared` in `apps/main.c`. `make reconf` inherits this.
+- `esptool` is spelled `esptool.py` inside ESP-IDF's own Python environment, and the
+  venv puts only that name on PATH. `tools/espflash.make` resolves both, so
+  `make espverify` works on a host with esptool installed and inside the IDF
+  environment (and inside the build container).
 - `func_sel` in the GPIO matrix is 9 bits. Masking to 6 truncates every signal above
   63, and the GPSPI signals are 101-103.
 - **The ESP32-S3 mask ROM cannot be told to enter download mode by a register write.**

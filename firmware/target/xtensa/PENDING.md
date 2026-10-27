@@ -361,6 +361,14 @@ Recipe: `export IDF_PATH=$HOME/esp/esp-idf IDF_PATH_FORCE=1; . $IDF_PATH/export.
 then `make`, `make zip`, `make manual-pdf`, `make esplayer`,
 `make flash ESPPORT=/dev/ttyACM0`.
 
+`tools/configure` has to run with that environment sourced. Without
+`xtensa-esp-elf-cpp` on PATH it prints "Warning: Could not determine target arch" and
+still writes `autoconf.h` — with `#define ARCH arch_none`. The build then fails
+far away from the cause, with `field 'context' has incomplete type` in
+`thread-internal.h` and `DEFAULT_STACK_SIZE undeclared` in `apps/main.c`. Re-running
+configure with the environment sourced is the whole fix; `make reconf` inherits the
+same requirement.
+
 Container: `tools/docker/Dockerfile` + `tools/docker/rb-build-artifacts.sh`.
 
 ```sh
