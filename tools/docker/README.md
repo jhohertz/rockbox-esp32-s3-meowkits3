@@ -156,6 +156,16 @@ real defect: the host's pack predated the feature-flag batch and had no prompts 
 the settings that batch added. Re-running `make voice` closed it. Both sides use
 espeak-ng 1.52.0, so the encoder is identical either way.
 
+## Artifact ownership
+
+The entrypoint runs as the container's default user, so files written into the mounted
+output directory arrive owned by uid 0 and mode 0644. That is fine for publishing or
+copying elsewhere, but re-running the script over an existing directory cannot overwrite
+`SHA256SUMS` — the script's own rewrite of that file needs the directory to be writable
+by whoever runs it. Either clear the folder between runs, or `chown -R` it afterwards.
+Running with `--user $(id -u):$(id -g)` does not work as-is: `BUILD_DIR` is created under
+`/work`, which only root can create.
+
 ## Not included
 
 - **Theme packs.** `tools/rbthemes.py` pulls from the volunteer theme server; a
