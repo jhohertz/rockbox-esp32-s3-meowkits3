@@ -53,11 +53,26 @@ else
    endif
 endif
 
+# The munging every dependency scan shares: three headers are generated into the
+# build directory and the preprocessor reports them as bare names, so they have to
+# be pointed at $(BUILDDIR) before they become prerequisites.
+dep_sed = sed -e "s: lang.h: lang/lang.h:" \
+	-e 's:_asmdefs.o:_asmdefs.h:' \
+	-e "s: max_language_size.h: lang/max_language_size.h:"
+
 # calculate dependencies for a list of source files $(2) and output them to $(1)
 mkdepfile = $(SILENT)perl $(TOOLSDIR)/multigcc.pl $(CC) $(PPCFLAGS) $(OTHER_INC) -MG -MM -include config.h -- $(2) | \
-	sed -e "s: lang.h: lang/lang.h:" \
-	-e 's:_asmdefs.o:_asmdefs.h:' \
-	-e "s: max_language_size.h: lang/max_language_size.h:" | \
+	$(dep_sed) | \
+	$(TOOLSDIR)/addtargetdir.pl $(ROOTDIR) $(BUILDDIR) \
+	>> $(1)
+
+# Same scan with $(3) ahead of the usual flags. A target that compiles some of its
+# objects with an external SDK's headers leading has to scan those objects with the
+# same order, or the dep file records whichever header the default order happened to
+# find rather than the one the compile used -- and a header that collides by name
+# between the two trees then makes the dependency wrong in both directions.
+mkdepfile_order = $(SILENT)perl $(TOOLSDIR)/multigcc.pl $(CC) $(3) $(PPCFLAGS) $(OTHER_INC) -MG -MM -include config.h -- $(2) | \
+	$(dep_sed) | \
 	$(TOOLSDIR)/addtargetdir.pl $(ROOTDIR) $(BUILDDIR) \
 	>> $(1)
 

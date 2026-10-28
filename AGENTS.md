@@ -3565,6 +3565,9 @@ make tools      # host tools only
 make tags
 make flash      # idf.py flash: bootloader 0x0, partition table 0x8000, app 0x10000
 make espverify  # image_info on the packed image, no board needed
+make espfull    # merged one-file image at 0x0, for a web flasher
+make espartifacts  # everything a release consists of, in $(BUILDDIR)/esp-artifacts
+make idf-clean  # drop IDF's build tree (make clean deliberately does not)
 ```
 
 `make flash` and `make espverify` come from `tools/espflash.make`, included from
@@ -3572,6 +3575,44 @@ make espverify  # image_info on the packed image, no board needed
 arch but produces a host executable, so it has no flash goal). Overridable
 variables: `ESPTOOL` (default `esptool`), `ESPPORT` (empty means let esptool
 probe), `ESPCHIP` (derived from the artifact name), `ESPADDR` (default `0x0`).
+
+### What rebuilds what (ESP-IDF build)
+
+IDF owns IDF's compilation and the link; Rockbox's `make` is the umbrella that
+drives it. Three things decide whether a step re-runs, and each was found by
+measuring a no-op `make` rather than by reading the rules:
+
+- **`$(BUILDDIR)/idf.make` is a prerequisite of every firmware-domain object**, not
+  only the few compiled with IDF's include path leading. `root.make`'s `CFLAGS`
+  line adds `$(IDF_CFLAGS)` to all of them, so a sdkconfig or component-set change
+  invalidates the whole firmware domain. Touching it rebuilds ~1100 objects.
+- **`rockbox_libs.cmake` is rewritten only when its content changes.** The archives
+  are its prerequisites, so an unconditional rewrite plus `touch main/CMakeLists.txt`
+  re-ran CMake on *every* build to tell it nothing; a no-op `make` measured 111 s
+  before the comparison, 0.9 s after. The archives are also prerequisites of the
+  image itself: an archive whose contents changed but whose name did not has to
+  relink, and before that the image moved only when the *set* of archives moved.
+- **sdkconfig is reseeded on content, not mtime.** `tools/idf-seedcheck` stamps the
+  hash of `sdkconfig.defaults` together with the ESP-IDF version and deletes
+  sdkconfig when either moves. The mtime test it replaced reseeded on every
+  `git checkout` (checkout rewrites mtimes), which rebuilt IDF from a regenerated
+  config and changed a hardware-verified image's hash with no source change at all.
+  An IDF upgrade is caught because the version is part of the stamp.
+
+Sources compiled with IDF's headers leading are listed once, in
+`firmware/firmware.make` (`XTENSA_IDF_FIRST_SRC`), and that list drives the compile
+flags, the rebuild trigger, *and* a second dependency pass with IDF's include order
+(`mkdepfile_order` in `tools/functions.make`). The dep pass is why `make.dep` can
+record FreeRTOS's `queue.h` for those objects: the default scan puts Rockbox's
+`firmware/kernel/include/queue.h` first, and the two headers share the guard name
+`QUEUE_H`, so whichever is opened first wins and the other is skipped. A dep file
+that records the header the compile did *not* use is wrong in both directions.
+
+IDF writes `rockbox.elf` and `rockbox.map` next to its own build tree; the image
+rule copies both into `$(BUILDDIR)`, where every other port leaves them, so
+`make elfzip`, `make mapzip`, `tools/esp-layout-check` and any symbol lookup work
+without knowing IDF's layout. `tools/docker/rb-build-artifacts.sh` ships
+`make espartifacts` output rather than reaching into `idf-app/build/` itself.
 
 **`make flash` needs download mode every time the player is running.** Its
 `--before=default_reset` drives RTS/DTR to reboot into the ROM loader, but while

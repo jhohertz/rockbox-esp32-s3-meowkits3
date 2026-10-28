@@ -308,7 +308,7 @@ without the next one existing:
 | Phase | Deliverable | Proved by |
 |---|---|---|
 | P0 | Decide the transport. Without a classic-capable device there is nothing to build. | A written decision, not code. |
-| P1 | Sink spike in `idf-spike`: PCM in, link out, no Rockbox. Measure ring size, latency, drop behaviour. | Spike on the bench, audio audible through the headphones. |
+| P1 | Sink spike (the `idf-spike/` directory that held this was a bare-metal-era leftover and is deleted; a re-spike would live under `idf-app/`): PCM in, link out, no Rockbox. Measure ring size, latency, drop behaviour. | Spike on the bench, audio audible through the headphones. |
 | P2 | `PCM_SINK_BT` + `bt_pcm_sink` + switch-on-connect/back-on-disconnect, guarded by `HAVE_BT_AUDIO_SOURCE`. | Playback switches to the link and back mid-track with no gap; `Debug → View HW info` row for link state. |
 | P3 | Remote control: link events → `button_queue_post`, press paired with `BUTTON_REL`. | Headset play/pause/skip/volume work in the WPS and menus. |
 | P4 | Pairing UX: fixed name, then card-sourced target, then a settings submenu. | Pair from cold, reconnect automatically. |

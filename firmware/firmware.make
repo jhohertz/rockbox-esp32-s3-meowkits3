@@ -69,23 +69,27 @@ OTHER_SRC += $(FIRMLIB_SRC)
 
 FIRMLIB = $(BUILDDIR)/firmware/libfirmware.a
 
-# The xtensa target files that reach an ESP-IDF driver whose headers pull
-# FreeRTOS have to be compiled with IDF's include path leading -- see
-# IDF_FIRST_CFLAGS in tools/root.make for why that order is a correctness issue
-# and not a style one. Add to this list when a target file starts including
-# anything that pulls FreeRTOS.h.
+# The xtensa target files that reach an ESP-IDF driver whose headers pull FreeRTOS
+# have to be compiled with IDF's include path leading -- see IDF_FIRST_CFLAGS in
+# tools/root.make for why that order is a correctness issue and not a style one.
+# Add to this list when a target file starts including anything that pulls
+# FreeRTOS.h.
+#
+# It is one list because three things have to agree about it: the compile flags, the
+# dependency scan (tools/root.make scans these sources with IDF's include order so
+# make.dep records the headers this compile actually used), and the rebuild trigger
+# when the harvested IDF flags change.
 ifeq (xtensa,$(CPU))
-$(BUILDDIR)/firmware/target/xtensa/sd-idf.o: CFLAGS := $(IDF_FIRST_CFLAGS)
-$(BUILDDIR)/firmware/target/xtensa/spi-xtensa.o: CFLAGS := $(IDF_FIRST_CFLAGS)
-$(BUILDDIR)/firmware/target/xtensa/paniclog.o: CFLAGS := $(IDF_FIRST_CFLAGS)
+XTENSA_IDF_FIRST_SRC := $(FIRMDIR)/target/xtensa/sd-idf.c \
+                       $(FIRMDIR)/target/xtensa/spi-xtensa.c \
+                       $(FIRMDIR)/target/xtensa/paniclog.c
+XTENSA_IDF_FIRST_OBJ := $(call c2obj,$(XTENSA_IDF_FIRST_SRC))
 
-# These are compiled against IDF's flags, so they have to be rebuilt when the
-# harvest changes. Making idf.make a prerequisite is what does that: without it a
+$(XTENSA_IDF_FIRST_OBJ): CFLAGS := $(IDF_FIRST_CFLAGS)
+# Compiled against IDF's flags, so rebuilt when the harvest changes: without this a
 # sdkconfig change recompiles IDF and leaves Rockbox's view of it frozen, which
 # surfaces as a header found but a CONFIG_ define missing.
-$(BUILDDIR)/firmware/target/xtensa/sd-idf.o \
-$(BUILDDIR)/firmware/target/xtensa/spi-xtensa.o \
-$(BUILDDIR)/firmware/target/xtensa/paniclog.o: $(BUILDDIR)/idf.make
+$(XTENSA_IDF_FIRST_OBJ): $(BUILDDIR)/idf.make
 endif
 
 ifeq ($(SYSFONT),)
