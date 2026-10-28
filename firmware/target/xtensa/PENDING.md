@@ -13,33 +13,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Capture path re-isolated; `pitch_detector` needs a hardware pass.** The receiver and
-  the transmitter no longer share one rate variable. `i2s-xtensa.c` now owns a bus flag
-  (`tx_rate` vs `rx_owns_bus`/`rx_bus_rate`), `i2s_rx_take_bus(rate)` brings the ADC up
-  and takes the clock pads in one place, `i2s_rx_release_bus()` gives them back
-  idempotently on both session paths, `i2s_set_frequency()` refuses to reprogram the ADC
-  while the receiver owns the bus, and the IDF channel's clock is set in
-  `pcm_rec_dma_start()` — after `pcm_apply_settings()` has put the requested rate on the
-  sink, which is the first moment that rate exists. It used to be set in
-  `pcm_init_recording()`, which runs before that, so the receiver kept whatever playback
-  last asked for. `pitch_detector` was the only caller asking for a rate playback had not
-  already had (8 kHz), which is why it stopped playback and then never got a frame.
-  New debug row `RX <rate>Hz en<n> bus<n> rd<n> to<n> e<n> <bytes>B` separates "reader
-  asked, nothing arrived" from "reader asked, refused". **To confirm on the board:**
-  1. `Debug → View HW info`: the RX row should read `8000Hz` while the tuner is open,
-     with `rd` climbing and `to` near zero. `to` climbing while `rd` stays 0 means the
-     clocks are not reaching the ADC; a non-zero `e` means the channel configuration was
-     refused.
-  2. Play into the mic: the tuner should paint a note. An octave-low reading would be a
-     format problem rather than a flow one — `pitchyin()` and `buffer_magnitude()` both
-     step by two and use channel L only, so interleaved stereo DMA frames are what the
-     plugin expects.
-  3. Record a WAV at Settings → Recording → 8 kHz and then at 44.1 kHz, stopping each
-     with **Back**, never Reset. Both must produce audible files; the first is the case
-     that exercised the reconfigure path this change replaces.
-  4. Leave the tuner and play a file: playback must still work, i.e. the pads made it
-     back to the transmitter.
-
 - **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
   60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
   current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage
@@ -129,6 +102,31 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   frame should cost less in libmpeg2's buffers and in the scaling pass.
 ## 2. Verified on hardware — closed
 
+- **Capture path re-isolated, and `pitch_detector` works** (`a781b24b47`). The receiver and
+  the transmitter no longer share one rate variable; see `AGENTS.md` ("Bus ownership") and
+  `MEMORY.md` for the contract. Verified on hardware with the image built from that commit:
+  - `Debug → View HW info` while the tuner had been open read
+    `RX 8000Hz en0 bus0 rd267 to0 e0 1096232B`. 267 reads of a full 4096-byte chunk, zero
+    timeouts, zero errors — and 1,096,232 B ÷ 4 B per stereo frame = 274,058 frames ≈ 34 s
+    at 8 kHz, which is how long the tuner was open. Audio arrived; the `en0 bus0` is correct
+    because the row was read after the session ended (the counters are cumulative precisely
+    so that a plugin holding the UI can still be diagnosed).
+  - Recording a WAV at Settings → Recording → **8 kHz** and playing it back is audible. That
+    is the proof the ADC and the reconfigure path run at a rate playback never set, which is
+    the case `pcm_rec_dma_start()` now programs.
+  - Playing that WAV back worked, which is also the pads-hand-back test: the transmitter
+    clocks the codecs again after a session released them.
+  - **Why the tuner still looked dead with audio flowing**: its gate is
+    `buffer_magnitude() > sqr(volume_threshold × sound_max(SOUND_MIC_GAIN))`
+    (`pitch_detector.c:1039`), and `es8311.h:36` declares mic gain as `AUDIOHW_SETTING
+    (MIC_GAIN, "dB", 0, 3, 0, 30, 30)` — so the shipped default of 50 demands RMS > 1500 in
+    channel L. That is a *line-level* expectation: most targets reach this plugin through
+    `INPUT_TYPE = AUDIO_SRC_LINEIN`, and we are mic-only with two MEMS mics behind a 30 dB
+    ladder. Lowering the plugin's own **Volume Threshold** to ~10 gives `(10×30)² = 90,000`
+    → RMS 300, which the mic actually reaches, and the tuner paints. Nothing in the driver is
+    involved; the plugin's threshold is a per-hardware knob and this board sits at the low
+    end of it. It persists: `save_settings()` writes `/pluginapps/.pitch_detector_settings`
+    on exit when the struct changed.
 - **Feature-flag batch — verified on hardware** (`2d550135b2`). Four enablements, all
   target-side, flashed as part of `292debd757186fc632531293fe67c6c2`:
   - *The status bar's disk icon is now driven.* `CONFIG_LED` defaults to `LED_VIRTUAL`, so
@@ -371,6 +369,7 @@ Not being submitted now. Kept so the work can be split for a merge.
 | `1a7ecb4aee` | `firmware/drivers/rtc/rtc_pcf8563.c` | New PCF8563 driver on the generic I2C API, alarm functions under `HAVE_RTC_ALARM` | The existing `rtc_e8564.c` is PP-async-only and reads hours from the wrong buffer index. Reusable driver. |
 | `7f9d1f98ce` | `firmware/drivers/i2c-async.c` | `I2C_ASYNC_SUBMIT_UNMASKED` seam defers the idle-bus submit until interrupts are restored | Already a proper opt-in seam with unchanged default behaviour. A target whose `__i2c_async_submit()` polls the controller to completion must not hold `disable_irq_save()` across a 100 kHz transfer. Worth showing upstream. |
 | `6cf0d20da7` | `apps/plugins/lib/keymaps.h` | Add `CONFIG_KEYPAD != ESP32S3_PAD` to the touch-grid fallback's exclusion list | A real upstream bug, not a target quirk: the `HAVE_TOUCHSCREEN` block redefines `BTN_FIRE`/`BTN_PAUSE` unconditionally, so any touchscreen target that also has physical fire/pause keys silently gets plugins that ignore them. GCC warns about the redefinition; nobody reads the warning. Eight targets are already excluded — the list just needed another entry. |
+| uncommitted | `apps/plugins/pitch_detector.c`, `manual/plugins/pitch_detector.tex` | The gate `sqr(volume_threshold * sound_max(SOUND_MIC_GAIN))` is a line-level assumption | On a mic-only target the multiplier is the gain *scale*, not the gain applied, so with a 0-30 dB mic-gain declaration the shipped threshold of 50 demands RMS 1500 (-15 dBFS) from MEMS mics and the tuner paints nothing while receiving a full stream. The plugin already has a 5-95 threshold knob and works once it is lowered, so the proposal is only that the default and the manual say so. Any mic-only target hits this; nothing target-specific about it.
 | — | `apps/plugins/puzzles/SOURCES.games` | Stop building the three games under `src/unfinished/` | Upstream's own README calls them half-written or unready, and its CMake build excludes them from install, yet Rockbox ships `sgt-group`, `sgt-slide` and `sgt-sokoban`. Sokoban crashes on launch here. Removing the three lines is the whole fix. |
 | `931cb55135` | `tools/rockboxdev.sh` | Strip the release tag's `esp-` prefix when composing the Xtensa archive name | Upstream-facing only if the ESP target lands upstream, but the underlying fact is worth recording: Espressif's release *tag* is `esp-14.2.0_20260121` while the published asset is `xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz`, so building the file name from the tag verbatim asks for a doubled prefix and the CDN answers 404. Verified against the release API (35 assets; for this triple only `riscv32-esp-elf-14.2.0_...` and `xtensa-esp-elf-14.2.0_...`). |
 | `931cb55135` | `tools/rockboxdev.sh` | `getfile_ex()` must exit non-zero when every mirror failed | A bare `exit` takes the status of the last command, and the two `echo`s above it always succeed — so a failed download printed "couldn't download the file!" and returned 0. Any build system driving this script continues with no toolchain. Affects every arch, not just Xtensa. |
