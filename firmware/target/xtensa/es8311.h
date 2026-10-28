@@ -33,7 +33,13 @@ AUDIOHW_SETTING(VOLUME, "dB", 1, 5, -955, 0, -250)
  */
 #ifdef HAVE_RECORDING
 #define AUDIOHW_HAVE_MIC_GAIN
-AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 30, 30)
+/* The ES7210 PGA ladder is 0..30 dB in 3 dB steps and then 33, 34.5, 36 and 37.5
+ * dB in 1.5 dB steps, with no defined code above that. The whole-dB range the UI
+ * offers therefore ends at 37, and es7210.c maps each value to the nearest defined
+ * code. A fixed digital calibration (see ADC12_DIGITAL_GAIN_DB) is added on top of
+ * whatever this setting asks for, because the chip's full-scale input is about
+ * 2 Vrms while the board's MEMS element puts out -38 dBV/Pa. */
+AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 37, 30)
 #endif
 
 void es8311_init(void);

@@ -31,6 +31,8 @@
 
 #include "es7210.h"
 
+#include <stdio.h>   /* es7210_stat(), for the debug screen */
+
 #define REG_RESET          0x00
 #define REG_CLOCK_OFF      0x01
 #define REG_MAINCLK        0x02
@@ -44,6 +46,9 @@
 #define REG_SDP_IF1        0x11
 #define REG_SDP_IF2        0x12
 #define REG_ADC_AUTOMUTE   0x13
+#define REG_ALC_SELECT     0x16
+#define REG_ADC2_MAXGAIN   0x1D
+#define REG_ADC1_MAXGAIN   0x1E
 #define REG_ADC34_HPF2     0x20
 #define REG_ADC34_HPF1     0x21
 #define REG_ADC12_HPF1     0x22
@@ -67,22 +72,78 @@
  * selected channels run. */
 #define CLOCK_OFF_ADC12    0x0b
 
-#define GAIN_ENABLE        (1u << 4)
+#define GAIN_ENABLE        (1u << 4)   /* SELMICn: select MICnP/MICnN as the input */
 #define GAIN_MASK          0x0f
 
 /*
- * REG43..REG46: bit 4 enables the channel, bits 3:0 are the gain. The steps are
- * 3 dB up to 30 dB and 1.5 dB above that; Rockbox only ever asks for whole dB
- * within the 0..30 range declared in es8311.h, so the 3 dB ladder is enough.
+ * REG41/REG42, mic bias. Bits 6:4 set the bias voltage (111 = 2.87 V with
+ * VDDM = 3.3 V) and bits 1:0 are ADCnBIAS_SWH, whose reset value is 01. The
+ * reference driver writes 0x70, which leaves that switch at level 0 -- and a PGA
+ * whose gain setting changes nothing measurable is exactly the symptom that
+ * deserves a second look at a bias register copied rather than read. The datasheet
+ * default is 0x71, so write that.
+ */
+#define MIC_BIAS_VALUE     0x71
+
+/*
+ * REG1B..REG1E are ADCn_DIRECT_DB: the post-ADC digital gain when ALC is off
+ * (REG16 resets to 0, so ALC is off). 0xBF is 0 dB and each step is 0.5 dB, up to
+ * 0xFF = +32 dB. Neither this port nor the reference driver has ever touched these,
+ * which is why the board's own firmware multiplies the samples by 8 in software
+ * (Mic_Class: magnification 16 with oversampling 2, f_gain = 16/(os<<1)) to get a
+ * usable level out of a 2 Vrms full-scale input fed by a -38 dBV/Pa MEMS element.
+ *
+ * The analog PGA tops out at 37.5 dB, and speech 300 mm from this mic needs roughly
+ * 35 dB to land near -18 dBFS, so a fixed slice of digital gain is board
+ * calibration rather than a preference. 12 dB is deliberately modest: it is what
+ * makes a quiet mic audible without clipping, and if the PGA turns out to work after
+ * the bias fix, 12 + 30 dB still leaves headroom for loud input.
+ */
+#define ADC12_DIGITAL_GAIN_DB 12
+#define DIGITAL_GAIN_UNITY 0xbf   /* 0 dB */
+#define DIGITAL_GAIN_MAX   0xff   /* +32 dB, 0.5 dB per step */
+
+static unsigned char digital_code(int db)
+{
+    unsigned int steps = (unsigned int)db * 2;   /* 0.5 dB per step */
+    unsigned int code = DIGITAL_GAIN_UNITY + steps;
+
+    if (code > DIGITAL_GAIN_MAX)
+        code = DIGITAL_GAIN_MAX;
+
+    return (unsigned char)code;
+}
+
+/*
+ * REG43..REG46: bit 4 is SELMICn and must be 1 or MICnP/MICnN is not the input at
+ * all. Bits 3:0 are the PGA gain, and the ladder is NOT linear past 30 dB:
+ *
+ *   0..10 -> 0..30 dB in 3 dB steps
+ *   11    -> 33 dB
+ *   12    -> 34.5 dB
+ *   13    -> 36 dB
+ *   14    -> 37.5 dB
+ *
+ * Code 15 is undefined in the datasheet. audiohw_set_recvol() used to pass the
+ * setting value straight through as a code, so the setting's 30 dB became 30,
+ * clamped to 15 -- an undefined gain state -- and the setting's 12 dB became
+ * 34.5 dB. Whole dB are what the UI offers, so the top of the ladder is reached in
+ * 1 dB increments that land on the nearest defined code.
  */
 static unsigned char gain_code(int db)
 {
-    if (db < 0)
+    if (db <= 0)
         return 0;
-    if (db > 30)
-        db = 30;
+    if (db <= 30)
+        return (unsigned char)(db / 3);
+    if (db <= 32)
+        return 11;      /* 33 dB */
+    if (db <= 35)
+        return 12;      /* 34.5 dB */
+    if (db <= 36)
+        return 13;      /* 36 dB */
 
-    return (unsigned char)(db / 3);
+    return 14;          /* 37.5 dB */
 }
 
 static bool reg_write(int reg, unsigned char val)
@@ -168,8 +229,8 @@ bool es7210_init(unsigned long rate)
     reg_update(REG_MODE_CONFIG, MODE_MASTER, 0);
 
     reg_write(REG_ANALOG, 0x43);
-    reg_write(REG_MIC12_BIAS, 0x70);
-    reg_write(REG_MIC34_BIAS, 0x70);
+    reg_write(REG_MIC12_BIAS, MIC_BIAS_VALUE);
+    reg_write(REG_MIC34_BIAS, MIC_BIAS_VALUE);
 
     program_clock(rate);
 
@@ -204,8 +265,7 @@ bool es7210_init(unsigned long rate)
     reg_write(REG_MIC12_POWER, 0x00);
     reg_update(REG_MIC1_GAIN, GAIN_ENABLE, GAIN_ENABLE);
     reg_update(REG_MIC2_GAIN, GAIN_ENABLE, GAIN_ENABLE);
-    reg_update(REG_MIC1_GAIN, GAIN_MASK, gain_code(global_settings.rec_mic_gain));
-    reg_update(REG_MIC2_GAIN, GAIN_MASK, gain_code(global_settings.rec_mic_gain));
+    es7210_set_gain(global_settings.rec_mic_gain);
 
     reg_write(REG_ADC_AUTOMUTE, 0x00);
 
@@ -217,15 +277,25 @@ void es7210_set_frequency(unsigned long rate)
     program_clock(rate);
 }
 
-void es7210_set_gain(int code)
+/*
+ * Set the mic gain in dB, on the scale the Rockbox setting uses (0 dB up to the
+ * top of the ladder declared in es8311.h). The analog PGA takes the requested
+ * figure and the fixed board calibration goes into the chip's own digital gain
+ * registers, so one knob covers both stages instead of leaving the missing half to
+ * a software multiplier somewhere above this driver.
+ */
+void es7210_set_gain(int db)
 {
-    if (code < 0)
-        code = 0;
-    if (code > 15)
-        code = 15;
+    unsigned char pga = gain_code(db);
+    unsigned char dig = digital_code(ADC12_DIGITAL_GAIN_DB);
 
-    reg_update(REG_MIC1_GAIN, GAIN_MASK, (unsigned char)code);
-    reg_update(REG_MIC2_GAIN, GAIN_MASK, (unsigned char)code);
+    reg_update(REG_MIC1_GAIN, GAIN_MASK, pga);
+    reg_update(REG_MIC2_GAIN, GAIN_MASK, pga);
+
+    /* ADC1 is the left slot and ADC2 the right on SDOUT1, and ALC is off, so these
+     * are direct dB rather than ALC ceilings. */
+    reg_write(REG_ADC1_MAXGAIN, dig);
+    reg_write(REG_ADC2_MAXGAIN, dig);
 }
 
 void es7210_start(void)
@@ -255,7 +325,27 @@ void es7210_start(void)
 
     /* Gain is re-applied on every start so a change in the recording settings
      * takes effect without re-initialising the chip. */
-    es7210_set_gain(gain_code(global_settings.rec_mic_gain));
+    es7210_set_gain(global_settings.rec_mic_gain);
+}
+
+/* What the chip actually holds, for the debug screen. The register values are the
+ * only way to separate "we wrote the wrong thing" from "the chip ignored what we
+ * wrote": a PGA gain setting that changes the captured level by 3 dB instead of 30
+ * looks like a broken caller or a broken device, and the two need different fixes.
+ * Reads cost six polled I2C transactions and are drawn when the screen opens. */
+void es7210_stat(char *buf, int bufsz)
+{
+    unsigned char v43 = 0, v1e = 0, v1d = 0, v41 = 0, v01 = 0, v08 = 0;
+
+    reg_read(REG_MIC1_GAIN, &v43);
+    reg_read(REG_ADC1_MAXGAIN, &v1e);
+    reg_read(REG_ADC2_MAXGAIN, &v1d);
+    reg_read(REG_MIC12_BIAS, &v41);
+    reg_read(REG_CLOCK_OFF, &v01);
+    reg_read(REG_MODE_CONFIG, &v08);
+
+    snprintf(buf, bufsz, "ADC 43=%02x 1e=%02x 1d=%02x 41=%02x 01=%02x 08=%02x",
+             v43, v1e, v1d, v41, v01, v08);
 }
 
 void es7210_stop(void)
