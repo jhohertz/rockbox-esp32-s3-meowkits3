@@ -13,28 +13,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Mic gain: two bugs fixed, the third question needs the board.** A 0 dB vs 30 dB
-  recording pair came back 1.46x apart (3.3 dB against the ladder's 31.6x), L and R
-  measured identical, and absolute levels sat at -66 to -69 dBFS -- all documented in
-  `MEMORY.md`. Fixed in this build: `audiohw_set_recvol()` was passing the dB setting
-  value as a register code (setting 30 -> undefined code 15), `MIC_GAIN` was declared
-  0..30 dB instead of the ladder's 0..37.5, mic bias REG41/42 was written 0x70 where the
-  datasheet resets to 0x71, and the chip's own digital gain (REG1D/REG1E
-  `ADCn_DIRECT_DB`, 0.5 dB steps to +32 dB) is now set to +12 dB as board calibration
-  instead of leaving the deficit to a software multiplier.
-  **To check on the next flash:**
-  1. `Debug -> View HW info` `ADC` row: with the setting at 30 dB it should read
-     `43=2a` (SELMIC set, code 10), `1e=d7 1d=d7` (+12 dB digital), `41=71`. If it
-     reads `43=1a` the setting never reached `es7210_set_gain()`; if `43=0f` or `ff`,
-     the write path is the problem, not the value.
-  2. Record 0 dB and 30 dB again, same position and source. If the ratio is now ~30x,
-     the bias write was the fault. If it is still ~1x while the row shows `43=2a`, the
-     PGA is not in the signal path at all and the schematic becomes the blocking item.
-  3. Measure the new absolute level off the card (MSC). Target is ordinary speech
-     around -20 dBFS RMS; whatever it lands at says whether +12 dB digital is the right
-     calibration or too modest.
-  4. Loud input check: a clap or shout should not clip hard. If it does, the digital
-     calibration comes down.
 - **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
   60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
   current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage
@@ -124,6 +102,35 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   frame should cost less in libmpeg2's buffers and in the scaling pass.
 ## 2. Verified on hardware — closed
 
+- **Mic gain fixed and measured** (`c39d932883` plus the follow-up). Four things were
+  wrong at once, and the recordings separate them:
+  - `audiohw_set_recvol()` passed the dB setting value to `es7210_set_gain()` as a
+    register code, so 30 dB asked for code 30 → clamped to **15, which the datasheet
+    does not define**. `es7210_set_gain()` now takes dB and maps it through the real
+    ladder (0..30 dB in 3 dB steps, then 33/34.5/36/37.5), and `MIC_GAIN` is declared
+    0..37 instead of 0..30.
+  - **`REG41` 0x70 was killing the PGA.** Written like that because the stock driver
+    writes it that way; the datasheet resets to 0x71 and `ADCnBIAS_SWH` belongs to the
+    PGA/ADC bias, not to the mic supply (the schematic's external 3 V3 bias through
+    0 Ω made this register look irrelevant — it isn't). With 0x70 the 0 dB vs 30 dB
+    span measured 3.3 dB; with 0x71 it measures 32 dB, i.e. the ladder's 31.6x.
+  - `REG1D`/`REG1E` (`ADCn_DIRECT_DB`, 0.5 dB steps, 0xBF = 0 dB) had never been
+    touched by us or the stock driver. Now `ADC12_DIGITAL_GAIN_DB` = +12 dB, which is
+    what the board needs against a 2 Vrms full-scale input and a -38 dBV/Pa mic.
+  - `REG08` `SPEED_MODE` is **bit 1**, not bit 6 (bits 7:4 are `LRCK_RATE_MODE`). The
+    driver used bit 6, so ≥64 kHz recording stayed single-speed.
+  **Measured result** at 44.1 kHz, talking into the mic: setting 30 dB gives RMS
+  **-23.9 dBFS**, peak 25721 (-6 dBFS), **zero clipped samples**; setting 0 dB gives
+  RMS -56 dBFS. L and R differ on 61,315 of 61,440 samples, so the earlier "channels
+  identical" reading was RMS happening to agree to 1%, not an RX slot artifact.
+  `Debug → View HW info` keeps an `ADC` row (REG43, REG1E, REG1D, REG41, REG01, REG08)
+  so this stays observable; note it shows the value applied at the *last session
+  start*, not the current setting.
+  Still unverified: recording at **88.2 or 96 kHz** (the `SPEED_MODE` fix has had no
+  signal through it), whether the **max 37 dB** setting clips on loud input, and
+  `pitch_detector` at its **default** Volume Threshold — its gate is now
+  `(50 × 37)² = 3.4e6`, i.e. RMS 1842, and the measured speech RMS is 2101, so it
+  should pass without touching the knob.
 - **Capture path re-isolated, and `pitch_detector` works** (`a781b24b47`). The receiver and
   the transmitter no longer share one rate variable; see `AGENTS.md` ("Bus ownership") and
   `MEMORY.md` for the contract. Verified on hardware with the image built from that commit:
