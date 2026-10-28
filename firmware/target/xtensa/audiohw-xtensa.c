@@ -186,8 +186,11 @@ void audio_set_output_source(int source)
 #endif /* INPUT_SRC_CAPS */
 
 #ifdef HAVE_RECORDING
-/* The ADC's gain is the only recording gain on the board. left is the hardware
- * code (0 = 0 dB, 10 = 30 dB) that es7210.c writes into REG43/REG44. */
+/* The ADC's gain is the only recording gain on the board. Rockbox hands the setting
+ * value here in dB, so it goes to es7210_set_gain() as dB: that function maps the
+ * analog PGA code from the datasheet ladder and adds the fixed digital calibration.
+ * Passing the value straight through as a register code used to write the undefined
+ * code 15 for the setting's 30 dB, and 34.5 dB for its 12 dB. */
 void audiohw_set_recvol(int left, int right, int type)
 {
     (void)right;

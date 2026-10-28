@@ -13,6 +13,28 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **Mic gain: two bugs fixed, the third question needs the board.** A 0 dB vs 30 dB
+  recording pair came back 1.46x apart (3.3 dB against the ladder's 31.6x), L and R
+  measured identical, and absolute levels sat at -66 to -69 dBFS -- all documented in
+  `MEMORY.md`. Fixed in this build: `audiohw_set_recvol()` was passing the dB setting
+  value as a register code (setting 30 -> undefined code 15), `MIC_GAIN` was declared
+  0..30 dB instead of the ladder's 0..37.5, mic bias REG41/42 was written 0x70 where the
+  datasheet resets to 0x71, and the chip's own digital gain (REG1D/REG1E
+  `ADCn_DIRECT_DB`, 0.5 dB steps to +32 dB) is now set to +12 dB as board calibration
+  instead of leaving the deficit to a software multiplier.
+  **To check on the next flash:**
+  1. `Debug -> View HW info` `ADC` row: with the setting at 30 dB it should read
+     `43=2a` (SELMIC set, code 10), `1e=d7 1d=d7` (+12 dB digital), `41=71`. If it
+     reads `43=1a` the setting never reached `es7210_set_gain()`; if `43=0f` or `ff`,
+     the write path is the problem, not the value.
+  2. Record 0 dB and 30 dB again, same position and source. If the ratio is now ~30x,
+     the bias write was the fault. If it is still ~1x while the row shows `43=2a`, the
+     PGA is not in the signal path at all and the schematic becomes the blocking item.
+  3. Measure the new absolute level off the card (MSC). Target is ordinary speech
+     around -20 dBFS RMS; whatever it lands at says whether +12 dB digital is the right
+     calibration or too modest.
+  4. Loud input check: a clap or shout should not clip hard. If it does, the digital
+     calibration comes down.
 - **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
   60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
   current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage

@@ -144,6 +144,13 @@ enum
      * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
      * screen is opened rather than sampled continuously. */
     INFO_CODEC,
+#ifdef HAVE_RECORDING
+/* The ADC's own gain, bias and clock state, read back off the chip. The captured
+ * level is the only consumer-visible evidence, and it cannot say whether a setting
+ * was written wrongly, written and ignored, or applied to an input that is not the
+ * mic -- the registers can. Costs six polled reads when the screen opens. */
+    INFO_ADC,
+#endif
     /* The AXP173 coulomb counters. They are enabled and cleared at boot by
      * axp173_init(), so a freshly booted board legitimately reads 0/0 -- which is also
      * what a failed I2C read produces, and what a clear that dropped the enable bit
@@ -290,6 +297,11 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_CODEC:
         es8311_stat(buf, bufsz);
         break;
+#ifdef HAVE_RECORDING
+    case INFO_ADC:
+        es7210_stat(buf, bufsz);
+        break;
+#endif
     case INFO_CC: {
         uint32_t charge, discharge;
         int ctrl;

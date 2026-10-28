@@ -1532,3 +1532,51 @@ Two consequences worth remembering:
   count reads and bytes; silence would look identical. The proof here was external: a 8 kHz
   WAV recorded and played back audibly through the same `pcm_rec_dma_start()`. When a
   capture consumer shows nothing, ask which of the two it is before touching either side.
+
+## The mic is quiet because the board is quiet, and because two gain bugs were in the way (2026-10-27)
+
+Recorded files measured off the card over MSC (`/Recordings/*.wav`, 2ch 16-bit):
+
+| File | mic gain setting | L RMS | L peak | RMS dBFS |
+|---|---|---|---|---|
+| `R_MIC_260508-202436` | 0 dB | 9.6 | 128 | -69.4 |
+| `R_MIC_260508-202504` | 30 dB | 14.1 | 180 | -65.9 |
+| `R_MIC_260508-190446` | 30 dB | 31 | 150 | -60.9 |
+
+Three things come out of that table:
+
+- **The analog ladder does nothing.** 0 dB vs 30 dB is 1.46x, i.e. 3.3 dB, where the
+  datasheet ladder says 31.6x. Either the write is wrong, the chip ignored it, or the
+  thing being amplified is not the mic. The `ADC` debug row was added to tell those
+  apart, because every consumer of the audio sees only the level.
+- **L and R are the same signal** (14.1 vs 14.0 RMS, 180 vs 187 peak). Two MEMS
+  elements would not agree to 1%. Either one mic appears in both slots or the second
+  channel is picking up the first, which is a wiring question the schematic answers.
+- **The absolute numbers are what the silicon predicts for a mic.** ES7210 full-scale
+  is `2 x AVDD / 3.3` Vrms (~2 Vrms differential) and ZTS6216 is -38 dBV/Pa, so
+  94 dB SPL at 30 dB PGA is ~9200 counts and ordinary speech is hundreds. Nothing here
+  is broken *relative to the datasheet*; the deficit is that the board's own firmware
+  multiplies samples by 8 in software (`Mic_Class` `magnification`) and Rockbox has no
+  equivalent, plus ~15-25 dB between the measurement and the arithmetic.
+
+The two bugs found while chasing that, both fixed:
+
+- `audiohw_set_recvol()` passed the **dB setting value** to `es7210_set_gain()`, which
+  read it as a register code. Setting 30 dB became code 30 -> clamped to 15, and code 15
+  is **undefined** in the datasheet (the ladder ends at 14 = 37.5 dB). Setting 12 dB
+  became 34.5 dB. `es7210_set_gain()` now takes dB and maps it through the real ladder.
+- `MIC_GAIN` was declared 0..30 dB in `es8311.h`, so 7.5 dB of the chip's ladder was
+  unreachable from the UI. Declared 0..37 now.
+
+And the stage nobody was using: **REG1B..REG1E are `ADCn_DIRECT_DB`**, the post-ADC
+digital gain when ALC is off (REG16 resets to 0), 0xBF = 0 dB stepping 0.5 dB to
+0xFF = +32 dB. `ADC12_DIGITAL_GAIN_DB` is 12 dB, written to REG1D/REG1E on every
+session start. 12 rather than 32 because if the PGA starts working after the bias fix,
+12 + 30 dB should leave headroom for loud input rather than clip it; the number is
+meant to be revised from the next round of measurements, not defended.
+
+REG41/REG42 mic bias: the datasheet default is 0x71 (`ADC12BIAS_SWH` = level 1) and
+both this driver and the stock driver wrote 0x70. Changed to 0x71 as part of the same
+step, on the reasoning that "PGA gain changes nothing" and "ADC12 bias switch left at
+level 0" are the kind of pair that belongs together. This is a hypothesis, and the
+`ADC` row plus a fresh 0-vs-30 dB pair is what settles it.
