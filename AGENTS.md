@@ -2282,6 +2282,45 @@ clock has to be 512 * rate in single-speed mode and 256 * rate in double-speed m
 `doubler = 1` below 64 kHz, `0` above it. Every entry in the reference firmware's
 table whose MCLK is 256 * rate agrees.
 
+### ES7210 gain: the chip has two stages and the board needs both
+
+Measured, not inferred (`/tmp/ES7210_DS.pdf` rev 21.0, `/tmp/ZTS6216.pdf`):
+
+| Fact | Value | Consequence |
+|---|---|---|
+| Full-scale analog input | `2 x AVDD / 3.3` Vrms differential, i.e. ~2 Vrms | a mic has to come close to 2 Vrms to reach full scale |
+| ZTS6216 sensitivity | -38 dBV/Pa, SNR 65 dB(A), analog output | 12.6 mVrms at 94 dB SPL |
+| PGA (REG43-46) bits 3:0 | 0..10 = 0..30 dB in 3 dB steps, then 11=33, 12=34.5, 13=36, **14=37.5 dB. There is no defined code 15** | writing 15 is writing an undefined state |
+| REG43 bit 4 | `SELMICn`: 1 selects MICnP/MICnN as the input | not a mute bit; without it the PGA input is not the mic |
+| REG1B-1E `ADCn_DIRECT_DB` | 0xBF = 0 dB, 0.5 dB per step, 0xFF = +32 dB | a digital gain stage, default unity, that neither this port nor the stock firmware ever used |
+| REG16 ALC select | default 0 = ALC off | so REG1B-1E are direct dB, not ALC ceilings |
+| REG41/42 mic bias | default 0x71 (`ADC12BIAS_SWH` = level 1); bits 6:4 = bias voltage | the stock driver writes 0x70, which drops that switch to level 0 |
+
+Arithmetic: speech ~65 dB SPL at 300 mm is ~2.2 mVrms, so 30 dB of PGA puts it at
+70 mVrms = -29 dBFS. The board's own firmware multiplies the samples by 8 in
+software (`Mic_Class`: `magnification = 16`, `f_gain = magnification / (oversampling
+<< 1)`) to compensate. That is why recorded audio looks weak here and why the
+reference driver can afford to leave `ADC12_DIRECT_DB` at unity.
+
+Two port bugs this exposed:
+
+- `audiohw_set_recvol()` passed the **setting value in dB** straight to
+  `es7210_set_gain()`, which treated it as a register code. The setting's 30 dB
+  became code 30, clamped to the undefined 15; the setting's 12 dB became 34.5 dB.
+  `es7210_set_gain()` now takes dB and maps it through the datasheet ladder.
+- The declared `MIC_GAIN` range was 0..30 dB, so the top 7.5 dB of the ladder was
+  unreachable. It is declared 0..37 now.
+
+`ADC12_DIGITAL_GAIN_DB` (12 dB) is a fixed board calibration written into
+REG1D/REG1E on every session start, so one setting covers both stages instead of
+leaving the missing half to a software multiplier above this driver.
+
+`Debug -> View HW info` has an `ADC` row that reads REG43, REG1E, REG1D, REG41,
+REG01 and REG08 back off the chip. It exists because a 0 dB vs 30 dB recording pair
+measured only **1.46x** apart (3.3 dB, against 31.6x expected), and the captured
+level cannot say whether the write was wrong, written and ignored, or applied to an
+input that is not the mic. The registers can.
+
 ### Bus ownership: TX and RX are exclusive, so make the switch explicit
 
 Rockbox never plays and records at once (`audiohw_set_input_source()` stops the sink
