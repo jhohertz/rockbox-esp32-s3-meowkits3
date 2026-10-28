@@ -395,6 +395,29 @@ static unsigned int charge_state(void)
 #endif
 
 
+/* Cumulative charge and discharge, integrated from the sampled current rather than
+ * read from the PMU's coulomb counters. Two things it is for:
+ *
+ *  - It is the independent measurement the counter scale has to be checked against.
+ *    axp173.h documents 180,000 LSB per mAh at the 25 Hz ADC rate axp173_init()
+ *    selects, but that figure is an arithmetic consequence of the sample rate, not
+ *    something anyone measured. A total built from the REG 0x28/0x29 mA samples over
+ *    a known time is the only way to find out whether it is right.
+ *  - Each interval is attributed to the sample that begins it, so the switch from
+ *    charger to battery lands on the row where it happened instead of being smeared
+ *    across it. Reading the direction out of the log afterwards is what removes the
+ *    need to catch that switch while it is happening.
+ *
+ * Units are mA-seconds, so no interval is rounded: 3600 of them is a mAh, and the
+ * columns print one decimal. 1000 mA over the full 16-hour buffer is 57.6 million,
+ * so an unsigned int is ample. The totals and the previous sample are file-scope
+ * because they belong to the run, not to the batch being written.
+ */
+static int last_secs;        /* stamp of the previously flushed sample, -1 for none */
+static int last_current;     /* its mA */
+static bool last_charging;
+static unsigned int chg_ms, dis_ms;
+
 static void flush_buffer(void)
 {
     int fd;
@@ -410,6 +433,26 @@ static void flush_buffer(void)
 
     for (i = 0; i < buf_idx; i++)
     {
+#if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
+        /* Close the interval that started at the previous sample using that sample's
+         * own reading and direction, then take this sample over. Attributing it to
+         * the sample that begins the interval is what keeps the charge-to-battery
+         * transition on the row where it occurred. */
+        if (last_secs >= 0 && bat[i].secs > (unsigned int)last_secs)
+        {
+            unsigned int units =
+                (unsigned int)(last_current > 0 ? last_current : 0) *
+                (bat[i].secs - (unsigned int)last_secs);          /* mA.s */
+            if (last_charging)
+                chg_ms += units;
+            else
+                dis_ms += units;
+        }
+        last_secs = (int)bat[i].secs;
+        last_current = bat[i].current;
+        last_charging = (bat[i].flags & BIT_CHARGING) != 0;
+#endif
+
         rb->fdprintf(fd,
                 "%02d:%02d:%02d,  %05d,     %03d%%,     "
                 "%02d:%02d,         %04d,   "
@@ -424,6 +467,9 @@ static void flush_buffer(void)
 #endif
 #ifdef HAVE_USB_POWER
                 ",  %c"
+#endif
+#if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
+                ",  %u.%u,  %u.%u"   /* mAh charged, mAh discharged, so far */
 #endif
                 "\n",
 
@@ -441,6 +487,10 @@ static void flush_buffer(void)
 #endif
 #ifdef HAVE_USB_POWER
                 , (bat[i].flags & BIT_USB_POWER) ? 'U' : '-'
+#endif
+#if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
+                , chg_ms / 3600, (chg_ms % 3600) / 360,
+                  dis_ms / 3600, (dis_ms % 3600) / 360
 #endif
         );
     }
@@ -460,6 +510,13 @@ static void thread(void)
 
     in_usb_mode = false;
     buf_idx = 0;
+    /* The totals are per run. Lines from an earlier run are already on the file and
+     * appended to, so carrying a total over would read as one long run. */
+    last_secs = -1;
+    last_current = 0;
+    last_charging = false;
+    chg_ms = 0;
+    dis_ms = 0;
 
     while (!exit)
     {

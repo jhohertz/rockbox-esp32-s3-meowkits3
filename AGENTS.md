@@ -1696,7 +1696,14 @@ obvious from the datasheet tables:
   `devices.cpp` enables the counter and no code reads it, so the constant has never been
   exercised. The hardware settled it: minutes of charging already show six and seven
   figure counts, which the 65536 version would need hours to reach. Confirm the scale
-  against an integrated current before building a percentage on it.
+  against an integrated current before building a percentage on it — `battery_bench` now
+  logs one: two columns of cumulative mAh charged and discharged, integrated from
+  `battery_current()` in mA.s and attributed to the sample that begins each interval. The
+  charge and discharge counters are separate cumulative registers, so the charge-to-battery
+  transition is not part of the measurement and does not need to be caught; and a run that
+  starts near full charge is the one run that tells you nothing, because the charge current
+  tapers as the cell reaches the target voltage and the average stops matching the
+  instantaneous reading. Start the charge leg near 30 %.
 - **Temperature is not an unread channel.** REG 0x38/0x39 (charge low/high) and 0x3C/0x3D
   (discharge low/high) are thresholds the chip acts on from the TS voltage, and REG 0x8F
   bit 2 is internal over-temp shutdown (default `0` = do not shut down). Whether this
