@@ -1502,3 +1502,33 @@ The capture DMA stays **stereo interleaved**, deliberately: `pcm_record.c`'s mon
 stereo input, and `pitchyin()` and `buffer_magnitude()` both step by two and use channel L
 only. Making the receiver mono would break the file recorder's mono conversion and the
 tuner at the same time.
+
+## pitch_detector's threshold is a line-level assumption on a mic-only board (2026-10-27)
+
+Once the capture path delivers (see the previous section), the tuner plugin still showed
+nothing, and the reason is arithmetic rather than plumbing:
+
+```c
+buffer_magnitude(audio_data[audio_head]) >
+    sqr(settings.volume_threshold * rb->sound_max(SOUND_MIC_GAIN))   /* :1039 */
+```
+
+`es8311.h:36` declares our mic gain as `AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 30, 30)`,
+so `sound_max(SOUND_MIC_GAIN)` is 30 and the plugin's built-in `VOLUME_THRESHOLD` of 50
+requires the average square of channel L to exceed 2,250,000 — **RMS 1500, roughly -15
+dBFS**. Two MEMS mics at 30 dB do not produce that from ordinary sound. The multiplier is
+the gain *scale*, not the gain applied, and the reason upstream looks fine is that on most
+targets this plugin is reached as a line-in tuner (`INPUT_TYPE` is `AUDIO_SRC_LINEIN`
+whenever `HAVE_MIC_IN` is absent). Setting the plugin's own **Volume Threshold** to ~10
+lowers the gate to RMS 300 and the tuner paints.
+
+Two consequences worth remembering:
+
+- The tuner's threshold is user-adjustable (5-95) and persists to
+  `/pluginapps/.pitch_detector_settings` on exit, so it is a one-time adjustment per board,
+  not a per-launch chore. `load_settings()` discards the file when its size != `sizeof
+  (settings)`, which is what makes a plugin-side struct change look like a silent reset.
+- A capture path that delivers bytes does not prove it delivers *signal*. The RX counters
+  count reads and bytes; silence would look identical. The proof here was external: a 8 kHz
+  WAV recorded and played back audibly through the same `pcm_rec_dma_start()`. When a
+  capture consumer shows nothing, ask which of the two it is before touching either side.
