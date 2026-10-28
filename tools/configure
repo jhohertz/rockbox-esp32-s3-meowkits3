@@ -5142,7 +5142,17 @@ if [ "$t_cpu" = "xtensa" ]; then
   idfbuild="$rootdir/idf-app/build"
   if [ ! -f "$idfbuild/compile_commands.json" ]; then
       echo "Configuring ESP-IDF project (idf-app) ..."
-      ( cd "$rootdir/idf-app" && idf.py reconfigure >/dev/null )
+      if ! command -v idf.py >/dev/null 2>&1; then
+          echo "WARNING: idf.py is not on PATH."
+          echo "WARNING: this target builds on ESP-IDF; source its environment"
+          echo "WARNING: (source ~/esp/esp-idf/export.sh) before running configure."
+      else
+          # CMake's progress chatter on stdout is noise; stderr is the diagnosis.
+          # Suppressing both left a failing reconfigure -- no IDF_PATH, wrong
+          # target, missing component -- indistinguishable from "idf.py was never
+          # run", with only the generic warning below to explain it.
+          ( cd "$rootdir/idf-app" && idf.py reconfigure 2>&1 >/dev/null )
+      fi
   fi
   if [ -f "$idfbuild/compile_commands.json" ]; then
       "$rootdir/tools/idf-flags" "$idfbuild" -o idf.make || exit 1

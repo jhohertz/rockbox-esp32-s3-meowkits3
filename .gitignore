@@ -345,10 +345,12 @@ __pycache__
 /idf-app/build/
 /idf-app/sdkconfig
 /idf-app/sdkconfig.old
+# seed stamp written by tools/root.make: records which sdkconfig.defaults content
+# and which ESP-IDF version the current sdkconfig was generated from
+/idf-app/sdkconfig.seedstamp
 /idf-app/rockbox_libs.cmake
-/idf-spike/build/
-/idf-spike/sdkconfig
-/idf-spike/sdkconfig.old
+# Rockbox's own ESP packaging output, produced by `make espartifacts`
+/build-*/esp-artifacts/
 
 # release output folders: mounted artifacts, never committed
 /release/
