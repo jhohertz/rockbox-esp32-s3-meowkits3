@@ -46,20 +46,34 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   minutes of charging already show six- and seven-figure counts. Nothing in the stock
   firmware calls those getters, so its constant has never been exercised. The row prints
   raw counts beside the estimate so the scale can be confirmed against a known current.
-  **The overnight run of 2026-10-27 produced the log but not the pair** — the counters were
-  cleared at boot as designed, and the board was then reset into download mode to flash the
-  release, so nothing from that run survives. Procedure, and it must not end in a reboot:
-  1. boot, read the CC row (control byte should show the enable bit; counts 0),
-  2. start `battery_bench`, unplug,
-  3. **run it to shutdown**, so `battery_level_shutoff` / `battery_level_disksafe`
-     (3300 / 3400 mV, never approached by the idle run) and the bottom of
-     `percent_to_volt_discharge[]` get measured instead of assumed,
-  4. read the CC row again *before* powering off,
-  5. take the log off the card.
+  `battery_bench` now measures the other side itself: two extra columns, cumulative **mAh
+  charged** and **mAh discharged**, integrated from `battery_current()` in mA.s (so no
+  interval is rounded) and attributed to the sample that *begins* each interval — which puts
+  the charger-to-battery switch on the row where it happened instead of smearing it across
+  one. That is the independent total; the chip's counter is the one under test.
+  Procedure, revised after two attempts that both failed the same way — starting from a full
+  charge and trying to catch the moment the charger switches to discharge:
+  1. **Don't start from full.** The counters are separate cumulative registers (0xb0-0xb3
+     charge, 0xb4-0xb7 discharge), so the transition is not part of the measurement; each
+     interval only has to sit inside one direction. Starting near full makes the tail
+     ambiguous, because charge current tapers as the cell reaches the target voltage and the
+     average stops matching the instantaneous reading.
+  2. Discharge leg: unplug, wait ~5 minutes so the charge counter is irrelevant, read the CC
+     row, run playback at fixed volume and backlight for 30-60 min with `battery_bench`
+     going, then read the CC row again *before* anything reboots.
+  3. Charge leg: start near 30 %, plug in, same shape against the `chg` counter.
+  4. Compare the CC row's `Δcounts` against the log's `ΔmAh`. Agreement settles 180,000
+     LSB/mAh; a clean factor says `coulomb_adc_rate_hz()`'s ADC-rate assumption is wrong, and
+     by how much.
+  5. Take the log off the card. Run to shutdown as well if you want the bottom of the gauge
+     measured rather than assumed: `battery_level_shutoff` / `battery_level_disksafe`
+     (3300 / 3400 mV) and the low end of `percent_to_volt_discharge[]` only get exercised by
+     a run that actually reaches them.
   The dark-idle run's integrated current was **425.1 mAh**, so a run of that length should
   show ~76.5 million discharge counts if 180,000 LSB/mAh is right — and an hour of idle at
-  44 mA should be ~7.9e6. Read the row twice around a measured interval and the scale is
-  settled.
+  44 mA should be ~7.9e6. The overnight run of 2026-10-27 produced the log but not the pair:
+  the counters were cleared at boot as designed and the board was then reset into download
+  mode to flash the release, so nothing from it survives.
   *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
   `config/meowkits3.h`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c` call
   `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
