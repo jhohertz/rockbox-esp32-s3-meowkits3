@@ -2294,13 +2294,19 @@ Measured, not inferred (`/tmp/ES7210_DS.pdf` rev 21.0, `/tmp/ZTS6216.pdf`):
 | REG43 bit 4 | `SELMICn`: 1 selects MICnP/MICnN as the input | not a mute bit; without it the PGA input is not the mic |
 | REG1B-1E `ADCn_DIRECT_DB` | 0xBF = 0 dB, 0.5 dB per step, 0xFF = +32 dB | a digital gain stage, default unity, that neither this port nor the stock firmware ever used |
 | REG16 ALC select | default 0 = ALC off | so REG1B-1E are direct dB, not ALC ceilings |
-| REG41/42 mic bias | default 0x71 (`ADC12BIAS_SWH` = level 1); bits 6:4 = bias voltage | the stock driver writes 0x70, which drops that switch to level 0 |
+| REG41/42 mic bias | default 0x71 (`ADCnBIAS_SWH` = level 1); bits 6:4 = bias voltage | **writing 0x70 kills the PGA.** Measured: with 0x70 the 0 dB vs 30 dB span was 3.3 dB; with 0x71 it is 32 dB, the ladder's real 31.6x. The mic's own VDD comes from `AUDIO_3V3` through 0 Ω (R15/R16/R29/R31 on the schematic), which makes the register look irrelevant — it isn't: `ADCnBIAS_SWH` belongs to the PGA/ADC bias, not the mic supply |
+| REG08 bits | bit 0 `MS_MODE`, **bit 1 `SPEED_MODE`**, bits 7:4 `LRCK_RATE_MODE` | a driver that uses bit 6 as the double-speed flag leaves the chip in single-speed mode above 64 kHz and sets a channel-count field instead |
 
 Arithmetic: speech ~65 dB SPL at 300 mm is ~2.2 mVrms, so 30 dB of PGA puts it at
 70 mVrms = -29 dBFS. The board's own firmware multiplies the samples by 8 in
 software (`Mic_Class`: `magnification = 16`, `f_gain = magnification / (oversampling
-<< 1)`) to compensate. That is why recorded audio looks weak here and why the
-reference driver can afford to leave `ADC12_DIRECT_DB` at unity.
+<< 1)`) to compensate, and leaves `ADC12_DIRECT_DB` at unity.
+
+Measured on this build (44.1 kHz, talking into the mic): setting 30 dB gives
+**RMS -23.9 dBFS, peak 25721, zero clipped samples**; setting 0 dB gives RMS
+-56 dBFS. That is -24 dBFS RMS for ordinary speech, which is where a recorder
+should sit, and it came from two bytes: `REG41` 0x70 -> 0x71 and `REG1D`/`REG1E`
+0xBF -> 0xD7.
 
 Two port bugs this exposed:
 
