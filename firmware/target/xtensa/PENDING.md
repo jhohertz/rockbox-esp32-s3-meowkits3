@@ -431,6 +431,18 @@ Not touched: `utils/rbutilqt/rbutil.ini`, the build-info server entry, the theme
 target entry (`meowkits3` returns "No themes available"; `tools/rbthemes.py` pulls
 through a proxy target instead). Verified `git diff upstream/master -- utils` is empty.
 
+One obstacle to that entry was on our side and is gone: rbutil's RockboxLoader expects
+a port to leave `rockbox.elf` and `rockbox.map` in the build directory, which is what
+`make elfzip` and `make mapzip` read. ESP-IDF owns the link and writes both beside its
+own build tree, so both goals found nothing and the map guard had to be pointed at
+`$(ROOTDIR)/idf-app/build/` by hand — which broke on an out-of-tree build. The image
+rule now copies both into `$(BUILDDIR)`, so the goal names behave the same as on every
+other port and `ESPLELFMAP` needs no source-root derivation. Release packaging is a
+Rockbox goal too (`make espartifacts`: app image, bootloader, partition table, IDF's
+`flash_args`, the merged 0x0 image, `image_info` output, map and ELF), so a build farm
+or a release script does not have to know IDF's layout. Neither change touches
+`utils/`.
+
 Maintained as if adoption were intended: `tools/configure` entry `133|meowkit-esp32s3`
 with `target_id=126`, unique `MODEL_NUMBER 133`, `tools/builds.pm` (`status => 2`,
 `sim => 0`, `manualok => 1`), `list_targets.pl` derives from `builds.pm`, manual

@@ -1,0 +1,61 @@
+#!/bin/sh
+# Decide whether ESP-IDF's sdkconfig has to be regenerated from sdkconfig.defaults,
+# and do it if so. Called from the image rule in tools/root.make.
+#
+# IDF seeds sdkconfig from sdkconfig.defaults only when sdkconfig does not exist: it
+# writes the file once and ignores the defaults forever after. So a defaults change
+# lands in neither sdkconfig nor the harvested idf.make, and the image is unchanged
+# with nothing to indicate why. The only way to pick up a change is to delete
+# sdkconfig and let IDF regenerate it -- which discards anything edited by hand in
+# sdkconfig, on the grounds that sdkconfig.defaults is the tracked source of truth.
+#
+# The decision is made on content, not modification time. `git checkout` rewrites
+# every file it touches, so an mtime comparison reseeded the configuration on each
+# branch switch and rebuilt IDF from a regenerated sdkconfig when nothing had been
+# changed -- which is how an image that had been verified on hardware came out with
+# a different hash after a checkout.
+#
+# The stamp holds the defaults hash together with the ESP-IDF version, because an
+# IDF upgrade alters the generated configuration without touching our defaults at
+# all: an earlier IDF version produced an sdkconfig whose values no longer match
+# what the current IDF would derive from the same file.
+#
+# usage: idf-seedcheck <path to idf-app> <path to the ESP-IDF tree>
+
+idfdir="$1"
+idfpath="$2"
+
+defaults="$idfdir/sdkconfig.defaults"
+config="$idfdir/sdkconfig"
+stamp="$idfdir/sdkconfig.seedstamp"
+
+# Nothing to seed from: an IDF tree with no defaults of its own.
+if [ ! -f "$defaults" ]; then
+    exit 0
+fi
+
+# A short hash is enough: it only ever gets compared to itself.
+hash="$(sha256sum "$defaults" 2>/dev/null | cut -c1-16)"
+
+# The IDF version is not spelled one way across installations: releases ship
+# version.txt, a git checkout does not, and the numbers live in a header either
+# way. If none of it can be read, the stamp says "unknown-idf" and stays that way --
+# a constant, so it does not force a reseed on every build; it only means an IDF
+# upgrade is not detected on its own.
+ver=""
+if [ -f "$idfpath/version.txt" ]; then
+    ver="$(cat "$idfpath/version.txt")"
+elif [ -f "$idfpath/components/esp_common/include/esp_idf_version.h" ]; then
+    ver="$(grep -hE '^#define ESP_IDF_VERSION_(MAJOR|MINOR|PATCH)' \
+			"$idfpath/components/esp_common/include/esp_idf_version.h" | \
+		 awk '{printf "%s%s", sep, $3; sep="."}')"
+fi
+want="$hash ${ver:-unknown-idf}"
+
+if [ -f "$config" ] && [ -n "$want" ] && [ "$want" = "$(cat "$stamp" 2>/dev/null)" ]; then
+    exit 0
+fi
+
+echo "  IDF: reseeding sdkconfig (defaults or ESP-IDF changed)"
+rm -f "$config"
+echo "$want" > "$stamp"

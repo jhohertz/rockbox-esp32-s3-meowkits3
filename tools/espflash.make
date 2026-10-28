@@ -56,16 +56,13 @@ espverify: $(BUILDDIR)/$(BINARY) esplayer
 # grown into the plugin/codec text fails the build instead of appearing as a printf on
 # a device after the image shipped. flash and espverify both run it: the point is that
 # you cannot reach a board without having passed it.
-# Spelled from $(ROOTDIR), not from $(BUILDDIR): `tools/configure` puts the build
-# directory wherever the caller asked for it, and deriving the source root as
-# `dir $(BUILDDIR)` only happens to be right when the build directory sits inside
-# the tree. An out-of-tree build (a container building into its own scratch path)
-# then looked for a map file that was never written there:
-#   make: *** No rule to make target '/work/idf-app/build/rockbox.map', needed by 'esplayer'
-# ROOTDIR is set by the generated Makefile before it includes root.make, so it is
-# available here even though IDFDIR (root.make:432) is not -- that is why idf-app
-# is spelled out rather than referenced through IDFDIR.
-ESPLELFMAP ?= $(ROOTDIR)/idf-app/build/rockbox.map
+#
+# The ELF and the linker map are copied into $(BUILDDIR) by the image rule in
+# tools/root.make, because that is where every other port leaves them and where the
+# goals that read them look. spelling from $(ROOTDIR) into IDF's own build tree was
+# only needed while the map had no home in the build directory, and it broke on an
+# out-of-tree build.
+ESPLELFMAP ?= $(BUILDDIR)/rockbox.map
 
 # The map is a build product with no rule of its own, so depending on it directly
 # makes `make esplayer` in a clean tree fail with "No rule to make target" instead
@@ -88,6 +85,7 @@ esplayer: $(BUILDDIR)/$(BINARY)
 # It depends on esplayer for the same reason flash and espverify do: an image whose
 # external arena has grown into the plugin/codec reservation must not reach a board.
 ESPFULL ?= $(BUILDDIR)/rockbox-flash.bin
+ESPARTIFACTS ?= $(BUILDDIR)/esp-artifacts
 
 espfull: $(BUILDDIR)/$(BINARY) esplayer
 	$(ESPTOOL) --chip $(ESPCHIP) merge_bin --output $(ESPFULL) --target-offset 0x0 \
@@ -95,3 +93,28 @@ espfull: $(BUILDDIR)/$(BINARY) esplayer
 		0x8000 $(IDFDIR)/build/partition_table/partition-table.bin \
 		0x10000 $(BUILDDIR)/$(BINARY)
 .PHONY: espfull
+
+# Everything that constitutes a release of an ESP target, gathered by a Rockbox goal
+# rather than by somebody knowing IDF's tree: the app image, the two pieces that make
+# it bootable at 0x0 with the offsets IDF itself uses, the merged one-file image, the
+# loader's view of that image, and the map and ELF so the arena reservations and the
+# symbols can be checked by a receiver with no toolchain and no ESP-IDF.
+espartifacts: $(BUILDDIR)/$(BINARY) esplayer espfull
+	$(call PRINTS,ESPARTIFACTS $(ESPARTIFACTS))
+	$(SILENT)rm -rf $(ESPARTIFACTS)
+	$(SILENT)mkdir -p $(ESPARTIFACTS)
+	$(SILENT)cp $(IDFDIR)/build/bootloader/bootloader.bin \
+		   $(IDFDIR)/build/partition_table/partition-table.bin \
+		   $(IDFDIR)/build/flash_args \
+		   $(BUILDDIR)/$(BINARY) $(ESPFULL) \
+		   $(BUILDDIR)/rockbox.map $(BUILDDIR)/rockbox.elf $(ESPARTIFACTS)/
+	$(SILENT)$(ESPTOOL) --chip $(ESPCHIP) image_info $(BUILDDIR)/$(BINARY) \
+		   > $(ESPARTIFACTS)/espverify.txt 2>&1
+.PHONY: espartifacts
+
+# clean:: in tools/root.make removes $(BINARY) but not the merged image or the
+# artifact directory, so a stale release image could sit beside a fresh one and be
+# the file someone ships.
+clean::
+	$(SILENT)rm -f $(ESPFULL)
+	$(SILENT)rm -rf $(ESPARTIFACTS)

@@ -37,7 +37,6 @@ RB_TARGET="${RB_TARGET:-meowkits3}"
 RB_VOICE="${RB_VOICE:-1}"
 RB_LANGUAGE="${RB_LANGUAGE:-english}"
 IDF_PATH="${IDF_PATH:-/opt/rockbox-dev/esp-idf}"
-IDF_BUILD="$REPO/idf-app/build"
 
 echo "== rockbox-build-artifacts =="
 echo "  repo      : $REPO"
@@ -96,28 +95,17 @@ make -j"$(nproc)"
 echo "-- layout guard (tools/esp-layout-check)"
 make esplayer
 
-echo "-- image verification (esptool image_info)"
-make espverify > "$OUT_DIR/espverify.txt" 2>&1
-tail -4 "$OUT_DIR/espverify.txt"
-
-echo "-- all-in-one image (make espfull)"
-make espfull > /dev/null
-
-echo "-- flash set"
-copy "$BUILD_DIR/rockbox.esp32s3"
-copy "$IDF_BUILD/bootloader/bootloader.bin"
-copy "$IDF_BUILD/partition_table/partition-table.bin"
-# The three-piece set plus the all-in-one image: bootloader, partition table and app
-# merged by esptool into one file that starts with the bootloader's header, so it goes
-# at offset 0x0 with a single line -- which is what a web flasher wants.
-copy "$BUILD_DIR/rockbox-flash.bin"
-# The address list IDF's own flash step uses, so a receiver can flash without
-# guessing: bootloader 0x000000, partition table 0x008000, app 0x010000.
-copy "$IDF_BUILD/flash_args"
-# The map is what tools/esp-layout-check reads. Shipping it means the arena
-# reservations can be re-checked by anyone who receives the artifacts, without a
-# toolchain.
-copy "$IDF_BUILD/rockbox.map"
+echo "-- flash and release artifact set (make espartifacts)"
+# One Rockbox goal produces everything a release of an ESP target consists of:
+# the app image, bootloader, partition table, IDF's own flash address list, the
+# merged one-file image at 0x0, esptool's image_info of the app, and the map and
+# ELF. The goal -- not this script -- knows IDF's layout, so IDF's build tree stops
+# being something a packaging step has to remember.
+make espartifacts > /dev/null
+for f in "$BUILD_DIR"/esp-artifacts/*; do
+    copy "$f"
+done
+tail -4 "$BUILD_DIR/esp-artifacts/espverify.txt"
 
 echo "-- card payload (rockbox.zip)"
 # `make zip` only copies voice clips it finds: buildzip.pl:686-689 globs *.voice and
