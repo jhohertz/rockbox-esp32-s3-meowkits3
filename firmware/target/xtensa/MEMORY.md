@@ -1580,3 +1580,43 @@ both this driver and the stock driver wrote 0x70. Changed to 0x71 as part of the
 step, on the reasoning that "PGA gain changes nothing" and "ADC12 bias switch left at
 level 0" are the kind of pair that belongs together. This is a hypothesis, and the
 `ADC` row plus a fresh 0-vs-30 dB pair is what settles it.
+
+## The bias byte was it: REG41 0x70 was killing the PGA (2026-10-27, measured)
+
+The previous section ended with an open question — the analog ladder appeared to do
+nothing, and the schematic seemed to explain away REG41 because the mic's VDD is fed
+externally from `AUDIO_3V3` through 0 Ω. The next build changed three things at once
+(bias byte, digital gain, dB-vs-code mapping), and the recordings separate them:
+
+| Build | setting | RMS dBFS | peak |
+|---|---|---|---|
+| before (`43` code 10, `41`=0x70, digital unity) | 0 dB | -69.4 | 128 |
+| before | 30 dB | -65.9 | 180 |
+| after (`43` code 10, `41`=0x71, digital +12 dB) | 0 dB | -56.0 | 2516 |
+| after | 30 dB | **-23.9** | 25721 |
+
+- Within the *after* build the 0 dB → 30 dB span is **40.7x on RMS (32 dB)**, which is
+  the ladder's 31.6x. Within the *before* build it was 1.46x (3.3 dB).
+- The PGA code was 10 in both builds (`es7210_start()` applied `gain_code(30)`), so the
+  analog path changed state through **`REG41` 0x70 → 0x71 alone**. `ADC12BIAS_SWH` is
+  part of the PGA/ADC bias, not the mic supply; "the mic is biased externally" does not
+  make that register irrelevant, and I said it did.
+- The 0 dB row moved -13.4 dB, which is the +12 dB of `ADC12_DIRECT_DB` ✓ so the
+  digital stage is live and doing what the registers say.
+- Final level: RMS -23.9 dBFS, peak -6 dBFS, **no clipped samples** for ordinary speech.
+  +12 dB digital is therefore the right calibration, not a stopgap.
+- **L and R are not identical**: 61,315 of 61,440 samples differ. The earlier "L == R"
+  observation was RMS values happening to agree to 1%, not a slot artifact. Two mics,
+  two channels, nothing wrong in the receiver.
+
+Also found while cross-checking REG08 against the datasheet: `SPEED_MODE` is **bit 1**,
+not bit 6 — bits 7:4 are `LRCK_RATE_MODE`, only meaningful in multi-LRCK TDM. The driver
+had `MODE_DOUBLE_SPEED = (1u << 6)`, so recording at 88.2 or 96 kHz left the chip in
+single-speed mode and wrote a channel-count field instead. Single speed is the reset
+default, which is why every rate below 64 kHz worked and the bug stayed hidden. Fixed;
+the ≥64 kHz path is unverified until someone records at 88.2 kHz.
+
+The general lesson, again: the schematic made a measured hypothesis look unnecessary,
+and the measurement was right. Copying a register value from a reference driver is not
+evidence that the value is correct — the reference driver is another piece of software
+that was never asked what it produced.

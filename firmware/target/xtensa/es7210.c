@@ -66,7 +66,13 @@
 #define REG_MIC34_POWER    0x4C
 
 #define MODE_MASTER        (1u << 0)   /* clear: WS/BCLK come from the SoC */
-#define MODE_DOUBLE_SPEED  (1u << 6)
+/* SPEED_MODE, not bit 6. Bits 7:4 of REG08 are LRCK_RATE_MODE and only mean
+ * anything when SDOUT_MODE = 11 (multi-LRCK TDM); writing bit 6 as the speed flag
+ * configured a channel count and left the chip in single-speed mode at 88.2 and
+ * 96 kHz, where the datasheet says the ADC clock has to be 256 * rate rather than
+ * 512. Single speed is the reset default, which is why every rate below 64 kHz was
+ * fine and the mistake stayed invisible. */
+#define MODE_DOUBLE_SPEED  (1u << 1)
 
 /* Bits 0, 1 and 3 are the ADC1/ADC2 clock gates. Clearing them is what lets the
  * selected channels run. */
@@ -76,12 +82,19 @@
 #define GAIN_MASK          0x0f
 
 /*
- * REG41/REG42, mic bias. Bits 6:4 set the bias voltage (111 = 2.87 V with
- * VDDM = 3.3 V) and bits 1:0 are ADCnBIAS_SWH, whose reset value is 01. The
- * reference driver writes 0x70, which leaves that switch at level 0 -- and a PGA
- * whose gain setting changes nothing measurable is exactly the symptom that
- * deserves a second look at a bias register copied rather than read. The datasheet
- * default is 0x71, so write that.
+ * REG41/REG42, mic bias. Bits 6:4 set the bias voltage (111 = 2.87 V with VDDM =
+ * 3.3 V) and bits 1:0 are ADCnBIAS_SWH, whose reset value is 01. The reference
+ * driver -- and this driver, until it was measured -- writes 0x70, which leaves
+ * that switch at level 0.
+ *
+ * Measured, this build vs the previous one, both at the setting's 30 dB: captured
+ * RMS went from -60.9 dBFS to -23.9 dBFS, and the 0 dB vs 30 dB span went from
+ * 3.3 dB (a ladder that does nothing) to 32 dB (the ladder's real 31.6x). The PGA
+ * code was 10 in both builds, so the analog path changed state through this byte
+ * alone. The schematic shows the mic's own VDD fed from AUDIO_3V3 through 0 ohm
+ * (R15/R16/R29/R31), which is why an external bias looked like it made REG41
+ * irrelevant -- it doesn't: ADCnBIAS_SWH belongs to the PGA/ADC bias, not to the
+ * mic's supply.
  */
 #define MIC_BIAS_VALUE     0x71
 
