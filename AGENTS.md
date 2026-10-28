@@ -3622,6 +3622,38 @@ No serial data received` — nothing is wrong with the image or the wiring. Put 
 board in download mode first (**hold BOOT, then tap RESET**, or hold BOOT while
 plugging USB in) and re-run. Worth recognising from that message alone.
 
+**The other half — getting the chip *out* of the loader — cannot be done from the
+host, and that is not a flag we are missing.** A host-driven reset over
+USB-Serial-JTAG is itself the download request: the ROM reports
+`rst:0x15 (USB_UART_CHIP_RESET), boot:0x3 (DOWNLOAD(USB/UART0))` and stays in the
+loader. Measured with the board in download mode, on both esptool 4.7.0 (the IDF
+environment, which has the esp32s3 stub) and the system esptool:
+
+| Attempt | Result |
+|---|---|
+| `--after hard_reset` | resets, lands in `DOWNLOAD` again; still `303a:1001` after 24 s, never `1234:4002` |
+| `--after soft_reset` | `Soft resetting is currently only supported on ESP8266` |
+| `run` (stub uploaded) | `Staying in bootloader` |
+| `run --no-stub` | `Enabling default SPI flash mode...` then `Staying in bootloader` |
+| DTR/RTS matrix, all four combinations | the two that produced a reset reported `boot:0x3 (DOWNLOAD)`; the two with DTR asserted produced no reset at all |
+
+What *does* exist is the device-side entry: `RTC_CNTL.option1` bit 0,
+`RTC_CNTL_FORCE_DOWNLOAD_BOOT` (`rtc_cntl_struct.h:855`, `rtc_cntl_reg.h:3210`),
+which is the S3 form of the classic `0x504A424C` "PJBL" write. Setting it plus
+handing the pads back to USB-Serial-JTAG plus `esp_restart()` puts the chip in the
+loader with no button involved — the removed `xt_usb_enter_download_mode()` proved
+it on this board (`rst:0xc (RTC_SW_CPU_RST), boot:0x3 (DOWNLOAD(USB/UART0))`).
+There is no counterpart for the exit: the ROM has no "force normal boot" the host can
+ask for, because nothing of ours runs while the ROM owns the chip, and an
+RTC-source reset is the only thing that boots normally. So **one physical reset after
+flashing is inherent to this interface**, and work that needs zero intervention has to
+avoid the ROM loader entirely rather than try to command it. See `PENDING.md` §4.
+
+Note that `esptool` is spelled two ways here and only one of them works for writing:
+the system package (`/usr/bin/esptool`) has no esp32s3 stub flasher and dies with
+`stub_flasher_32s3.json: No such file`, while IDF's Python environment installs
+`esptool.py` 4.7.0 with it. Use `esptool.py`, or set `ESPTOOL` accordingly.
+
 Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 `RBDEV_BUILD`, `RBDEV_RESTART` (restart a toolchain build at a given step),
 `RBDEV_TARGET`, `RBDEV_ESP_TOOLCHAIN` (Espressif release tag).
