@@ -654,7 +654,8 @@ or a release script does not have to know IDF's layout. Neither change touches
 `utils/`.
 
 Maintained as if adoption were intended: `tools/configure` entry `133|meowkit-esp32s3`
-with `target_id=126`, unique `MODEL_NUMBER 133`, `tools/builds.pm` (`status => 2`,
+with `target_id=126`, `MODEL_NUMBER 133` (unique then — upstream later assigned 133 to
+`agptekrockernative`, so this target moved to 134 during the rebase), `tools/builds.pm` (`status => 2`,
 `sim => 0`, `manualok => 1`), `list_targets.pl` derives from `builds.pm`, manual
 platform/keymap wiring, simulator buttonmap and UI bitmap.
 
