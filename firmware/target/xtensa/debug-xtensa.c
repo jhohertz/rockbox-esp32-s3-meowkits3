@@ -27,6 +27,7 @@
 #include "axp173.h"
 #include "i2s-xtensa.h"
 #include "tick.h"
+#include "core_alloc.h"
 #include <stdio.h>
 
 #include "esp_pm.h"      /* esp_pm_config_t, esp_pm_get_configuration() */
@@ -121,6 +122,18 @@ enum
     INFO_CORE,
     INFO_CACHE,
     INFO_MMU,
+    /* What a plugin's malloc() actually has to work with. firmware/buflib_malloc.c
+     * routes plugin allocation to core_alloc(), not to the plugin buffer, so the
+     * 524,288-byte pluginbuf says nothing about whether a plugin can allocate -- its
+     * .data and .bss come from there, and its heap comes from here. Two numbers are
+     * printed because they answer different questions: core_available() is everything
+     * still free, core_allocatable() is the largest single block that can be had, and
+     * the difference between them is fragmentation. The second is what decides whether
+     * something like doom can run, since its screens are allocated one at a time at
+     * LCD_WIDTH*LCD_HEIGHT each (76,800 here, four of them at a screen wipe). The
+     * first moves while audio plays, which is why the two readings differ between
+     * visits to this screen. */
+    INFO_ARENA,
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_PANIC,
@@ -246,6 +259,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     case INFO_MMU:
         snprintf(buf, bufsz, "External cache MMU: %u of 512 pages mapped",
                  mmu_mapped_pages());
+        break;
+    case INFO_ARENA:
+        snprintf(buf, bufsz, "arena: %u free, %u allocatable",
+                 (unsigned)core_available(), (unsigned)core_allocatable());
         break;
     case INFO_USB:
         /* The DWC is clock-gated until usb_enable() runs, and a gated
