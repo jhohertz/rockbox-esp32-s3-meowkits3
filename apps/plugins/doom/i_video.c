@@ -110,6 +110,7 @@
 #include "v_video.h"
 #include "m_argv.h"
 #include "d_main.h"
+#include "g_game.h"
 
 #include "doomdef.h"
 
@@ -656,27 +657,44 @@ void I_ShutdownGraphics(void)
 #define DOOMBUTTON_MAP     BUTTON_START
 
 #elif CONFIG_KEYPAD == ESP32S3_PAD
-/* MeowKit ESP32-S3: 4-way + A + B, plus a 3x3 touch grid. Convention across
- * every MeowKit plugin keymap: directions move, A confirms or fires, B quits;
- * TOPMIDDLE/BOTTOMMIDDLE are the up/down pair, MIDLEFT/MIDRIGHT the prev/next
- * pair, CENTER the primary game action, corners secondary. */
-
-/* Movement on the pad, which is the one thing that must be simultaneous and
- * repeat-friendly; everything else is a discrete action and goes on the
- * screen. */
-#define DOOMBUTTON_UP    BUTTON_UP
-#define DOOMBUTTON_DOWN  BUTTON_DOWN
-#define DOOMBUTTON_LEFT  BUTTON_LEFT
-#define DOOMBUTTON_RIGHT BUTTON_RIGHT
-#define DOOMBUTTON_SHOOT BUTTON_A
-#define DOOMBUTTON_ESC   BUTTON_B
-#define DOOMBUTTON_OPEN  BUTTON_MIDRIGHT
-#define DOOMBUTTON_ENTER BUTTON_MIDLEFT
-#define DOOMBUTTON_SCROLLWHEEL
-#define DOOMBUTTON_SCROLLWHEEL_CW BUTTON_TOPMIDDLE
-#define DOOMBUTTON_SCROLLWHEEL_CC BUTTON_BOTTOMMIDDLE
-#define DOOMBUTTON_WEAPON   BUTTON_TOPRIGHT
-#define DOOMBUTTON_MAP      BUTTON_BOTTOMRIGHT
+/* MeowKit ESP32-S3: a 4-way stick plus A and B, and a 3x3 touch grid. Apps/plugin.c
+ * puts plugins in TOUCHSCREEN_BUTTON mode (:1024) and restores the user's setting on
+ * exit, so the grid synthesises the nine region buttons.
+ *
+ * The stick owns the two things that have to be continuous -- walking and turning --
+ * and the two physical buttons own the two things a player does constantly: fire and
+ * use. Putting use on the screen was the core problem with the previous layout; it is
+ * the second most frequent action in Doom and it forced a hand off the stick.
+ * Everything else is discrete and lives on the grid, with the cells nearest the thumb
+ * reserved for what a level actually needs: escape top-left (the cell every other
+ * MeowKit plugin uses for it), map top-middle, next weapon top-right, menu confirm
+ * mid-left, autorun bottom-left, strafe bottom-middle and bottom-right.
+ *
+ * Every one of these is handled by getkey()'s held-state machine, because this target's
+ * button_read_device() folds the touch region into the state it returns
+ * (firmware/target/xtensa/button-xtensa.c:190-203) and button.c keeps that as lastbtn
+ * (:414), which is what rb->button_status() reports. A finger held on a cell therefore
+ * reads as a key held down, which is what strafe needs and what makes a toggle fire
+ * once per press. Do not add a queue-reading path here as well: posting both a queued
+ * event and a state edge for the same touch double-fires toggles like escape and
+ * autorun, which is how a menu ends up opening and closing on one press.
+ *
+ * There is no scrollwheel on this board, so DOOMBUTTON_SCROLLWHEEL is deliberately not
+ * defined: it would only add a wheel branch that reads the queue every tic and discards
+ * anything that is not a wheel event. */
+#define DOOMBUTTON_UP          BUTTON_UP
+#define DOOMBUTTON_DOWN        BUTTON_DOWN
+#define DOOMBUTTON_LEFT        BUTTON_LEFT
+#define DOOMBUTTON_RIGHT       BUTTON_RIGHT
+#define DOOMBUTTON_SHOOT       BUTTON_A
+#define DOOMBUTTON_OPEN        BUTTON_B
+#define DOOMBUTTON_ESC         BUTTON_TOPLEFT
+#define DOOMBUTTON_MAP         BUTTON_TOPMIDDLE
+#define DOOMBUTTON_WEAPON      BUTTON_TOPRIGHT
+#define DOOMBUTTON_ENTER       BUTTON_MIDLEFT
+#define DOOMBUTTON_AUTORUN     BUTTON_BOTTOMLEFT
+#define DOOMBUTTON_STRAFELEFT  BUTTON_BOTTOMMIDDLE
+#define DOOMBUTTON_STRAFERIGHT BUTTON_BOTTOMRIGHT
 #else
 #error Keymap not defined!
 #endif
@@ -871,6 +889,28 @@ static inline void getkey()
          D_PostEvent(&event);
       }
 #endif
+#if CONFIG_KEYPAD == ESP32S3_PAD
+      /* The three cells the table above puts on the grid that this target needs and no
+       * other keypad defines. Strafe uses Doom's dedicated keys rather than the
+       * key_strafe modifier: the modifier path would need a held-key gesture, and
+       * HAS_BUTTON_HOLD is not implemented for xtensa, so button_hold() has nothing to
+       * report. These keys are also rebindable in Doom's own Controls menu. */
+      if(released & DOOMBUTTON_STRAFELEFT)
+      {
+         event.data1 = key_strafeleft;
+         D_PostEvent(&event);
+      }
+      if(released & DOOMBUTTON_STRAFERIGHT)
+      {
+         event.data1 = key_straferight;
+         D_PostEvent(&event);
+      }
+      if(released & DOOMBUTTON_AUTORUN)
+      {
+         event.data1 = key_autorun;
+         D_PostEvent(&event);
+      }
+#endif
    }
    if(pressed)
    {
@@ -932,6 +972,26 @@ static inline void getkey()
       if(pressed & DOOMBUTTON_MAP)
       {
          event.data1 =KEY_TAB;
+         D_PostEvent(&event);
+      }
+#endif
+#if CONFIG_KEYPAD == ESP32S3_PAD
+      if(pressed & DOOMBUTTON_STRAFELEFT)
+      {
+         event.data1 = key_strafeleft;
+         D_PostEvent(&event);
+      }
+      if(pressed & DOOMBUTTON_STRAFERIGHT)
+      {
+         event.data1 = key_straferight;
+         D_PostEvent(&event);
+      }
+      /* autorun is a latch (m_menu.c:1534-1539 toggles it when the menu is not up), so
+       * it acts on the press edge only; the matching keyup below keeps gamekeydown
+       * consistent without re-toggling. */
+      if(pressed & DOOMBUTTON_AUTORUN)
+      {
+         event.data1 = key_autorun;
          D_PostEvent(&event);
       }
 #endif
