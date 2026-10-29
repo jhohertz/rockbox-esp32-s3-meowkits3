@@ -274,8 +274,25 @@
  * raises the ceiling on everything that allocates after boot, which on this
  * target is everything that matters. The stored size is clamped by
  * dircache_init() -> MIN(last_size, DIRCACHE_LIMIT), so an existing card setting
- * cannot defeat this. */
-#define DIRCACHE_LIMIT   (1024*1024*1) /* 1 MB: DIRCACHE_MIN, leaves ~3 MB free */
+ * cannot defeat this.
+ *
+ * The floor has to move with the limit. dircache.c sizes the cache as
+ * MAX(DIRCACHE_MIN, MIN(size, DIRCACHE_LIMIT)), and DIRCACHE_MIN defaults to 1 MB
+ * (dircache.h:52-53), so lowering only the limit is a no-op -- the floor wins and
+ * the cache still claims 1 MB. Both are #ifndef-guarded, so a target can set them.
+ *
+ * 256 KB is chosen from what the arena has to carry afterwards. Doom's zone comes
+ * from core_alloc_maximum(), i.e. everything left at that moment, and measured on
+ * hardware its peak demand at a screen wipe is four full panels (307,200 bytes at
+ * 320x240) plus ~1.2 MB of pre-cached sound effects and ~300 KB of level data:
+ *
+ *   dircache 1 MB   -> doom zone 1,757,376 bytes -> Z_Malloc fails
+ *   dircache off    -> doom zone 2,805,984 bytes -> plays
+ *
+ * 256 KB sits between those, and the playback file buffer only gets more room than
+ * the 1 MB case above already needed. */
+#define DIRCACHE_MIN     (1024*1024/4) /* 256 KB: must not exceed DIRCACHE_LIMIT */
+#define DIRCACHE_LIMIT   (1024*1024/4) /* 256 KB: leaves ~3.75 MB of the arena free */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
  * allocated with core_alloc_maximum(), which grants whatever is left in the
