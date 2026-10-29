@@ -29,8 +29,8 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   dark idle and why `BATTERY_CAPACITY_DEFAULT` stays at 1400 anyway. Still wanted:
   playback screen-on and playback screen-off on the same track and volume, 20+ minutes
   each, reading the slope across samples rather than any single line.
-- **Coulometer → real battery percent: the counters run and the scale is measured; the
-  wiring is not done.** The row read `0/0` on every visit for one reason, and it was
+- **Coulometer → real battery percent: the counters run, the scale is measured, and the
+  gauge now uses them.** The row read `0/0` on every visit for one reason, and it was
   ours: `axp173_coulomb_clear()` wrote REG 0xB8 as a bare whole-register value (`0x20`),
   which cleared the enable bit along with the counters, so counting was off from boot
   onward. The header also called bit 6 a "calibration base"; the datasheet calls it a
@@ -81,23 +81,33 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   better measurement. `ctrl 80` at both ends confirms the enable bit and that CLEAR
   self-clears. Tightening it further needs a steady load (screen off, idle) or a shorter
   sample interval; neither is required to build a percentage on it.
-  What is left: `power-xtensa.c` has **no `_battery_level()`** — the weak default
-  `powermgmt.c:139` returns -1 — so `PERCENTAGE_MEASURE` needs one written, and it needs
-  two numbers the coulometer cannot give itself: the cell's usable capacity and what
-  "full" means. A run to shutdown supplies both (it also measures the bottom of
-  `percent_to_volt_discharge[]`, which is still assumed); this run's 81 mAh across the
-  93→88% step implies ~1.6 mAh per gauge percent there, consistent with the module's
-  nominal 1400 mAh but not proof of it.
-  The dark-idle run's integrated current was **425.1 mAh**, so a run of that length should
-  show ~76.5 million discharge counts if 180,000 LSB/mAh is right — and an hour of idle at
-  44 mA should be ~7.9e6. The overnight run of 2026-10-27 produced the log but not the pair:
-  the counters were cleared at boot as designed and the board was then reset into download
-  mode to flash the release, so nothing from it survives.
-  *Wiring*: `CONFIG_BATTERY_MEASURE` is currently `(VOLTAGE_MEASURE | CURRENT_MEASURE)` in
-  `config/meowkits3.h`; adding `PERCENTAGE_MEASURE` makes `firmware/powermgmt.c` call
-  `_battery_level()` in `power-xtensa.c` instead of mapping voltage through
-  `percent_to_volt_discharge[]`. That is the whole hook — no core change. Voltage stays as
-  a cross-check, because the two disagree under load sag.
+  **Wired on 2026-10-28, pending hardware confirmation.** `CONFIG_BATTERY_MEASURE` gained
+  `PERCENTAGE_MEASURE`, and `power-xtensa.c` now has `_battery_level()`: it anchors to the
+  voltage-derived percent on the first reading (the counters are cleared at boot, so they
+  cannot know the cell's state), then moves from that anchor by
+  `100 × Δ(dis − chg) / get_battery_capacity()`. Voltage stays in the config for the anchor,
+  for the fallback (`powermgmt.c:388-392` goes back to `voltage_to_battery_level()` when
+  `_battery_level()` returns -1), and because shutoff/disksafe are voltage comparisons either
+  way (`powermgmt.c:503`, `:537`) — so a failed read costs accuracy, not protection. Polling
+  is throttled to 5 s on a shared bus, and `axp173_coulomb_mAh()` was added so one 8-byte
+  transaction answers both counters *and* says whether the chip replied
+  (`axp173_coulomb_read()` reports zeroes either way).
+  Three things on it still need the bench:
+  1. **the full signal.** This chip has no charge-done flag, so "full" is inferred from the
+     taper — direction bit still charging while `axp173_charge_current()` sits at the
+     termination threshold (10% of the programmed current, so 45 mA at 450 mA; REG 33H bit 4
+     left clear). Confirm a charge actually reaches ~100% after unplug and that the taper is
+     observable, not just assumed. The level is capped at 99% while charging, as the voltage
+     path does.
+  2. **the boot anchor's error is inherited, not corrected.** A gauge anchored at 93% by
+     voltage stays 93%-based until a taper re-anchor or a counter clear. The run-to-shutdown
+     test both bounds that error and measures the bottom of `percent_to_volt_discharge[]`,
+     which is still assumed rather than observed.
+  3. **`battery_time()` sanity.** It now divides the coulometer percent by the same capacity,
+     so ~14 h remaining at 84 mA is the expected reading on the measured run's state.
+  The hook is entirely target-side: no core change, and the voltage tables stay in place
+  as the anchor and the fallback, which is also why voltage and percent disagree under
+  load sag without either being wrong.
 - **The 83 % "full" reading was our own charge ceiling, not the gauge table.** REG 0x33
   bits 6:5 set the charge target voltage and reset to `10` = 4.20 V. Our init wrote the
   register as `0x80 | 4` — "enable, 450 mA" — which zeroed those two bits and set a 4.10 V
