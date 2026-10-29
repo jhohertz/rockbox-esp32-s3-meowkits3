@@ -1217,6 +1217,18 @@ void I_InitGraphics(void)
    d_screens[0] = fastscreen;
 #else
    // Don't know if this will fit in other IRAMs
+
+   /* V_Init() allocates the screens individually precisely so that this function can
+    * replace d_screens[0] -- v_video.c:387 says so -- but the release never made it
+    * into the code, so the plugin held a third full-size screen while asking for one.
+    * Z_Malloc can only coalesce blocks adjacent to free space, so holding an extra
+    * static block in the middle of the zone costs more than its own size: measured as
+    * 416,704 usable bytes and no run above 18,624 for this 76,800-byte allocation.
+    * Freeing first gives Z_Free a block whose neighbours it can merge with. The
+    * replacement is the same size, so net memory is unchanged. */
+   if (d_screens[0])
+      V_FreeScreen(0);
+
    d_screens[0] = malloc (LCD_WIDTH * LCD_HEIGHT * sizeof(unsigned char));
 #endif
 }
