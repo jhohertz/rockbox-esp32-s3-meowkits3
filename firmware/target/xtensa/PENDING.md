@@ -29,8 +29,8 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   dark idle and why `BATTERY_CAPACITY_DEFAULT` stays at 1400 anyway. Still wanted:
   playback screen-on and playback screen-off on the same track and volume, 20+ minutes
   each, reading the slope across samples rather than any single line.
-- **Coulometer → real battery percent: the counters now actually run; the scale is
-  documented but unverified.** The row read `0/0` on every visit for one reason, and it was
+- **Coulometer → real battery percent: the counters run and the scale is measured; the
+  wiring is not done.** The row read `0/0` on every visit for one reason, and it was
   ours: `axp173_coulomb_clear()` wrote REG 0xB8 as a bare whole-register value (`0x20`),
   which cleared the enable bit along with the counters, so counting was off from boot
   onward. The header also called bit 6 a "calibration base"; the datasheet calls it a
@@ -69,6 +69,25 @@ Board access: **hold BOOT, tap RESET** for download mode, then
      measured rather than assumed: `battery_level_shutoff` / `battery_level_disksafe`
      (3300 / 3400 mV) and the low end of `percent_to_volt_discharge[]` only get exercised by
      a run that actually reaches them.
+  **Result, 2026-10-28.** 56 min on battery with playback running, current 76-86 mA (mean
+  83.2), voltage 4126 → 4059 mV, gauge 93% → 88%. Discharge counter 617,273 → 15,189,454,
+  i.e. **14,572,181 counts = 80.96 mAh** at 180,000 LSB/mAh; the plugin's independent
+  integration of `battery_current()` over the same window gives **77.6 mAh** (trapezoid on
+  the same rows: 77.7, so the log side is internally consistent). Implied scale **187,786
+  LSB/mAh — 4.3% off the derivation, not a factor**: a wrong ADC rate would read 2×, 4× or
+  8×, so `coulomb_adc_rate_hz()`'s 25 Hz assumption holds. The residual's *sign* is the
+  tell — the chip reads higher because a once-a-minute instantaneous sample misses peaks in
+  a varying load, while the chip integrates continuously. Treat the chip counter as the
+  better measurement. `ctrl 80` at both ends confirms the enable bit and that CLEAR
+  self-clears. Tightening it further needs a steady load (screen off, idle) or a shorter
+  sample interval; neither is required to build a percentage on it.
+  What is left: `power-xtensa.c` has **no `_battery_level()`** — the weak default
+  `powermgmt.c:139` returns -1 — so `PERCENTAGE_MEASURE` needs one written, and it needs
+  two numbers the coulometer cannot give itself: the cell's usable capacity and what
+  "full" means. A run to shutdown supplies both (it also measures the bottom of
+  `percent_to_volt_discharge[]`, which is still assumed); this run's 81 mAh across the
+  93→88% step implies ~1.6 mAh per gauge percent there, consistent with the module's
+  nominal 1400 mAh but not proof of it.
   The dark-idle run's integrated current was **425.1 mAh**, so a run of that length should
   show ~76.5 million discharge counts if 180,000 LSB/mAh is right — and an hour of idle at
   44 mA should be ~7.9e6. The overnight run of 2026-10-27 produced the log but not the pair:
