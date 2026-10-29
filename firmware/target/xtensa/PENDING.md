@@ -354,6 +354,24 @@ Each of these was checked on the board, not inferred.
   on this panel comes first; the `%T` mapping work after that. Not a firmware gap — the
   builtin `cabbiev2` continues to render fine.
 
+- **Remote terminal UI over the CDC class — explored and parked, not scheduled.** Written
+  up in `CDC-UI-RESEARCH.md`: a host-side TUI that mirrors menuing plus a line CLI with
+  the prompt as context, both re-synced by one canonical Ctrl-L snapshot gesture. The tree
+  turns out to support the idea better than expected — the serial class asks for neither
+  exclusive storage nor a CPU boost (`usb_serial.c:437-438`), `button_queue_post()` is the
+  documented input seam used by non-hardware sources (`button-devinput.c:306`), settings are
+  addressable by cfg name with string conversion both ways (`settings.h:301-305`), the log
+  ring is exported so CDC streaming can become pull-based with a ~5-line gate in `logf.c`,
+  and the voice UI is already precedent for mapping screen function to a non-visual medium
+  (`get_talk_id`, `talk_id(LANG_*)`). Constraints recorded there: it only works while the
+  card is *not* exported (MSC parks the UI on `gui_usb_screen_run()`), pixel mirroring is out
+  on bandwidth, plugins can only get raw-key forwarding, and a plugin host would need a
+  `PLUGIN_API_VERSION` bump. Make-or-break: snapshot consistency against the UI thread — if
+  that needs locking in shared GUI code, the idea stops being additive. Nothing was
+  implemented, and the RX defects it depends on (`transfer_complete` ignores `length`, no NUL
+  guarantee, `RECV_BUFFER_SIZE` 32 against a 512-byte buffer) are worth fixing on their own
+  merits regardless. Reopens if hand-free operation of the device becomes worth a client.
+
 | Item | Why deferred | What would reopen it |
 |---|---|---|
 | `%T` regions in the built-in theme (`UX-PLAN` S6) | `skin_parser.c:1648` already maps `shuffle`, `repmode`, `pitch`, `trackinfo`, `playlist`, `listbookmarks`, `createbookmark`, so themes get them without firmware. Editing `cabbiev2` would put our 320×240 layout opinion in a file every target shares. | A theme pack proves the regions are unreliable at 320×240, or upstream accepts a touch-first default skin. |
