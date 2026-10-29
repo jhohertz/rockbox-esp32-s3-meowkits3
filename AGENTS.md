@@ -4800,6 +4800,34 @@ target from the build directory name, so that directory has to keep the `build-`
 plus the model name — a scratch directory with a different spelling cannot be the one the
 README points at.
 
+## Sample rate, the resampler, and what DSD actually needs from this tree
+
+Three things that look like hardware limits and are not, and one that is a code gap:
+
+- **`HW_SAMPR_CAPS` does not cap what you can play.** The DSP resampler is unconditional —
+  `lib/rbcodec/dsp/resample.c:322`, "This stage should be enabled at all times" — and it
+  converts the file's virtual rate to the DSP output frequency. `SAMPR_CAP_ALL_96` decides
+  what the sink is *clocked* at. A 176.4 kHz WAV plays at the correct pitch through a 96 kHz
+  sink, measured on hardware. There is no `convert_rate` in this tree at all, so that
+  resampler is the whole mechanism; if it ever gets disabled, over-cap files play at the
+  wrong speed.
+- **Sample-rate math is in bits, not bytes.** `rate × channels × bits / 1e6` is megabits
+  per second. 176.4 kHz / 24-bit / stereo is 1.06 **MB/s**, not 8.47; 96/24 is 0.58 MB/s;
+  the 1-bit 20 MHz card sustains roughly 2.5 MB/s. Saying "that file cannot stream off the
+  card" from the first number is a units error, and it is easy to make.
+- **A quiet recording is not the same as a dead capture path.** The way to tell a genuine
+  high-rate capture from one that silently ran at 44.1 kHz is the spectrum: energy above the
+  22.05 kHz Nyquist of a 44.1 kHz capture is impossible. Two clips at 96 kHz measured 1.3%
+  and 8.4% of their energy above 22 kHz, so `REG08` bit 1 (`SPEED_MODE`) works; the level
+  was low because mic gain was 0 dB and nothing was said into them.
+- **`dsd.c` handles DSD containers inconsistently.** `parse_dsf` requires
+  `sample_type == 2`, while `decode_dsf` only ever runs the plain CIC decimator —
+  `dst_decode()` is reached exclusively from `decode_dff()`. A raw-DSD DSF whose header
+  carries 2 plays correctly (measured, with its ID3v2 APIC art), and DST-compressed DSF
+  would decode wrongly; DSF seeking uses linear byte arithmetic that only holds for
+  uncompressed data. Upstream code, not ours, but it means "DSD works here" is true only for
+  the files we have actually tried.
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not

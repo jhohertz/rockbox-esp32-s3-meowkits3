@@ -250,6 +250,61 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 2. Verified on hardware — closed
 
+- **Recording at 88.2 kHz and 96 kHz works** — the `SPEED_MODE` bit-1 fix
+  (`dfff14a08b`) now has signal through it. Verified 2026-10-29 on `960b37067f` by reading
+  the WAVs off the card rather than by listening: `Recordings/R_MIC_260510-131716.wav` is
+  96,000 Hz / 16-bit / stereo, 0.92 s, peak 1166 (-29.0 dBFS), RMS 140 (-47.4 dBFS), zero
+  clipped samples, and **1.3% of its energy above 22 kHz**. That last figure is the whole
+  proof: a 44.1 kHz capture cannot contain anything above its 22.05 kHz Nyquist, so the ADC
+  was genuinely clocked at the requested rate. The clip was recorded with mic gain at **0
+  dB**, which is why the level is modest — it sits between the measured 0 dB reference
+  (RMS -56 dBFS) and the 30 dB one (RMS -23.9 dBFS), exactly where a voice at 0 dB belongs.
+  The two earlier high-rate clips (88.2 peak -59.9 dBFS, 96 peak -57.4 dBFS) were also
+  genuine captures — 40.8% and 8.4% of their energy sits above 22 kHz — they simply had no
+  input, and at 0 dB gain the oversampled noise dominates the top end, which is why the
+  *fraction* above 22 kHz is larger in the quiet files. Reading "low level" as "no signal"
+  was the wrong inference; bytes, rate and spectrum were all fine.
+- **DSD64 DSF plays, and album art decodes out of it.** `1-01 - Hello.dsf` (145,283,752 B,
+  Oasis) plays on `960b37067f`, and its embedded art renders. Header: `DSD ` magic,
+  `sample_type=2`, DSD rate 2,822,400 → `metadata/dsd.c:55` divides by 64 and asks the sink
+  for **44.1 kHz**, channels field 1 (so `lsb_first`), block 4096, `sample_count`
+  573,511,680 bits per channel — which computes to 143.4 MB of payload, matching the file
+  exactly, so **the data is raw DSD** despite the `sample_type` value. The tag is an ID3v2.3
+  block at `metadata_pointer` (143,384,668) with an **APIC frame of 1,890,341 B (JPEG)**,
+  read through `setid3v2title()` — the first time our art path has been exercised on a
+  container other than FLAC or ID3v2 MP3. Sustained card read is only 0.71 MB/s, so the SD
+  path is not the limit here.
+  Two things I predicted wrongly and should not be repeated: that `sample_type=2` means
+  DST-compressed and therefore this file would decode to static (it plays — the field's
+  meaning is unconfirmed, and `dsd.c:148` requires exactly 2 whatever it signifies), and
+  that a plain DSF is the common case that the gate rejects (untested either way). What is
+  still true from reading the code: `decode_dsf()` only ever runs the CIC decimator —
+  `dst_decode()` is reached solely from `decode_dff()` (lines 468/487/528) — so a genuinely
+  DST-compressed DSF would decode wrongly, and DSF seeking (`dsd.c:197`) uses linear byte
+  arithmetic that only holds for uncompressed data. Unverified, because we have no such
+  file.
+  **Startup is noticeably slow** on these files and the cause is not established. Three
+  observations separate the candidates: play the same file twice (fast second start ⇒ card
+  and cache, not codec load); play a FLAC of similar size from the same folder (fast ⇒ the
+  DSF-specific work is the cause); play it with album art off (shorter ⇒ the 1.9 MB tag and
+  JPEG read at 143 MB, i.e. ~2 MB from the far end of the file before the first sample, is
+  where the seconds are).
+- **176.4 kHz / 24-bit WAV plays at the correct pitch.** Both 176.4 kHz files in the MA
+  Recordings sampler play fine on `960b37067f`, which is what the code says should happen:
+  the DSP resampler is unconditional — `lib/rbcodec/dsp/resample.c:322`, "This stage should
+  be enabled at all times" — and converts the file's virtual rate to the DSP output
+  frequency, so `HW_SAMPR_CAPS SAMPR_CAP_ALL_96` decides only what the sink is *clocked*
+  at, not what is playable. There is no `convert_rate` anywhere in this tree, so that
+  resampler is the entire mechanism. 24-bit input still lands in a 16-bit slot
+  (`SLOT_BITS 16`, ES8311 `REG_SDPIN`/`REG_SDPOUT` = 16-bit), so nothing about resolution
+  is gained at the DAC; what the files really exercise is per-sample resampling at 2× the
+  usual rate on one core, with codec and DSP code executing from PSRAM.
+  I also stated the card bandwidth wrongly: `rate × channels × bits / 1e6` is **megabits**
+  per second. The sustained reads are 0.18 MB/s at 44.1/16, 0.58 MB/s at 96/24 and
+  1.06 MB/s at 176.4/24, against roughly 2.5 MB/s available — so the transport was never
+  the limit, and my objection to testing those files was a units error.
+
+
 - **Doom sound was the plugin's own default** (`apps/plugins/doom/m_misc.c:294`).
   `doomstat.c:102` initialises `enable_sound` to 1, but the settings table registers the
   default as 0 and `M_LoadDefaults()` applies it, while `rockdoom.c:876` deletes
@@ -310,11 +365,11 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   `Debug → View HW info` keeps an `ADC` row (REG43, REG1E, REG1D, REG41, REG01, REG08)
   so this stays observable; note it shows the value applied at the *last session
   start*, not the current setting.
-  Still unverified: recording at **88.2 or 96 kHz** (the `SPEED_MODE` fix has had no
-  signal through it), whether the **max 37 dB** setting clips on loud input, and
+  Still unverified: whether the **max 37 dB** setting clips on loud input, and
   `pitch_detector` at its **default** Volume Threshold — its gate is now
   `(50 × 37)² = 3.4e6`, i.e. RMS 1842, and the measured speech RMS is 2101, so it
-  should pass without touching the knob.
+  should pass without touching the knob. (Recording at 88.2 and 96 kHz is no longer on
+  this list — it is verified, see §2.)
 - **Capture path re-isolated, and `pitch_detector` works** (`a781b24b47`). The receiver and
   the transmitter no longer share one rate variable; see `AGENTS.md` ("Bus ownership") and
   `MEMORY.md` for the contract. Verified on hardware with the image built from that commit:
@@ -719,9 +774,12 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      `rm -rf <builddir>/apps/plugins && make rocks && make zip`. The canonical card zip is
      back at `build-meowkits3/rockbox.zip` — 422 files, 157 rocks, 44 codec entries, 63 Lua
      plugins, one voice pack, version matching the flashed image.
-  2. DSD playback (`dsd.c`, DSF/DFF/SACD) is now compiled for this target and unverified:
-     whether our I2S path can carry those rates is unknown, and a codec that cannot play is
-     worse than one that is absent.
+  2. **DSD: partially done.** DSD64 DSF plays with art (see §2). Remaining: **DSD128**,
+     which asks the sink for 88.2 kHz and doubles the CIC decimator to roughly 11.3 M steps
+     per second — watch for stutter rather than silence; a `.dff` file, which is the only
+     container in this codec with a DST path; and whether a DSF with any other
+     `sample_type` value is rejected by the gate at `dsd.c:148`. Also worth establishing
+     why DSF startup is slow, which §2 lists as three isolating tests.
   3. The upstream opus buffer rework (allocate at their limits) and the m4a 512 KB seeking
      rework change peak codec demand against our fixed codecbuf/pluginbuf/arena. Read
      `Debug → View HW info`'s arena row after playing Opus and M4A.
