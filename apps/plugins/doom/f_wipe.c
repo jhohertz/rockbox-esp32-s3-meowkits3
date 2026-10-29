@@ -34,7 +34,6 @@
 #include "z_zone.h"
 #include "doomdef.h"
 #include "i_video.h"
-#include "i_system.h"
 #include "v_video.h"
 #include "m_random.h"
 #include "f_wipe.h"
@@ -82,8 +81,6 @@ static int wipe_initMelt(int width, int height, int ticks)
 
    // setup initial column positions (y<0 => not ready to scroll yet)
    y = (int *) malloc(width*sizeof(int));
-   if (!y)
-      I_Error("Wipe: out of memory for %d columns", width);
    y[0] = -(M_Random()%16);
    for (i=1;i<width;i++)
    {
@@ -162,8 +159,6 @@ static int wipe_exitMelt(int width, int height, int ticks)
 int wipe_StartScreen(int x, int y, int width, int height)
 {
    wipe_scr_start = d_screens[SRC_SCR] = malloc(SCREENWIDTH * SCREENHEIGHT);
-   if (!wipe_scr_start)
-      I_Error("Wipe start: out of memory (%d)", SCREENWIDTH * SCREENHEIGHT);
    V_CopyRect(x, y, 0,       width, height, x, y, SRC_SCR, VPT_NONE ); // Copy start screen to buffer
    return 0;
 }
@@ -171,8 +166,6 @@ int wipe_StartScreen(int x, int y, int width, int height)
 int wipe_EndScreen(int x, int y, int width, int height)
 {
    wipe_scr_end = d_screens[DEST_SCR] = malloc(SCREENWIDTH * SCREENHEIGHT);
-   if (!wipe_scr_end)
-      I_Error("Wipe end: out of memory (%d)", SCREENWIDTH * SCREENHEIGHT);
    V_CopyRect(x, y, 0,       width, height, x, y, DEST_SCR, VPT_NONE); // Copy end screen to buffer
    V_CopyRect(x, y, SRC_SCR, width, height, x, y, 0       , VPT_NONE); // restore start screen
    return 0;
