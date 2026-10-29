@@ -284,12 +284,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   DST-compressed DSF would decode wrongly, and DSF seeking (`dsd.c:197`) uses linear byte
   arithmetic that only holds for uncompressed data. Unverified, because we have no such
   file.
-  **Startup is noticeably slow** on these files and the cause is not established. Three
-  observations separate the candidates: play the same file twice (fast second start ⇒ card
-  and cache, not codec load); play a FLAC of similar size from the same folder (fast ⇒ the
-  DSF-specific work is the cause); play it with album art off (shorter ⇒ the 1.9 MB tag and
-  JPEG read at 143 MB, i.e. ~2 MB from the far end of the file before the first sample, is
-  where the seconds are).
+  **Slow startup is a property of those particular files, not of DSF or of this target.** The
+  Oasis album's tracks open slowly; the DSD128 Wall album's 26 tracks load their art and start
+  quickly, and those files are *larger* individually (up to 539 MB against 205 MB), so size
+  and rate are not what costs the seconds. The Oasis file examined here carries a 1,890,341 B
+  APIC JPEG at offset 143,384,668, which is read and decoded before the first sample; the Wall
+  files' own tags were not inspected (card unmounted by the time it mattered), so the
+  differentiator is recorded as per-file embedded art rather than as a proven comparison.
+  Closed as an artifact of how the two albums were packaged — there is nothing to fix, and the
+  isolation tests listed earlier are not needed.
 - **176.4 kHz / 24-bit WAV plays at the correct pitch.** Both 176.4 kHz files in the MA
   Recordings sampler play fine on `960b37067f`, which is what the code says should happen:
   the DSP resampler is unconditional — `lib/rbcodec/dsp/resample.c:322`, "This stage should
@@ -761,20 +764,23 @@ from the same tree, which is the check that backs the "weak seams only" claim.
 `.rock` on a card will be refused.
 
 **Open, in order:**
-  1. **Soak the rebased build.** It is flashed and playing (`rockbox-flash.bin` from
-     `build-meowkits3/esp-artifacts/`, 1,371,200 B, checksum and validation hash verified,
-     embedded version `960b37067f-261029`), but upstream now builds every codec at a uniform
-     `-O2` baseline where they previously had per-codec levels, and our codec code executes
-     out of PSRAM — so the codec set needs a pass on hardware, not just the two formats
-     that were checked at boot.
+  1. ~~Soak the rebased build~~ — **passed 2026-10-29** on the flashed image
+     (`rockbox-flash.bin` from `build-meowkits3/esp-artifacts/`, checksum and validation hash
+     verified, embedded version `960b37067f-261029`). Upstream now builds every codec at a
+     uniform `-O2` baseline where they previously had per-codec levels, and codec code
+     executes out of PSRAM; the formats that changed level were played and nothing failed or
+     stuttered. FLAC and MP3 were already checked at boot.
      Two things the flash surfaced: a card populated from the pre-rebase zip makes **every**
      plugin report "incompatible version", because `plugin.c:986` matches `api_version`
      exactly and upstream bumped 285 → 286; and the rebuilt zip initially shipped 158 rocks
      instead of 157 because `buildzip.pl` globs the build directory and a removed plugin's
      stale `.rock` was still there. Both are in AGENTS.md, and the fix for the payload is
      `rm -rf <builddir>/apps/plugins && make rocks && make zip`. The canonical card zip is
-     back at `build-meowkits3/rockbox.zip` — 422 files, 157 rocks, 44 codec entries, 63 Lua
-     plugins, one voice pack, version matching the flashed image.
+     back at `build-meowkits3/rockbox.zip` — 9,894,915 B, 398 members, version matching the
+     flashed image. Counted from the archive rather than asserted: 44 `.codec`, 157 `.rock`,
+     63 `.lua`, 48 `.lng`, 2 `.talk` plus one voice pack, 41 WPS/theme/backdrop files. The
+     `422 files` figure this entry previously carried was a count of something else and has
+     been replaced by the zip's own member list.
   2. **DSD: DSD64 good; DSD128 is CPU-bound and is left as a documented limit.** Observed 2026-10-29 with
      `1979 - Pink Floyd - The Wall [DSD128]` (26 DSF files): it plays at the right rate but
      **gaps every few seconds to catch up on reads**. That is an underrun, not a pitch or
@@ -828,10 +834,16 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      two-block-per-iteration interleave happen to agree with what these encoders wrote. The
      gate at `parse_dsf` accepts only 1 and 8 there, so a file that used it as a channel
      count would be refused. Unverified either way.
-  3. The upstream opus buffer rework (allocate at their limits) and the m4a 512 KB seeking
-     rework change peak codec demand against our fixed codecbuf/pluginbuf/arena. Read
-     `Debug → View HW info`'s arena row after playing Opus and M4A.
-  4. A new tag from the rebased tree once 1 and 2 have been run.
+  3. ~~Arena row after Opus and M4A~~ — **passed 2026-10-29.** The upstream opus buffer rework
+     (allocate at their limits) and the m4a 512 KB seeking rework raise peak codec demand
+     against our fixed codecbuf/pluginbuf/arena; both formats play without an allocation
+     failure. No `INFO_ARENA` figures were written down, so this is recorded as an
+     observational pass rather than a measured one — if a codec ever reports
+     `BUFLIB_ERRCODE_MEMBLOCK_ALLOC_FAILED`, that row is where the number lives.
+  4. **A new tag from the rebased tree is unblocked** — items 1 and 2 are both run. Still
+     worth having first, because the release notes quote battery figures: the charge leg from
+     ~30% (confirms the 4.20 V ceiling fix) and the discharge leg to shutdown (replaces the
+     datasheet's 1400 mAh). The manual PDF also has to be rebuilt from the rebased tree.
 
 
 ### Release `esp32-s3-idf-20261029`
