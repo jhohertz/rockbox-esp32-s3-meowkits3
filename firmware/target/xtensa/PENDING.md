@@ -58,9 +58,21 @@ Board access: **hold BOOT, tap RESET** for download mode, then
      interval only has to sit inside one direction. Starting near full makes the tail
      ambiguous, because charge current tapers as the cell reaches the target voltage and the
      average stops matching the instantaneous reading.
-  2. Discharge leg: unplug, wait ~5 minutes so the charge counter is irrelevant, read the CC
-     row, run playback at fixed volume and backlight for 30-60 min with `battery_bench`
-     going, then read the CC row again *before* anything reboots.
+  2. Discharge leg: unplug, run playback with `battery_bench` going, and read the CC row
+     whenever it is convenient. Catching the charge-to-discharge switch is not required:
+     the two counters are separate and cumulative (`axp173.h:35-51`), so the discharge
+     figure at any instant already contains everything the cell has given up since boot,
+     and `battery_bench` now writes a `# switched to discharge HH:MM:SS` banner at the row
+     where the direction bit flipped. What *is* required is reading before a reboot —
+     `axp173_init()` clears both counters, so a session's history dies with the session.
+     Consumption does not have to be even. The counters integrate instantaneous current, so
+     a varied load still gives correct mAh; what varies is the *usable* total, because a run
+     ends at a voltage rather than at a charge. The floor is `power-xtensa.c:36-37`:
+     disksafe 3400 mV, shutoff 3300 mV, which is also the 0 % entry of
+     `percent_to_volt_discharge[]`. So the last CC reading that exists is whatever the
+     screen shows above 3.3 V, and a run-to-shutdown figure measures the capacity above
+     3.3 V. Overflow is not a concern: the counters are 32-bit raw at ~187,786 LSB/mAh,
+     i.e. 22,874 mAh before wrap, sixteen full cells.
   3. Charge leg: start near 30 %, plug in, same shape against the `chg` counter.
   4. Compare the CC row's `Δcounts` against the log's `ΔmAh`. Agreement settles 180,000
      LSB/mAh; a clean factor says `coulomb_adc_rate_hz()`'s ADC-rate assumption is wrong, and
@@ -220,12 +232,12 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   on failure, so opening Browse-by-Tag before a plugin launch leaves the plugin nothing.
 
   **Still open, in order:**
-  - **Doom makes no audible sound.** Verified by ear, not inferred. It drives
-    `PCM_MIXER_CHAN_PLAYBACK` through pcmbuf, and `I_InitSound` calls `rb->audio_stop()`
-    then `pcmbuf_fade(false, true)` (`i_sound.c:504,512`), so the likely cause is the
-    playback channel's amplitude/fade state or the mixer session not being re-armed, not
-    the DAC path -- the same path plays FLAC correctly. Note the cost of the silent
-    sounds: ~1.2 MB of static zone memory for audio nobody hears.
+  - ~~Doom sound and music~~ — closed, see §2. Sound was `m_misc.c`'s default for
+    `enable_sound`, not the mixer: the ~1.2 MB of pre-cached effects were being played
+    into a channel the plugin had switched off. Music is absent by upstream design —
+    `I_InitMusic`, `I_PlaySong` and `I_RegisterSong` are `// UNUSED.` stubs
+    (`i_sound.c:546-595`) on every Rockbox port, so the WAD's `mus00` lumps load and go
+    nowhere. Not a gap we can close without an ADM/OPL emulator.
   - ~~Doom key mappings~~ — closed, see §2.
 
   - **Re-test the worst case**: launch doom while a FLAC track is mid-playback, with the
@@ -237,6 +249,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     time; the successful run above used the runtime off switch.
 
 ## 2. Verified on hardware — closed
+
+- **Doom sound was the plugin's own default** (`apps/plugins/doom/m_misc.c:294`).
+  `doomstat.c:102` initialises `enable_sound` to 1, but the settings table registers the
+  default as 0 and `M_LoadDefaults()` applies it, while `rockdoom.c:876` deletes
+  `/code/data/config.cfg` before every launch — so the default was the effective state on
+  every start, and a menu change could not survive because the file it wrote was removed
+  before the next run. The default is now 1, matching the initialiser. Verified on
+  hardware: sound effects audible, still no music (upstream stubs, see §1).
+- **`battery_bench` marks the direction change** (`apps/plugins/battery_bench.c`). The
+  charging column reads `C`/`D` instead of `C`/`-`, because this chip reports the battery
+  *current direction* and a clear bit means current flowing out — a `-` was the same glyph
+  the charger column uses for "nothing attached", which made the discharge half of a run
+  invisible to the eye. A `#` banner line is written at the row where the bit flips, with
+  the charge and discharge totals accumulated up to the previous row, so a capacity figure
+  starts at a labelled line. Both columns are live on this target
+  (`CONFIG_CHARGING == CHARGING_MONITOR`, `CONFIG_BATTERY_MEASURE & CURRENT_MEASURE`).
+
 
 - **Doom controls, remapped and verified** (`apps/plugins/doom/i_video.c`). Stick walks
   and turns, `A` fires, `B` uses or opens, and the grid carries escape (top-left), map
@@ -577,6 +606,12 @@ Not being submitted now. Kept so the work can be split for a merge.
 | `931cb55135` | `tools/rockboxdev.sh` | Strip the release tag's `esp-` prefix when composing the Xtensa archive name | Upstream-facing only if the ESP target lands upstream, but the underlying fact is worth recording: Espressif's release *tag* is `esp-14.2.0_20260121` while the published asset is `xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz`, so building the file name from the tag verbatim asks for a doubled prefix and the CDN answers 404. Verified against the release API (35 assets; for this triple only `riscv32-esp-elf-14.2.0_...` and `xtensa-esp-elf-14.2.0_...`). |
 | `931cb55135` | `tools/rockboxdev.sh` | `getfile_ex()` must exit non-zero when every mirror failed | A bare `exit` takes the status of the last command, and the two `echo`s above it always succeed — so a failed download printed "couldn't download the file!" and returned 0. Any build system driving this script continues with no toolchain. Affects every arch, not just Xtensa. |
 | — | `tools/configure` | Include `-` in the `--target=` class when rebuilding `CONFIGURE_OPTIONS` | The five sed patterns that strip the options configure re-sets unconditionally cover `--voice=[-_./a-zA-Z0-9]*` but not `-` for `--target`, so a hyphenated target spelling is only half stripped and `make reconf` re-runs configure with a stray `-esp32s3` and dies on "Option '-esp32s3' unsupported". Only our alias triggers it today, which is exactly why the asymmetry is a bug rather than a rule. |
+| `a552df3b95` | `apps/plugins/doom/i_sound.c` | `getsfx()` reads a lump once instead of twice | Upstream code: it calls `W_GetNumForName`/`S_LoadSound` and then re-reads the same lump through a second path, so a sound is present in the zone twice. On a device that is out of memory rather than out of time this is ~900 KB of duplicated effects. Any target. |
+| `5a967cee39` | `apps/plugins/doom/i_video.c` | `I_InitGraphics()` releases `d_screens[0]` before replacing it | `v_video.c:387` documents that the caller owns that buffer; nothing freed it, so a second `I_InitGraphics()` leaks a full-panel buffer. Any target that re-inits graphics. |
+| `8b57f077e7` | `apps/plugins/doom/f_wipe.c` | Wipe transform scratch in static storage rather than the zone | A third full-screen buffer allocated out of the game's memory pool for the duration of a wipe. Measured here: it was the difference between a wipe passing and failing at 68,384 bytes free against 76,800 needed. Device targets only care, but the fix is generic. |
+| `249f58a5fb` | `apps/plugins/doom/i_system.c`, `rockdoom.c` | `I_Error()` exits through the plugin's `exit()` instead of returning | Returning from `I_Error()` returns into a NULL caller. `rb_atexit()` cleanup then still runs. Applies to every plugin that can hit a fatal Doom error. |
+| new | `apps/plugins/doom/m_misc.c` | `enable_sound` default 1, matching `doomstat.c:102`'s initialiser | The table's default was 0 and `rockdoom.c` deletes `config.cfg` before every launch, so Doom was silent on every target on every start and the menu setting could not persist. One-word fix; changes audible behaviour for everyone. |
+| new | `apps/plugins/doom/i_video.c` | Keypad block for `ESP32S3_PAD` and the three cells no other keypad defines | Target-specific, listed only so the doom diff is complete: the four rows above are the ones worth proposing. |
 
 ## 6. Core touches rationalized into the target — done
 
