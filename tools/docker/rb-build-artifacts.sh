@@ -66,6 +66,19 @@ fi
 source "$IDF_PATH/export.sh" >/dev/null
 
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
+
+# Git refuses to operate on a repository owned by a different uid, and a host directory
+# mounted into a container is exactly that: the checkout is the host user's, the process
+# is root. Without this, `rev-parse` fails with "detected dubious ownership", the
+# manifest records commit=unknown and dirty=0, and tools/version.sh embeds an empty hash
+# in the image itself -- so the device's About screen reads "-261029" and nothing can tie
+# an artifact to a commit. Measured on the esp32-s3-idf-20261029 build, where it produced
+# exactly that.
+git config --global --add safe.directory "$REPO" >/dev/null 2>&1 || true
+if [ -d "$IDF_PATH" ]; then
+    git config --global --add safe.directory "$IDF_PATH" >/dev/null 2>&1 || true
+fi
+
 cd "$BUILD_DIR"
 
 # configure must be run from inside the build directory, and it writes Makefile and
