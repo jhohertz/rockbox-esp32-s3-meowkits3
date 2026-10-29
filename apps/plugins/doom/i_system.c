@@ -63,6 +63,8 @@
 
 #include "rockmacros.h"
 
+#include "lib/pluginlib_exit.h"
+
 //
 // I_GetTime
 // returns time in 1/70th second tics
@@ -154,10 +156,13 @@ void I_Error (char *error, ...)
       G_CheckDemoStatus();
 
    I_Quit();
-   /* The printf() above is suppressed while the game owns the display -- noprintf
-   * guards the grayscale and direct-LCD paths -- so it is not enough on its own:
-   * without this the player just loses the plugin with no reason shown.
-   * I_ShutdownGraphics() has cleared noprintf by now, and the splash replaces the
-   * blind sleep that used to be here. */
+   /* The printf() above is invisible while the game owns the display: noprintf guards
+   * the grayscale and direct-LCD paths. I_ShutdownGraphics() has cleared it by now, so
+   * the reason -- usually Z_Malloc's byte count -- is worth showing before leaving. */
    rb->splash(HZ*2, p_buf);
+   /* Upstream returns here, so the caller carries on with the NULL it just got and the
+   * next write through it is a LoadProhibited reboot instead of an error message.
+   * plugin_crt0.c implements exit() as a longjmp back to plugin__start, which turns a
+   * nonzero status into PLUGIN_ERROR and still runs the atexit handler (W_ReportLocks). */
+   exit(EXIT_FAILURE);
 }

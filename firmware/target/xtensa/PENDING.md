@@ -162,26 +162,32 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   of the 524,288-byte plugin buffer, so that buffer is not the constraint. The arena is
   ~4 MiB of PSRAM shared with the audiobuffer, pcmbuf, codec buffer, playlist cache and
   albumart (`MEMORY.md` §2), which is why the shortfall varies with what was running.
-  **Fixed (this commit):** the four screen allocations and the wipe's column array are
-  checked. `V_Init()` reports through `rb->splash` and sets `doomexit` — deliberately not
-  `I_Error()`, because `I_Init` has not run yet and its shutdown path would tear down
-  things that were never brought up; `D_DoomMainSetup()` now returns on `doomexit`, and
-  `D_DoomLoop()`'s `while (!doomexit)` plus `I_SubmitSound()`'s `enable_sound` guard make
-  the early return clean. The wipe checks go through `I_Error()` (mid-game, init done) and
-  `wipe_ScreenWipe()` reports the wipe as finished once `doomexit` is set, so the caller's
-  loop stops touching buffers that do not exist. `I_Error()` now splashes the message
-  instead of sleeping — its `printf()` is suppressed while the game owns the display, so
-  previously the player just lost the plugin with no reason shown. Card-only change; no
-  firmware image.
-  **Still open:** doom may simply not fit at this resolution. Before deciding, surface the
-  number — `core_allocatable()` exists (`core_alloc.c:100`, used by `playback.c:1081` and
-  `playlist.c:3195`) and nothing reports it; an `INFO_ARENA` row or a second value on the
-  boot `MEMORY:` line would say how much the arena can actually give. Then choose: free
-  arena (playlist cache, albumart), trade `CODEC_SIZE` (1 MB reserved against a 200 KB
-  largest codec), or take doom out of this target's build as honestly unsupported. Other
-  unchecked allocations remain in doom (`i_video.c:968` `paldata`, `:1209` `gbuf`,
-  `i_sound.c:135`, `g_game.c:1752` save buffer, `d_main.c:555` wad dir table) — the ones
-  fixed are the ones that were actually crashing.
+  **Fixed:** `I_Error()` no longer returns. Upstream prints, shuts down and hands control
+  back to the caller, which then carries on with the NULL it just got -- that is the
+  `LoadProhibited` above. It now shows the reason and calls `exit(EXIT_FAILURE)`;
+  `apps/plugins/plugin_crt0.c:59` implements `exit()` as a longjmp back to
+  `plugin__start`, which maps a nonzero status to `PLUGIN_ERROR` and still runs the
+  registered atexit handler (`w_wad.c:477` `W_ReportLocks`). One change covers every error
+  path in the plugin at once, including the `Z_Malloc` one that was actually firing, so
+  nothing per-site had to unwind. The message goes through `rb->splash()` rather than
+  doom's `printf()`, because `noprintf` suppresses the latter while the game owns the
+  display -- that is why the failure looked silent mid-game. The four allocations whose
+  results are written through unchecked (`V_Init`'s two screens, both wipe screens, the
+  wipe's column array) each gained a one-line `I_Error()`. Plugin delta is 25 lines added
+  and 1 removed across three files, and nothing else in `apps/plugins/doom/` is touched.
+  Caveat worth knowing: `exit()` skips `rockdoom.c`'s post-main cleanup (`M_SaveDefaults`,
+  its own `I_Quit`, the open-file loop), so a mid-game failure leaves settings unsaved and
+  file handles for the core to close (`apps/plugin.c:169` reports leaked handles).
+  **Still open:** doom may simply not fit at this resolution. What would decide it is the
+  largest single block the arena can hand out -- `core_allocatable()` (`core_alloc.c:100`)
+  answers that and nothing on screen reports it, so the next step is a debug row printing
+  it next to `core_available()`. Then choose: free arena (playlist cache, albumart), trade
+  `CODEC_SIZE`
+  (1 MB reserved against a 200 KB largest codec), or take doom out of this target's build
+  as honestly unsupported. Unchecked allocations remain elsewhere in doom (`i_video.c:968`
+  `paldata`, `:1209` `gbuf`, `i_sound.c:135`, `g_game.c:1752` save buffer, `d_main.c:555`
+  wad dir table) -- a NULL from those still faults unless the site goes through
+  `I_Error()`, so they stay listed as the next places to look if a launch misbehaves again.
 
 ## 2. Verified on hardware — closed
 
