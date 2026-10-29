@@ -659,6 +659,47 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
 
+### Release `esp32-s3-idf-20261029`
+
+Tag at `260c70d53f00a8a82d8ac19a7529c3f89c96edea`, carrying its own notes at
+`firmware/target/xtensa/releases/esp32-s3-idf-20261029.md`. Supersedes the 20261027 tag:
+27 commits of measured fixes — the ES7210 PGA, the coulometer scale and the percent that
+now comes from it, the four doom allocations, the doom keymap and its sound default, and
+the build-rule work. Built in the container from a fresh shallow clone of the tag, tree
+clean, embedded version `260c70d53f-261029`, so a receiver can match an artifact to this
+commit from the device's own About screen. `espverify.txt` reports seven segments with a
+valid checksum and validation hash, and `tools/esp-layout-check` passes: `.ext_ram.bss`
+ends at `0x3c5b3214`, 55 KB below the plugin-text reservation at `0x3c5c0000`.
+
+| File | Size | SHA-256 (first 16) |
+|---|---|---|
+| `rockbox-flash.bin` | 1,358,832 B | `a75a4f5f3b893e6a` — all-in-one image at `0x0` |
+| `rockbox.esp32s3` | 1,293,296 B | app image |
+| `rockbox.zip` | 9,877,784 B | 412 files: 43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack |
+| `rockbox-fonts.zip` | 8,478,936 B | 88 fonts |
+| `rockbox-manual.pdf` | 3,050,846 B | 286 pages |
+| `rockbox.elf` | 11,480,148 B | shipped so a console crash address resolves without a rebuild |
+
+**The provenance bug this release found.** The first container run produced artifacts whose
+manifest said `commit=unknown`, `dirty=0` and whose image embedded `-261029` — an empty
+hash. The cause is not the script: git refuses to read a repository owned by a different
+uid, and a host directory mounted into a container is exactly that, so `rev-parse` failed
+with "detected dubious ownership" and `tools/version.sh` had nothing to embed. Nothing
+failed loudly; the artifacts were simply unattributable. Fixed by adding
+`git config --global --add safe.directory` for the checkout and for IDF in
+`tools/docker/rb-build-artifacts.sh`, and the run was repeated. Worth knowing because the
+same failure mode applies to any container that mounts a host checkout: the symptom is a
+blank version string, not an error. Note also that the container *image* carries its own
+copy of that script, so a stale image silently runs stale provenance logic — mount the
+checkout's script over `/usr/local/bin/rb-build-artifacts.sh` when reproducing an older
+tag, as this build did.
+
+**Not yet done for this tag:** flashing and hardware verification of
+`rockbox-flash.bin`. The firmware differs from the image currently on the device only by
+the embedded version string — everything after the dircache commit was plugin-side or
+documentation — but that is an inference about the artifact set, not a verification, so the
+release is not claimed verified until it is flashed.
+
 ### Release `esp32-s3-idf-20261027`
 
 Tag at `d83ce28c3fd32608a666001b4575b22db0bbacf2` — retagged once from `a1a3ece0b1` so
