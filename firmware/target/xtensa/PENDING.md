@@ -240,13 +240,14 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     nowhere. Not a gap we can close without an ADM/OPL emulator.
   - ~~Doom key mappings~~ — closed, see §2.
 
-  - **Re-test the worst case**: launch doom while a FLAC track is mid-playback, with the
-    committed 256 KB dircache. The player parks the arena in its audiobuffer
-    (`playback.c:1083`) and surrenders it only to a `core_alloc_maximum` ask
-    (`playback.c:984-992`), which is what doom does -- but that path has now been
-    exercised only with dircache off.
-  - **The dircache change needs a flash.** `DIRCACHE_MIN`/`DIRCACHE_LIMIT` are compile
-    time; the successful run above used the runtime off switch.
+  - ~~Re-test the worst case~~ -- **passed 2026-10-29** on the flashed rebased image
+    (`960b37067f-261029`): dircache on at its committed 256 KB, a FLAC track mid-playback,
+    then launch doom. It starts and plays. The audiobuffer-surrender path
+    (`playback.c:984-992` giving up the buffer only on a both-position shrink hint, which
+    `core_alloc_maximum` sends) therefore works with the cache live, and the compile-time
+    `DIRCACHE_MIN`/`DIRCACHE_LIMIT` pair is exercised rather than the runtime off switch.
+  - ~~The dircache change needs a flash~~ -- done: `90224de484` is in the flashed image, and
+    the run above used it.
 
 ## 2. Verified on hardware — closed
 
@@ -272,8 +273,8 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   exactly, so **the data is raw DSD** despite the `sample_type` value. The tag is an ID3v2.3
   block at `metadata_pointer` (143,384,668) with an **APIC frame of 1,890,341 B (JPEG)**,
   read through `setid3v2title()` — the first time our art path has been exercised on a
-  container other than FLAC or ID3v2 MP3. Sustained card read is only 0.71 MB/s, so the SD
-  path is not the limit here.
+  container other than FLAC or ID3v2 MP3. Its demand is 0.71 MB/s of sustained reading, and
+  it plays clean, so nothing here bounds the card.
   Two things I predicted wrongly and should not be repeated: that `sample_type=2` means
   DST-compressed and therefore this file would decode to static (it plays — the field's
   meaning is unconfirmed, and `dsd.c:148` requires exactly 2 whatever it signifies), and
@@ -774,12 +775,55 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      `rm -rf <builddir>/apps/plugins && make rocks && make zip`. The canonical card zip is
      back at `build-meowkits3/rockbox.zip` — 422 files, 157 rocks, 44 codec entries, 63 Lua
      plugins, one voice pack, version matching the flashed image.
-  2. **DSD: partially done.** DSD64 DSF plays with art (see §2). Remaining: **DSD128**,
-     which asks the sink for 88.2 kHz and doubles the CIC decimator to roughly 11.3 M steps
-     per second — watch for stutter rather than silence; a `.dff` file, which is the only
-     container in this codec with a DST path; and whether a DSF with any other
-     `sample_type` value is rejected by the gate at `dsd.c:148`. Also worth establishing
-     why DSF startup is slow, which §2 lists as three isolating tests.
+  2. **DSD: DSD64 good, DSD128 gaps.** Observed 2026-10-29 with
+     `1979 - Pink Floyd - The Wall [DSD128]` (26 DSF files): it plays at the right rate but
+     **gaps every few seconds to catch up on reads**. That is an underrun, not a pitch or
+     clock fault, and the arithmetic says which producer is short:
+
+     | format | bits/s/ch | channels | sustained read demanded | observed |
+     |---|---|---|---|---|
+     | DSD64 (Oasis) | 2,822,400 | 2 interleaved | **0.71 MB/s** | plays clean |
+     | DSD128 (The Wall) | 5,644,800 | 2 interleaved | **1.41 MB/s** | gaps every few s |
+     | DSD256 | 11,289,600 | 2 | 2.82 MB/s | above the 1-bit bus, unreachable |
+
+     The same file doubles both costs, so the two candidate limits move together: the SD
+     path (`sd-idf.c`, 1-bit, 20 MHz card clock, theoretical 2.5 MB/s) and the CIC
+     decimator (11.3 M bits/s through a 3-stage 64-bit integrator/delay loop, code resident
+     in PSRAM). The gap *pattern* — play, run dry, refill in a burst — is the signature of a
+     producer under real time on average rather than a one-off stall, and the periodicity is
+     what an extent boundary or a fixed-size read-ahead refill would look like.
+
+     **What I measured, and what it does not prove.** Reading 32 MB of four different DSD128
+     files off the card through MSC, each from an uncached region, gave 1.05, 1.03, 1.04 and
+     1.04 MB/s at 4 KB, 64 KB, 512 KB and 1 MB read sizes. The rate is **flat with
+     granularity**, which is a hard cap rather than per-command overhead — but the cap could
+     be USB full-speed bulk (12 Mbit/s, ~1.0-1.2 MB/s in practice), so this bounds the
+     *combined* card+MSC path and says nothing about the card alone. Do not read it as
+     "the card does 1 MB/s". I also wrote earlier, in this file, that sustained card read is
+     "only 0.71 MB/s" — that figure was the DSD64 file's demand, not a measurement, and it
+     was wrong to state it as one.
+
+     Two measurements would settle it, both small:
+     - **An on-device SD throughput row.** Time a multi-MB read into a scratch buffer from
+       `Debug → View HW info` and print MB/s. No USB in the path, so it bounds the card
+       directly, and it is reusable for every future rate question.
+     - **Split the codec thread's time in `dsd.c`.** Accumulate ms spent in `read_exact()`
+       versus ms in the filter loop, print one line per second over CDC. If reads dominate,
+       the transport is the limit and the levers are bigger multi-block transfers
+       (`sdmmc_host.c:848` `max_nr_blocks`) or a larger read-ahead; if the filter dominates,
+       it is CPU and the lever is the decimator itself.
+
+     Cheaper, no rebuild: play a DSD128 track with the screen off and EQ/replaygain off. If
+     the gaps thin out, the DSP and LCD writes were competing for the core; if they persist
+     unchanged, the codec thread alone is under real time.
+
+     Still open on the container side: a `.dff` (the only path in this codec that reaches
+     `dst_decode()`), and whether any DSF declares the field at header offset 60 as something
+     other than 1 — all 30 files here say 1, while their payloads are exactly twice the
+     single-channel size, so `dsd.c`'s reading of that field as `lsb_first` and its fixed
+     two-block-per-iteration interleave happen to agree with what these encoders wrote. The
+     gate at `parse_dsf` accepts only 1 and 8 there, so a file that used it as a channel
+     count would be refused. Unverified either way.
   3. The upstream opus buffer rework (allocate at their limits) and the m4a 512 KB seeking
      rework change peak codec demand against our fixed codecbuf/pluginbuf/arena. Read
      `Debug → View HW info`'s arena row after playing Opus and M4A.
