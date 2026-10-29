@@ -4740,6 +4740,39 @@ under a plain `Connecting...` says `device reports readiness to read but returne
 first flash attempt, not after the fourth. Measured: four failed writes, then the flash
 succeeded in 6.4 s at 460800 once the reader was killed.
 
+## Rebasing onto upstream master: the failures are numbers, not diffs
+
+The branch and upstream both add entries to the same identity lists — `CONFIG_KEYPAD`
+PAD numbers, `CONFIG_RTC` backend ids, `MODEL_NUMBER`, `target_id`. A merge that keeps both
+lines produces two names with one value, which is **textually clean and semantically
+wrong**: the first `#elif` in `apps/SOURCES` / `firmware/SOURCES` wins, so the MeowKit build
+silently picks another target's keymap or driver. Measured on the 2026-10-29 rebase:
+`PSP_PAD 81` vs our `ESP32S3_PAD 81` (build selected `keymap-psp.c`), `RTC_X1600 28` vs our
+`RTC_PCF8563 28` (selected `rtc_ingenic.c`, then failed on a generated header), and
+`agptekrockernative`'s `MODEL_NUMBER 133` vs ours (would have failed nothing — Rolo, the
+boot loader and rbutil would have seen two targets as one).
+
+So after any rebase, before believing the build:
+
+1. Scan the identity lists for duplicate values (`*_PAD`, `RTC_*`, CPU ids, `MODEL_NUMBER`,
+   `target_id` in `tools/configure`). Give *our* entry the next free number — upstream's
+   numbers are the ones other targets already depend on — and say why in a comment, because
+   the next merge will reintroduce the collision otherwise.
+2. Build the port **and** a second target from the same tree. The SDL simulator is the cheap
+   one (`tools/configure --target=sdlapp`); it is what backs the "core carries only weak
+   seams" claim, and a bad seam shows up there and nowhere else.
+3. Re-run `make esplayer` (the layout guard) and `make espverify`: upstream changes codec and
+   buffer sizing, which is exactly what the guard exists to catch.
+
+The dominant conflict shape is mechanical, not intellectual: upstream's new targets edit the
+same `#elif CONFIG_KEYPAD == …` chains that carry our `ESP32S3_PAD` blocks, so both sides
+append at the same spot. Turn `rerere` on, and auto-resolve only hunks where both sides
+*append* to the same base and their branch conditions don't collide — then check the
+result with a build, because "both sides added a branch" is also what an identity collision
+looks like in a diff. Nine files genuinely needed a human on this rebase
+(`tools/configure`, `tools/root.make`, `codecs.make`, `settings_list.c`, `config.h`,
+`audiohw.h`, `main.c`, `lib/keymaps.h`, `battery_bench.c`); the other ~40 did not.
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not

@@ -366,7 +366,8 @@ this is a seed rather than a one-off.
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |
 | Card payload | ~9.3 MB, 387 files (43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack) |
-| Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, and a rebase onto upstream `master` (which also bumps the plugin API to 286, so shipped `.rock` files must be rebuilt from the rebased tree) |
+| Upstream sync | Rebased onto upstream `master` (`fe5c0874af`, 2026-10-28) on 2026-10-29: 651 commits replayed, 257 upstream commits absorbed. The plugin API went 285 → 286, so every shipped `.rock` is rebuilt and older ones are refused. Upstream `master` also removed `frotz` (157 plugin binaries now) and added a DSD codec that this target compiles but has not been made to play |
+| Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, and a reflash plus codec soak of the rebased tree — upstream now builds every codec at a uniform `-O2`, and codec code executes out of PSRAM |
 
 Bugs, questions and patches welcome — and if any of this looks like something that
 belongs upstream, that's exactly the point.
