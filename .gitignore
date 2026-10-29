@@ -358,5 +358,4 @@ __pycache__
 # Verification build directories. tools/autoconf.pl infers the target from the
 # build directory name, so these cannot always use the build-* spelling the /build*
 # pattern above covers -- they have to end in the model name instead.
-/rebase-meowkits3/
 /sim-sdlapp/

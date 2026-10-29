@@ -704,10 +704,20 @@ from the same tree, which is the check that backs the "weak seams only" claim.
 `.rock` on a card will be refused.
 
 **Open, in order:**
-  1. Reflash from the rebased tree and soak — codecs in particular, because upstream now
-     builds every codec at a uniform `-O2` baseline where they previously had per-codec
-     levels, and our codec code executes out of PSRAM. That is a hardware question the
-     rebase just reopened.
+  1. **Soak the rebased build.** It is flashed and playing (`rockbox-flash.bin` from
+     `build-meowkits3/esp-artifacts/`, 1,371,200 B, checksum and validation hash verified,
+     embedded version `960b37067f-261029`), but upstream now builds every codec at a uniform
+     `-O2` baseline where they previously had per-codec levels, and our codec code executes
+     out of PSRAM — so the codec set needs a pass on hardware, not just the two formats
+     that were checked at boot.
+     Two things the flash surfaced: a card populated from the pre-rebase zip makes **every**
+     plugin report "incompatible version", because `plugin.c:986` matches `api_version`
+     exactly and upstream bumped 285 → 286; and the rebuilt zip initially shipped 158 rocks
+     instead of 157 because `buildzip.pl` globs the build directory and a removed plugin's
+     stale `.rock` was still there. Both are in AGENTS.md, and the fix for the payload is
+     `rm -rf <builddir>/apps/plugins && make rocks && make zip`. The canonical card zip is
+     back at `build-meowkits3/rockbox.zip` — 422 files, 157 rocks, 44 codec entries, 63 Lua
+     plugins, one voice pack, version matching the flashed image.
   2. DSD playback (`dsd.c`, DSF/DFF/SACD) is now compiled for this target and unverified:
      whether our I2S path can carry those rates is unknown, and a codec that cannot play is
      worse than one that is absent.
