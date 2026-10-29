@@ -198,20 +198,46 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   failure itself before returning, so a NULL check after them can never fire.
   **Net plugin delta:** two files -- `i_system.c` (leave instead of returning, visible
   message) and `rockdoom.c` (the cleanup handler). `apps/plugin.h` untouched.
-  **Still open: the zone is not big enough, and we need two numbers to say by how much.**
-  Doom prints its own zone size at startup, `Z_Init: Allocated %luKb zone memory`, and each
-  stage line names where it got to. Read both off the LCD on the next launch: the zone size
-  says how much the player surrendered (the arena totals 4,325,376 bytes and roughly
-  2.65 MB of it is claimed at boot by dircache, tagcache and fonts), and the last stage line
-  says whether it died loading sounds, textures or a level. Levers after that are
-  target-local, not core: `DIRCACHE_LIMIT` is 1 MB here and both it and the tagcache
-  MEMORYSIZE-derived cache are shrinkable, so the floor is what doom cannot reach. The
-  honest alternative is to leave doom out of this target's build: its own `MIN_RAM`
-  (`z_zone.c:62`) is 8 MB, and screens at 320x240 are ~7x those of the panels it ships on.
-  `INFO_ARENA` in the debug info screen reports the pool, but read it before playback --
-  the player parks the whole arena in its audiobuffer and `audio_stop()` does not release
-  it (only `apps/playback.c:4005` or the shrink callback's give-up does), so 0/0 while
-  playing and a residual reduction after stopping are both by design.
+  **Outcome: it plays.** Four changes, each measured rather than guessed. Instrumented
+  builds walked doom's zone at every stage and reported `st/pu/fr/big/blocks` over the
+  CDC, which is what turned this from speculation into arithmetic.
+
+  | change | effect, measured |
+  |---|---|
+  | `getsfx()` reads the lump directly (`W_ReadLump`) instead of caching it and copying | removes ~900 KB of purgable duplicates -- one block per sound instead of two, in an interleaved pattern that was the fragmentation source |
+  | `I_InitGraphics()` releases `V_Init()`'s `d_screens[0]` before replacing it, which `v_video.c:387` always promised | the zone went from `fr=37,824 big=18,624` to a run that can hold a screen; net memory unchanged because the replacement is the same size |
+  | the wipe's column-major transform scratch moves to `.bss` (`pluginbuf`, not the arena) | drops the fifth full-panel buffer out of the zone; the failing ask was 76,800 against `big=68,384` with 880,320 usable |
+  | `DIRCACHE_MIN` and `DIRCACHE_LIMIT` both to 256 KB | doom's zone 1,757,376 -> ~2.5 MB; the 1 MB floor alone was holding the cache at 1 MB regardless of the limit |
+
+  Measured zone sizes for reference: dircache 1 MB gave `doom: zone 1757376`, dircache
+  disabled gave `doom: zone 2805984`. Peak doom demand at a wipe is four panels
+  (307,200) + ~1.2 MB pre-cached sounds + ~300 KB level data, i.e. ~1.9 MB, which is
+  what the 256 KB cache makes possible. `tagcache` was left alone deliberately -- its
+  RAM block mirrors the on-disk database (`tagcache.c:4342-4346`) and has no shrink
+  callback (`:4319-4322`), so it is on/off only, and there is no size setting in this
+  tree; it is the next lever if headroom is ever short again. Also worth knowing:
+  `initialize_tagtree()` does its own `core_alloc_maximum` (`tagtree.c:1436`) and panics
+  on failure, so opening Browse-by-Tag before a plugin launch leaves the plugin nothing.
+
+  **Still open, in order:**
+  - **Doom makes no audible sound.** Verified by ear, not inferred. It drives
+    `PCM_MIXER_CHAN_PLAYBACK` through pcmbuf, and `I_InitSound` calls `rb->audio_stop()`
+    then `pcmbuf_fade(false, true)` (`i_sound.c:504,512`), so the likely cause is the
+    playback channel's amplitude/fade state or the mixer session not being re-armed, not
+    the DAC path -- the same path plays FLAC correctly. Note the cost of the silent
+    sounds: ~1.2 MB of static zone memory for audio nobody hears.
+  - **Key mappings are bad.** Doom on this board is joystick + two buttons, and
+    `apps/plugins/doom/rockdoom.c` plus `keymap-meowkits3.c` map them in a way that is
+    not intuitive for a FPS: worth a deliberate pass (which button is fire/turn/use,
+    whether the stick should be side-to-side movement or turning, and what the touch
+    screen should do, if anything).
+  - **Re-test the worst case**: launch doom while a FLAC track is mid-playback, with the
+    committed 256 KB dircache. The player parks the arena in its audiobuffer
+    (`playback.c:1083`) and surrenders it only to a `core_alloc_maximum` ask
+    (`playback.c:984-992`), which is what doom does -- but that path has now been
+    exercised only with dircache off.
+  - **The dircache change needs a flash.** `DIRCACHE_MIN`/`DIRCACHE_LIMIT` are compile
+    time; the successful run above used the runtime off switch.
 
 ## 2. Verified on hardware — closed
 
