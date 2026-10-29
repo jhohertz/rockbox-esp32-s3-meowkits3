@@ -388,7 +388,26 @@ void V_Init (void)
    //  if e.g. it wants a MitSHM buffer instead
 
    for (i=0 ; i<PREALLOCED_SCREENS ; i++)
+   {
       d_screens[i] = calloc(SCREENWIDTH*SCREENHEIGHT, 1);
+      if (!d_screens[i])
+      {
+         /* Upstream never checks this. On a 320x240 panel one screen is 76,800 bytes
+         * taken from the shared PSRAM arena (firmware/buflib_malloc.c -> core_alloc),
+         * which is also feeding the audiobuffer, pcmbuf, codec buffer, playlist cache
+         * and albumart, so failure is reachable -- and every drawing routine below
+         * writes straight through the pointer. */
+         rb->splash(HZ*2, "Out of memory for screens");
+         /* Set the exit flag rather than calling I_Error(): I_Init has not run yet,
+         * so the sound and graphics shutdowns it goes through would tear down things
+         * that were never brought up. D_DoomMainSetup() returns on doomexit. */
+         doomexit = true;
+         /* Leave the rest NULL: nothing later may draw into a buffer that failed. */
+         for (; i<4; i++)
+            d_screens[i] = NULL;
+         return;
+      }
+   }
    for (; i<4; i++) // Clear the rest (paranoia)
       d_screens[i] = NULL;
 }
