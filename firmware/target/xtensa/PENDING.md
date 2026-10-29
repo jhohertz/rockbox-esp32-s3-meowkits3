@@ -775,7 +775,7 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      `rm -rf <builddir>/apps/plugins && make rocks && make zip`. The canonical card zip is
      back at `build-meowkits3/rockbox.zip` — 422 files, 157 rocks, 44 codec entries, 63 Lua
      plugins, one voice pack, version matching the flashed image.
-  2. **DSD: DSD64 good, DSD128 gaps.** Observed 2026-10-29 with
+  2. **DSD: DSD64 good; DSD128 is CPU-bound and is left as a documented limit.** Observed 2026-10-29 with
      `1979 - Pink Floyd - The Wall [DSD128]` (26 DSF files): it plays at the right rate but
      **gaps every few seconds to catch up on reads**. That is an underrun, not a pitch or
      clock fault, and the arithmetic says which producer is short:
@@ -803,7 +803,12 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      "only 0.71 MB/s" — that figure was the DSD64 file's demand, not a measurement, and it
      was wrong to state it as one.
 
-     Two measurements would settle it, both small:
+     **Settled by you on the bench: it is CPU-bound, not the transport.** The card is not
+     the limit; the CIC decimator cannot keep 11.3 Mbit/s in real time on this core with the
+     codec executing from PSRAM. That makes **DSD64 the practical ceiling for DSD on this
+     target** and DSD128 playable-but-gapping, which is a limitation of decode throughput
+     rather than a bug to chase. Two measurements would have settled it, both small, and are
+     kept here only as the method for whoever reopens this:
      - **An on-device SD throughput row.** Time a multi-MB read into a scratch buffer from
        `Debug → View HW info` and print MB/s. No USB in the path, so it bounds the card
        directly, and it is reusable for every future rate question.
@@ -813,9 +818,8 @@ from the same tree, which is the check that backs the "weak seams only" claim.
        (`sdmmc_host.c:848` `max_nr_blocks`) or a larger read-ahead; if the filter dominates,
        it is CPU and the lever is the decimator itself.
 
-     Cheaper, no rebuild: play a DSD128 track with the screen off and EQ/replaygain off. If
-     the gaps thin out, the DSP and LCD writes were competing for the core; if they persist
-     unchanged, the codec thread alone is under real time.
+     Cheaper, no rebuild: play a DSD128 track with the screen off and EQ/replaygain off. This
+     is the discriminator that was used, and it pointed at the core.
 
      Still open on the container side: a `.dff` (the only path in this codec that reaches
      `dst_decode()`), and whether any DSF declares the field at header offset 60 as something
