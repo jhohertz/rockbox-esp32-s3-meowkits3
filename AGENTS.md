@@ -4701,6 +4701,32 @@ Also: an undefined `*_NAME` help-string macro does not report as undeclared —
 `STAR_QUIT_NAME ":"` in an initialiser list becomes `expected '}' before string
 constant`, which reads like a syntax error in code you never touched.
 
+**Doom is the deliberate exception.** A first-person shooter has two actions that
+dominate play — fire and use — and only two physical buttons that stay usable while the
+stick is working, so `use` moved off the grid onto `B` and `escape` onto `TOPLEFT`; the
+scheme's up/down and prev/next pairs are simply not what a level asks for. In
+`apps/plugins/doom/i_video.c`: stick = walk and turn, `A` fire, `B` use, `TOPLEFT`
+escape, `TOPMIDDLE` map, `TOPRIGHT` next weapon, `MIDLEFT` menu confirm, `BOTTOMLEFT`
+autorun toggle, `BOTTOMMIDDLE` and `BOTTOMRIGHT` strafe. `MIDRIGHT` and `CENTER` are
+deliberately unused, and no scrollwheel is defined because the board has none.
+
+Two mechanics worth knowing before touching any plugin's input path on this target:
+
+- **Touch cells are held state, not only events.** `button_read_device()` ORs the
+  region button into the value it returns
+  (`firmware/target/xtensa/button-xtensa.c:190-203`), and `button.c:414` keeps that as
+  `lastbtn`, which `rb->button_status()` reports. A finger held on a cell therefore
+  reads as a key held down — which is what a continuous action needs, and what makes a
+  toggle fire once per press. The panel is polled at 20 Hz (every fifth tick, throttled
+  for bus load) and re-posts at `REPEAT_INTERVAL_TOUCH` while contact continues.
+- **Do not add a queue reader on top of a held-state machine.** Posting both a queued
+  press/release pair and a state edge for one touch double-fires toggles: escape and
+  autorun open then close on a single press, and the plugin reads as dead input. This
+  was built, compared against a tracer build on hardware, and reverted — the state
+  machine is the path that works. `HAS_BUTTON_HOLD` is not implemented for xtensa, so
+  "hold this button to modify" gestures have no mechanism at all; give a modifier its
+  own cell instead.
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not
