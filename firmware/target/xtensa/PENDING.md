@@ -178,11 +178,13 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   Caveat worth knowing: `exit()` skips `rockdoom.c`'s post-main cleanup (`M_SaveDefaults`,
   its own `I_Quit`, the open-file loop), so a mid-game failure leaves settings unsaved and
   file handles for the core to close (`apps/plugin.c:169` reports leaked handles).
-  **Still open:** doom may simply not fit at this resolution. What would decide it is the
-  largest single block the arena can hand out -- `core_allocatable()` (`core_alloc.c:100`)
-  answers that and nothing on screen reports it, so the next step is a debug row printing
-  it next to `core_available()`. Then choose: free arena (playlist cache, albumart), trade
-  `CODEC_SIZE`
+  **Still open:** doom may simply not fit at this resolution. The debug info screen's
+  `INFO_ARENA` row prints `core_available()` and `core_allocatable()`; the second is the
+  largest single block the arena can hand out, which is what decides this, because doom
+  allocates its screens one at a time. Read it with nothing playing and again during
+  playback -- the gap between the two columns is fragmentation, and the audiobuffer,
+  pcmbuf, codec buffer, playlist cache and albumart all take from the same arena while a
+  track runs. Then choose: free arena (playlist cache, albumart), trade `CODEC_SIZE`
   (1 MB reserved against a 200 KB largest codec), or take doom out of this target's build
   as honestly unsupported. Unchecked allocations remain elsewhere in doom (`i_video.c:968`
   `paldata`, `:1209` `gbuf`, `i_sound.c:135`, `g_game.c:1752` save buffer, `d_main.c:555`
