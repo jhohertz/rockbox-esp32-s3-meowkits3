@@ -107,7 +107,6 @@ static inline int32_t clip_sample16(int32_t sample)
 //
 void* getsfx( const char* sfxname )
 {
-   unsigned char*      sfx;
    unsigned char*      paddedsfx;
    int                 size;
    char                name[20];
@@ -130,11 +129,16 @@ void* getsfx( const char* sfxname )
 
    size = W_LumpLength( sfxlump );
 
-   sfx = (unsigned char*)W_CacheLumpNum( sfxlump);
-
+   /* This used to cache the lump, allocate a second buffer, memcpy into it and unlock,
+    * so every sound effect sat in the zone twice. I_InitSound() pre-caches the whole
+    * table -- 114 entries -- which left ~900 KB of purgable duplicates interleaved with
+    * the static copies. That layout is what starved later allocations of contiguous
+    * space: measured on a 320x240 panel, the zone held 880,320 usable bytes but no run
+    * larger than 68,384 when a 76,800-byte screen buffer was requested. W_ReadLump
+    * fills our buffer directly and takes no lock, so it is one block per sound. The
+    * name is misleading either way -- nothing was padded, it was a plain copy. */
    paddedsfx = (unsigned char*)malloc( size );  // Allocate from memory.
-   memcpy(paddedsfx, sfx, size );               // Now copy and pad.
-   W_UnlockLumpNum(sfxlump);    // Remove the cached lump.
+   W_ReadLump( sfxlump, paddedsfx );            // Read straight into it.
 
    return (void *) (paddedsfx); // Return allocated data.
 }
