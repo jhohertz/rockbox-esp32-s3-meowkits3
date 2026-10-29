@@ -1704,6 +1704,16 @@ obvious from the datasheet tables:
   starts near full charge is the one run that tells you nothing, because the charge current
   tapers as the cell reaches the target voltage and the average stops matching the
   instantaneous reading. Start the charge leg near 30 %.
+  **Measured 2026-10-28, and the scale is right.** 56 minutes on battery, playback,
+  current 76-86 mA (mean 83.2), voltage 4126 -> 4059 mV: the discharge counter moved
+  617,273 -> 15,189,454 counts (**14,572,181**), which at 180,000 LSB/mAh is 80.96 mAh,
+  while the plugin's independent integration of `battery_current()` over the same window
+  says 77.6 mAh. That implies 187,786 LSB/mAh — **within 4.3%** of the derivation, not a
+  factor. A wrong ADC rate would show as 2x, 4x or 8x, so the 25 Hz assumption stands.
+  The sign of the residual is the interesting part: the chip is *higher*, which is what
+  once-a-minute instantaneous sampling does to a varying load — it misses peaks, while
+  the chip integrates continuously. Read the chip counter as the better of the two.
+  Settle it tighter with a steady load (screen off, idle) or a shorter sample interval.
 - **Temperature is not an unread channel.** REG 0x38/0x39 (charge low/high) and 0x3C/0x3D
   (discharge low/high) are thresholds the chip acts on from the TS voltage, and REG 0x8F
   bit 2 is internal over-temp shutdown (default `0` = do not shut down). Whether this
