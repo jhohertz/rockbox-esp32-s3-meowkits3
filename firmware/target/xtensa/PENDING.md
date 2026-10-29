@@ -589,10 +589,11 @@ Not being submitted now. Kept so the work can be split for a merge.
 | `9d9581a612` | `apps/audio_path.c`, `apps/SOURCES` | Guard input-source selection with `#if INPUT_SRC_CAPS != 0` | A target with a speaker but no recording/radio references `audio_enable_speaker()`, which `apps/SOURCES` only builds when `INPUT_SRC_CAPS != 0`. Shape problem, not ours. |
 | uncommitted | `apps/settings_list.c` | `#ifndef DEFAULT_SPEAKER_MODE` seam for the Speaker choice default | The hardcoded default is 0 = Off, which is only correct for targets where the speaker is an extra. A weak seam defaulting to today's value; the target that needs On states it in its own config, the way `DEFAULT_TOUCHSCREEN_MODE` already does one block above. |
 | `9cb4f7325a` | `tools/functions.make` + every codec `.make` | `make_archive` removes the archive before `ar` adds | `ar` only replaces members it is handed, so a stale object survives a rebuild. Generic build bug. |
-| `d4092053ed` | `apps/keymaps/keymap-touchscreen.c` | Chain `CONTEXT_RECSCREEN` to the target keymap | The recording screen fell to the default table, so no touchscreen target could produce `ACTION_REC_PAUSE`. **Changes behaviour for every touchscreen target** — must be flagged in the message. |
+| ~~`d4092053ed`~~ | `apps/keymaps/keymap-touchscreen.c` | Chain `CONTEXT_RECSCREEN` to the target keymap | **Superseded upstream**: `2b12d568ff` added `button_context_recscreen` to that switch, which supplies `ACTION_REC_PAUSE` and chains to `CONTEXT_CUSTOM2|CONTEXT_RECSCREEN` itself. The patch was dropped during the rebase — keeping it produced a duplicate case value. |
 | `f270c29b11` | `firmware/rolo.c` | Use `ICODE_ATTR` instead of forcing `.section(".icode")` | `ICODE_ATTR` is deliberately null on targets low on IRAM, and the hard-coded section ignored that. |
 | `18ca6599c8` | `apps/recorder/pcm_record.c` | Panic naming both sizes when `core_alloc_maximum()` grants less than `PCM_BUF_SIZE` | `core_alloc_maximum()` grants what is left, not what was asked; every index wraps at `PCM_BUF_SIZE`, so a short grant writes past the allocation into buflib's handle table. Core hardening. |
 | — | `firmware/usbstack/usb_core.c` | Mask the serial-number index to a hex digit | `USB_NUM_DRIVERS` is not capped at 4, so the bitmask can exceed a single hex digit on any target. |
+| upstream `51fdc7f856` | `firmware/usbstack/usb_storage.c` | (upstream's own) fail writes with an unexpected transfer length | The precedent for the `usb_serial.c` defect we still carry: `transfer_complete()` ignores `length`, and the RX buffer is 32 bytes against a 512-byte endpoint. Copy upstream's shape rather than inventing one. |
 | `3630b5b65f` | `firmware/drivers/ft6x06.c` | Clamp parsed point count to the driver's storage | The register is a 4-bit field; a misbehaving panel can report more points than storage, and callers iterate `nr_points`. Any touch target. |
 | `536e7cf365` | `firmware/include/fs_defines.h` | `#ifndef MAX_OPEN_FILES` / `#ifndef DC_NUM_ENTRIES` | Both were sized from `MEMORYSIZE`, i.e. storage size; a target whose DMA-visible region is tighter than its flash needs to shrink them together. A seam, additive and default-preserving. |
 | `c5f40905ac` | `apps/settings_list.c` | `#ifndef DEFAULT_LIST_LINE_PADDING` | Auto row height is derived from LCD DPI; on a dense small panel that gives ~3 visible rows. Seam, default unchanged for everyone else. |
@@ -658,6 +659,63 @@ with `target_id=126`, unique `MODEL_NUMBER 133`, `tools/builds.pm` (`status => 2
 platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
+### Rebase onto upstream `master` (2026-10-29)
+
+`esp32-s3-idf` now sits on `fe5c0874af` (upstream tip, 2026-10-28): **651 commits replayed,
+257 upstream commits absorbed, branch 651 ahead and 0 behind**. `backup/pre-rebase-20261029`
+is the pre-rebase tip, pushed to origin, and the release tag `esp32-s3-idf-20261029` still
+points at the pre-rebase tree — deliberately, because that is the tree the flashed image
+came from.
+
+The mechanics: `rerere` on, and a helper that auto-resolved only hunks where both sides
+*append* to the same base and the appended branch conditions don't collide. That covered the
+dominant shape — upstream's psp port, the fiiom3klinux removal, the frotz removal and the
+RNG series all edit the same `#elif CONFIG_KEYPAD == …` chains where the `ESP32S3_PAD`
+blocks live — and left nine to be resolved by hand: `tools/configure`, `tools/root.make`
+(twice: the `MKFIRMWARE_TOOL` dependency and the IDF-backed link), `lib/rbcodec/codecs/codecs.make`
+(the uniform `-O2` baseline against `FREESTAND_CFLAGS`), `apps/settings_list.c`
+(`F_THEMESETTING` landed on the very line carrying `DEFAULT_LIST_LINE_PADDING` — both kept,
+so our pinned value is now a theme setting's initial value rather than a fixed one),
+`firmware/export/config.h`, `firmware/export/audiohw.h`, `apps/main.c`, `apps/plugins/lib/keymaps.h`
+and `apps/plugins/battery_bench.c`.
+
+**What actually went wrong was invisible in the diffs.** Three identity collisions, each of
+which merged cleanly and each reported only by the build or by target identity:
+`ESP32S3_PAD 81` collided with upstream's new `PSP_PAD 81` (the build picked `keymap-psp.c`
+and failed on buttons the board has never heard of), `RTC_PCF8563 28` collided with the new
+`RTC_X1600 28` (`firmware/SOURCES` picked `rtc_ingenic.c` and failed on a generated header
+with no rule here), and `MODEL_NUMBER 133` collided with `agptekrockernative`'s 133 — the
+one that would not have failed a build, only made Rolo, the boot loader and rbutil see two
+targets as one. Fixed to 82, 29 and 134. The lesson, recorded in AGENTS.md: after a rebase,
+run the duplicate-value audit over the identity lists *and* build two targets, because a
+merge cannot see a number that two names share.
+
+Also: upstream's `2b12d568ff` added `button_context_recscreen` to the touchscreen context
+switch, which is exactly the gap our `d4092053ed` patched — our chain is dropped, and §5's
+row for it is marked superseded.
+
+**Post-rebase state, measured:** xtensa firmware links through IDF (image 1,307,856 B, was
+1,293,296 B), `esp-layout-check` passes with `.ext_ram.bss` ending 55 KB below the plugin-text
+reservation, `make rocks` builds **157** rocks (was 158 — upstream removed frotz) plus 63 Lua
+plugins, `make zip` produces 420 files with **44** codec entries (upstream added the DSD/DSF
+codec, unconditional in `codecs/SOURCES`), and the SDL simulator configures, compiles and links
+from the same tree, which is the check that backs the "weak seams only" claim.
+`PLUGIN_API_VERSION` went 285 → 286 upstream, so the shipped rocks are rebuilt and any older
+`.rock` on a card will be refused.
+
+**Open, in order:**
+  1. Reflash from the rebased tree and soak — codecs in particular, because upstream now
+     builds every codec at a uniform `-O2` baseline where they previously had per-codec
+     levels, and our codec code executes out of PSRAM. That is a hardware question the
+     rebase just reopened.
+  2. DSD playback (`dsd.c`, DSF/DFF/SACD) is now compiled for this target and unverified:
+     whether our I2S path can carry those rates is unknown, and a codec that cannot play is
+     worse than one that is absent.
+  3. The upstream opus buffer rework (allocate at their limits) and the m4a 512 KB seeking
+     rework change peak codec demand against our fixed codecbuf/pluginbuf/arena. Read
+     `Debug → View HW info`'s arena row after playing Opus and M4A.
+  4. A new tag from the rebased tree once 1 and 2 have been run.
+
 
 ### Release `esp32-s3-idf-20261029`
 
