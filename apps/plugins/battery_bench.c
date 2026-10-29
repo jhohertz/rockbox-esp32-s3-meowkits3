@@ -447,6 +447,23 @@ static void flush_buffer(void)
             else
                 dis_ms += units;
         }
+#if CONFIG_CHARGING >= CHARGING_MONITOR
+        /* Say out loud where the cell took over. The direction column marks every row,
+         * but finding the unplugging in a two-hour run means scanning a column of D's
+         * for the first one; the totals here are what has accumulated up to the
+         * previous row, so the discharge figure that matters for a capacity run starts
+         * on a labelled line. The '#' prefix keeps it out of any parser that expects
+         * the row format. */
+        if (last_secs >= 0
+            && ((bat[i].flags & BIT_CHARGING) != 0) != last_charging)
+            rb->fdprintf(fd,
+                "# %02d:%02d:%02d  switched to %s"
+                "  (charged %u.%u mAh, discharged %u.%u mAh so far)\n",
+                HMS(bat[i].secs),
+                (bat[i].flags & BIT_CHARGING) ? "charge" : "discharge",
+                chg_ms / 3600, (chg_ms % 3600) / 360,
+                dis_ms / 3600, (dis_ms % 3600) / 360);
+#endif
         last_secs = (int)bat[i].secs;
         last_current = bat[i].current;
         last_charging = (bat[i].flags & BIT_CHARGING) != 0;
@@ -481,7 +498,12 @@ static void flush_buffer(void)
 #if CONFIG_CHARGING
                 , (bat[i].flags & BIT_CHARGER) ? 'A' : '-'
 #if CONFIG_CHARGING >= CHARGING_MONITOR
-                , (bat[i].flags & BIT_CHARGING) ? 'C' : '-'
+                /* 'D' rather than '-': this chip reports the battery current direction,
+                 * not a charging state, so a clear bit means current is flowing *out*.
+                 * A bare '-' was the same glyph the charger column uses for "nothing
+                 * attached", which made the discharge half of a run invisible in a log
+                 * read by eye. The preceding column separates idle from unplugged. */
+                , (bat[i].flags & BIT_CHARGING) ? 'C' : 'D'
 #endif
 #endif
 #ifdef HAVE_USB_POWER
