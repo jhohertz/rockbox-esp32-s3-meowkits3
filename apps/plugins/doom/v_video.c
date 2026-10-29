@@ -388,14 +388,7 @@ void V_Init (void)
    //  if e.g. it wants a MitSHM buffer instead
 
    for (i=0 ; i<PREALLOCED_SCREENS ; i++)
-   {
       d_screens[i] = calloc(SCREENWIDTH*SCREENHEIGHT, 1);
-      if (!d_screens[i])
-         /* One screen is LCD_WIDTH*LCD_HEIGHT bytes taken from the arena the core
-         * shares with the audiobuffer and pcmbuf, and every drawing routine below
-         * writes straight through this pointer. */
-         I_Error("V_Init: out of memory (%d)", SCREENWIDTH*SCREENHEIGHT);
-   }
    for (; i<4; i++) // Clear the rest (paranoia)
       d_screens[i] = NULL;
 }

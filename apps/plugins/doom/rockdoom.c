@@ -684,6 +684,12 @@ static void doom_cleanup(void)
 #endif
    }
 
+   /* Nothing to release here beyond the descriptors: z_zone.h:103-106 maps malloc,
+    * calloc and free onto doom's own zone, so every allocation the plugin makes --
+    * screens, wipe buffers, lump cache, grey table, sounds -- lives inside the single
+    * block plugin_get_audio_buffer() handed over, and apps/plugin.c:1053 frees that
+    * block when the plugin returns. */
+
 #ifdef HAVE_ADJUSTABLE_CPU_FREQ
    rb->cpu_boost(false);
 #endif

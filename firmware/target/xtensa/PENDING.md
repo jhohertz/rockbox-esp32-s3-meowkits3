@@ -162,46 +162,56 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   of the 524,288-byte plugin buffer, so that buffer is not the constraint. The arena is
   ~4 MiB of PSRAM shared with the audiobuffer, pcmbuf, codec buffer, playlist cache and
   albumart (`MEMORY.md` §2), which is why the shortfall varies with what was running.
+  **What the memory model actually is.** `z_zone.h:103-106` maps `malloc`, `calloc` and
+  `free` onto doom's zone, so every runtime allocation -- V_Init's screens, the wipe's two
+  extra screens, the lump cache, the grey table, all preloaded sound effects -- comes out
+  of the single block `Z_Init()` obtains from `rb->plugin_get_audio_buffer()`
+  (`z_zone.c:244`). There is no second pool. That function is `core_alloc_maximum()`
+  (`apps/plugin.c:1170`), which sends shrink hints at *both* positions, and that is
+  exactly the condition under which the player surrenders the audiobuffer
+  (`apps/playback.c:984-992`: both positions -> `give_up = true`, otherwise
+  `BUFLIB_CB_CANNOT_SHRINK`). So the maximum ask is the correct idiom for a plugin that
+  needs the pool, and a bounded `rb->malloc()` zone would have been *refused* -- it sends
+  `SHRINK_POS_FRONT` only. That was tried and reverted.
   **Fixed:** `I_Error()` no longer returns. Upstream prints, shuts down and hands control
-  back to the caller, which then carries on with the NULL it just got -- that is the
-  `LoadProhibited` above. It now shows the reason and calls `exit(EXIT_FAILURE)`;
-  `apps/plugins/plugin_crt0.c:59` implements `exit()` as a longjmp back to
-  `plugin__start`, which maps a nonzero status to `PLUGIN_ERROR` and still runs the
-  registered atexit handler (`w_wad.c:477` `W_ReportLocks`). One change covers every error
-  path in the plugin at once, including the `Z_Malloc` one that was actually firing, so
-  nothing per-site had to unwind. The message goes through `rb->splash()` rather than
-  doom's `printf()`, because `noprintf` suppresses the latter while the game owns the
-  display -- that is why the failure looked silent mid-game. The four allocations whose
-  results are written through unchecked (`V_Init`'s two screens, both wipe screens, the
-  wipe's column array) each gained a one-line `I_Error()`.
-  That leaves `rockdoom.c`'s post-main restoration unreachable on the `exit()` path, which
-  it observed as a "Plugin error / #leak-file-handles" yes/no prompt: `apps/plugin.c:163`
-  asks `gui_syncyesno_run()` whenever handles are still open. The tail therefore moved into
-  a `doom_cleanup()` registered with `rb_atexit()` -- `plugin_crt0.c` runs the handler
-  whichever way the plugin stops, and still inside `plugin__start()`, so plugin data is
-  valid there. It covers `backlight_use_settings()`, `M_SaveDefaults()`, `I_Quit()`, the
-  file closes, `cpu_boost(false)` and `talk_disable(false)`; without those last three a
-  failed launch left the CPU boosted, talking disabled and the backlight refusing to time
-  out, because `apps/plugin.c` restores none of them itself. Registration sits just after
-  `backlight_ignore_timeout()`, not at the top of `plugin_start()`, so the early menu exits
-  (quit, missing base WAD) still run nothing. The close loop also dropped an off-by-one:
-  `fpoint` is the next free slot, and the old loop closed `filearray[fpoint]` as well, i.e.
-  a stale descriptor the core reports as a double close.
-  **Net plugin delta:** four files -- `i_system.c` (the exit and the visible message),
-  `v_video.c` and `f_wipe.c` (the allocation checks) and `rockdoom.c` (the cleanup move).
-  Nothing else in `apps/plugins/doom/` is touched, and `apps/plugin.h` is untouched.
-  **Still open:** doom may simply not fit at this resolution. The debug info screen's
-  `INFO_ARENA` row prints `core_available()` and `core_allocatable()`; the second is the
-  largest single block the arena can hand out, which is what decides this, because doom
-  allocates its screens one at a time. Read it with nothing playing and again during
-  playback -- the gap between the two columns is fragmentation, and the audiobuffer,
-  pcmbuf, codec buffer, playlist cache and albumart all take from the same arena while a
-  track runs. Then choose: free arena (playlist cache, albumart), trade `CODEC_SIZE`
-  (1 MB reserved against a 200 KB largest codec), or take doom out of this target's build
-  as honestly unsupported. Unchecked allocations remain elsewhere in doom (`i_video.c:968`
-  `paldata`, `:1209` `gbuf`, `i_sound.c:135`, `g_game.c:1752` save buffer, `d_main.c:555`
-  wad dir table) -- a NULL from those still faults unless the site goes through
-  `I_Error()`, so they stay listed as the next places to look if a launch misbehaves again.
+  back to the caller, which carries on with the NULL it just got -- that is the
+  `LoadProhibited` at `excv=0x10`. It now shows the reason and calls `exit(EXIT_FAILURE)`;
+  `apps/plugins/plugin_crt0.c:59` implements that as a longjmp to `plugin__start`, which
+  maps a nonzero status to `PLUGIN_ERROR` and still runs the registered atexit handler.
+  One change covers every error path, including the `Z_Malloc` one that was firing
+  (`z_zone.c:401`, "Z_Malloc: Failure trying to allocate %d bytes"), which is the message
+  the failure now reports deterministically. `printf()` in this plugin is suppressed while
+  the game owns the display (`noprintf` guards the grayscale and direct-LCD paths), so the
+  message goes through `rb->splash()`.
+  Also fixed on the same path: the post-main restoration used to be inline after
+  `D_DoomMain()` and `exit()` longjmps past it, which is what produced the
+  "Plugin error / #leak-file-handles" yes/no prompt (`apps/plugin.c:163`). It now lives in
+  `doom_cleanup()` registered with `rb_atexit()` just after `backlight_ignore_timeout()`,
+  covering `backlight_use_settings()`, `M_SaveDefaults()`, `I_Quit()`, the file closes,
+  `cpu_boost(false)` and `talk_disable(false)` -- `apps/plugin.c` restores none of those
+  itself. Registering after the menu check keeps the two early exits (quit chosen, missing
+  base WAD) from running shutdowns for systems they never started. The close loop also
+  dropped an off-by-one: `fpoint` is the next free slot, and the old loop closed
+  `filearray[fpoint]` as well, i.e. a stale descriptor the core reports as a double close.
+  **Reverted as dead code:** allocation checks on V_Init's calloc, the wipe's two mallocs
+  and its column array. Those names are macros onto `Z_Malloc`/`Z_Calloc`, which reports
+  failure itself before returning, so a NULL check after them can never fire.
+  **Net plugin delta:** two files -- `i_system.c` (leave instead of returning, visible
+  message) and `rockdoom.c` (the cleanup handler). `apps/plugin.h` untouched.
+  **Still open: the zone is not big enough, and we need two numbers to say by how much.**
+  Doom prints its own zone size at startup, `Z_Init: Allocated %luKb zone memory`, and each
+  stage line names where it got to. Read both off the LCD on the next launch: the zone size
+  says how much the player surrendered (the arena totals 4,325,376 bytes and roughly
+  2.65 MB of it is claimed at boot by dircache, tagcache and fonts), and the last stage line
+  says whether it died loading sounds, textures or a level. Levers after that are
+  target-local, not core: `DIRCACHE_LIMIT` is 1 MB here and both it and the tagcache
+  MEMORYSIZE-derived cache are shrinkable, so the floor is what doom cannot reach. The
+  honest alternative is to leave doom out of this target's build: its own `MIN_RAM`
+  (`z_zone.c:62`) is 8 MB, and screens at 320x240 are ~7x those of the panels it ships on.
+  `INFO_ARENA` in the debug info screen reports the pool, but read it before playback --
+  the player parks the whole arena in its audiobuffer and `audio_stop()` does not release
+  it (only `apps/playback.c:4005` or the shrink callback's give-up does), so 0/0 while
+  playing and a residual reduction after stopping are both by design.
 
 ## 2. Verified on hardware — closed
 
