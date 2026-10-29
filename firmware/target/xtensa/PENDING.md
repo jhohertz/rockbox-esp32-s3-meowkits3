@@ -143,6 +143,46 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 - **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
   recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
   frame should cost less in libmpeg2's buffers and in the scaling pass.
+- **Doom cannot launch: the arena is the limit, not the plugin buffer.** Observed on
+  `b94d2a0bd1`: launching doom failed with a shortfall that varies (76,800 in one run,
+  ~18k on a fresh boot) and then *crashed* — the console captured
+  `rb panic: LoadProhibited pc=425e3425 excv=00000010 cause=28`, and `pc` decodes inside
+  doom's own text (plugin text reserved at `0x3c5c0000`, executed through the instruction
+  window at `+0x06000000`; `doom.map` gives `.text 0x425c0000 0x29678`). `excv=0x10` is a
+  NULL plus an offset.
+  The number 76800 is `LCD_WIDTH × LCD_HEIGHT`, i.e. one doom screen buffer. `V_Init()`
+  callocs two (`v_video.c:389`) and the wipe allocates two more (`f_wipe.c:161`, `:168`),
+  none of them checked in upstream, and each drawing routine writes straight through the
+  pointer — so an allocation failure is a reboot, not an error message. Peak demand is
+  ~307 KB of screens plus per-level `Z_Malloc` data (`p_setup.c`), `paldata` and
+  `GREYBUFSIZE`. Panels on targets that ship doom are 112×64 to 160×80, where a screen is
+  8-12 KB; at 320×240 ours is ~7-9× that.
+  Plugin `malloc` comes from the core buflib arena (`firmware/buflib_malloc.c` →
+  `core_alloc.c:72`), *not* from `pluginbuf`: doom's `.data`+`.bss` are 62,816 + 113,044
+  of the 524,288-byte plugin buffer, so that buffer is not the constraint. The arena is
+  ~4 MiB of PSRAM shared with the audiobuffer, pcmbuf, codec buffer, playlist cache and
+  albumart (`MEMORY.md` §2), which is why the shortfall varies with what was running.
+  **Fixed (this commit):** the four screen allocations and the wipe's column array are
+  checked. `V_Init()` reports through `rb->splash` and sets `doomexit` — deliberately not
+  `I_Error()`, because `I_Init` has not run yet and its shutdown path would tear down
+  things that were never brought up; `D_DoomMainSetup()` now returns on `doomexit`, and
+  `D_DoomLoop()`'s `while (!doomexit)` plus `I_SubmitSound()`'s `enable_sound` guard make
+  the early return clean. The wipe checks go through `I_Error()` (mid-game, init done) and
+  `wipe_ScreenWipe()` reports the wipe as finished once `doomexit` is set, so the caller's
+  loop stops touching buffers that do not exist. `I_Error()` now splashes the message
+  instead of sleeping — its `printf()` is suppressed while the game owns the display, so
+  previously the player just lost the plugin with no reason shown. Card-only change; no
+  firmware image.
+  **Still open:** doom may simply not fit at this resolution. Before deciding, surface the
+  number — `core_allocatable()` exists (`core_alloc.c:100`, used by `playback.c:1081` and
+  `playlist.c:3195`) and nothing reports it; an `INFO_ARENA` row or a second value on the
+  boot `MEMORY:` line would say how much the arena can actually give. Then choose: free
+  arena (playlist cache, albumart), trade `CODEC_SIZE` (1 MB reserved against a 200 KB
+  largest codec), or take doom out of this target's build as honestly unsupported. Other
+  unchecked allocations remain in doom (`i_video.c:968` `paldata`, `:1209` `gbuf`,
+  `i_sound.c:135`, `g_game.c:1752` save buffer, `d_main.c:555` wad dir table) — the ones
+  fixed are the ones that were actually crashing.
+
 ## 2. Verified on hardware — closed
 
 - **Mic gain fixed and measured** (`c39d932883` plus the follow-up). Four things were

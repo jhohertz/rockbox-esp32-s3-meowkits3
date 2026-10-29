@@ -154,5 +154,10 @@ void I_Error (char *error, ...)
       G_CheckDemoStatus();
 
    I_Quit();
-   rb->sleep(HZ*2);
+   /* The printf() above is suppressed while the game owns the display -- noprintf
+   * guards the grayscale and direct-LCD paths -- so it is not enough on its own:
+   * without this the player just loses the plugin with no reason shown.
+   * I_ShutdownGraphics() has cleared noprintf by now, and the splash replaces the
+   * blind sleep that used to be here. */
+   rb->splash(HZ*2, p_buf);
 }

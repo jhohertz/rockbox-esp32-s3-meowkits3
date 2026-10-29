@@ -34,6 +34,7 @@
 #include "z_zone.h"
 #include "doomdef.h"
 #include "i_video.h"
+#include "i_system.h"
 #include "v_video.h"
 #include "m_random.h"
 #include "f_wipe.h"
@@ -81,6 +82,8 @@ static int wipe_initMelt(int width, int height, int ticks)
 
    // setup initial column positions (y<0 => not ready to scroll yet)
    y = (int *) malloc(width*sizeof(int));
+   if (!y)
+      I_Error("Wipe: out of memory for %d columns", width);
    y[0] = -(M_Random()%16);
    for (i=1;i<width;i++)
    {
@@ -159,6 +162,15 @@ static int wipe_exitMelt(int width, int height, int ticks)
 int wipe_StartScreen(int x, int y, int width, int height)
 {
    wipe_scr_start = d_screens[SRC_SCR] = malloc(SCREENWIDTH * SCREENHEIGHT);
+   if (!wipe_scr_start)
+   {
+      /* Same reachable failure as V_Init: a screen is LCD_WIDTH*LCD_HEIGHT bytes from
+      * the shared arena, and the copy below writes through the pointer. I_Error sets
+      * doomexit, and wipe_ScreenWipe() below reports the wipe as finished so the
+      * caller stops using these buffers. */
+      I_Error("Wipe start: out of memory (%d)", SCREENWIDTH * SCREENHEIGHT);
+      return -1;
+   }
    V_CopyRect(x, y, 0,       width, height, x, y, SRC_SCR, VPT_NONE ); // Copy start screen to buffer
    return 0;
 }
@@ -166,6 +178,11 @@ int wipe_StartScreen(int x, int y, int width, int height)
 int wipe_EndScreen(int x, int y, int width, int height)
 {
    wipe_scr_end = d_screens[DEST_SCR] = malloc(SCREENWIDTH * SCREENHEIGHT);
+   if (!wipe_scr_end)
+   {
+      I_Error("Wipe end: out of memory (%d)", SCREENWIDTH * SCREENHEIGHT);
+      return -1;
+   }
    V_CopyRect(x, y, 0,       width, height, x, y, DEST_SCR, VPT_NONE); // Copy end screen to buffer
    V_CopyRect(x, y, SRC_SCR, width, height, x, y, 0       , VPT_NONE); // restore start screen
    return 0;
@@ -177,6 +194,11 @@ int wipe_ScreenWipe(int x, int y, int width, int height, int ticks)
    (void)x;
    (void)y;
    static boolean go;                               // when zero, stop the wipe
+   /* An allocation in the start or end step failed and I_Error has already queued the
+   * exit: report the wipe as done so the caller's loop stops touching buffers that do
+   * not exist. */
+   if (doomexit || !wipe_scr_start || !wipe_scr_end)
+      return 1;
    if (!go)                                         // initial stuff
    {
       go = 1;

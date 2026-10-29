@@ -723,6 +723,12 @@ void D_DoomMainSetup(void)
    // init subsystems
    printf ("V_Init: allocate screens.\n");
    V_Init ();
+   /* V_Init sets doomexit when the arena could not give it a screen. Everything from
+   * here on either draws into those screens or allocates more of them, and the game
+   * loop would do nothing anyway, so leave now and let rockdoom.c run its ordinary
+   * exit path. */
+   if (doomexit)
+      return;
 
    printf ("W_Init: Init WADfiles.\n");
    W_Init();
