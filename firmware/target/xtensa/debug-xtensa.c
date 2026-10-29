@@ -130,9 +130,18 @@ enum
      * still free, core_allocatable() is the largest single block that can be had, and
      * the difference between them is fragmentation. The second is what decides whether
      * something like doom can run, since its screens are allocated one at a time at
-     * LCD_WIDTH*LCD_HEIGHT each (76,800 here, four of them at a screen wipe). The
-     * first moves while audio plays, which is why the two readings differ between
-     * visits to this screen. */
+     * LCD_WIDTH*LCD_HEIGHT each (76,800 here, four of them at a screen wipe).
+     *
+     * Read this before playback starts, not during. audio_reset_buffer()
+     * (apps/playback.c:1083) takes the arena through core_alloc_maximum() as soon as a
+     * track is buffered, so both numbers legitimately read 0 while playing -- the pool
+     * is parked in the audiobuffer, not lost, and that block is shrinkable, which is how
+     * anything else gets space back. It stays parked after the player stops as well,
+     * because audio_stop() does not release it; only the hard-stop path
+     * (apps/playback.c:4005) or the shrink callback giving up does. A reading that is
+     * lower than the boot value is therefore the player holding its buffer, and a
+     * reading that is lower still after a plugin ran is that plugin's own allocations
+     * still outstanding. */
     INFO_ARENA,
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
