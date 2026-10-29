@@ -98,15 +98,15 @@ Everything below was tested on the device, not just compiled.
 | **Buttons** | 5-way joystick + A + B, 80 ms debounce, plus the AXP173 power-key (long press = clean shutdown: buffers flushed, settings saved, card closed) |
 | **Playback** | 43 codecs on the card, including FLAC, MP3, OGG, Opus, WMA, APE, WavPack, TTA, Musepack, ALAC, AAC, AIFF, WAV, Speex, and the chiptune family (SID, SPC, NSF, GBS, VGM, MOD, AY, HES, KSS, …). Verified at 44.1, 48 and 96 kHz, including resume from idle |
 | **Audio settings** | Hardware volume in 0.5 dB steps, software tone controls (bass/treble), replay gain, crossfeed, A-B repeat, ID3-tag browsing |
-| **Recording** | ES7210 microphone over I2S, WAV recording, verified |
+| **Recording** | ES7210 microphone over I2S, WAV recording, verified at a usable level. The chip has two gain stages — its own PGA and Rockbox's software gain — and both needed fixing: `REG41` was written with bits that disabled the PGA, and `REG08`'s speed bit is a different bit than the driver assumed |
 | **USB** | Mass storage (auto-holds on plug), DAC mode — the host's audio enters Rockbox's mixer, up to 48 kHz — a HID endpoint available alongside either, and a CDC serial console in the debug menu. The profiles are CDC+HID+MSC or CDC+HID+Audio: the device has seven IN endpoints and both combinations use all of them, so all three at once isn't possible |
 | **Storage** | SD card through ESP-IDF's SDMMC driver, dircache, tagcache/database, bookmarks |
-| **Battery** | AXP173 PMU: voltage, charging state, VBUS current, temperature; coulometer counters read and exposed (percent scaling pending one calibration run) |
+| **Battery** | AXP173 PMU: percentage from the coulometer counters on a scale measured against hardware (187,786 LSB/mAh observed, 180,000 derived), anchored to the voltage-derived percent at first reading; voltage, charging state, VBUS current and temperature. The cell's total capacity is still the datasheet's 1400 mAh until a run-to-shutdown measures it |
 | **RTC** | PCF8563: timekeeping and alarm read/write |
 | **Themes** | Built-in `cabbiev2` plus failsafe, album art (with BMP scaling), touch regions on skin bars, and third-party themes from the theme server |
 | **Fonts** | 88 fonts buildable from the tree; DPI-correct list row heights |
 | **Voice** | 950-clip English voice pack generated from this tree, playable from the card |
-| **Plugins** | 158 compiled plugin binaries plus 63 Lua ones, games mapped to the stick and buttons, key-lock, and the usual convention: stick moves, `A` acts, `B` taps for menu/pause, `B` held quits |
+| **Plugins** | 158 compiled plugin binaries plus 63 Lua ones, games mapped to the stick and buttons, key-lock, and the usual convention: stick moves, `A` acts, `B` taps for menu/pause, `B` held quits. Doom is the deliberate exception — fire and use are the two actions that dominate play, so they own the physical buttons and the grid carries escape, map, weapon, autorun and strafe |
 | **Video plugins** | `mpegplayer` with working YUV blit, `pictureflow` |
 | **Power management** | Backlight timeout → LCD sleep, CPU frequency scaling, light sleep, amp off when idle |
 | **Manual** | `make manual-pdf` builds a 286-page PDF that covers this target's keys, settings and quirks |
@@ -361,12 +361,12 @@ this is a seed rather than a one-off.
 | | |
 |---|---|
 | Branch | `esp32-s3-idf`, at <https://gitea.max.optiplexus.org/jhohertz/rockbox> |
-| First release | tag [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027), with [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261027.md) — flashed at `0x0` and verified |
+| Releases | [`esp32-s3-idf-20261029`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261029) — current — with [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261029.md), superseding [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027) and [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261027.md). Both were flashed at `0x0` and verified |
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |
 | Card payload | ~9.3 MB, 387 files (43 codecs, 158 plugins + 63 Lua, 48 languages, one voice pack) |
-| Not yet done | coulometer → battery percent calibration, a theme that renders correctly at 320×240, upstream submissions |
+| Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, and a rebase onto upstream `master` (which also bumps the plugin API to 286, so shipped `.rock` files must be rebuilt from the rebased tree) |
 
 Bugs, questions and patches welcome — and if any of this looks like something that
 belongs upstream, that's exactly the point.
