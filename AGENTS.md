@@ -4727,6 +4727,19 @@ Two mechanics worth knowing before touching any plugin's input path on this targ
   "hold this button to modify" gestures have no mechanism at all; give a modifier its
   own cell instead.
 
+## A process holding /dev/ttyACM0 makes esptool lie about the hardware
+
+The debug console and the flash loader share the same USB-Serial-JTAG ACM device. If a
+console reader is running while esptool writes, the failures do not look like a busy port:
+the stub path reports `A fatal error occurred: The chip stopped responding`, the ROM path
+(`--no-stub`) reports `Packet content transfer stopped (received 0 bytes)` partway through
+the erase, and small reads still succeed the whole time — `read_mac` answers cleanly — so
+the symptom reads as an unstable link or a brown-out. It isn't: pySerial's own message
+under a plain `Connecting...` says `device reports readiness to read but returned no data
+(device disconnected or multiple access on port?)`. Check `lsof /dev/ttyACM0` before the
+first flash attempt, not after the fourth. Measured: four failed writes, then the flash
+succeeded in 6.4 s at 460800 once the reader was killed.
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not

@@ -694,11 +694,13 @@ copy of that script, so a stale image silently runs stale provenance logic — m
 checkout's script over `/usr/local/bin/rb-build-artifacts.sh` when reproducing an older
 tag, as this build did.
 
-**Not yet done for this tag:** flashing and hardware verification of
-`rockbox-flash.bin`. The firmware differs from the image currently on the device only by
-the embedded version string — everything after the dircache commit was plugin-side or
-documentation — but that is an inference about the artifact set, not a verification, so the
-release is not claimed verified until it is flashed.
+**Flashed.** `rockbox-flash.bin` went into `0x0` on 2026-10-29 over USB-Serial-JTAG at
+460800 baud with the stub: 1,358,832 bytes written (664,112 compressed), `Hash of data
+verified`, and the board boots after a physical RESET — esptool was run with
+`--after no_reset`, because a USB-asked reset re-enters the loader on this board rather
+than booting the image. Behaviour beyond boot is still being soaked (the overnight
+discharge run started against this build), so the feature list above remains a statement
+about the port, not a re-verification of every item on these bytes.
 
 ### Release `esp32-s3-idf-20261027`
 
