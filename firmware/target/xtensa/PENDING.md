@@ -226,11 +226,8 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     playback channel's amplitude/fade state or the mixer session not being re-armed, not
     the DAC path -- the same path plays FLAC correctly. Note the cost of the silent
     sounds: ~1.2 MB of static zone memory for audio nobody hears.
-  - **Key mappings are bad.** Doom on this board is joystick + two buttons, and
-    `apps/plugins/doom/rockdoom.c` plus `keymap-meowkits3.c` map them in a way that is
-    not intuitive for a FPS: worth a deliberate pass (which button is fire/turn/use,
-    whether the stick should be side-to-side movement or turning, and what the touch
-    screen should do, if anything).
+  - ~~Doom key mappings~~ — closed, see §2.
+
   - **Re-test the worst case**: launch doom while a FLAC track is mid-playback, with the
     committed 256 KB dircache. The player parks the arena in its audiobuffer
     (`playback.c:1083`) and surrenders it only to a `core_alloc_maximum` ask
@@ -240,6 +237,25 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     time; the successful run above used the runtime off switch.
 
 ## 2. Verified on hardware — closed
+
+- **Doom controls, remapped and verified** (`apps/plugins/doom/i_video.c`). Stick walks
+  and turns, `A` fires, `B` uses or opens, and the grid carries escape (top-left), map
+  (top-middle), next weapon (top-right), menu confirm (mid-left), autorun toggle
+  (bottom-left) and strafe (bottom-middle, bottom-right). Reported working with no
+  issues on `90224de484` plus this mapping. Strafe uses Doom's dedicated
+  `key_strafeleft`/`key_straferight` (defaults `,` and `.`) rather than the
+  `key_strafe` modifier, because the modifier would need a held-key gesture and
+  `HAS_BUTTON_HOLD` is not implemented for xtensa. All of them are rebindable in Doom's
+  own Controls menu.
+  The measurement that settled the implementation: a build that drained the button queue
+  *and* kept the held-state machine produced double-fired toggles (escape opening and
+  closing on one press), while a build whose queue drain happened first — a tracer that
+  consumed the events before the handler could — worked for every cell the state machine
+  covers and failed only for the three it did not. That is what proved touch cells arrive
+  as held state via `button_status()` (`button-xtensa.c:190-203`, `button.c:414`) and
+  that the queue path was redundant at best. The fix was to delete the queue handler and
+  add the three missing cases to the state machine.
+
 
 - **Mic gain fixed and measured** (`c39d932883` plus the follow-up). Four things were
   wrong at once, and the recordings separate them:
