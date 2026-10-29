@@ -4773,6 +4773,33 @@ looks like in a diff. Nine files genuinely needed a human on this rebase
 (`tools/configure`, `tools/root.make`, `codecs.make`, `settings_list.c`, `config.h`,
 `audiohw.h`, `main.c`, `lib/keymaps.h`, `battery_bench.c`); the other ~40 did not.
 
+## A build directory keeps rocks the tree no longer has, and the plugin API is an exact match
+
+`tools/buildzip.pl` globs the **build directory**, not the source tree, so a `.rock` that
+was built there earlier is packaged again even after its source is gone. Measured right
+after the rebase: upstream removed `frotz`, `build-meowkits3/apps/plugins/frotz.rock` was
+still on disk, and the resulting `rockbox.zip` shipped 158 rocks where the tree can build
+157. Combined with the second fact below, that turns one stale file into a plugin that
+reports "incompatible version" on an otherwise correct card.
+
+The second fact: `apps/plugin.c:986` rejects a plugin whose header `api_version` is not
+**exactly** `PLUGIN_API_VERSION` — it is not a range and not a "newer is fine" check.
+Upstream bumped 285 → 286 during the rebase, so a card populated from the pre-rebase zip
+made *every* plugin refuse to load, which is what it looks like on screen and what it is.
+
+So after any rebase, before shipping a card payload:
+
+```sh
+rm -rf <builddir>/apps/plugins      # drop rocks the current tree cannot build
+make rocks && make zip
+```
+
+and check the payload count against the tree, not against the last zip you made. The one
+card zip for this port is `build-meowkits3/rockbox.zip`; `tools/autoconf.pl` infers the
+target from the build directory name, so that directory has to keep the `build-` prefix
+plus the model name — a scratch directory with a different spelling cannot be the one the
+README points at.
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not
