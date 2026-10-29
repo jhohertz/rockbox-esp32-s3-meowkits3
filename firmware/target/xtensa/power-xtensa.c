@@ -158,6 +158,133 @@ int _battery_current(void)
 }
 #endif
 
+#if CONFIG_BATTERY_MEASURE & PERCENTAGE_MEASURE
+/* Battery percentage from the PMU's coulomb counters, replacing the voltage-table
+ * mapping.
+ *
+ * The counters are cleared by axp173_init() at boot, so they measure this session only
+ * and cannot know what the cell held when the player started. That is what the voltage
+ * tables are still for: the first reading anchors the coulometer to the voltage-derived
+ * percent, and every reading after it moves from that anchor by the charge actually
+ * transferred. The anchor is a guess with a short life; the deltas are measurements.
+ * The reason to bother is linearity -- on the 2026-10-28 run, 81 mAh left the cell while
+ * the voltage gauge moved 93% to 88%, because the top of a Li-ion curve is stretched:
+ * roughly 16 mAh per gauge percent there, against the ~14 mAh a 1400 mAh cell implies.
+ * Charge and discharge are separate cumulative registers, so charging is counted rather
+ * than guessed, and the capacity used here is `get_battery_capacity()`, the same number
+ * battery_time() divides by, so the bar and the estimate cannot drift apart.
+ *
+ * Returning -1 is deliberate and safe: powermgmt.c falls back to voltage_to_battery_level()
+ * whenever the target has nothing to report (powermgmt.c:388-392), and the shutoff and
+ * disksafe thresholds stay voltage-based either way (powermgmt.c:503, :537), so a failed
+ * read costs accuracy, not protection.
+ */
+#define CC_UPDATE_TICKS      (5 * HZ)   /* the counters integrate over minutes; polling
+                                        * them twice a second only burns the shared bus */
+#define CC_TAPER_FLOOR_MA    10
+
+static int cc_percent = -1;
+static int cc_anchor_percent;
+static int cc_anchor_net;
+static uint32_t cc_anchor_dis, cc_anchor_chg;
+static long cc_last_update;
+
+/* Voltage to percent over this target's own tables. The core's equivalent is static in
+ * powermgmt.c, so the rule is repeated here rather than exported: charging uses the
+ * charge table and never reads full until charging finishes (powermgmt.c:356-372). Used
+ * only as the anchor, so its inaccuracy is bounded by the first update. */
+static int volt_percent(void)
+{
+    int mv = axp173_battery_voltage();
+    const unsigned short *table;
+    int i;
+
+    if (mv < 0)
+        return -1;
+
+    table = axp173_charging() ? percent_to_volt_charge
+                              : percent_to_volt_discharge;
+    if (mv <= table[0])
+        return 0;
+    if (mv >= table[10])
+        return axp173_charging() ? 99 : 100;
+
+    for (i = 0; i < 10 && table[i + 1] < mv; i++)
+        ;
+
+    return i * 10 + (mv - table[i]) * 10 / (table[i + 1] - table[i]);
+}
+
+int _battery_level(void)
+{
+    int chg, dis, capacity, net, percent, taper_ma;
+
+    if (cc_percent >= 0 && current_tick - cc_last_update < CC_UPDATE_TICKS)
+        return cc_percent;
+
+    if (!axp173_coulomb_mAh(&chg, &dis))
+        return -1;
+
+    capacity = get_battery_capacity();
+    if (capacity <= 0)
+        return -1;
+
+    net = dis - chg;
+
+    /* First reading, or the counters went backwards. Only a clear or a corrupted read
+     * can do that, and both make the anchor meaningless, so take a new one. */
+    if (cc_percent < 0 || dis < cc_anchor_dis || chg < cc_anchor_chg) {
+        cc_anchor_percent = volt_percent();
+        if (cc_anchor_percent < 0)
+            return -1;
+        cc_anchor_dis  = dis;
+        cc_anchor_chg  = chg;
+        cc_anchor_net  = net;
+    }
+
+    percent = cc_anchor_percent - (100 * (net - cc_anchor_net)) / capacity;
+
+    /* "Full", as far as this chip can say so. It has no charge-done flag -- REG 01H
+     * bit 6 reads 0 both when the charger is idle and when it has finished -- so the
+     * taper is the only signal: the direction bit still says charging while the charge
+     * current has fallen to the termination threshold, which for our init is 10% of the
+     * programmed current (REG 33H bit 4 left clear, so 45 mA at 450 mA). Not yet
+     * confirmed on hardware; see PENDING.md. */
+    if (axp173_current_is_charging()) {
+        taper_ma = axp173_charge_current_setting_mA() / 10;
+        if (taper_ma < CC_TAPER_FLOOR_MA)
+            taper_ma = CC_TAPER_FLOOR_MA;
+
+        if (axp173_charge_current() <= taper_ma) {
+            cc_anchor_percent = 100;
+            cc_anchor_dis  = dis;
+            cc_anchor_chg  = chg;
+            cc_anchor_net  = net;
+            percent = 100;
+        }
+        if (percent > 99)
+            percent = 99;
+    }
+
+    if (percent < 0)
+        percent = 0;
+    else if (percent > 100)
+        percent = 100;
+
+    cc_percent = percent;
+    cc_last_update = current_tick;
+    return percent;
+}
+#endif /* CONFIG_BATTERY_MEASURE & PERCENTAGE_MEASURE */
+
+#ifdef BOOTLOADER
+/* powermgmt.c only supplies its own stub when PERCENTAGE_MEASURE is unset, so a
+ * bootloader build that compiles both files still needs a definition here. */
+#if CONFIG_BATTERY_MEASURE & PERCENTAGE_MEASURE
+int _battery_level(void) { return -1; }
+#endif
+#endif
+
 /* Called from the tick handler. Only does something if the bootloader armed the
  * watchdog, which by default it did. */
 void ICODE_ATTR feed_rwdt(void)

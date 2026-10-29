@@ -388,7 +388,11 @@
 /* AXP173 at 0x34: supplies the board, measures the battery, and owns the power
  * button. Charging is controlled by the chip; Rockbox only monitors it. */
 #define CONFIG_CHARGING CHARGING_MONITOR
-#define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE)
+/* VOLTAGE_MEASURE stays on even with PERCENTAGE_MEASURE: it is what anchors the
+ * coulometer at boot (the counters are cleared by axp173_init() and cannot know the
+ * cell's state), it is the fallback whenever a coulomb read fails, and the shutoff and
+ * disksafe thresholds are compared against voltage either way. See power-xtensa.c. */
+#define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)
 #define HAVE_AXP173
 
 /* The AXP173 owns the rails and the charge path independently of the SoC, so powering
