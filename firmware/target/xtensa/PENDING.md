@@ -173,11 +173,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   doom's `printf()`, because `noprintf` suppresses the latter while the game owns the
   display -- that is why the failure looked silent mid-game. The four allocations whose
   results are written through unchecked (`V_Init`'s two screens, both wipe screens, the
-  wipe's column array) each gained a one-line `I_Error()`. Plugin delta is 25 lines added
-  and 1 removed across three files, and nothing else in `apps/plugins/doom/` is touched.
-  Caveat worth knowing: `exit()` skips `rockdoom.c`'s post-main cleanup (`M_SaveDefaults`,
-  its own `I_Quit`, the open-file loop), so a mid-game failure leaves settings unsaved and
-  file handles for the core to close (`apps/plugin.c:169` reports leaked handles).
+  wipe's column array) each gained a one-line `I_Error()`.
+  That leaves `rockdoom.c`'s post-main restoration unreachable on the `exit()` path, which
+  it observed as a "Plugin error / #leak-file-handles" yes/no prompt: `apps/plugin.c:163`
+  asks `gui_syncyesno_run()` whenever handles are still open. The tail therefore moved into
+  a `doom_cleanup()` registered with `rb_atexit()` -- `plugin_crt0.c` runs the handler
+  whichever way the plugin stops, and still inside `plugin__start()`, so plugin data is
+  valid there. It covers `backlight_use_settings()`, `M_SaveDefaults()`, `I_Quit()`, the
+  file closes, `cpu_boost(false)` and `talk_disable(false)`; without those last three a
+  failed launch left the CPU boosted, talking disabled and the backlight refusing to time
+  out, because `apps/plugin.c` restores none of them itself. Registration sits just after
+  `backlight_ignore_timeout()`, not at the top of `plugin_start()`, so the early menu exits
+  (quit, missing base WAD) still run nothing. The close loop also dropped an off-by-one:
+  `fpoint` is the next free slot, and the old loop closed `filearray[fpoint]` as well, i.e.
+  a stale descriptor the core reports as a double close.
+  **Net plugin delta:** four files -- `i_system.c` (the exit and the visible message),
+  `v_video.c` and `f_wipe.c` (the allocation checks) and `rockdoom.c` (the cleanup move).
+  Nothing else in `apps/plugins/doom/` is touched, and `apps/plugin.h` is untouched.
   **Still open:** doom may simply not fit at this resolution. The debug info screen's
   `INFO_ARENA` row prints `core_available()` and `core_allocatable()`; the second is the
   largest single block the arena can hand out, which is what decides this, because doom

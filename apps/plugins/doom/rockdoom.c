@@ -40,6 +40,7 @@
 #include "hu_stuff.h"
 #include "st_stuff.h"
 #include "lib/helper.h"
+#include "lib/pluginlib_exit.h"
 
 extern boolean timingdemo, singledemo, demoplayback, fastdemo; // killough
 
@@ -653,6 +654,43 @@ int doom_menu()
 }
 
 extern int systemvol;
+
+/* Everything plugin_start() turns on has to be turned off again, and it used to be done
+ * inline after D_DoomMain() returned. I_Error() now leaves through exit(), which
+ * longjmps past that tail, so the restoration lives here instead: plugin_crt0.c runs the
+ * registered handler whichever way the plugin stops, before plugin__start() returns and
+ * before apps/plugin.c checks for leaked handles. Leaving a WAD handle open there gets
+ * answered with a "Plugin error / #leak-file-handles" yes/no prompt on any target with
+ * HAVE_PLUGIN_CHECK_OPEN_CLOSE, and skipping the three restores below leaves the CPU
+ * boosted, talking disabled and the backlight refusing to time out. */
+static void doom_cleanup(void)
+{
+   backlight_use_settings();
+
+   M_SaveDefaults ();
+
+   I_Quit(); // Make SURE everything was closed out right
+
+   /* Slots 1..fpoint-1 hold descriptors; fpoint is the next free one. The loop that was
+    * in the tail closed filearray[fpoint] as well, i.e. a stale descriptor, which the
+    * core reports as a double close. */
+   while (fpoint > 1)
+   {
+      fpoint--;
+#if (CONFIG_PLATFORM & PLATFORM_HOSTED)
+      close(filearray[fpoint]);
+#else
+      rb->close(filearray[fpoint]);
+#endif
+   }
+
+#ifdef HAVE_ADJUSTABLE_CPU_FREQ
+   rb->cpu_boost(false);
+#endif
+
+   rb->talk_disable(false);
+}
+
 /* this is the plugin entry point */
 enum plugin_status plugin_start(const void* parameter)
 {
@@ -725,6 +763,11 @@ enum plugin_status plugin_start(const void* parameter)
 
    backlight_ignore_timeout();
 
+   /* Registered here rather than at the top of plugin_start(): the paths that leave the
+    * menu early (quit, missing base WAD) have not started anything, and must not run the
+    * sound and graphics shutdowns or rewrite config.cfg. */
+   rb_atexit(doom_cleanup);
+
 #ifdef RB_PROFILE
    rb->profile_thread();
 #endif
@@ -739,27 +782,8 @@ enum plugin_status plugin_start(const void* parameter)
    rb->profstop();
 #endif
 
-   backlight_use_settings();
-
-   M_SaveDefaults ();
-
-   I_Quit(); // Make SURE everything was closed out right
-
-   printf("There were still: %d files open\n", fpoint);
-   while(fpoint>0)
-   {
-#if (CONFIG_PLATFORM & PLATFORM_HOSTED)
-      close(filearray[fpoint]);
-#else
-      rb->close(filearray[fpoint]);
-#endif
-      fpoint--;
-   }
-
-#ifdef HAVE_ADJUSTABLE_CPU_FREQ
-   rb->cpu_boost(false);
-#endif
-
-   rb->talk_disable(false);
+   /* The restoration is doom_cleanup()'s job now, so it happens on the exit() path too.
+   * plugin_crt0.c runs it after plugin_start() returns or longjmps back, which is still
+   * inside plugin__start(), so the plugin's data and code are valid here. */
    return PLUGIN_OK;
 }
