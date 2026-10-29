@@ -1725,6 +1725,29 @@ obvious from the datasheet tables:
   3.2 V → 0 %, 3.5 V → 20 %, 3.7 V → 40 %, 3.9 V → 70 %, 4.1 V → 90 %, 4.2 V → 100 %. Our
   `percent_to_volt_discharge[]` is close in shape; at 4.0 V it says 83 % where the vendor
   curve says ~80 %, which is well inside the disagreement between any two li-ion curves.
+- **The gauge is coulometer-backed now, with voltage as the anchor.** `CONFIG_BATTERY_MEASURE`
+  is `(VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)`, so `powermgmt.c` calls the
+  target's `_battery_level()` (`power-xtensa.c`) instead of mapping voltage through the table.
+  The counters are cleared by `axp173_init()` at boot, so they cannot know the cell's state:
+  the first reading anchors to the voltage-derived percent and every later reading moves from
+  that anchor by `100 × Δ(dis − chg) / get_battery_capacity()`. Voltage stays on for three
+  reasons — the anchor, the fallback when a read fails (`powermgmt.c:388-392` returns to
+  `voltage_to_battery_level()` when `_battery_level()` says -1), and because the shutoff and
+  disksafe thresholds are compared against **voltage** either way (`powermgmt.c:503`, `:537`),
+  so a failed coulomb read costs accuracy, not low-battery protection.
+  Why bother: the top of a li-ion curve is stretched. On the 2026-10-28 run 81 mAh left the
+  cell while the voltage gauge moved 93 % → 88 %, i.e. ~16 mAh per gauge percent there
+  against the ~14 mAh a 1400 mAh cell implies. Charge is counted rather than guessed because
+  the two counters are separate registers, and `battery_time()` divides by the same capacity
+  setting, so bar and estimate cannot disagree. Polling is throttled to 5 s (`CC_UPDATE_TICKS`)
+  because the counters integrate over minutes and the bus is shared.
+  **Unverified on hardware: the "full" signal.** This chip has no charge-done flag, so the
+  taper is used — direction bit still saying charging while `axp173_charge_current()` is at
+  the termination threshold (10 % of the programmed current, REG 33H bit 4 left clear, so
+  45 mA at 450 mA) re-anchors to 100 %, and the level is capped at 99 % while charging, as
+  the voltage path does. Confirm on a charge cycle that it reaches ~100 % and that a taper
+  is actually observed; also confirm `battery_time()` reads plausibly (~14 h at 84 mA on the
+  measured run was what the voltage gauge's own estimate said).
 - The power button is the chip's PEK input, and it is readable over I2C. The IRQ
   enables are REG 0x40-0x43 plus 0x4A, and the matching status registers are
   0x44-0x47 plus 0x4D. **The PEK bits are in REG 0x46** (IRQ STATUS3): bit 0 is the

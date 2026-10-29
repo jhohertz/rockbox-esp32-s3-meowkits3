@@ -187,11 +187,14 @@ int axp173_ts_temperature(void);
    The reference library's version of this conversion multiplies by 65536, which the
    hardware contradicts by four orders of magnitude; see axp173.c. Nothing in the stock
    firmware calls those getters at all, so that constant has never been exercised. The
-   debug row prints the raw counts beside the estimate so the scale can be confirmed
-   against a known current rather than trusted. */
+   scale was confirmed on hardware on 2026-10-28: 14,572,181 discharge counts against an
+   independent 77.6 mAh integration, i.e. 187,786 LSB/mAh measured vs 180,000 derived.
+   axp173_coulomb_mAh() reads both counters in one transaction and reports whether the
+   chip answered, which is what the battery gauge needs. */
 bool axp173_coulomb_enable(bool on);
 bool axp173_coulomb_clear(void);
 void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge);
+bool axp173_coulomb_mAh(int *charge, int *discharge);
 int axp173_coulomb_charge_mAh(void);
 int axp173_coulomb_discharge_mAh(void);
 /* Raw CC_CTRL byte, so "enabled" and "paused" are visible instead of inferred from
