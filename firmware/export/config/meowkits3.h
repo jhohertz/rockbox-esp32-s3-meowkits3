@@ -5,7 +5,11 @@
  */
 
 /* For Rolo and boot loader */
-#define MODEL_NUMBER 133
+/* 134, not the 133 this target used before the rebase: upstream assigned MODEL_NUMBER 133
+ * to agptekrockernative (firmware/export/config/agptekrockernative.h:7), and the number is
+ * what identifies a target to Rolo, the boot loader and rbutil, so two targets sharing one
+ * is a real collision rather than a cosmetic one. 134 is unclaimed upstream. */
+#define MODEL_NUMBER 134
 #define MODEL_NAME   "MeowKit ESP32-S3"
 
 #define CONFIG_CPU ESP32S3

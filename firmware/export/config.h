@@ -162,7 +162,12 @@
 #define HIBY_R3PROII_PAD   79
 #define HIDIZS_AP80MAX_PAD 80
 #define PSP_PAD            81
-#define ESP32S3_PAD        81
+/* 82, not 81: upstream assigned 81 to PSP_PAD in the same list this target had already
+ * claimed, and a merge that keeps both lines leaves two names with one value. The effect
+ * was silent and severe -- apps/SOURCES tests PSP_PAD before ESP32S3_PAD, so the MeowKit
+ * build picked up keymap-psp.c and failed on buttons it has never heard of. PAD values are
+ * identity, not order, so the later target moves. */
+#define ESP32S3_PAD        82
 
 /* CONFIG_REMOTE_KEYPAD */
 #define H100_REMOTE   1
@@ -366,7 +371,11 @@ Lyre prototype 1 */
 #define RTC_NANO4G   26 /* Dialog Semiconductor D1759 ??? */
 #define RTC_STM32H743 27
 #define RTC_X1600    28 /* Ingenic X1600 */
-#define RTC_PCF8563   28 /* NXP PCF8563 over the generic I2C API */
+#define RTC_PCF8563   29 /* NXP PCF8563 over the generic I2C API. 29, not 28: upstream
+                           assigned 28 to RTC_X1600 in the same list, and a merge that
+                           keeps both lines gives one value two names -- which made
+                           firmware/SOURCES select drivers/rtc/rtc_ingenic.c for this
+                           target and then fail on a generated header it has no rule for */
 
 /* USB On-the-go */
 #define USBOTG_M66591   6591 /* M:Robe 500 */
