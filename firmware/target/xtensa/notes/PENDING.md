@@ -20,6 +20,20 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **Simulator: built and running, not interactively verified.** `--target=meowkits3
+  --type=s` compiles and the 7,645,576-byte `rockboxui` stays alive under
+  `SDL_VIDEODRIVER=dummy`, and the buttonmap, touch conversion and skin touch objects are
+  in the binary. What no headless run can show is the part a reviewer actually looks at:
+  the 320×240 panel on screen, the stick mapping to `BUTTON_UP/DOWN/LEFT/RIGHT`, and the
+  3×3 touch grid. Run it on a desktop with
+  `./build-sim-meowkits3/rockboxui --root <dir-with-.rockbox>` and check those three.
+- **A fresh build directory can lose a race upstream has.** In a new sim build dir,
+  `lib/rbcodec/metadata/hes.c` compiled before `lang_enum.h` existed and died on the
+  include. `plugin.h` includes `lang_enum.h`; nothing in the dependency graph orders the
+  generated header ahead of the codec objects, and `make.dep` does not list it for `hes.o`
+  even in builds that succeeded. A fresh `ondavx747 --type=s` won the race, so the
+  exposure is timing, not target. Locally: `make $(BUILDDIR)/lang_enum.h` first. The fix
+  belongs in `apps/lang/lang.make`; recorded, not patched here.
 - **Runtime numbers — parked by you, procedure settled.** `battery_bench` samples every
   60 s (`battery_bench.c:457`): elapsed seconds, level %, estimated remaining time, voltage,
   current, charge flags → appended to `/.rockbox/battery_bench.txt`, flushed on storage
@@ -760,6 +774,9 @@ Not being submitted now. Kept so the work can be split for a merge.
 | new | `apps/plugins/bitmaps/remote_native/SOURCES`, plugin sources testing `CONFIG_LCD` | Two upstream `#if`s that assume a macro always exists | Found by narrowing `-Wno-undef` to the target directory, which puts `-Wundef` back on for the rest of the tree. `#if LCD_REMOTE_DEPTH == 1` appears in a `SOURCES` file that only dual-LCD targets define that for, and `#if CONFIG_LCD == LCD_SSD1815` in cube.c, clock_draw_analog.c, mandelbrot_set.c and doom/i_video.c assumes every target names its LCD controller — agptekrocker, aigoerosq, hibyr1, hidizsap80max and sansae200r define neither, so those targets emit 17 warnings today. Benign (undefined evaluates to 0 and the branch is the right one), but `defined()`-guarding them or defaulting `CONFIG_LCD` to 0 in `config.h` is a clean upstream patch. Not done here: it is upstream text and unrelated to this port. |
 | new | `manual/getting_started/installation.tex`, `manual/configure_rockbox/system_options.tex`, `manual/appendix/config_file_options.tex` | Three LaTeX errors in generic manual text when built for this target | `make manual-pdf` reports "Something's wrong--perhaps a missing \item" twice in `system_options.tex` and once in `installation.tex`, plus "Float(s) lost" in `config_file_options.tex`. They survive removing this target's own `meowkits3_install.tex` section, so they are not ours; the PDF builds (3.05 MB) and the MeowKit chapters render correctly. Worth pinning down before the manual chapter is offered upstream, because a reviewer building the manual for this target sees errors. |
 
+| new | `firmware/logf.c` | `logf_panic_dump()` gets the `__PCTOOL__` stub `_logf()` already has | `logf.c` defines `logfbuffer`, `logfindex` and `logfwrap` under `#ifndef __PCTOOL__`, and `logf.h` declares them the same way, but `logf_panic_dump()` dereferences them unguarded — so any target with `ROCKBOX_HAS_LOGF` fails a checkwps or database build on four undeclared names. Found building `--type=d` for this target; the only other targets that enable logf are three iPods, whose pctool builds nobody runs. Generic, four lines, no effect on a real build. |
+| new | `apps/plugins/test_touchscreen.c` | `ESP32S3_PAD` keymap | Without it the plugin's `#error "No keymap defined!"` stops any build that enables test plugins — which is every simulator build, since `--type=s` adds `-DHAVE_TEST_PLUGINS`. |
+
 ## 6. Core touches rationalized into the target — done
 
 Each was checked against `upstream/master` hunk by hunk, then changed so the shared code
@@ -850,6 +867,48 @@ with `target_id=126`, `MODEL_NUMBER 133` (unique then — upstream later assigne
 platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
+
+### Phase C — simulator (2026-10-30)
+
+`--target=meowkits3 --type=s` builds and runs, and so do `--type=c` and `--type=d`.
+
+| Build | Result |
+|---|---|
+| native (`--type=AV`) | 1,307,856 B, unchanged; segments 4/5/6/7 byte-lengths identical to pre-Phase-B (`0x04904`, `0x13a9c`, `0x00020`, `0x00058`); layout guard passes; `espverify` hash valid |
+| simulator | `rockboxui` 7,645,576 B; runs headless under `SDL_VIDEODRIVER=dummy` and `SDL_AUDIODRIVER=dummy`, alive until the 8 s timeout killed it; root dir, SDL 2.32.10 and the audio driver list all initialised |
+| checkwps | `checkwps.meowkits3` 195,016 B |
+| database | `database.meowkits3` 949,576 B (needed the `logf.c` fix below) |
+| control | fresh `--target=ondavx747 --type=s` builds clean, which is what proved the sim failures were ours |
+
+The mechanism: `tools/root.make` now computes `XTENSA_IDF` from the artifact — `CPU=xtensa`
+**and** a `rockbox.<chip>` output — and every SDK block hangs off it instead of off the CPU
+name: `-include idf.make`, the firmware-domain `CFLAGS`/`PPCFLAGS`, `IDF_FIRST_CFLAGS`, the
+separate dependency scan, the `idf.make` rebuild trigger, the link fork and the flash
+makefile. `firmware/firmware.make`'s include-order split and `XTENSA_IDF_FIRST_*` do the
+same. `firmware/SOURCES`'s two xtensa blocks carry
+`&& (CONFIG_PLATFORM & PLATFORM_NATIVE)`, which is how upstream already writes the
+`CPU_ARM` branch. A host build therefore never sees IDF's response-file flags
+(`-mlongcalls`, `-mdisable-hardware-atomics`) or IDF's `endian.h`, and the sim's own
+`TARGET_INC` (hosted/sdl, hosted, plus our dirs) resolves normally.
+
+Two fixes the earlier probe could not have surfaced:
+
+- `es8311.h` moved from the board directory to `firmware/export/`, because every codec
+  header `audiohw.h` can include lives there upstream (`as3514.h`, `cs43131.h`, `es9218.h`, `pcm1792.h`,
+  `eros_qn_codec.h` — all eleven of them) and a tool build's `TARGET_INC` has no board directory — the dependency scan then
+  recorded a bare `es8311.h` with no rule. It also gained `#include <stddef.h>` for
+  `es8311_stat()`'s `size_t`.
+- `firmware/logf.c`: `logf_panic_dump()` used the logf buffer, index and `MAX_LOGF_SIZE`,
+  all of which are `#ifndef __PCTOOL__`, so `--type=d` failed. Now it has the same
+  `__PCTOOL__` stub pair `_logf()` already uses. This is a core fix — it breaks any target
+  with `ROCKBOX_HAS_LOGF`, and this port is the first one to hit it because the only other
+  logf targets are three iPods nobody builds tools for.
+
+`tools/builds.pm` says `sim => 1`, replacing the comment that no simulator could exist for
+this model — that was true of the gates, not of the port. `tools/list_targets.pl` lists the
+target in both tables.
+
+Not done: the interactive checks. See §1.
 
 ### Phase B — target tree restructure (2026-10-30)
 

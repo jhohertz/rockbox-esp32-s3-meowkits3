@@ -21,6 +21,33 @@ pins `codecbuf` and `pluginbuf` as absolute symbols, and a loaded image whose
 `load_addr` is not exactly those addresses is rejected at load time with a
 message that names neither the header nor the window.
 
+## On a host, without hardware
+
+The simulator is the point of review for a port, so it builds:
+
+```sh
+mkdir build-sim-meowkits3 && cd build-sim-meowkits3
+../tools/configure --target=meowkits3 --type=s
+make
+./rockboxui --root /path/to/simdisk
+```
+
+| Build | Result | Date |
+|---|---|---|
+| simulator | `rockboxui` 7,645,576 B; alive under `SDL_VIDEODRIVER=dummy` + `SDL_AUDIODRIVER=dummy` until killed at 8 s; root dir, SDL 2.32.10 and the audio driver list initialised | 2026-10-30 |
+| checkwps (`--type=c`) | 195,016 B | 2026-10-30 |
+| database tool (`--type=d`) | 949,576 B | 2026-10-30 |
+| control | fresh `--target=ondavx747 --type=s` builds clean with host gcc, which is what proved the earlier sim failures were this port's and not the sim's | 2026-10-30 |
+
+**Not verified:** what the sim looks like. Keys responding, the stick mapping to
+`BUTTON_UP/DOWN/LEFT/RIGHT`, the 3 by 3 touch grid and the 320×240 window all need a
+desktop session; a dummy-video run proves the UI loop is reached, not that it renders.
+
+The tool builds also surfaced a core defect worth knowing about: `firmware/logf.c`
+kept `logfbuffer`, `logfindex` and `MAX_LOGF_SIZE` behind `#ifndef __PCTOOL__` but used
+them unguarded in `logf_panic_dump()`, so any target enabling logf fails a checkwps or
+database build. Fixed there rather than by turning logf off here.
+
 ## Hardware
 
 | Subsystem | Exercised | Evidence | Date |

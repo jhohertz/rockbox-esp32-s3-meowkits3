@@ -195,6 +195,19 @@ same SoC has nowhere to go, and it also means `root.make`'s
 
 ### 3.3 No simulator build, and dead sim artifacts
 
+**Resolved 2026-10-30** by Phase C. `--target=meowkits3 --type=s` builds and runs, and
+`tools/builds.pm` now says `sim => 1`. The SDK layer is keyed on the artifact rather than
+on the CPU (`XTENSA_IDF` in `tools/root.make`), `firmware/SOURCES`'s xtensa blocks carry
+`&& (CONFIG_PLATFORM & PLATFORM_NATIVE)`, and two things the original probe never reached
+had to be fixed: the codec header `audiohw.h` includes had to move to `firmware/export/`
+where every other codec header lives, and `firmware/logf.c`'s `logf_panic_dump()` needed
+the `__PCTOOL__` stub the file already uses for `_logf()` — without it, *any* target with
+`ROCKBOX_HAS_LOGF` fails a checkwps or database build. See §5 Phase C.
+
+Not yet exercised: interactive behaviour in the sim — keys responding, the touch grid,
+window geometry. It was run headless under SDL's dummy video driver, which proves it
+initialises and reaches the UI loop but cannot show a screen.
+
 **Evidence.** Probed `--target=meowkits3 --type=s`: configures fine (host gcc, SDL2,
 `ARCH_NONE`, sigaltstack threads) then fails on IDF flags reaching host gcc, on
 `esp-idf/components/newlib/platform_include/endian.h`, and on
@@ -543,6 +556,69 @@ firmware/target/xtensa/espressif_esp32s3/meowkits3/
 segment sizes and load addresses identical to before (this phase must not move code).
 
 ### Phase C — simulator (~1–2 days)
+
+**Done 2026-10-30, one item short of the gate.** `--target=meowkits3 --type=s` builds and
+runs; `--type=c` (checkwps) and `--type=d` (database) build too; the native build is
+unchanged at 1,307,856 bytes with the same segment sizes and layout symbols.
+
+What the plan predicted and what it did not:
+
+1. **Gates re-keyed.** `tools/root.make` computes one flag, `XTENSA_IDF`, from the
+   artifact — `xtensa` CPU *and* a `rockbox.<chip>` output — and every SDK block now
+   hangs off it: the `-include idf.make`, the firmware-domain `CFLAGS`/`PPCFLAGS` split,
+   `IDF_FIRST_CFLAGS`, the separate dependency scan, the `IDF_FLAGGED_OBJ` rebuild
+   trigger, the IDF link fork, and the flash makefile. `firmware/firmware.make`'s
+   include-order and `XTENSA_IDF_FIRST_*` blocks do the same. `firmware/SOURCES` gained
+   `&& (CONFIG_PLATFORM & PLATFORM_NATIVE)` on both xtensa blocks, matching the
+   `CPU_ARM` branch upstream already writes that way.
+   This is the Phase D shape arrived at from the other direction: when the native build
+   gets `app_type="esp-idf"`, `XTENSA_IDF` becomes a test on `APP_TYPE` and the artifact
+   string stops being load-bearing.
+2. **`simcc()` needed nothing.** The plan expected xtensa flags to survive the reset;
+   they did not turn out to be the problem — the failures were the harvested IDF response
+   file (`-mlongcalls`, `-mdisable-hardware-atomics`) and IDF's `endian.h`, both removed by
+   the gate in (1). `-mlongcalls` is appended to `GCCOPTS` in `tools/configure` and
+   `simcc()` rebuilds `GCCOPTS`, so it was already gone.
+3. **`config/meowkits3.h` needed only its existing guards.** `PSRAM_BSS_ATTR`,
+   `IRAM_LCDFRAMEBUFFER`, `HAVE_DBG_BREADCRUMB` and `HAVE_PANIC_CONSOLE` are already
+   `#ifndef SIMULATOR`; nothing else had to be added, because the sim's `CONFIG_PLATFORM`
+   is hosted and the target files simply are not compiled.
+4. **Two blockers the probe could not have reached.**
+   - `audiohw.h` includes the codec header named by `HAVE_ES8311`, and every codec header
+     it can include lives in `firmware/export/` (`as3514.h`, `cs43131.h`, `es9218.h`,
+     `pcm1792.h`, `eros_qn_codec.h`, eleven of them). Ours sat in the board directory, so
+     in a tool build — whose `TARGET_INC` is `hosted/sdl/database`, `hosted/sdl`,
+     `hosted` — the include resolved to nothing and the dependency scan recorded a bare
+     `es8311.h` with no rule. `es8311.h` is now `firmware/export/es8311.h`, and it gained
+     `#include <stddef.h>` because `es8311_stat()` takes a `size_t` and the header is now
+     reachable from places that do not include `system.h` first.
+   - `firmware/logf.c` defines `logfbuffer`/`logfindex`/`logfwrap` under
+     `#ifndef __PCTOOL__` and declares them the same way in `logf.h`, but
+     `logf_panic_dump()` uses them unguarded. So `--type=d` failed on four undeclared
+     names. Fixed in `logf.c` with the file's own idiom — a `__PCTOOL__` stub beside the
+     real body, the same pair ``_logf()`` already has. That is a core fix for any target
+     enabling logf, and it is why `sansac200 --type=d` builds while ours did not: as3514.h
+     and friends are in `firmware/export/`, so the header half of the problem never
+     existed for them.
+5. **The sim artifacts are reached now.** `uisimulator/buttonmap/meowkits3.o` is compiled
+   and `meowkits3.c` appears in the generated `buttonmaps.c`; `key_to_touch-sdl.o` and
+   `apps/gui/skin_engine/skin_touchsupport.o` are in the binary. `sim => 1` in
+   `tools/builds.pm` replaced the claim that no simulator could exist for this model, which
+   was true only of the gates, not of the port.
+6. **A latent ordering race, observed but not ours to fix.** In a *fresh* sim build
+   directory, `lib/rbcodec/metadata/hes.c` can compile before `lang_enum.h` is generated:
+   it includes `plugin.h`, which includes `lang_enum.h`, and nothing in the graph makes the
+   codec objects depend on that generated header. `make.dep` does not list it for `hes.o`
+   even in a build that succeeded. A fresh `--target=ondavx747 --type=s` won the race and
+   built clean, so the race is upstream's and the exposure is timing-dependent. Working
+   around it locally is one `make` invocation; the fix belongs in `apps/lang/lang.make` or
+   as an ordering prerequisite, and it is recorded rather than patched.
+
+**Gate:** `--target=meowkits3 --type=s` builds and runs headless (7,645,576-byte
+`rockboxui`, alive under `SDL_VIDEODRIVER=dummy` until killed). Native unchanged.
+Interactive checks — keys, touch grid, window geometry — remain for a desktop session.
+
+Original plan text:
 
 1. Re-key every xtensa/IDF gate on platform, not on `CPU`:
    `root.make` (`ifeq (xtensa,$(CPU))` blocks for IDF flags, dep scan and link),

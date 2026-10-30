@@ -59,7 +59,7 @@ target/hosted/rolo.c
  * single-read loader cannot express it; see the header comment in the target
  * file. Hosted targets already replace the loader the same way (lc-unix.c,
  * lc-3ds.c). */
-#if defined(CPU_XTENSA)
+#if defined(CPU_XTENSA) && (CONFIG_PLATFORM & PLATFORM_NATIVE)
 target/xtensa/espressif_esp32s3/lc-esp32s3.c
 #else
 lc-rock.c
@@ -671,7 +671,7 @@ target/coldfire/i2c-coldfire.c
 target/coldfire/ata-as-coldfire.S
 #endif
 
-#elif defined(CPU_XTENSA)
+#elif defined(CPU_XTENSA) && (CONFIG_PLATFORM & PLATFORM_NATIVE)
 
 /* The bare-metal startup is not used on this path and is not built: ESP-IDF owns
  * the entry point, the vectors, the cache/MMU arming, the PSRAM bring-up and the

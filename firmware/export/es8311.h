@@ -1,6 +1,8 @@
 #ifndef ES8311_H
 #define ES8311_H
 
+#include <stddef.h>   /* es8311_stat() takes a buffer size */
+
 /* MeowKit ESP32-S3: ES8311 on the hardware I2C master, address 0x18 */
 #define ES8311_I2C_ADDR 0x18
 

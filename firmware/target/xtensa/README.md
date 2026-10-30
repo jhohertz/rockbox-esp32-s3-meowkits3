@@ -34,8 +34,16 @@ firmware/target/xtensa/espressif_esp32s3/meowkits3/   board: this panel, this
     *-target.h        button, lcd, backlight, adc, i2c  codec, this PMU
     button-meowkits3.c backlight-meowkits3.c lcd-meowkits3.c
     audiohw-meowkits3.c power-meowkits3.c
-    st7789.[ch] pca9557.[ch] es8311.[ch] es7210.[ch]
+    st7789.[ch] pca9557.[ch] es7210.[ch]
 ```
+
+`es8311.h` is at `firmware/export/`, not in the board directory: `audiohw.h`
+includes the codec header named by `HAVE_*`, and every codec header it can name
+lives in `firmware/export/` upstream (`as3514.h`, `cs43131.h`, `es9218.h`,
+`pcm1792.h`, `eros_qn_codec.h` — eleven of them). A tool build's `TARGET_INC`
+holds only the hosted directories, so a codec header in a board directory is
+unreachable there, and the dependency scan records a bare filename with no rule
+to build it.
 
 `tools/configure` sets `t_cpu="xtensa"`, `t_manufacturer="espressif_esp32s3"`,
 `t_model="meowkits3"`, which is what makes the three `TARGET_INC` directories
@@ -74,6 +82,25 @@ Only `firmware/target/xtensa/cache-xtensa.c` includes the platform cache HAL.
 Anything that used to include an IDF header from `system-target.h` — and
 `system-target.h` is reached from `system.h`, so that meant nearly every file in
 the build — now declares the entry points instead.
+
+The gate on all of it is `XTENSA_IDF` in `tools/root.make`: `CPU=xtensa` *and* a
+`rockbox.<chip>` output. That is what makes `--target=meowkits3 --type=s` work.
+The simulator shares the arch name because `t_cpu` is what selects the target
+directories, but it is a host executable, and it must not see the SDK's
+response-file flags or headers. So a reviewer can run this port without hardware:
+
+```sh
+mkdir build-sim-meowkits3 && cd build-sim-meowkits3
+../tools/configure --target=meowkits3 --type=s
+make
+./rockboxui --root /path/to/simdisk      # with .rockbox unpacked there
+```
+
+`--type=c` (checkwps) and `--type=d` (the database tool) build as well. Both
+needed `firmware/logf.c` to give `logf_panic_dump()` the `__PCTOOL__` stub that
+`_logf()` already has: the logf buffer, index and `MAX_LOGF_SIZE` are
+`#ifndef __PCTOOL__` in `logf.c` and in `logf.h`, and the dump function used them
+unguarded, so any target enabling logf failed a tool build.
 
 ## What the platform owns
 
