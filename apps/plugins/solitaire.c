@@ -552,14 +552,7 @@ CONFIG_KEYPAD == MROBE500_PAD
 #   define HK_REM2STACK    "POWER + RIGHT"
 
 #elif (CONFIG_KEYPAD == SONY_NWZ_PAD)
-#define SOL_QUIT      BUTTON_B
-/* help text names the cell rather than a key, since that is what the player
- * is looking at */
-#   define HK_MOVE      "A"
-#   define HK_DRAW      "TOP"
-#   define HK_REM2CUR   "BOT"
-#   define HK_CUR2STACK "LEFT"
-#   define HK_REM2STACK "RIGHT"ACK
+#define SOL_QUIT      BUTTON_BACK
 #define SOL_UP        BUTTON_UP
 #define SOL_DOWN      BUTTON_DOWN
 #define SOL_LEFT      BUTTON_LEFT

@@ -326,11 +326,6 @@ int show_logo_boot( void )
 #ifdef HAVE_DIRCACHE
 static int INIT_ATTR init_dircache(bool preinit)
 {
-    /* Dircache takes part in the file_internal writer lock, and a bug in that
-     * lock's wait queue was exposed only with the cache on. Disabling the cache
-     * here would hide a defect rather than fix it, so it stays enabled and the
-     * lock is correct instead. See firmware/target/xtensa/MEMORY.md. */
-
     if (preinit)
         dircache_init(MAX(global_status.dircache_size, 0));
 
@@ -499,9 +494,7 @@ static void init(void)
     filetype_init();
     playlist_init();
     shortcuts_init();
-
     audio_init();
-
     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
     settings_apply_skins();
 
@@ -552,7 +545,6 @@ static void init(void)
 
     enable_irq();
 #if defined(CPU_ARM_CLASSIC)
-
     enable_fiq();
 #endif
     /* current_tick should be ticking by now */
@@ -629,13 +621,21 @@ static void init(void)
 
     /* Keep the order of this 3 (viewportmanager handles statusbars)
      * Must be done before any code uses the multi-screen API */
+    CHART(">gui_syncstatusbar_init");
     gui_syncstatusbar_init(&statusbars);
+    CHART("<gui_syncstatusbar_init");
+    CHART(">sb_skin_init");
     sb_skin_init();
-
+    CHART("<sb_skin_init");
+    CHART(">gui_sync_wps_init");
     gui_sync_skin_init();
+    CHART("<gui_sync_wps_init");
+    CHART(">viewportmanager_init");
     viewportmanager_init();
-    rc = storage_init();
+    CHART("<viewportmanager_init");
 
+    CHART(">storage_init");
+    rc = storage_init();
     CHART("<storage_init");
     if(rc)
     {
@@ -687,7 +687,9 @@ static void init(void)
 
     if (!mounted)
     {
+        CHART(">disk_mount_all");
         rc = disk_mount_all();
+        CHART("<disk_mount_all");
 
         if (rc<=0)
         {

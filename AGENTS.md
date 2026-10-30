@@ -292,26 +292,30 @@ Two mechanical notes for files that include IDF headers:
   docs contradict the implementation). A context switch is a flat save/restore of
   a0, a1 and a12-a15.
 
-  The cost: the toolchain's libgcc is windowed in every multilib, so `-lgcc` mixes
-  ABIs. A windowed helper clobbers physical a12-a15 (its a8-a15 map to physical
-  a12-a19) and returns with `retw`. Worse, `entry` rotates the window by CALLINC=4,
-  so a windowed callee reads its arguments from physical a6-a19 while a call0 caller
-  put them in a2-a5: the helper does not merely clobber state, it is handed the wrong
-  operands. `lib/xtensa_support` supplies the helpers Rockbox needs, written with
-  32-bit operations only so they do not call libgcc again. `CORE_LIBS` are searched
-  before `-lgcc`, so the Rockbox archive wins.
+  The cost, and it was fatal: the toolchain's libgcc is windowed in every
+  multilib, so `-lgcc` mixes ABIs. A windowed helper clobbers physical a12-a15
+  (its a8-a15 map to physical a12-a19) and returns with `retw`. Worse, `entry`
+  rotates the window by CALLINC=4, so a windowed callee reads its arguments from
+  physical a6-a19 while a call0 caller put them in a2-a5: the helper does not
+  merely clobber state, it is handed the wrong operands. That is why this tree
+  once carried `lib/xtensa_support`, a hand-written archive of the 26 helpers
+  with 32-bit operations only, placed on `CORE_LIBS` ahead of `-lgcc` (and
+  added to `CODEC_LIBS` too, because codecs are a separate link that does not
+  use `CORE_LIBS`).
 
-  Codecs are a separate link (`lib/rbcodec/codecs/codecs.make`) that does not use
-  `CORE_LIBS`, so `$(XTENSASUPPORTLIB)` has to be added to `CODEC_LIBS` explicitly.
-  After that a full build links without opening libgcc at all.
+  **That archive no longer exists.** The windowed overflow/underflow vectors in
+  `firmware/target/xtensa/vectors.S` made the windowed ABI workable, `-mabi=call0`
+  was dropped, and libgcc is linked normally again — see "The windowed ABI, and
+  why call0 was the wrong call" below. Do not reintroduce a support archive; the
+  paragraph above is history, not design.
 
-  **Measured scope** (full-tree compile with the xtensa compiler, 2909 sources):
-  26 libgcc symbols — 6 integer (`__ashldi3`, `__ashrdi3`, `__lshrdi3`,
-  `__divdi3`, `__moddi3`, `__bswapsi2`) and 20 float. No `long double`, no
-  exceptions/unwinding, no overflow builtins; the only builtin that maps to a
-  helper is `__builtin_ctzll` in `vuprintf.c`. That is the whole problem.
+  **Measured scope** of the helpers that had to be replaced (full-tree compile
+  with the xtensa compiler, 2909 sources): 26 libgcc symbols — 6 integer
+  (`__ashldi3`, `__ashrdi3`, `__lshrdi3`, `__divdi3`, `__moddi3`, `__bswapsi2`)
+  and 20 float. No `long double`, no exceptions/unwinding, no overflow builtins;
+  the only builtin that maps to a helper is `__builtin_ctzll` in `vuprintf.c`.
 
-  No other Rockbox arch reimplements this. Every target links `-lgcc`; only
+  No other Rockbox arch reimplements libgcc. Every target links `-lgcc`; only
   ARM7TDMI has an archive (`lib/arm_support`), and only for 32-bit division,
   `clz` and `popcount`, because that core has no hardware divide. Nothing in
   the tree reimplements 64-bit division or soft float.
@@ -3993,8 +3997,25 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   traffic. Keep the surviving record in RTC slow and read it when a human asks.
 - In a linker script, an assignment to `.` whose expression contains a bare absolute
   constant is treated as an absolute section address, and the region usage is then
-  computed from that address instead of the section size - a spurious overflow of
+  computed from that address instead of the section size — a spurious overflow of
   roughly the region origin. Express the same value with `ORIGIN()`/`LENGTH()`.
+- **A plugin keymap block must be pure addition.** Upstream's keymap chains are one
+  `#elif CONFIG_KEYPAD == X_PAD` branch per target, and an insertion that lands in
+  the wrong branch silently rewrites *another* target's controls — and if the text
+  is a macro body like `#define HK_REM2STACK "RIGHT"ACK`, the other target fails to
+  compile at the macro's use site, which no build of our own target will ever show.
+  Two detectors catch it: a macro defined twice inside the same conditional branch,
+  and a string literal immediately followed by an identifier. Check both against the
+  upstream tree, not just ours, so pre-existing duplicates are not reported as ours.
+- **Do not relax a shared `#error` to make a target build.** The plugin chains end in
+  `#error No keymap defined!` inside the `#else`; wrapping it in `#if
+  !defined(HAVE_TOUCHSCREEN)` silences that net for every touchscreen target and is
+  pointless for a target that has its own branch, because the `#else` is never
+  reached. A keypad with no branch needs a branch, not a quieter error.
+- **Restoring upstream whitespace is part of the diff review.** `git diff --numstat`
+  against `git diff -w --numstat` shows which deletions exist only to reflow a line;
+  a file whose ignoring-whitespace diff has zero deletions was reformatted, not
+  changed. Reformat churn in shared files costs a merge and buys nothing.
 - The manual's feature list has the same missing-header dependency the cached linker
   scripts had. `manual/Makefile:54` builds `$(OBJDIR)/features.tex` from
   `apps/features.txt` alone, but the rule preprocesses that file with

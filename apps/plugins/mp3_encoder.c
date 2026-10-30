@@ -2605,13 +2605,17 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define MP3ENC_DONE     BUTTON_POWER
 #define MP3ENC_SELECT   BUTTON_SELECT
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick left/right steps the bitrate, A starts the encode,
+ * B leaves without encoding. Same convention as every other MeowKit plugin
+ * keymap: directions move, A confirms, B backs out. */
+#define MP3ENC_PREV     BUTTON_LEFT
+#define MP3ENC_NEXT     BUTTON_RIGHT
+#define MP3ENC_DONE     BUTTON_B
+#define MP3ENC_SELECT   BUTTON_A
+
 #else
-#if !defined(HAVE_TOUCHSCREEN)
-/* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
- * chain left undefined, so a touchscreen target is not missing a keymap --
- * it is using the one upstream already provides for it. */
 #error No keymap defined!
-#endif
 #endif
 
 #ifdef HAVE_TOUCHSCREEN

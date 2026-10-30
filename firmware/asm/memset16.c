@@ -62,7 +62,7 @@ void memset16(void *dst, int val, size_t len)
         {
             buffer = 0;
             for (i = 0; i < LBLOCKSIZE; i++)
-                buffer = (buffer << 16) | val;
+            buffer = (buffer << 16) | val;
         }
 
         while (len >= LBLOCKSIZE*4)

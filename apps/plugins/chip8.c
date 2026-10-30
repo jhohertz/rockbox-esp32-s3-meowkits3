@@ -1357,12 +1357,7 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define CHIP8_KEYF  BUTTON_A|BUTTON_REPEAT
 #define CHIP8_OFF   BUTTON_B|BUTTON_REPEAT
 #else
-#if !defined(HAVE_TOUCHSCREEN)
-/* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
- * chain left undefined, so a touchscreen target is not missing a keymap --
- * it is using the one upstream already provides for it. */
 #error No keymap defined!
-#endif
 #endif
 
 #ifdef HAVE_TOUCHSCREEN
