@@ -881,8 +881,25 @@ Numbers, all measured on this tree:
   global `-Wno-undef`.
 - Objects reaching an IDF API header: 16, all under `firmware/target/xtensa/`.
 
-**Not yet done:** the flash that closes Phase A's gate. `rockbox-flash.bin` is built
-and the guard passed; it needs the BOOT-then-RESET gesture on the board.
+**Gate flash.** `rockbox-flash.bin` (1,373,376 B) written at `0x0` on 2026-10-30:
+"Wrote 1373376 bytes (670970 compressed) … Hash of data verified", `--after
+no_reset` so the chip stayed in the ROM bootloader for the RESET press.
+
+One environment fact that cost a failed attempt: the **system `esptool` cannot
+write to an ESP32-S3 at all**. `/usr/lib/python3/dist-packages/esptool` is 4.7.0
+but has no `targets/stub_flasher/stub_flasher_32s3.json`, so chip detection
+succeeds (`Detecting chip type... ESP32-S3`, MAC read fine) and then
+`run_stub()` dies with `FileNotFoundError` pointing inside dist-packages. The
+IDF venv copy works — its stubs live under `targets/stub_flasher/1/` and `2/`:
+
+```sh
+~/.espressif/python_env/idf5.5_py3.14_env/bin/python -m esptool \
+    --chip esp32s3 --port /dev/ttyACM0 --after no_reset write_flash 0x0 rockbox-flash.bin
+```
+
+`export.sh` does not shadow `/usr/bin/esptool`, so `command -v esptool` finds the
+broken one either way. `make espverify` is unaffected because `image_info` needs
+no stub — which is why the defect only shows up at the moment of writing.
 
 ### Rebase onto upstream `master` (2026-10-29)
 
