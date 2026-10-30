@@ -146,10 +146,14 @@ the image rule, and `idf-clean`. It is included early in `tools/root.make` --
 before the subdir makefiles, because a `SOURCES` file is a C preprocessor program
 and one of them reaches the platform headers while the makefiles are being read.
 
-Flashing needs the board in download mode (hold BOOT, press RESET): the serial
-port is the chip's own USB-CDC, with no DTR or RTS wired to the boot straps, so
-`sdkconfig.defaults` sets `--before no_reset` and `make flash ESPPORT=...` talks
-to a board that is already listening rather than trying to reset it.
+Flashing needs the board in download mode (hold BOOT, press RESET) and then a
+second RESET to run the image. The serial port is the chip's own USB-CDC, with no
+DTR or RTS wired to the boot straps, so `sdkconfig.defaults` sets both
+`--before no_reset` and `--after no_reset`: neither reset can be pulsed, and
+esptool's default `hard_reset` prints "Hard resetting via RTS pin" while leaving
+the chip in the bootloader — observed, which is why the honest setting is the one
+in the project. `make flash ESPPORT=...` therefore writes to a board that is
+already listening and leaves it there.
 
 ## Rules worth knowing before editing
 

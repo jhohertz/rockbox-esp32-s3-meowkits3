@@ -74,9 +74,14 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 # would report "Failed to connect to ESP32-S3" and the only way in is holding BOOT
 # while pressing RESET. --before no_reset talks to a board that is already in
 # download mode instead of trying to put it there, which is what `make flash`
-# expects you to have done.
+# expects you to have done. --after no_reset is the matching honesty: the same
+# missing RTS means "hard resetting" would be a claim esptool cannot keep, and it
+# would print "Hard resetting via RTS pin" while leaving the chip in the
+# bootloader. Press RESET afterwards to run the image.
 CONFIG_ESPTOOLPY_BEFORE_NORESET=y
 CONFIG_ESPTOOLPY_BEFORE="no_reset"
+CONFIG_ESPTOOLPY_AFTER_NORESET=y
+CONFIG_ESPTOOLPY_AFTER="no_reset"
 
 # ---- app partition ----
 # IDF's default single-app table gives the app 1 MB. Rockbox does not fit in it:
