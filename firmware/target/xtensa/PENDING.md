@@ -150,11 +150,14 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   variation means libmpeg2's software IDCT and `stretch_image_plane()` are at least part
   of the picture, so moving plugin text into internal RAM is not obviously the lever.
   DIRAM has 1,105 bytes free anyway, so that path would displace something. Audio is
-  unaffected. Two things to settle, in order: find the encode settings that suit the panel
-  (yours to play with), and only then decide whether placement is worth touching.
-- **Frame-rate tuning of the encode recipe.** Deferred until you want it. The chapter's
-  recipe caps coded size at 320×240 for memory reasons, not speed reasons; a smaller coded
-  frame should cost less in libmpeg2's buffers and in the scaling pass.
+  unaffected. The encode half is settled (§3): the chosen profile halves the decode cost by
+  dropping to 15 fps. **Placement is still undecided** — whether moving plugin text into
+  internal RAM is worth displacing something is now a smaller question, because the recipe
+  no longer asks 7.5k macroblocks/s of the core.
+- ~~Frame-rate tuning of the encode recipe~~ — **done 2026-10-29.** Nine profiles plus two
+  audio variants, measured with ffprobe; the chosen recipe is `-r 15`, 500k video, `-g 8`,
+  mono 48k at 44.1 kHz, and it is in the manual chapter. Details and the two independent
+  levers are in §3's mpegplayer entry.
 - **Doom cannot launch: the arena is the limit, not the plugin buffer.** Observed on
   `b94d2a0bd1`: launching doom failed with a shortfall that varies (76,800 in one run,
   ~18k on a fresh boot) and then *crashed* — the console captured
@@ -544,20 +547,81 @@ Each of these was checked on the board, not inferred.
 
 ## 3. Deferred — might return
 
-- **mpegplayer: working, with the memory arithmetic still worth knowing.** It plays now
-  (§2), so the earlier failure shapes are closed, but these facts were measured and are not
-  obvious from the code:
+- **mpegplayer: the memory floor is one disk_buf page, and crossing it is a panic.** It
+  played, then crashed again on 2026-10-29, and the crash corrected two entries in this
+  section. `pc=0x425c56bf` resolved to **`disk_buf_probe+0x1f`** — the deployed `.rock` is
+  stripped, but `build-meowkits3/apps/plugins/mpegplayer/mpegplayer.elf` carries 333
+  symbols and its `.text` is `0x12c80`, matching the shipped rock byte for byte, so the
+  address resolves. That offset is `MAP_OFFSET_TO_PAGE()` (`disk_buf.h:54`), which is
 
-  | step | fails when | message |
+  ```c
+  #define MAP_OFFSET_TO_PAGE(o)  (MAP_OFFSET_TO_TAG(o) % disk_buf.pgcount)
+  ```
+
+  a modulo by a runtime value. With `pgcount == 0` libgcc's `__umodsi3` executes `modui`
+  with a zero divisor → IntegerDivideByZero → panic and watchdog reset. No message, no
+  splash.
+
+  Failure shapes, as measured (greylib is compiled out on this target — `HAVE_LCD_COLOR`,
+  so the older "grey +" figures in this file were wrong):
+
+  | step | fails when | what you get |
   |---|---|---|
-  | `mpeg_alloc_init()` | grant < grey + 2 MiB | "Out of memory in stream_init" |
-  | `pcm_output_init()` | grant < grey + 2 MiB + 176,400 | "Could not initialize PCM!" |
+  | `mpeg_alloc_init()` | grant < 2,097,152 | "Out of memory in stream_init" |
+  | `pcm_output_init()` | grant < 2,273,552 | "Could not initialize PCM!" |
+  | `audio_thread_init()` | grant < 2,340,836 | "Cannot create audio thread!" |
   | `disk_buf_init()` | remainder < `MIN_MEMMARGIN` (4 KiB) | "Cannot create buffering thread!" |
+  | first `disk_buf_probe()` | `pgcount == 0` | **divide-by-zero panic** |
 
-  Demand is ~2.57 MB of the **4,325,376 B** arena, contiguous, with theme fonts, skin data
-  and album art competing for the same pool — which is why a font-heavy theme reports
-  `stream_init` failure and the failsafe theme does not. Two hazards that remain true even
-  though the plugin now runs:
+  The fifth row is the one that bites, because `mpeg_malloc_all()` refuses only below
+  4 KiB: between 4 KiB and `DISK_GUARDBUF_SIZE` (65,544) + one 32 KiB page it *succeeds*,
+  hands back a pointer, and leaves `pgcount` at 0 (`disk_buf.c:943` divides by the page
+  size, then the shrink loop can decrement to zero). So the plugin starts, allocates
+  everything it checks, and faults on the first probe.
+
+  **The floor is a grant of ~2,443,244 bytes** (2,097,152 libmpeg2 reservation + 176,400
+  PCM + 67,284 audio queue + 4,096 margin + 65,544 disk guard + 32,768 page). Measured on
+  the bench: cold boot `core_allocatable()` = **2,456,452** — 13 KB above the floor, one
+  cache page — and it crashed; with the directory cache off = **2,718,620**, about nine
+  pages, and playback works. `buflib_alloc_maximum()` takes exactly `buflib_allocatable()`
+  (`buflib_mempool.c:872`), which is the second number the `INFO_ARENA` row prints, so
+  that row *is* the plugin's grant. A cold boot sits barely inside; anything the browser or
+  an album image has claimed since boot puts a file below it.
+
+  **The rebase was ruled out by audit, not by assumption.** `git diff 260c70d53f..HEAD --
+  apps/plugins/mpegplayer/` is only keymap blocks (`FIIO_M3K_LINUX_PAD` deleted, our
+  `ESP32S3_PAD` cases moved). Kernel changes are PSP-scoped (`mutex_unlock` guard,
+  `DEFAULT_STACK_SIZE` guard) plus `TMO_NOT_QUEUED` becoming `((struct … *)1)`.
+  `apps/codec_thread.c` gained the `size == 0` guard, which mpegplayer cannot reach (it
+  never calls `read_filebuf`). `plugin.lds` gained only an X1600 branch; `plugins.make`
+  only renamed `ctru-app` to `3ds-homebrew`, so plugin build flags are unchanged.
+  `firmware/lc-rock.c`, `lcd.h`, `lcd-xtensa.c`, `st7789.c`, `cache-xtensa.h` and
+  `asm/lcd-as-memframe.c` are byte-identical, including the `lcd_write_yuv420_lines()`
+  signature our blit re-declares locally. Plugin API went 285 → 286 with two tail entries
+  mpegplayer does not reference. The clip was verified healthy (320×240 MPEG-2 in a
+  Program Stream, 24 fps, homogeneous across the file, no B-frames, no `sequence_error`)
+  and the card's rock is byte-identical to the rebuilt zip's member (sha `991a74c034…`).
+
+  **The encode sweep answered the backlog item.** Nine profiles at 320×240 plus two
+  full-rate audio variants, all derived from one lossless intermediate, measured with
+  ffprobe rather than from the command line that made them. libmpeg2's pool demand is
+  **0.65 MB at any bitrate** — 76,800 coded pixels — so bitrate and frame rate are two
+  independent levers: bitrate buys *buffer seconds* (one 32 KiB page = 0.87 s at 250 kb/s,
+  0.47 s at the chosen profile, 0.29 s at 900 kb/s), frame rate buys *CPU* (300
+  macroblocks/frame, so 25 fps = 7.5k MB/s against 15 fps = 4.5k). Chosen profile, now the
+  manual's recipe: `-r 15 -b:v 500k -maxrate 650k -bufsize 2000k -g 8 -bf 0`,
+  `-c:a libmp3lame -ar 44100 -ac 1 -b:a 48k -muxrate 1100k -f mpeg` → 379 MB for 91 min,
+  69 kB/s sustained. 44.1 kHz matters twice: it equals the plugin's `CLOCK_RATE` so the DSP
+  resamples nothing (`audio_thread.c:622` only calls `DSP_SET_FREQUENCY` when the rates
+  differ), and `-ar 22050` would emit MPEG-2 Layer III frames — decodable (libmad's
+  `MAD_FLAG_LSF_EXT` gives `MAD_NSBSAMPLES = 18`, i.e. 576 samples/frame, which
+  `audio_thread.c:311`'s `32 * MAD_NSBSAMPLES` computes correctly) but resampled.
+  Two ffmpeg gotchas found by measuring: `-muxrate` must be ~2× the combined stream rate
+  (at combined+100k the muxer underflowed 103,473 times across the file, invisible in a
+  90-second low-motion test), and `ffmpeg` without `-nostdin` eats the loop's stdin and
+  swallows rows of a batch list.
+
+  Two hazards that remain true:
 
   - mpegplayer never rejects a coded frame larger than the panel; it clips only at blit
     (`mpegplayer.c:818`/`:951`) and `video_out_rockbox.c:416-428` scales via
@@ -572,8 +636,17 @@ Each of these was checked on the board, not inferred.
     16-bit blit are not shallow. A stack overflow inside pluginbuf would corrupt adjacent
     plugin data and fault without a useful address.
 
-  Encoding notes the chapter carries: MPEG-2 video rather than MPEG-1 (mpegplayer needs PTS,
-  which MPEG-1 video in a Program Stream does not provide), `-bf 0`, and `-g` below 12.
+  **Open, and both are upstream bugs rather than target ones:**
+  - `disk_buf_init()` should refuse when the shrink loop has emptied the cache —
+    `if (disk_buf.pgcount < 1) return false;` — which turns this panic into the
+    "Cannot create buffering thread!" splash `stream_mgr.c:1117` already handles.
+  - `libmpeg2/header.c:975-996` assigns `yuv_buf[][]` from `mpeg2_malloc()` with no check,
+    and `video_thread.c:672` does not check `mpeg2_init()`. That is the reason the
+    panel-sized `LIBMPEG2_ALLOC_SIZE` override was reverted (`29acf747cd`): under-sizing
+    was a silent NULL write instead of a failure. Once those results are checked, sizing the
+    reservation to the panel becomes a safe knob that returns roughly 1 MB of arena.
+
+  The chapter's recipe and its reasoning are in `manual/plugins/mpegplayer.tex`.
 
 
 - **Theme packs parked — the one tried renders incorrectly.** The `%T` region work

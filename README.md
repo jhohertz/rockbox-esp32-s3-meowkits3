@@ -81,7 +81,7 @@ Other limits, briefly, so nobody discovers them by surprise:
 | SD card | 1-bit SDMMC at 20 MHz. Fine for playback; large playlist sorts are noticeably slow. |
 | App partition | 1.5 MB (ESP-IDF's single-app-large). The firmware fits with ~16 % to spare; everything else belongs on the card. |
 | Plugin and codec code | Runs from PSRAM. Works, but PSRAM is slower than internal RAM and this is a hardware characteristic of the port. |
-| Video | `mpegplayer` runs at roughly 11 fps for a full-frame 320×240 encode; frame rate is set by how the clip is encoded, not by a knob. |
+| Video | `mpegplayer` plays MPEG-2 Program-Stream files at 320×240. Frame rate is a property of the encode, not a knob: a 25 fps clip asks 7,500 macroblocks a second of the software IDCT, the recipe's 15 fps clip asks 4,500. Needs ~2.44 MB of free arena to start at all. |
 | Hardware EQ / DRC | The ES8311 exposes none, so bass and treble are Rockbox's software tone controls. |
 | IR receiver, WS2812B LED, IMU | Present on the board, unused by Rockbox. |
 
@@ -367,7 +367,7 @@ this is a seed rather than a one-off.
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |
 | Card payload | 9,894,915 B, 398 files (44 `.codec`, 157 `.rock` plugins, 63 Lua, 48 `.lng` languages, 2 voice clips + one voice pack, 41 WPS/backdrops/themes) |
 | Upstream sync | Rebased onto upstream `master` (`fe5c0874af`, 2026-10-28) on 2026-10-29: 651 commits replayed, 257 upstream commits absorbed. The plugin API went 285 → 286, so every shipped `.rock` is rebuilt and older ones are refused. Upstream `master` also removed `frotz` (157 plugin binaries now) and added a DSD codec. DSD64 DSF plays on hardware with its embedded album art decoded; DSD128 is CPU-bound and gaps, so DSD64 is this target's practical ceiling |
-| Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, and a release tag from the rebased tree (the codec soak is done; the manual PDF has to be rebuilt from the rebased tree first) |
+| Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, two mpegplayer fixes upstream (`disk_buf_init` accepting a zero page count, libmpeg2 not checking its allocations), and a release tag from the rebased tree (the codec soak is done; the manual PDF has to be rebuilt from the rebased tree first) |
 
 Bugs, questions and patches welcome — and if any of this looks like something that
 belongs upstream, that's exactly the point.
