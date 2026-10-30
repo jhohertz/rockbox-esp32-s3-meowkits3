@@ -50,6 +50,11 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   load-bearing (`-D_GNU_SOURCE`, or `firmware/include/string-extra.h` fails on
   `mempcpy`), so the honest form is naming them in the target makefile rather
   than inheriting 97 SDK flags.
+  Both experiments are saved for re-running:
+  `build-meowkits3/notes-reference/idf.make.narrowed` (the narrowed makefile as
+  built, V1 shape) and `notes-reference/root.make.dep-hook.diff` (the
+  `DEP_EXCLUDE` change it needs). They sit in the gitignored build directory so
+  the tree stays clean; regenerate them if the build directory is removed.
 - **Simulator: built and running, not interactively verified.** `--target=meowkits3
   --type=s` compiles from a new directory (7,645,176-byte `rockboxui` after the
   `IMAGE_LINK` polarity fix) and stays alive under
