@@ -711,8 +711,11 @@ same 17/2/1 warnings, checkwps/database/simulator builds unaffected and needing 
 `tools/root.make`'s diff mentions xtensa only in the dispatch path. `configure`
 with `ESP_IDF_PATH` and `IDF_PATH` unset exits 7 with a named remedy.
 
-A board run is still owed for this phase: the image is provably the same code, but the
-flash goal itself changed (`--before no_reset`), so it has to be exercised on hardware.
+The board gate ran the same day: flashed at `0x10000`, hash verified, RESET, and the host
+enumerated `1234:4002 Rockbox media player` with `ttyACM0` on the CDC interface. That also
+measured the flash path itself — esptool's default `hard_reset` printed "Hard resetting via
+RTS pin" and left the chip in the download bootloader, because the USB-CDC port has no RTS
+on the boot straps, so `sdkconfig.defaults` now sets `--after no_reset` as well.
 
 **Open risk to state plainly:** upstream may still refuse a port that requires ESP-IDF in
 the build environment, however well-shaped. §4.1 is the argument for it; §4.3 is the

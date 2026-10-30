@@ -96,11 +96,13 @@ touches `idf-app/main/CMakeLists.txt` to make ninja re-run CMake;
 graph and the file then appears as an output twice.
 
 Build with the IDF environment sourced: `. ~/esp/esp-idf/export.sh && make`.
-Flashing needs the board in download mode — hold BOOT, press RESET. The serial port
-is the chip's own USB-CDC, with no DTR or RTS wired to the boot straps, so
-`sdkconfig.defaults` sets `CONFIG_ESPTOOLPY_BEFORE="no_reset"` and
-`make flash ESPPORT=/dev/ttyACM0` talks to a board that is already listening rather
-than trying to reset it.
+Flashing needs the board in download mode — hold BOOT, press RESET — and then a
+second RESET to run the image. The serial port is the chip's own USB-CDC, with no
+DTR or RTS wired to the boot straps, so `sdkconfig.defaults` sets
+`CONFIG_ESPTOOLPY_BEFORE="no_reset"` and `CONFIG_ESPTOOLPY_AFTER="no_reset"`:
+`make flash ESPPORT=/dev/ttyACM0` talks to a board that is already listening, and
+the default `hard_reset` only ever prints "Hard resetting via RTS pin" while
+leaving the chip in the bootloader (observed on the Phase D flash).
 
 Read "Two compilation domains", below, before changing any flag set.
 

@@ -887,6 +887,7 @@ The gate was measured against a worktree at the pre-change commit, not asserted:
 | payload | 420 zip entries, `diff` of the two entry lists empty; `flac.codec` 17,440 B and `pong.rock` 10,384 B unchanged, load addresses unchanged |
 | warnings | 17 `-Wundef`, 2 `-Wparentheses`, 1 `-Wmisleading-indentation` — same as before |
 | host builds | checkwps 195,016 B, database 949,568 B, `meowkits3 --type=s` `rockboxui` 7,645,176 B, `ondavx747 --type=s` 7,455,912 B; none of them asks for the SDK |
+| board | flashed 2026-10-30 12:13 and booted: 1,307,840 B written at `0x10000`, "Hash of data verified", partition table at `0x8000`; after RESET the host enumerated `1234:4002 Brain Actuated Technologies Rockbox media player` with `ttyACM0` on interface `3-1.1:1.0` |
 
 Three real differences the comparison caught, all of them consequences of
 `APP_TYPE` no longer being empty, and all fixed by `IMAGE_LINK`:
@@ -935,11 +936,14 @@ Where the plan and the execution diverged:
   `firmware/asm/xtensa/thread.c` is the arch context switch, `thread-idf.c` is the
   target's OS binding, and that split is upstream's shape.
 
-`sdkconfig.defaults` gained `CONFIG_ESPTOOLPY_BEFORE="no_reset"`. The serial port
-is the chip's own USB-CDC, which has no DTR or RTS wired to the boot straps, so
-`--before default_reset` could only ever fail; flashing now expects the board to be
-in download mode (BOOT + RESET) and talks to it there. Verified in the rebuilt
-image's own `flash_args`: `--before no_reset --after hard_reset`.
+`sdkconfig.defaults` gained `CONFIG_ESPTOOLPY_BEFORE="no_reset"` and
+`CONFIG_ESPTOOLPY_AFTER="no_reset"`. The serial port is the chip's own USB-CDC,
+which has no DTR or RTS wired to the boot straps, so neither reset can be pulsed.
+`--before default_reset` could only ever fail, and the first Phase D flash showed
+the other half: esptool wrote the image, printed "Hard resetting via RTS pin", and
+left the chip in the download bootloader — the host still saw `303a:1001 Espressif
+USB JTAG/serial debug unit` until RESET was pressed. Flashing now expects download
+mode and leaves the board there for a manual RESET.
 
 ### Phase C — simulator (2026-10-30)
 
