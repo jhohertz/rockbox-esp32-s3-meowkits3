@@ -389,7 +389,7 @@ this is a seed rather than a one-off.
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` 1,373,376 B at `0x0` |
-| Card payload | 9,888,675 B, 422 files (44 `.codec`, 157 `.rock` plugins, 63 Lua, 48 `.lng` languages, 2 voice clips + one voice pack, 41 WPS/backdrops/themes) |
+| Card payload | 9,888,989 B, 422 files (44 `.codec`, 157 `.rock` plugins, 63 Lua, 48 `.lng` languages, 2 voice clips + one voice pack, 41 WPS/backdrops/themes) |
 | Upstream sync | Rebased onto upstream `master` (`fe5c0874af`, 2026-10-28) on 2026-10-29: 651 commits replayed, 257 upstream commits absorbed. The plugin API went 285 → 286, so every shipped `.rock` is rebuilt and older ones are refused. Upstream `master` also removed `frotz` (157 plugin binaries now) and added a DSD codec. DSD64 DSF plays on hardware with its embedded album art decoded; DSD128 is CPU-bound and gaps, so DSD64 is this target's practical ceiling |
 | Not yet done | a run-to-shutdown capacity measurement to replace the datasheet's 1400 mAh, a theme that renders correctly at 320×240, upstream submissions, two mpegplayer fixes upstream (`disk_buf_init` accepting a zero page count, libmpeg2 not checking its allocations), and a release tag from the rebased tree (the codec soak is done and the manual PDF is built — `build-meowkits3/rockbox-manual.pdf`, 3,056,519 B — so the remaining blocker is the capacity run) |
 
