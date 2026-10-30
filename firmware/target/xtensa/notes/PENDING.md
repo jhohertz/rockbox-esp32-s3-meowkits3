@@ -850,6 +850,40 @@ with `target_id=126`, `MODEL_NUMBER 133` (unique then — upstream later assigne
 platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
+
+### Phase A — conformance cleanup (2026-10-30)
+
+Five commits, no behaviour change by design:
+
+| Commit | What |
+|---|---|
+| `df30667bc2` | `xtensa_breadcrumb*()`/`xtensa_panic_log()` became `dbg_breadcrumb()`/`panic_console_write()` behind `HAVE_DBG_BREADCRUMB`/`HAVE_PANIC_CONSOLE`; target-internal crash-record readers moved to `paniclog.h`; `firmware/include/xtensa.h` → `firmware/export/xtensa.h` with the memory layout absorbed from `memory-xtensa.h`, which is deleted |
+| `e3af37a0a9` | `system-target.h` stops including IDF headers; new `cache-xtensa.c` is the only object that includes the platform cache HAL; `-Wno-undef` scoped to `firmware/target/xtensa/` and dropped from `PPCFLAGS` |
+| `2727bfb824` | 1745 comment lines rewrapped to 80 columns; `test_touchscreen.c` keymap for `ESP32S3_PAD` |
+| `358e488b8a` | board tooling moved to `tools/meowkits3/` |
+| `6940c09bd4` | target `README.md` + `TESTING.md`; working notes moved to `notes/`; user facts added to the manual install chapter |
+
+Numbers, all measured on this tree:
+
+- `rockbox.bin` 1,307,856 B (`0x13ec40`), 7 segments, validation hash
+  `704284c94a463a7a…0c9a4a50`. The hash is *identical* across the tooling move and
+  the comment reflow, which is the check that those two commits changed nothing.
+- `rockbox-flash.bin` (bootloader + partition table + app at `0x0`) 1,373,376 B.
+- Layout guard passes: `.ext_ram.bss` ends at `0x3c5b3244`, plugin text reserved at
+  `0x3c5c0000`, `codecbuf` `0x3c680000`, `pluginbuf` `0x3c780000`, arena top
+  `0x3c800000` — the same numbers `plugin.lds` produces, verified from
+  `flac.codec`'s and `pong.rock`'s program headers as well.
+- Card payload `rockbox.zip` 9,888,811 B, rebuilt after the last commit.
+- Manual PDF built from the rebased tree: `build-meowkits3/rockbox-manual.pdf`,
+  3,056,519 B. **This closes the "manual PDF has to be rebuilt before a tag" item.**
+- Build warnings: 17, all upstream (`LCD_REMOTE_DEPTH` in a bitmaps `SOURCES` file,
+  `CONFIG_LCD` in four plugin sources). Before this phase it was 683, muted by a
+  global `-Wno-undef`.
+- Objects reaching an IDF API header: 16, all under `firmware/target/xtensa/`.
+
+**Not yet done:** the flash that closes Phase A's gate. `rockbox-flash.bin` is built
+and the guard passed; it needs the BOOT-then-RESET gesture on the board.
+
 ### Rebase onto upstream `master` (2026-10-29)
 
 `esp32-s3-idf` now sits on `fe5c0874af` (upstream tip, 2026-10-28): **651 commits replayed,

@@ -408,6 +408,48 @@ Phases A → B → C → D → E. A, B and C are independent of the SDK decision
    `esp-stage2`, docker bits → `utils/meowkits3/`.
 8. Add the missing `ESP32S3_PAD` keymap to `apps/plugins/test_touchscreen.c`.
 
+**Done 2026-10-30, in four commits.** What differed from the plan as written:
+
+- Item 2 sent the CPU header to `firmware/export/xtensa.h`, not the target directory:
+  `cpu.h` includes a per-CPU header for every arch and upstream keeps them all in
+  `firmware/export/` (`x1000.h`, `as3525.h`, `imx233.h`, `mcf5249.h`). Moving it into
+  the target tree would have been the wrong convention.
+- Item 3 followed the same logic: the layout numbers went into `xtensa.h` rather than
+  `config/meowkits3.h`, which is where `as3525.h` keeps `DRAM_ORIG`/`IRAM_ORIG`. That
+  removed `plugin.lds`'s target-path include entirely instead of replacing it, and
+  turned the `$(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)` prerequisites into a
+  conditional dependency on a core header. `memory-xtensa.h` is gone.
+- Item 4 needed a change the plan had not anticipated. `-Wno-undef` was load-bearing
+  because `system-target.h` included `<xtensa/hal.h>` and `cache-xtensa.h`, and
+  `system-target.h` is reached from `system.h` -- so IDF headers sat in front of 919 of
+  1190 objects. Declaring the three whole-cache entry points (they are `extern` in
+  `hal.h`, not inline) and moving the per-range cache calls out of the inline header into
+  a new `cache-xtensa.c`, the only object in the tree that includes the platform cache
+  HAL, took objects reaching an IDF *API* header from 919 to 16, all of them under
+  `firmware/target/xtensa/`. `-Wno-undef` is now scoped to that directory; the one IDF
+  libc-header warning is silenced by supplying
+  `CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0`, which is what this project's sdkconfig
+  means. PPCFLAGS lost the flag: preprocessing the three `SOURCES` files with the real
+  flags yields zero `-Wundef` warnings. Full-rebuild warnings went 683 to 17, and all 17
+  are upstream behaviour other targets also emit.
+- Item 5 rewrapped 1745 comment lines across the 51 files this branch created, using a
+  tool that asserts two invariants before writing anything: everything outside a comment
+  byte-identical, and the comment prose identical as a word sequence. Pre-formatted
+  paragraphs (register tables, aligned columns) were left alone, which is why some long
+  lines survive. Makefiles and shell scripts were left alone -- upstream's own
+  `tools/configure` has 100 lines over 80 columns.
+- Item 6 became README.md + TESTING.md in the target directory with the ten working
+  notes moved to `notes/`, rather than folding the research documents into two files.
+  User facts went into `manual/getting_started/meowkits3_install.tex`, not
+  `manual/platform/meowkits3.tex`, because that second file is option plumbing and the
+  install page is where upstream puts per-target prose.
+- Item 7 landed in `tools/meowkits3/` (the `tools/agptek_rocker/` shape, Dockerfile and
+  README included) rather than splitting across `tools/xtensa/` and `utils/meowkits3/`.
+  Four of the files the plan listed to move -- `esp-elf2image`, `esp-stage2`,
+  `esp-trailwatch.py`, `esp-usbflash.py` -- are not in this tree at all; they belong to
+  the `baremetal-pre-idf` tag. `esp-layout-check` also gained repo-relative defaults so
+  it can be run from a build directory.
+
 **Gate:** xtensa build clean, image hash unchanged for code (byte-compare segments),
 `make espverify` passes, payload rebuilt. No board behaviour change expected; flash once
 to confirm boot.
