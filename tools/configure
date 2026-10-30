@@ -5038,6 +5038,14 @@ fi
 
 ### end of cmdline
 
+# How codecs and plugins are produced is a separate question from APP_TYPE, which
+# says who supplies the runtime environment: a native build links its own images,
+# and so does an SDK-backed target that still loads them as images rather than
+# dlopening them; a hosted one builds shared objects instead.
+if [ -z "$app_type" ] || [ "$app_type" = "esp-idf" ]; then
+    image_link="yes"
+fi
+
 cat > Makefile <<EOF
 ## Automatically generated. http://www.rockbox.org/
 
@@ -5095,6 +5103,7 @@ export RANLIB=${RANLIB}
 export PREFIX=${ARG_PREFIX}
 export PROFILE_OPTS=${PROFILE_OPTS}
 export APP_TYPE=${app_type}
+export IMAGE_LINK=${image_link}
 export APPLICATION=${application}
 export SIMDIR=\$(ROOTDIR)/uisimulator/sdl
 export GCCOPTS=${GCCOPTS}

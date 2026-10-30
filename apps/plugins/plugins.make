@@ -19,6 +19,12 @@ ifeq ($(APP_TYPE),3ds-homebrew)
     is_app_build =
 endif
 
+# A target that links its own plugin images uses the native plugin list even
+# when it runs on an external SDK -- see IMAGE_LINK in tools/configure.
+ifdef IMAGE_LINK
+    is_app_build =
+endif
+
 ifneq ($(SELECTED_PLUGINS_SRC),DEFAULT)
 PLUGINS_SRC = $(SELECTED_PLUGINS_SRC)
 else
@@ -52,7 +58,7 @@ $(BUILDDIR)/apps/plugins/plugin_crt0.o: PLUGINFLAGS += -fno-lto
 endif
 
 ### build data / rules
-ifndef APP_TYPE
+ifdef IMAGE_LINK
 CONFIGFILE := $(FIRMDIR)/export/config/$(MODELNAME).h
 PLUGIN_LDS := $(APPSDIR)/plugins/plugin.lds
 PLUGINLINK_LDS := $(BUILDDIR)/apps/plugins/plugin.link
@@ -167,12 +173,12 @@ $(BUILDDIR)/apps/plugins/%.o: $(ROOTDIR)/apps/plugins/%.c
 	$(SILENT)mkdir -p $(dir $@)
 	$(call PRINTS,CC $(subst $(ROOTDIR)/,,$<))$(CC) -I$(dir $<) $(PLUGINFLAGS) -c $< -o $@
 
-ifdef APP_TYPE
- PLUGINLDFLAGS = $(SHARED_LDFLAGS) -Wl,$(LDMAP_OPT),$*.map
- PLUGINFLAGS += $(SHARED_CFLAGS) # <-- from Makefile
-else
+ifdef IMAGE_LINK
  PLUGINLDFLAGS = -T$(PLUGINLINK_LDS) -Wl,--gc-sections -Wl,-Map,$*.map
  OVERLAYLDFLAGS = -T$(OVERLAYREF_LDS) -Wl,--gc-sections -Wl,-Map,$*.refmap $(GLOBAL_LDOPTS)
+else
+ PLUGINLDFLAGS = $(SHARED_LDFLAGS) -Wl,$(LDMAP_OPT),$*.map
+ PLUGINFLAGS += $(SHARED_CFLAGS) # <-- from Makefile
 endif
 PLUGINLDFLAGS += $(GLOBAL_LDOPTS)
 

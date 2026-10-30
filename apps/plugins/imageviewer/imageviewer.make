@@ -27,7 +27,7 @@ $(foreach dir,$(IMGVSUBDIRS),$(eval include $(dir)/$(notdir $(dir)).make))
 
 IMGDECLDFLAGS = $(GLOBAL_LDOPTS) -T$(PLUGINLINK_LDS) -Wl,--gc-sections -Wl,-Map,$(IMGVBUILDDIR)/$*.refmap
 
-ifndef APP_TYPE
+ifndef IMAGE_LINK
     IMGDEC_OUTLDS = $(IMGVBUILDDIR)/%.link
     IMGDEC_OVLFLAGS = $(GLOBAL_LDOPTS) -T$(IMGVBUILDDIR)/$*.link -Wl,--gc-sections -Wl,-Map,$(IMGVBUILDDIR)/$*.map
 else

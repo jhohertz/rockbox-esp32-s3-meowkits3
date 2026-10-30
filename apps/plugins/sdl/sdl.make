@@ -38,7 +38,7 @@ SDLFLAGS = -I$(SDL_SRCDIR)/include $(filter-out -O%,$(PLUGINFLAGS))		\
 #-ffast-math -funroll-loops -fomit-frame-pointer -fexpensive-optimizations	\
 #-D_GNU_SOURCE=1 -D_REENTRANT -DSDL -DELF
 
-ifndef APP_TYPE
+ifndef IMAGE_LINK
     ### no target has a big enough plugin buffer
     ROCKS += $(SDL_OBJDIR)/duke3d.ovl
     ROCKS += $(SDL_OBJDIR)/wolf3d.ovl
