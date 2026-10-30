@@ -497,6 +497,9 @@ those carry source paths. The validation hash differs because IDF's `esp_app_des
 head of the app partition, embeds Rockbox's version string and the build timestamp
 (`v4.0-final-2683-g39d9de21a0-dir`, `Oct 30 2026`, `02:07:04`); both change on any commit
 and rebuild. "This phase must not move code" is therefore proven rather than assumed.
+The gate flash went in at `0x0` and the board enumerated `1234:4002 Rockbox media player`
+after RESET with `ttyACM0` on its CDC interface, so the restructured tree runs on hardware
+as the flat one did.
 
 The first attempt at this gate *did* move code, and that is the finding worth keeping.
 `firmware/firmware.make`'s `XTENSA_IDF_FIRST_SRC` still named `target/xtensa/sd-idf.c` and

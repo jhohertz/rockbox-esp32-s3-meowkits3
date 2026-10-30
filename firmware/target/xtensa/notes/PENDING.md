@@ -907,8 +907,13 @@ Numbers after the move:
   the sim now builds clean. Worth remembering — a stale build directory can report a tree
   problem that isn't one.
 
-**Not yet done:** the confirmation flash (`rockbox-flash.bin` 1,373,456 B is built and the
-layout guard passed; the board needs BOOT-then-RESET again to accept it).
+**Confirmation flash.** `rockbox-flash.bin` 1,373,392 B written at `0x0` on
+2026-10-30 ("Hash of data verified"), and after RESET the host enumerated
+`1234:4002 Rockbox media player` with `ttyACM0` on interface `3-1.1:1.0` — the
+composite descriptor came up, so the restructured tree runs on the board exactly
+as the flat one did. Mass storage is not attached because this build's default
+USB mode is charge-only; holding a button while plugging in flips it, as the
+manual says.
 
 ### Phase A — conformance cleanup (2026-10-30)
 
