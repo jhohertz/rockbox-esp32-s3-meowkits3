@@ -46,7 +46,9 @@ CODECFLAGS += -mno-longcalls
 CODECLINK_LDS_DEPS += $(FIRMDIR)/export/xtensa.h
 endif
 
-ifdef APP_TYPE
+ifdef IMAGE_LINK
+ CODECLDFLAGS = -T$(CODECLINK_LDS) -Wl,--gc-sections
+else
  CODECLDFLAGS = $(SHARED_LDFLAGS)
  ifneq ($(UNAME), Darwin)
   ifeq (,$(findstring psp, $(MODELNAME)))
@@ -54,8 +56,6 @@ ifdef APP_TYPE
   endif
  endif
  CODECFLAGS += $(SHARED_CFLAGS) # <-- from Makefile
-else
- CODECLDFLAGS = -T$(CODECLINK_LDS) -Wl,--gc-sections
 endif
 CODECLDFLAGS += -Wl,$(LDMAP_OPT),$(CODECDIR)/$*.map $(GLOBAL_LDOPTS)
 
@@ -134,7 +134,7 @@ else ifeq ($(ARCH),arch_mips)
   $(OPUSLIB) : CODECFLAGS += -fno-strict-aliasing
 endif
 
-ifndef APP_TYPE
+ifdef IMAGE_LINK
   CONFIGFILE := $(FIRMDIR)/export/config/$(MODELNAME).h
   CODEC_LDS := $(APPSDIR)/plugins/plugin.lds # codecs and plugins use same file
   CODECLINK_LDS := $(CODECDIR)/codec.link

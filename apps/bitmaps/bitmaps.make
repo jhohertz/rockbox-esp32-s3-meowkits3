@@ -50,9 +50,12 @@ $(BUILDDIR)/apps/bitmaps/remote_native/%.c: $(ROOTDIR)/apps/bitmaps/remote_nativ
 	$(SILENT)mkdir -p $(dir $@) $(BMPINCDIR)
 	$(call PRINTS,BMP2RB $(<F))$(BMP2RB_REMOTENATIVE) -b -h $(BMPINCDIR) $< > $@
 
-ifdef APP_TYPE
+ifndef IMAGE_LINK
 ifeq (,$(findstring psp, $(MODELNAME)))
 # Bitmaps must be explicitly Position independent to avoid linker warnings
+# (this is the dlopen case; a target that links native images does not need it,
+# and PIC would move the bitmap structs into .data.rel.ro -- see IMAGE_LINK in
+# tools/configure)
 $(BUILDDIR)/apps/bitmaps/native/%.o: CFLAGS += -fPIC
 $(BUILDDIR)/apps/bitmaps/mono/%.o: CFLAGS += -fPIC
 $(BUILDDIR)/apps/bitmaps/remote_mono/%.o: CFLAGS += -fPIC

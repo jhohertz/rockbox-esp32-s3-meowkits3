@@ -21,7 +21,7 @@ $(PDBOXBUILDDIR)/pdbox.rock: $(PDBOX_OBJ) $(MPEG_OBJ)
 
 PDBOXFLAGS = $(PLUGINFLAGS) -fno-strict-aliasing -Wno-cast-function-type
 PDBOXLDFLAGS = $(PLUGINLDFLAGS)
-ifdef APP_TYPE
+ifndef IMAGE_LINK
 PDBOXLDFLAGS += -lm
 endif
 
