@@ -23,6 +23,7 @@
  *    same thing on every descriptor it hands to a DMA engine.
  ****************************************************************************/
 #include "config.h"
+#include "cache-xtensa.h"
 
 /* One line per transmit session, on the CDC console when a host is present. This
  * file asks for logf deliberately: the session counters below are the difference

@@ -681,6 +681,7 @@ target/coldfire/ata-as-coldfire.S
 target/xtensa/paniclog.c
 target/xtensa/thread-idf.c
 target/xtensa/memory-xtensa-syms.S
+target/xtensa/cache-xtensa.c
 target/xtensa/system-xtensa.c
 target/xtensa/power-xtensa.c
 target/xtensa/timer-xtensa.c
