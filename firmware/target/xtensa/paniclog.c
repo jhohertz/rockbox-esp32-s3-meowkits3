@@ -68,8 +68,9 @@ static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
  * IDF's panic entry is not a registration point: esp_panic_handler() is a
  * strong symbol in esp_system/panic.c, in an object the link pulls anyway for
  * the watchdog helpers it also defines. Taking it over needs an object of the
- * executable plus -Wl,--allow-multiple-definition, which idf-app/panic_cdc.c
- * does; both crashes in the session that produced this file happened before
+ * executable plus -Wl,--allow-multiple-definition, which
+ * espressif_esp32s3/idf-app/panic_cdc.c does; both crashes in the session that
+ * produced this file happened before
  * that existed and left nothing but "Panic handler entered multiple times".
  *
  * Breadcrumbs complement rather than duplicate that: they are written while
@@ -102,7 +103,8 @@ static struct breadcrumb bc[BC_SLOTS] __attribute__((section(".noinit"), aligned
 static uint32_t bc_magic __attribute__((section(".noinit")));
 static uint32_t bc_next  __attribute__((section(".noinit")));
 
-/* Which image is running this boot, stamped by idf-app/main/rockbox_app.c from
+/* Which image is running this boot, stamped by
+ * espressif_esp32s3/idf-app/main/rockbox_app.c from
  * esp_app_get_description()->version before Rockbox's init starts.
  *
  * It exists because a flash cannot be confirmed by observation: the
@@ -580,8 +582,8 @@ int paniclog_frame_words(char *buf, int bufsize, int line)
 }
 
 /* Store ps, epc1..epc4, depc and the cache-error detail. regs[] is the fixed
- * order documented in idf-app/panic_cdc.c: ps, epc1, epc2, epc3, epc4, depc,
- * cache_vaddr, cache_size. Words that could not be read legally are zero and
+ * order documented in espressif_esp32s3/idf-app/panic_cdc.c: ps, epc1, epc2,
+ * epc3, epc4, depc, cache_vaddr, cache_size. Words that could not be read legally are zero and
  * the line says so, rather than presenting a zero as if it were a real value. */
 void paniclog_frame_regs(const unsigned long *regs, int count)
 {
