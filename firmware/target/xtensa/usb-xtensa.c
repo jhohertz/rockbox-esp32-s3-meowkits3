@@ -27,6 +27,7 @@
  * the pads move only while USB mode is active and return to USJ on reset.
  ****************************************************************************/
 #include "config.h"
+#include "debug.h"           /* dbg_breadcrumb() */
 #include "system.h"
 #ifdef USB_ENABLE_SERIAL
 #include <stdio.h>          /* snprintf */
@@ -351,7 +352,7 @@ void usb_dw_target_enable_clocks(void)
 
     /* The last thing that runs before the console disappears: from here on the
      * breadcrumb trail is the only record, until the next boot prints it. */
-    xtensa_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
+    dbg_breadcrumb("usbClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_CLK_EN1));
 }
 
 void usb_dw_target_disable_clocks(void)
@@ -372,7 +373,7 @@ void usb_dw_target_disable_clocks(void)
      * The final marker reads RTCCNTL and the SoC clock-enable register only: both are always
      * clocked, so they are safe to take after the wrap gate has gone.
      */
-    xtensa_breadcrumb_rtc("usbRel", DWC_DAINT, DWC_GINTSTS);
+    dbg_breadcrumb_retained("usbRel", DWC_DAINT, DWC_GINTSTS);
 
     /* Give the pins back, and release the PHY loads, while the wrap clock still reaches
      * the pad mux. USB-Serial-JTAG is the console and the flash port, so leaving the mux
@@ -400,7 +401,7 @@ void usb_dw_target_disable_clocks(void)
      * may sleep again. Paired with the acquire in enable_clocks(). */
     xt_light_sleep_block(false);
 
-    xtensa_breadcrumb_rtc("usbEnd", rd(XT_RTC_USB_CONF), rd(XT_PERIP_CLK_EN0));
+    dbg_breadcrumb_retained("usbEnd", rd(XT_RTC_USB_CONF), rd(XT_PERIP_CLK_EN0));
 }
 
 void usb_dw_target_enable_irq(void)
@@ -415,7 +416,7 @@ void usb_dw_target_enable_irq(void)
      * GINTSTS & GINTMSK was non-zero and the mapped slot was not pending -- and taking
      * one starves the audio path. The tick-task dispatch drives the driver instead.
      */
-    xtensa_breadcrumb("usbNoIrq", 1, 0);
+    dbg_breadcrumb("usbNoIrq", 1, 0);
     return;
 #endif
 
@@ -473,7 +474,7 @@ void usb_dw_target_enable_irq(void)
              * from a dead bus from the outside. Record the code -- ESP_ERR_INVALID_STATE
              * means something else already owns this source. */
             usb_intr = NULL;
-            xtensa_breadcrumb("usbIrqE", (unsigned long)err, 0);
+            dbg_breadcrumb("usbIrqE", (unsigned long)err, 0);
             return;
         }
 
@@ -491,7 +492,7 @@ void usb_dw_target_enable_irq(void)
          * mass storage -- and as a ring entry that pushed everything else out, so the
          * trail read as sixteen identical usbIrq lines. The churn is a counter in the
          * CDC trace now, which is where a count belongs. */
-        xtensa_breadcrumb("usbIrq", (unsigned long)(usb_intr != NULL), 0);
+        dbg_breadcrumb("usbIrq", (unsigned long)(usb_intr != NULL), 0);
     }
 }
 
@@ -628,7 +629,7 @@ static uint32_t xt_attach_tick;
  *     ROM, not something the firmware should be asked to do to itself.
  *   - the 't' trail dump over CDC, and the periodic register and usb-audio lines. They
  *     were a load on a transport whose host may not be reading, and the crash trail is
- *     still available: xtensa_breadcrumb() keeps the ring and the boot console prints it.
+ *     still available: dbg_breadcrumb() keeps the ring and the boot console prints it.
  *
  * What is left is the transport, the audio endpoints and the cable sense. */
 
@@ -864,8 +865,8 @@ static void usb_vbus_poll(void)
     if (xt_armed && ++report >= 10 * HZ)
     {
         report = 0;
-        xtensa_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
-        xtensa_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
+        dbg_breadcrumb("usbIRQ", xt_usb_irqs, DWC_GINTSTS);
+        dbg_breadcrumb("usbDsts", DWC_DSTS, DWC_DAINT);
     }
 
     if (++ticks < USB_VBUS_POLL_TICKS)
@@ -930,7 +931,7 @@ static void usb_vbus_poll(void)
          * transition belongs in the trail: whether the cable event was seen at all,
          * and when, is half of the question. */
         last = status;
-        xtensa_breadcrumb_rtc("usbEv", (unsigned long)status, current_tick);
+        dbg_breadcrumb_retained("usbEv", (unsigned long)status, current_tick);
         usb_status_event(status);
     }
 }
@@ -1026,7 +1027,7 @@ void usb_init_device(void)
 void __wrap_usb_enable(bool on)
 {
 #ifdef USB_ALLOW_ATTACH
-    xtensa_breadcrumb("usbEn", on ? 1 : 0, current_tick);
+    dbg_breadcrumb("usbEn", on ? 1 : 0, current_tick);
 
     /* Sample the register state BEFORE the teardown. usb_core_exit() ends with
      * usb_dw_target_disable_clocks(), which clears the USB-wrap gate, and reading
@@ -1056,7 +1057,7 @@ void __wrap_usb_enable(bool on)
          * the full 90 seconds on others, and the trail cannot say which without a
          * clock: 200 ticks is Rockbox releasing the transport on its own, 9000 is the
          * bring-up judge. */
-        xtensa_breadcrumb("usbEnT", current_tick - xt_attach_tick, xt_attach_tick);
+        dbg_breadcrumb("usbEnT", current_tick - xt_attach_tick, xt_attach_tick);
     }
 
     if (on)
@@ -1087,15 +1088,15 @@ void __wrap_usb_enable(bool on)
      * window, so one power cycle tells us what the previous boot did -- including
      * whether this function was called with false, which is the other explanation
      * for a report that reads all zeroes. */
-    xtensa_breadcrumb(on ? "usbIn" : "usbOut", pre_gsnpsid, pre_otgconf);
-    xtensa_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+    dbg_breadcrumb(on ? "usbIn" : "usbOut", pre_gsnpsid, pre_otgconf);
+    dbg_breadcrumb("usbClk2", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
     /* The same two steps in the ring that survives a reset. They are the only markers
      * between usb_core_exit()'s dRet and whatever runs next, and while they lived only in
      * the .noinit ring a watchdog reset erased them -- which is why every detach trace so
      * far appeared to stop exactly at dRet with no explanation. These are register reads on
      * SoC blocks plus GSNPSID, taken while the OTG block is still clocked. */
-    xtensa_breadcrumb_rtc(on ? "uIn" : "uOut", pre_gsnpsid, pre_otgconf);
-    xtensa_breadcrumb_rtc("uClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
+    dbg_breadcrumb_retained(on ? "uIn" : "uOut", pre_gsnpsid, pre_otgconf);
+    dbg_breadcrumb_retained("uClk", rd(XT_PERIP_CLK_EN0), rd(XT_PERIP_RST_EN0));
 
     /* The register state after the attach, recorded rather than panicked. The
      * earlier version of this slept 8 s and called panicf() so the values would
@@ -1111,7 +1112,7 @@ void __wrap_usb_enable(bool on)
      */
     if (on)
     {
-        xtensa_breadcrumb("usbPost", DWC_DCTL, DWC_GINTSTS);
+        dbg_breadcrumb("usbPost", DWC_DCTL, DWC_GINTSTS);
     }
 
     /* Bring-up only: collect ~90 s of interrupt and bus state, then restart the
@@ -1136,7 +1137,7 @@ void __wrap_usb_enable(bool on)
      * ring and nothing after it does, the boot died in code that runs once the transport
      * is down: charging bookkeeping, the threads the detach broadcast woke, or whatever
      * the player does on its way back to its loop. */
-    xtensa_breadcrumb_rtc("wRet", on ? 1 : 0, current_tick);
+    dbg_breadcrumb_retained("wRet", on ? 1 : 0, current_tick);
 }
 
 #endif /* HAVE_USBSTACK */

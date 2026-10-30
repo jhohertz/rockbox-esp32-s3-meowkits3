@@ -40,6 +40,10 @@ CODECFLAGS := $(FREESTAND_CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
 # range the link fails loudly instead of faulting on the player.
 ifeq ($(ARCH),arch_xtensa)
 CODECFLAGS += -mno-longcalls
+# The layout constants codec.lds reads come from firmware/export/xtensa.h (via
+# cpu.h). Without this prerequisite a layout change silently links codecs against
+# the origin the firmware no longer reserves.
+CODECLINK_LDS_DEPS += $(FIRMDIR)/export/xtensa.h
 endif
 
 ifdef APP_TYPE
@@ -140,8 +144,7 @@ CODEC_CRT0 := $(CODECDIR)/codec_crt0.o
 
 $(CODECS): $(CODEC_CRT0) $(CODECLINK_LDS)
 
-$(CODECLINK_LDS): $(CODEC_LDS) $(CONFIGFILE) \
-                   $(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)
+$(CODECLINK_LDS): $(CODEC_LDS) $(CONFIGFILE) $(CODECLINK_LDS_DEPS)
 	$(call PRINTS,PP $(@F))
 	$(shell mkdir -p $(dir $@))
 	$(call preprocess2file, $<, $@, -DCODEC)

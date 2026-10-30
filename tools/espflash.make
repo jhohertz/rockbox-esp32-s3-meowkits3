@@ -52,7 +52,7 @@ espverify: $(BUILDDIR)/$(BINARY) esplayer
 # The external arena has no link-time guard, because ESP-IDF owns the linker script
 # and the ldfragment we feed it only routes archives to memory regions -- an ASSERT()
 # has nowhere to live. tools/esp-layout-check reads the addresses out of the map and
-# compares them against the reservations memory-xtensa.h defines, so an arena that has
+# compares them against the reservations firmware/export/xtensa.h defines, so an arena that has
 # grown into the plugin/codec text fails the build instead of appearing as a printf on
 # a device after the image shipped. flash and espverify both run it: the point is that
 # you cannot reach a board without having passed it.
@@ -71,7 +71,7 @@ ESPLELFMAP ?= $(BUILDDIR)/rockbox.map
 esplayer: $(BUILDDIR)/$(BINARY)
 	$(SILENT)$(ROOTDIR)/tools/esp-layout-check $(ESPLELFMAP) \
 		$(ROOTDIR)/firmware/export/config/$(MODELNAME).h \
-		$(ROOTDIR)/firmware/target/xtensa/memory-xtensa.h $(BUILDDIR)/Makefile
+		$(FIRMDIR)/export/xtensa.h $(BUILDDIR)/Makefile
 .PHONY: esplayer
 
 # The all-in-one image: bootloader, partition table and app merged into one file

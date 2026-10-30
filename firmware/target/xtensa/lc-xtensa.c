@@ -73,7 +73,7 @@
 #include "load_code.h"
 #include "stdio.h"
 #include <string.h>
-#include "memory-xtensa.h"
+#include "xtensa.h"      /* XT_* layout constants, via config.h */
 
 /* ELF32, little endian, as emitted by the xtensa toolchain. Parsed by hand
  * rather than through <elf.h> so that this does not depend on a hosted header
@@ -242,7 +242,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         if (ph.memsz > ph.filesz)
             memset(dest + ph.filesz, 0, ph.memsz - ph.filesz);
 
-        xtensa_breadcrumb("seg", ph.vaddr, (unsigned long)dest);
+        dbg_breadcrumb("seg", ph.vaddr, (unsigned long)dest);
         printf("codec load: seg %d vaddr=%08x -> write@%p filesz=%u memsz=%u\n",
                i, ph.vaddr, (void *)dest, ph.filesz, ph.memsz);
 
@@ -304,7 +304,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      * loading it -- which is the distinction the two WAV-resume crashes needed
      * and could not make, because IDF's panic handler re-entered before printing
      * anything at all. */
-    xtensa_breadcrumb("placed", (unsigned long)buf, (unsigned long)loaded);
+    dbg_breadcrumb("placed", (unsigned long)buf, (unsigned long)loaded);
     printf("codec load: %d segment(s) placed, handle=%p\n", loaded,
            (void *)buf);
 

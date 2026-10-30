@@ -28,6 +28,15 @@ extern void debugf(const char* fmt,...) ATTRIBUTE_PRINTF(1, 2);
 extern void ldebugf(const char* file, int line, const char *fmt, ...)
                     ATTRIBUTE_PRINTF(3, 4);
 
+#ifdef HAVE_DBG_BREADCRUMB
+/* Target crash trail: record a step that might be the last one. Needs no
+ * console, no lock, no stack and no working panic handler, because its whole
+ * purpose is to survive the hang or reset that follows it. The retained variant
+ * lives in memory that outlives that reset; use it for steps that can stall. */
+void dbg_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+void dbg_breadcrumb_retained(const char *tag, unsigned long a, unsigned long b);
+#endif
+
 #ifndef CODEC  
 
 #if defined(SIMULATOR) && !defined(__PCTOOL__) \

@@ -29,8 +29,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include "config.h"
 #include "esp_rom_sys.h"
 #include "tick.h"
+#include "panic.h"
+#include "debug.h"
+#include "paniclog.h"
 
 /* Opt this file into logf output. logf.h compiles logf() away in any file that
  * does not ask for it, and the crash report below is the only message this file
@@ -124,7 +128,7 @@ void xtensa_build_id_stamp(const char *id)
     rb_build_now[i] = '\0';
 }
 
-const char *xtensa_build_id_running(void)
+const char *paniclog_build_id_running(void)
 {
     /* .noinit is uninitialised on the first ever boot, so an unstamped buffer
        reads as noise rather than as an empty string. A stamp is printable and
@@ -138,7 +142,7 @@ const char *xtensa_build_id_running(void)
     return rb_build_now;
 }
 
-void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
+void dbg_breadcrumb(const char *tag, unsigned long a, unsigned long b)
 {
     struct breadcrumb *e;
 
@@ -167,7 +171,7 @@ void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b)
  * .noinit ring is left alone by that reset. A caller with no console (the screen)
  * needs it entry by entry rather than as a dump. Returns 0 when there is nothing at
  * that index -- no trail, or fewer entries than asked for. */
-int xtensa_breadcrumb_back(int back, char *buf, int bufsize)
+int dbg_breadcrumb_back(int back, char *buf, int bufsize)
 {
     uint32_t n;
     const struct breadcrumb *e;
@@ -193,12 +197,12 @@ int xtensa_breadcrumb_back(int back, char *buf, int bufsize)
  * survived the reset and the whole mechanism is proven end to end; if it
  * doesn't, internal DRAM is cleared by panic_restart() and no panic-time
  * record of any kind can work here. */
-void xtensa_paniclog_stamp_boot(unsigned long seq)
+void paniclog_stamp_boot(unsigned long seq)
 {
     /* A boundary in the RTC ring. It survives resets, so without a marker there a reader
      * cannot tell the entries the dead boot wrote from the ones this boot wrote. */
-    xtensa_breadcrumb_rtc("rBoot", (unsigned long)seq, 0);
-    xtensa_breadcrumb("boot", seq, 0);
+    dbg_breadcrumb_retained("rBoot", (unsigned long)seq, 0);
+    dbg_breadcrumb("boot", seq, 0);
 }
 
 /* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
@@ -207,10 +211,10 @@ void xtensa_paniclog_stamp_boot(unsigned long seq)
 /* Reset reason of the reset that produced this boot, stamped by app_main before
  * anything can overwrite it. The breadcrumb ring is only forty slots and a busy USB
  * attach fills them in seconds, so an rstR entry is gone before anyone can read it;
- * this is not. Read back by xtensa_paniclog_reset_reason(). */
+ * this is not. Read back by paniclog_reset_reason(). */
 static uint32_t xt_reset_reason;
 
-void xtensa_paniclog_set_reset(unsigned reason)
+void paniclog_set_reset(unsigned reason)
 {
     xt_reset_reason = reason;
 }
@@ -331,7 +335,7 @@ struct frame_rtc
 static volatile struct rtc_store *rtc_store =
     (volatile struct rtc_store *)XT_RTC_SLOW_BASE;
 
-void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b)
+void dbg_breadcrumb_retained(const char *tag, unsigned long a, unsigned long b)
 {
     struct rtc_store *s = (struct rtc_store *)rtc_store;
     uint32_t i;
@@ -377,7 +381,7 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 /* The retained panic message, RTC copy preferred. RTC slow survives the reset that
  * clears internal DRAM, so it is the record that can name a crash the SRAM trail
  * cannot. Returns 0 when nothing was retained. */
-int xtensa_paniclog_text(char *buf, int bufsize)
+int paniclog_text(char *buf, int bufsize)
 {
     volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
     int len = 0;
@@ -424,7 +428,7 @@ int xtensa_paniclog_text(char *buf, int bufsize)
 /* The reset that produced this boot. The breadcrumb ring is only forty slots and a
  * busy USB attach fills them in seconds, so an rstR entry is gone before anyone can
  * read it; this is not. */
-unsigned long xtensa_paniclog_reset_reason(void)
+unsigned long paniclog_reset_reason(void)
 {
     return xt_reset_reason;
 }
@@ -432,12 +436,12 @@ unsigned long xtensa_paniclog_reset_reason(void)
 /* How many entries the RTC ring holds. Zero on a clean power-on, and the difference
  * between "the dead boot never reached the USB teardown" and "it reached it and
  * hung" once a panic message is on the glass. */
-unsigned long xtensa_paniclog_rtc_count(void)
+unsigned long paniclog_rtc_count(void)
 {
     return rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0;
 }
 
-void xtensa_panic_log(const char *msg)
+void panic_console_write(const char *msg)
 {
     if (rec.magic != PANICLOG_MAGIC)
     {
@@ -488,7 +492,7 @@ void xtensa_panic_log(const char *msg)
  *
  * The words are copied verbatim rather than decoded. Which layout they are in is
  * the question being asked, and deciding it here would be guessing. */
-void xtensa_paniclog_frame(const unsigned long *words, int count,
+void paniclog_frame(const unsigned long *words, int count,
                            int exception, int pseudo)
 {
     volatile struct frame_rtc *fr =
@@ -513,7 +517,7 @@ void xtensa_paniclog_frame(const unsigned long *words, int count,
         fr->word[i] = (uint32_t)words[i];
 }
 
-void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
+void paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
                                 unsigned long *count)
 {
     volatile struct frame_rtc *fr =
@@ -534,7 +538,7 @@ void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
 
 /* Four words per line, line 0 being the frame's first word. Returns 0 when there
  * is nothing retained or the line is past the stored count. */
-int xtensa_paniclog_frame_words(char *buf, int bufsize, int line)
+int paniclog_frame_words(char *buf, int bufsize, int line)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -567,7 +571,7 @@ int xtensa_paniclog_frame_words(char *buf, int bufsize, int line)
  * order documented in idf-app/panic_cdc.c: ps, epc1, epc2, epc3, epc4, depc,
  * cache_vaddr, cache_size. Words that could not be read legally are zero and
  * the line says so, rather than presenting a zero as if it were a real value. */
-void xtensa_paniclog_frame_regs(const unsigned long *regs, int count)
+void paniclog_frame_regs(const unsigned long *regs, int count)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -599,7 +603,7 @@ void xtensa_paniclog_frame_regs(const unsigned long *regs, int count)
  * spill or underflow walking a chain that does not exist. a5 is the pointer those
  * handlers use as the ancestor frame address, so it is the value that says whether
  * the walk was sane. */
-void xtensa_paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
+void paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
                                   uint32_t a5)
 {
     volatile struct frame_rtc *fr =
@@ -611,7 +615,7 @@ void xtensa_paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
     fr->win_magic = XT_REGS_RTC_MAGIC;
 }
 
-int xtensa_paniclog_frame_window_text(char *buf, int bufsize)
+int paniclog_frame_window_text(char *buf, int bufsize)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -630,7 +634,7 @@ int xtensa_paniclog_frame_window_text(char *buf, int bufsize)
 /* One line with the register slots. Returns 0 when nothing was stored. Slots that
  * could not be read at the exception level are printed as ----- so an absent
  * value cannot be mistaken for a legitimate address of 0. */
-int xtensa_paniclog_frame_regs_text(char *buf, int bufsize)
+int paniclog_frame_regs_text(char *buf, int bufsize)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -654,7 +658,7 @@ int xtensa_paniclog_frame_regs_text(char *buf, int bufsize)
                     (unsigned long)fr->depc);
 }
 
-int xtensa_paniclog_frame_cache(char *buf, int bufsize)
+int paniclog_frame_cache(char *buf, int bufsize)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -710,7 +714,7 @@ struct crash_rtc
 /* Record which build faulted. Called from the panic handler, which is the only
  * place that knows the difference between "this image is running" and "this image
  * crashed". */
-void xtensa_paniclog_crash_id(const char *build)
+void paniclog_crash_id(const char *build)
 {
     volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
     char id[XT_BT_ID_WORDS * 4];
@@ -730,7 +734,7 @@ void xtensa_paniclog_crash_id(const char *build)
 }
 
 /* One line with the build id of the crash, as stored by the handler. Returns 0 when absent. */
-int xtensa_paniclog_crash_build(char *buf, int bufsize)
+int paniclog_crash_build(char *buf, int bufsize)
 {
     volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
     char id[XT_BT_ID_WORDS * 4];
@@ -751,11 +755,11 @@ int xtensa_paniclog_crash_build(char *buf, int bufsize)
     return snprintf(buf, bufsize, "crashed %s", id);
 }
 
-void xtensa_paniclog_dump(void)
+void paniclog_dump(void)
 {
     /* The trail is printed independently of the panic record. Both crashes this
      * was built for were hardware exceptions, and those never reach
-     * xtensa_panic_log() -- which is what panicked twice before printing
+     * panic_console_write() -- which is what panicked twice before printing
      * anything. Returning early on an absent record therefore hid the one thing
      * that could survive such a crash. */
     if (rec.magic == PANICLOG_MAGIC)
@@ -866,20 +870,20 @@ void xtensa_paniclog_dump(void)
  * tick_task_thread -- ordinary thread context, the same place every other logf()
  * caller runs, so there is no second producer racing the filesystem's messages.
  */
-void xtensa_crash_report_logf(void)
+void paniclog_crash_report_logf(void)
 {
     char line[96];
     int len;
 
-    len = xtensa_paniclog_text(line, sizeof line);
+    len = paniclog_text(line, sizeof line);
     if (len > 0)
         logf("rb panic: %s", line);
     else
         logf("rb panic: none, reset %lu, rtc %lu",
-             xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count());
+             paniclog_reset_reason(), paniclog_rtc_count());
 
     logf("rb reset %lu rtc %lu trail %lu",
-         xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count(),
+         paniclog_reset_reason(), paniclog_rtc_count(),
          (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
 
     /* The register slots first, because they are the only thing that can name
@@ -888,18 +892,18 @@ void xtensa_crash_report_logf(void)
      * context. The frame words follow for context. Both together are roughly 430
      * bytes, inside the 512-byte ring that overflowed when this reported forty
      * trail entries; the trail itself stays on the debug page and in SRAM. */
-    len = xtensa_paniclog_frame_regs_text(line, sizeof line);
+    len = paniclog_frame_regs_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
 
-    len = xtensa_paniclog_frame_cache(line, sizeof line);
+    len = paniclog_frame_cache(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
 
     /* The window state. A fault whose PC is the interrupted SP is what a window
      * spill or underflow produces when the ancestor chain is wrong, and these are
      * the three registers that say so. */
-    len = xtensa_paniclog_frame_window_text(line, sizeof line);
+    len = paniclog_frame_window_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
 
@@ -924,8 +928,8 @@ void xtensa_crash_report_logf(void)
      * a board whose pads the running image gave to the DWC core -- and a backtrace
      * resolved against the wrong build is worse than no backtrace at all. */
     {
-        const char *now = xtensa_build_id_running();
-        int clen = xtensa_paniclog_crash_build(line, sizeof line);
+        const char *now = paniclog_build_id_running();
+        int clen = paniclog_crash_build(line, sizeof line);
 
         if (clen > 0 && now != NULL && strcmp(line + 8, now) == 0)
             logf("rb build %s (same)", now);

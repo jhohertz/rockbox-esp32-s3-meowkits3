@@ -10,6 +10,7 @@
 #include "xtensa.h"
 
 #include "system.h"
+#include "paniclog.h"
 #include "button.h"
 #include "tick.h"     /* current_tick and HZ: the report below is timed in ticks */
 #include "gpio-xtensa.h"
@@ -228,7 +229,7 @@ int button_read_device(int *data)
             else if (current_tick >= report_at)
             {
                 reported = true;
-                xtensa_crash_report_logf();
+                paniclog_crash_report_logf();
             }
         }
     }

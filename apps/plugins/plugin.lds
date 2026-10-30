@@ -2,14 +2,6 @@
 #include "config.h"
 #include "cpu.h"
 
-#ifdef CPU_XTENSA
-/* The text/data window split below and the buffer symbols in the firmware's
- * own linker fragments have to agree exactly -- apps/codecs.c and apps/plugin.c
- * reject a loaded image whose load_addr is not codecbuf or pluginbuf -- so the
- * numbers live in one place. */
-#include "memory-xtensa.h"
-#endif
-
 /* These output formats should be in the config-files */
 
 #ifdef CPU_COLDFIRE
@@ -147,12 +139,11 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  * the firmware MUST produce the same numbers -- and the only way to guarantee
  * that is to derive them from the same header rather than restate them here.
  *
- * They were restated, as `DRAMORIG 0x3C000020` plus the size formula, which
- * silently diverged the moment memory-xtensa.h moved codecbuf down by 0x20 to
- * bring the arena back inside the mapped MMU window: the firmware's codecbuf
- * became 0x3c680000 while every codec still linked at 0x3c680020, and each was
- * then refused on load. The comment above has always claimed the numbers live in
- * one place; now they actually do.
+ * The numbers come from firmware/export/xtensa.h, which cpu.h includes above --
+ * the same way every other target's script reads as3525.h, x1000.h or imx233.h.
+ * Restating them here is what made codecs fail on load once: the firmware's
+ * codecbuf moved down by 0x20 to bring the arena inside the mapped MMU window,
+ * this script still said 0x3C000020, and every codec was rejected.
  *
  * IRAM here is the instruction-bus view of internal SRAM. It has to sit in the
  * gap app.lds leaves between the firmware's .iram and the firmware's data region,
@@ -202,13 +193,13 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  *
  * Because the windows alias, the two halves must occupy *different* physical
  * pages, so the text halves are carved from the gap below codecbuf rather than
- * placed at the same offset as their data. Sizes come from memory-xtensa.h: the
+ * placed at the same offset as their data. Sizes come from xtensa.h: the
  * largest codec .text+.literal+.rodata measured is 182 KB against a 256 KB codec
  * half, and the largest .rock is 482,560 B against a 512 KB plugin half. THIS_TEXT_LENGTH
  * below is what makes an oversized image fail at link time rather than at load.
- * This file is preprocessed into a cached .link, so memory-xtensa.h is a declared
- * dependency of those rules -- without it a size change here silently links images at
- * the stale origin.
+ * This file is preprocessed into a cached .link, so xtensa.h is a declared
+ * dependency of the codec and plugin link rules -- without it a size change
+ * silently links images at the stale origin.
  *
  * CODEC_ORIGIN and PLUGIN_ORIGIN are deliberately untouched: apps/codecs.c and
  * apps/plugin.c compare a loaded image's load_addr against codecbuf and
