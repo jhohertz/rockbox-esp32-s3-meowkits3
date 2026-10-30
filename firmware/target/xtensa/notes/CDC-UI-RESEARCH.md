@@ -1,5 +1,10 @@
 # CDC terminal UI for the ESP32-S3 port — speculative plan
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 **Status: exploratory. No code, no ABI change, nothing committed to a build.** This is
 an idea-space document: what a host-side terminal interface over the USB CDC class
 could be, what the tree already gives us, and where it breaks. Related:

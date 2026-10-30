@@ -1,5 +1,10 @@
 # TX migration to `esp_driver_i2s` — staged plan and log
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Goal: replace the hand-rolled GDMA transmit path in `i2s-xtensa.c` with IDF's
 `esp_driver_i2s`, keeping the `builtin_pcm_sink` contract and the existing
 threading model. Rockbox stays in control; IDF is used where it does the work.

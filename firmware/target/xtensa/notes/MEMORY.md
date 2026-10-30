@@ -1,5 +1,10 @@
 # ESP32-S3 memory map (MeowKit / esp32-s3-idf)
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Everything here is measured from `rockbox.elf` and the generated linker script,
 not from the datasheet. Where a number is a constant we chose, it says so and
 names the header that owns it.

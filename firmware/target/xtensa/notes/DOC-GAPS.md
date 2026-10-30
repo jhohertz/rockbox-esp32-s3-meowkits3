@@ -1,5 +1,10 @@
 # Documentation-driven gap log
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Running list of implementation gaps surfaced while writing the target manual.
 The manual is effectively a spec of what the player promises, so every `\opt{}`
 the body expects and every action macro it renders is a claim we either honour

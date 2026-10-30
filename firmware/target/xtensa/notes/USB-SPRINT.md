@@ -1,5 +1,10 @@
 # USB sprint — ESP32-S3 MeowKit
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Investigation notes before any code. Everything marked **verified** was read out of
 the tree or out of ESP-IDF; anything marked **hypothesis** has not been measured.
 

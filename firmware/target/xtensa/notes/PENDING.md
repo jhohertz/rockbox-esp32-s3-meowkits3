@@ -1,5 +1,10 @@
 # Pending — MeowKit ESP32-S3
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 The single status list. `MEMORY.md` is evidence, `TX-IDF-MIGRATION.md` /
 `USB-SPRINT.md` / `USB-AUDIO-RESEARCH.md` are investigation records, `DOC-GAPS.md` and
 `UX-PLAN.md` are the documentation and input logs, and `MERGE-PLAN.md` is the shape plan
@@ -752,6 +757,9 @@ Not being submitted now. Kept so the work can be split for a merge.
 | new | `firmware/usbstack/usb_audio.c` | `as_playback_freq_idx` initialised to `HW_FREQ_DEFAULT` instead of 0 | `hw_freq_sampr` is in descending order, so index 0 is the *highest* rate the target declares, and `usb_audio_start_playback()` calls `mixer_set_frequency()` with it before the host's `SET_CUR` arrives. Audible as stretched playback until the request lands — milliseconds on most targets, seconds on a composite device where mass-storage enumeration shares the control endpoint. Any target. |
 | new | `firmware/usbstack/usb_audio.c` | `USB_AUDIO_BUFFER_SIZE` override also sets the descriptor's `wMaxPacketSize` and the endpoint's `mps` | The driver's endpoint default is the USB maximum (1023), which a tight device-FIFO budget cannot pay for; overriding only the buffer left the descriptor promising a packet the endpoint refused to allocate. Generic shape fix, default unchanged for targets that override nothing. |
 
+| new | `apps/plugins/bitmaps/remote_native/SOURCES`, plugin sources testing `CONFIG_LCD` | Two upstream `#if`s that assume a macro always exists | Found by narrowing `-Wno-undef` to the target directory, which puts `-Wundef` back on for the rest of the tree. `#if LCD_REMOTE_DEPTH == 1` appears in a `SOURCES` file that only dual-LCD targets define that for, and `#if CONFIG_LCD == LCD_SSD1815` in cube.c, clock_draw_analog.c, mandelbrot_set.c and doom/i_video.c assumes every target names its LCD controller — agptekrocker, aigoerosq, hibyr1, hidizsap80max and sansae200r define neither, so those targets emit 17 warnings today. Benign (undefined evaluates to 0 and the branch is the right one), but `defined()`-guarding them or defaulting `CONFIG_LCD` to 0 in `config.h` is a clean upstream patch. Not done here: it is upstream text and unrelated to this port. |
+| new | `manual/getting_started/installation.tex`, `manual/configure_rockbox/system_options.tex`, `manual/appendix/config_file_options.tex` | Three LaTeX errors in generic manual text when built for this target | `make manual-pdf` reports "Something's wrong--perhaps a missing \item" twice in `system_options.tex` and once in `installation.tex`, plus "Float(s) lost" in `config_file_options.tex`. They survive removing this target's own `meowkits3_install.tex` section, so they are not ours; the PDF builds (3.05 MB) and the MeowKit chapters render correctly. Worth pinning down before the manual chapter is offered upstream, because a reviewer building the manual for this target sees errors. |
+
 ## 6. Core touches rationalized into the target — done
 
 Each was checked against `upstream/master` hunk by hunk, then changed so the shared code
@@ -972,7 +980,7 @@ from the same tree, which is the check that backs the "weak seams only" claim.
 ### Release `esp32-s3-idf-20261029`
 
 Tag at `260c70d53f00a8a82d8ac19a7529c3f89c96edea`, carrying its own notes at
-`firmware/target/xtensa/releases/esp32-s3-idf-20261029.md`. Supersedes the 20261027 tag:
+`firmware/target/xtensa/notes/releases/esp32-s3-idf-20261029.md`. Supersedes the 20261027 tag:
 27 commits of measured fixes — the ES7210 PGA, the coulometer scale and the percent that
 now comes from it, the four doom allocations, the doom keymap and its sound default, and
 the build-rule work. Built in the container from a fresh shallow clone of the tag, tree
@@ -1015,7 +1023,7 @@ about the port, not a re-verification of every item on these bytes.
 ### Release `esp32-s3-idf-20261027`
 
 Tag at `d83ce28c3fd32608a666001b4575b22db0bbacf2` — retagged once from `a1a3ece0b1` so
-the tag itself carries `firmware/target/xtensa/releases/esp32-s3-idf-20261027.md`. Built
+the tag itself carries `firmware/target/xtensa/notes/releases/esp32-s3-idf-20261027.md`. Built
 by the container against the tag (`--build-arg RB_BRANCH=<tag>`) into
 `release/esp32-s3-idf-20261027/`, which is gitignored. Embedded version is clean —
 `d83ce28c3f-261027`, no `M` suffix, because `tools/version.sh` marks a dirty working tree

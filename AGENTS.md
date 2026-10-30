@@ -17,6 +17,14 @@ paths it names that no longer exist here are `firmware/target/xtensa/crt0.S`,
 
 Remotes: `origin` is the working fork, `upstream` is `git.rockbox.org`.
 
+**Where the documentation lives.** `README.md` at the repository root is what a
+user reads. `firmware/target/xtensa/README.md` is what someone reviewing the
+target code reads, and `TESTING.md` next to it records what was verified on
+hardware and what was not. Everything the port writes to itself — status,
+plans, research threads, release notes — is in `firmware/target/xtensa/notes/`,
+and `notes/PENDING.md` is the single status list. Board tooling is in
+`tools/meowkits3/`, following `tools/agptek_rocker/` and `tools/echoplayer/`.
+
 ---
 
 ## 1. The build pipeline (read this before touching anything)
@@ -187,7 +195,7 @@ hardware has finished transmitting, and IDF exposes no hook for it. So the
 hand-rolled GDMA ring is the integration point, not incidental complexity. TX
 still uses IDF's *HAL* (`i2s_hal_std_set_tx_slot`) and RX uses full IDF
 `esp_driver_i2s`. Full evidence and twelve builds of refuted hypotheses:
-`firmware/target/xtensa/TX-IDF-MIGRATION.md`.
+`firmware/target/xtensa/notes/TX-IDF-MIGRATION.md`.
 
 There is no A/B switch in `i2s-xtensa.c`: the Stage-1b scaffolding was deleted
 rather than left defined-off, so the dead branch cannot drift or be mistaken for an
@@ -221,7 +229,7 @@ stack. S3 declares no ISO/CIS capability, `components/bt/host/` contains only `b
 and `nimble`, and there is no `le_audio` component in this checkout. So no wireless stereo
 audio output is possible from this chip in any profile. Reaching Bluetooth headphones means
 adding a classic-capable co-processor and treating it as a PCM sink — see
-`firmware/target/xtensa/BT-AUDIO.md`, which also documents the sink seam the core already
+`firmware/target/xtensa/notes/BT-AUDIO.md`, which also documents the sink seam the core already
 provides (`pcm_sink.h`, `mixer_switch_sink`, the IAP precedent).
 
 ### Use IDF's drivers; do not bit-bang peripherals
@@ -1036,7 +1044,7 @@ interrupt is unmasked; `XT_ISR_SPILL=0` boots and cycles all threads indefinitel
 ### Memory map (from the toolchain's own linker scripts, not guessed)
 
 > **Measured budgets and the full arena layout now live in
-> `firmware/target/xtensa/MEMORY.md`**, generated from `rockbox.elf` rather than
+> `firmware/target/xtensa/notes/MEMORY.md`**, generated from `rockbox.elf` rather than
 > from headers, with the commands to re-derive every number. Read that first for
 > current free space -- internal SRAM is down to ~1 KiB and the figures here are
 > the design rationale, not the live budget.
@@ -3944,7 +3952,7 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   driving, so the chip never sees it and keeps running the previous image —
   `Hash of data verified` proves the write, nothing more. Hold BOOT for download
   mode, flash, then power-cycle, and read the `rb build` line to confirm which
-  image is reporting. See `firmware/target/xtensa/MEMORY.md`.
+  image is reporting. See `firmware/target/xtensa/notes/MEMORY.md`.
 - Anything the DMA writes back must be `volatile`. A descriptor's owner bit changes
   through a store the compiler cannot see, so an empty spin loop on it gets folded into
   a single test and the driver never notices the buffer being handed back. Check the
@@ -5087,7 +5095,7 @@ codec directly and work with it off.
 What is left at 42 mA is board current the architecture cannot reclaim without deep sleep
 (which skips the clean shutdown) or cutting rails the expander and card slot need. Full
 inventory, budgets and the open hardware questions (MMU table retention across light sleep,
-PSRAM halfsleep) are in `firmware/target/xtensa/MEMORY.md`.## Voice UI: how to build it, and where it lands
+PSRAM halfsleep) are in `firmware/target/xtensa/notes/MEMORY.md`.## Voice UI: how to build it, and where it lands
 
 The voice UI is selected by the build **type string**, not by a target config
 define. `tools/configure` only parses the developer-option letters on the
@@ -5342,14 +5350,14 @@ fixing them changes other targets' manuals.
 `manual/platform/keymap-meowkits3.tex` deliberately renders *not available* for
 actions this target cannot produce, and every mapping in it mirrors
 `apps/keymaps/keymap-meowkits3.c` and `keymap-touchscreen.c`. The gaps that
-surface as a result are tracked in `firmware/target/xtensa/DOC-GAPS.md`: add an
+surface as a result are tracked in `firmware/target/xtensa/notes/DOC-GAPS.md`: add an
 
-The status list for everything still open is `firmware/target/xtensa/PENDING.md`:
+The status list for everything still open is `firmware/target/xtensa/notes/PENDING.md`:
 hardware-verification queue, deferred flags, decisions taken deliberately, upstream-submittable fixes not yet filed, and the current artifact inventory.
 entry whenever the manual promises something the keymap does not deliver, and
 update the tex file when a mapping is finally implemented. The implementation
 plan for those gaps — gesture budget, upstream precedents, spike order — is in
-`firmware/target/xtensa/UX-PLAN.md`.
+`firmware/target/xtensa/notes/UX-PLAN.md`.
 
 Two LaTeX gotchas found while writing ours: `\begin{code}` is fancyvrb and
 **cannot appear inside a `\note{}` argument** (runaway argument, then a
