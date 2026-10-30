@@ -107,9 +107,9 @@ int sd_init(void)
     slot.width = 1;
 
     esp_err_t err = sdmmc_host_init();
-    /* Stamped either way, not only on success: the trail is how a crash inside the
-     * first card access after recording starts gets attributed, and a step that
-     * never returns leaves its completion note absent. */
+    /* Stamped either way, not only on success: the trail is how a crash
+     * inside the first card access after recording starts gets attributed,
+     * and a step that never returns leaves its completion note absent. */
     dbg_breadcrumb("sdHost", (unsigned long)err, 0);
     if (err == ESP_OK)
         err = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot);
@@ -124,10 +124,10 @@ int sd_init(void)
         return EIO;
     }
 
-    /* Only the two fields Rockbox actually reads. tCardInfo carries CSD detail
-     * (taac, r2w_factor, current_bank) that the generic SD protocol layer used to
-     * fill in while it was negotiating the card; here the negotiation belongs to
-     * IDF and nothing in the tree asks for the rest. */
+    /* Only the two fields Rockbox actually reads. tCardInfo carries CSD
+     * detail (taac, r2w_factor, current_bank) that the generic SD protocol
+     * layer used to fill in while it was negotiating the card; here the
+     * negotiation belongs to IDF and nothing in the tree asks for the rest. */
     cardinfo.numblocks = card.csd.capacity;
     cardinfo.blocksize = card.csd.sector_size;
 

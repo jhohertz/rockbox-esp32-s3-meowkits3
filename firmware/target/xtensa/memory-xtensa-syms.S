@@ -57,20 +57,21 @@ audiobuffer:
     .globl audiobufend
 audiobufend:
 
-    /* End of what THIS file puts in PSRAM. It is not the end of .ext_ram.bss:
-     * IDF places its own content in that section around and beyond this label, and
-     * the linker's section end is _ext_ram_bss_end. On a recent build the two
-     * differed by 117,372 bytes, which is why the boot guard in system_init()
-     * checks both and takes the larger. Do not treat this symbol as the section
-     * bound -- that is exactly the mistake that made the guard blind. */
+    /* End of what THIS file puts in PSRAM. It is not the end of
+     * .ext_ram.bss: IDF places its own content in that section around and
+     * beyond this label, and the linker's section end is _ext_ram_bss_end.
+     * On a recent build the two differed by 117,372 bytes, which is why the
+     * boot guard in system_init() checks both and takes the larger. Do not
+     * treat this symbol as the section bound -- that is exactly the mistake
+     * that made the guard blind. */
     .globl rb_ext_ram_end
 rb_ext_ram_end:
 
     /*
      * Codec and plugin load buffers.
      *
-     * Pinned, not placed. See XT_CODECBUF_ADDR in firmware/export/xtensa.h for the
-     * derivation and for why this side and apps/plugins/plugin.lds have to
+     * Pinned, not placed. See XT_CODECBUF_ADDR in firmware/export/xtensa.h for
+     * the derivation and for why this side and apps/plugins/plugin.lds have to
      * produce the same number: apps/codecs.c and apps/plugin.c reject a loaded
      * image whose declared load address is not these symbols, and the images
      * are linked against plugin.lds's CODEC_ORIGIN / PLUGIN_ORIGIN.

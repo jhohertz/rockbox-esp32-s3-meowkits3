@@ -61,13 +61,14 @@ void lcd_write_data(const fb_data *p_bytes, int count)
         int n = count > chunk ? chunk : count;
         int j = 0;
 
-        /* High byte first. Reverting a "fix" I made earlier this session on the
-         * strength of reading 0x00f8 out of the framebuffer for a solid red
-         * fill -- but that fill wrote the raw bytes F8,00 by hand, so reading it
-         * back as a little-endian uint16_t necessarily gave 0x00f8. It said
-         * nothing about Rockbox's native format, which is ordinary RGB565 with
-         * red = 0xf800. Swapping on top of that exchanged the two halves of
-         * every pixel, and on the glass yellow (0xfff0) came out blue. */
+        /* High byte first. Reverting a "fix" I made earlier this session on
+         * the strength of reading 0x00f8 out of the framebuffer for a solid
+         * red fill -- but that fill wrote the raw bytes F8,00 by hand, so
+         * reading it back as a little-endian uint16_t necessarily gave
+         * 0x00f8. It said nothing about Rockbox's native format, which is
+         * ordinary RGB565 with red = 0xf800. Swapping on top of that
+         * exchanged the two halves of every pixel, and on the glass yellow
+         * (0xfff0) came out blue. */
         for (int i = 0; i < n; i++) {
             unsigned short pixel = p_bytes[i];
             buf[j++] = (unsigned char)(pixel >> 8);
@@ -106,8 +107,8 @@ static void set_window(int x1, int x2, int y1, int y2)
     write_cmd_args(0x2A, caset, 4);   /* CASET */
     write_cmd_args(0x2B, raset, 4);   /* RASET */
 
-    /* RAMWR starts the write. CASET/RASET only set the address window; the panel
-     * does not accept pixel data until 0x2C has been issued. LovyanGFX's
+    /* RAMWR starts the write. CASET/RASET only set the address window; the
+     * panel does not accept pixel data until 0x2C has been issued. LovyanGFX's
      * set_window_8() ends with writeCommand(cmd, 8) and every caller passes
      * CMD_RAMWR. Omitting it leaves GRAM untouched, which looks like noise that
      * never changes rather than a wrong image.
@@ -152,25 +153,26 @@ void lcd_update(void)
  * drivers/lcd-memframe.c version, whose only difference from this is that it
  * stops at the framebuffer.
  *
- * The conversion is *not* reimplemented here. libmpeg2 hands the plugin three YUV
- * planes, and the generic line helpers in firmware/asm/lcd-as-memframe.c
- * (lcd_write_yuv420_lines and its dithered sibling) already turn a 2x2 luma block
- * into packed RGB565 correctly -- which is demonstrable, because the frame mpegplayer
- * left in the framebuffer looked right in both colour and geometry when something
- * happened to do a full update. An earlier version of this function did its own
- * conversion and got the packing wrong by handing 8-bit channels to
- * LCD_RGBPACK_LCD, which expects already-reduced 5/6/5 ones (lcd.h:310 vs 344).
- * Reusing the shared helper keeps this target's pixels identical to what the UI
- * drawing code produces, and keeps one place where the conversion lives.
+ * The conversion is *not* reimplemented here. libmpeg2 hands the plugin three
+ * YUV planes, and the generic line helpers in firmware/asm/lcd-as-memframe.c
+ * (lcd_write_yuv420_lines and its dithered sibling) already turn a 2x2 luma
+ * block into packed RGB565 correctly -- which is demonstrable, because the
+ * frame mpegplayer left in the framebuffer looked right in both colour and
+ * geometry when something happened to do a full update. An earlier version of
+ * this function did its own conversion and got the packing wrong by handing
+ * 8-bit channels to LCD_RGBPACK_LCD, which expects already-reduced 5/6/5 ones
+ * (lcd.h:310 vs 344). Reusing the shared helper keeps this target's pixels
+ * identical to what the UI drawing code produces, and keeps one place where the
+ * conversion lives.
  *
  * What is added is the push, and the walk that feeds it: same plane offsets as
- * memframe, one call per two luma rows, then a single lcd_update_rect() over the
- * whole rectangle rather than one per strip.
+ * memframe, one call per two luma rows, then a single lcd_update_rect() over
+ * the whole rectangle rather than one per strip.
  *
- * LCD_YUV_DITHER is not honoured: memframe keeps its option in a file-static, so a
- * target cannot read it, and the ordered dither exists for panels wired for 18-bit
- * colour. This one carries the full 6/6/6 RGB565 already, so the plain helper is
- * the right call regardless.
+ * LCD_YUV_DITHER is not honoured: memframe keeps its option in a file-static,
+ * so a target cannot read it, and the ordered dither exists for panels wired
+ * for 18-bit colour. This one carries the full 6/6/6 RGB565 already, so the
+ * plain helper is the right call regardless.
  */
 void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride,
                   int x, int y, int width, int height)
@@ -179,7 +181,8 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
 #error This target is landscape; a portrait panel would need the planes transposed
 #endif
 
-    /* Both dimensions must be even, as the caller is required to pass even ones. */
+    /* Both dimensions must be even, as the caller is required to pass even
+    /* ones. */
     width &= ~1;
 
     /* Bound against the framebuffer: unlike the drawing functions this writes
@@ -259,8 +262,8 @@ void lcd_init_device(void)
  *             recovery delay as after a reset
  *
  * lcd_enable() is called from the backlight driver, and lcd_sleep() is reached
- * only after the backlight has been off for LCD_SLEEP_TIMEOUT - it is the deeper
- * state, which is why Rockbox asks for both.
+ * only after the backlight has been off for LCD_SLEEP_TIMEOUT - it is the
+ * deeper state, which is why Rockbox asks for both.
  */
 static bool panel_asleep;
 
@@ -274,8 +277,8 @@ static void panel_wake(void)
     panel_asleep = false;
 
     /* Whether GRAM survives SLPIN is a panel question we cannot answer from the
-     * datasheet alone, so do not rely on it: push the whole frame. lcd_on has to
-     * be set first, because lcd_update() drops the draw when the panel is
+     * datasheet alone, so do not rely on it: push the whole frame. lcd_on has
+     * to be set first, because lcd_update() drops the draw when the panel is
      * inactive.
      */
     lcd_on = true;
@@ -329,6 +332,6 @@ void lcd_shutdown(void)
     lcd_on = false;
 }
 
-/* The backlight is not written here. GPIO 42 is routed to LEDC channel 7 through
- * the GPIO matrix, so a plain GPIO write has no effect on the pin; backlight-xtensa.c
- * owns the PWM. */
+/* The backlight is not written here. GPIO 42 is routed to LEDC channel 7
+ * through the GPIO matrix, so a plain GPIO write has no effect on the pin;
+ * backlight-xtensa.c owns the PWM. */

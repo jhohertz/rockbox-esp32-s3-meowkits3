@@ -29,33 +29,35 @@ void xthal_icache_all_invalidate(void);
 
 extern long cpu_frequency;   /* set by system_init */
 
-/* Hold ESP_PM_NO_LIGHT_SLEEP while a peripheral whose interrupt cannot wake the core
- * is armed. Only the USB device needs it today: see xt_light_sleep_block() in
- * system-xtensa.c for why, and idf-app/sdkconfig.defaults for why sleeping is safe on
- * this port at all -- the peripheral domain is deliberately left powered, which is what
- * keeps hand-written drivers intact across a sleep. Codecs and plugins never call it,
- * and the firmware side is the only definition. */
+/* Hold ESP_PM_NO_LIGHT_SLEEP while a peripheral whose interrupt cannot wake
+ * the core is armed. Only the USB device needs it today: see
+ * xt_light_sleep_block() in system-xtensa.c for why, and
+ * idf-app/sdkconfig.defaults for why sleeping is safe on this port at all --
+ * the peripheral domain is deliberately left powered, which is what keeps
+ * hand-written drivers intact across a sleep. Codecs and plugins never call
+ * it, and the firmware side is the only definition. */
 void xt_light_sleep_block(bool block);
 
 /*
  * Frequency ladder.
  *
- * All three points are taps of the BBPLL, so nothing but the core moves when the
- * CPU is clocked down: AHB/APB, which is GDMA's clock, is a fixed 80 MHz whenever
- * CPU_CLK comes from the PLL; MSPI (flash and PSRAM) takes its core clock from the
- * PLL tap selected by CORE_CLK_SEL; GPSPI2 (the display) uses PLL_CLK_80M; and I2S,
- * I2C and the timer groups are clocked from XTAL.
+ * All three points are taps of the BBPLL, so nothing but the core moves when
+ * the CPU is clocked down: AHB/APB, which is GDMA's clock, is a fixed 80 MHz
+ * whenever CPU_CLK comes from the PLL; MSPI (flash and PSRAM) takes its core
+ * clock from the PLL tap selected by CORE_CLK_SEL; GPSPI2 (the display) uses
+ * PLL_CLK_80M; and I2S, I2C and the timer groups are clocked from XTAL.
  *
- * XTAL (40 MHz) is deliberately not in the ladder: it would drop APB to 40 MHz and
- * invalidate the MSPI core clock selection that IDF's PSRAM driver programs.
+ * XTAL (40 MHz) is deliberately not in the ladder: it would drop APB to 40 MHz
+ * and invalidate the MSPI core clock selection that IDF's PSRAM driver
+ * programs.
  */
 #define CPUFREQ_MAX     240000000
 #define CPUFREQ_NORMAL  160000000
 #define CPUFREQ_DEFAULT  80000000
 
-/* The esp32s3 core config has no byte-swap instruction (tested: 'swap' is not a
- * valid opcode), so the generic C byte-swaps in firmware/libc/include/endian.h are
- * used. Same as the jz47xx target. */
+/* The esp32s3 core config has no byte-swap instruction (tested: 'swap' is
+ * not a valid opcode), so the generic C byte-swaps in
+ * firmware/libc/include/endian.h are used. Same as the jz47xx target. */
 #define NEED_GENERIC_BYTESWAPS
 
 #define nop asm volatile ("nop")
@@ -68,8 +70,8 @@ void xt_light_sleep_block(bool block);
  * disabled. The rest of PS is EXCM (bit 4), UM (5), RING (6-7), OWB (8-11),
  * CALLINC (16-17) and WOE (18).
  *
- * rsr.intlevel / wsr.intlevel do not exist on the esp32s3 core config, so PS has
- * to be read and written as a whole.
+ * rsr.intlevel / wsr.intlevel do not exist on the esp32s3 core config, so PS
+ * has to be read and written as a whole.
  */
 #ifdef ESP_PLATFORM
 /*
@@ -78,9 +80,9 @@ void xt_light_sleep_block(bool block);
  * reaches the same translation unit (via FreeRTOSConfig.h -> xtensa_config.h ->
  * xtensa_context.h -> corebits.h). The values agree -- corebits.h has
  * PS_WOE_MASK 0x00040000 and PS_INTLEVEL_MASK 0x0000000F -- so this is a name
- * collision rather than a disagreement, but taking IDF's is the only option that
- * works in both orders: corebits.h defines them unguarded, so an #ifndef here
- * would not suppress it.
+ * collision rather than a disagreement, but taking IDF's is the only option
+ * that works in both orders: corebits.h defines them unguarded, so an #ifndef
+ * here would not suppress it.
  *
  * The masking helpers below are transitional too. On the IDF path interrupt
  * masking and the tick belong to FreeRTOS, and this whole block goes away with
@@ -109,9 +111,9 @@ static inline int set_irq_level(int level)
     return (int)old;
 }
 
-/* Masking by level is only half of it: a slot also has to be unmasked in INTENABLE.
- * Levels cannot be programmed on this core config, so the slot has to already be the
- * level you want (see firmware/include/xtensa.h). */
+/* Masking by level is only half of it: a slot also has to be unmasked in
+ * INTENABLE. Levels cannot be programmed on this core config, so the slot
+ * has to already be the level you want (see firmware/include/xtensa.h). */
 
 static inline unsigned int get_irq_level(void)
 {
@@ -158,12 +160,12 @@ static inline void restore_irq(int oldlevel)
 /* Put the core in a power-saving state until an interrupt wakes it.
  *
  * switch_thread() reaches here with interrupts masked by PS.INTLEVEL = 15, so a
- * bare waiti would stall forever: WAITI n waits for a slot of level n+1 or higher
- * that is enabled *and* able to be taken, and level 1 cannot be taken while the
- * core is already at level 15. The level has to be dropped before waiting, the
- * same way ARM's core_sleep re-enables and Coldfire's "stop #0x2000" wakes on an
- * interrupt. The handler's rfe puts the level back, so the resumed thread is not
- * left with interrupts open.
+ * bare waiti would stall forever: WAITI n waits for a slot of level n+1 or
+ * higher that is enabled *and* able to be taken, and level 1 cannot be taken
+ * while the core is already at level 15. The level has to be dropped before
+ * waiting, the same way ARM's core_sleep re-enables and Coldfire's "stop
+ * #0x2000" wakes on an interrupt. The handler's rfe puts the level back, so the
+ * resumed thread is not left with interrupts open.
  */
 static inline void core_sleep(void)
 {
@@ -174,13 +176,14 @@ static inline void core_sleep(void)
 /*
  * Cycle-count delay, following the jz47xx pattern.
  *
- * The loop is two instructions per iteration (bnez + addi.n), but a taken backward
- * branch costs more than one cycle on this core, so the real delay is somewhat
- * longer than requested. That is the safe direction for I2C bit-banging, which only
- * tolerates a slow clock, but it must not be relied on for anything timing-critical.
+ * The loop is two instructions per iteration (bnez + addi.n), but a taken
+ * backward branch costs more than one cycle on this core, so the real delay is
+ * somewhat longer than requested. That is the safe direction for I2C
+ * bit-banging, which only tolerates a slow clock, but it must not be relied on
+ * for anything timing-critical.
  *
- * It also depends on cpu_frequency being set, which happens in system_init. The core
- * runs at 240 MHz unless something changes it.
+ * It also depends on cpu_frequency being set, which happens in system_init. The
+ * core runs at 240 MHz unless something changes it.
  */
 static inline void udelay(unsigned us)
 {
@@ -206,10 +209,10 @@ static inline void mdelay(unsigned ms)
  * metal route - calling the mask ROM's Cache_* entry points by absolute
  * address - is on the tagged branch.
  *
- * Internal SRAM (0x3FC88000-0x3FD00000, which is exactly SOC_DMA_LOW/SOC_DMA_HIGH)
- * is served by the L1 D-cache, so anything a DMA touches there needs
- * maintenance. That case is per-range, not whole-cache, and lives in
- * cache-xtensa.h.
+ * Internal SRAM (0x3FC88000-0x3FD00000, which is exactly
+ * SOC_DMA_LOW/SOC_DMA_HIGH) is served by the L1 D-cache, so anything a DMA
+ * touches there needs maintenance. That case is per-range, not whole-cache, and
+ * lives in cache-xtensa.h.
  */
 static inline void commit_dcache(void)
 {

@@ -192,8 +192,8 @@ void rb_thread_handoff(struct regs *in)
     if (self != NULL && self != in)
     {
         /* The gate is an exclusive token meaning "the kernel has selected you".
-         * It can be given without that being true -- a give from a path that did
-         * not go through switch_thread(), or a second give while the holder
+         * It can be given without that being true -- a give from a path that
+         * did not go through switch_thread(), or a second give while the holder
          * still holds it -- and a task that proceeds anyway then runs Rockbox
          * code under another thread's identity. Measured on this board: the
          * kernel's running-thread and the executing task disagreed 759 times in
@@ -210,9 +210,10 @@ void rb_thread_handoff(struct regs *in)
                 break;
         }
 
-        /* Resumed, and selected. Whoever gave that gate meant us to be running,
-         * and the kernel's own notion is set by whichever core did the giving --
-         * which is not necessarily the core we land on. Re-assert it. */
+        /* Resumed, and selected. Whoever gave that gate meant us to be
+         * running, and the kernel's own notion is set by whichever core did
+         * the giving -- which is not necessarily the core we land on.
+         * Re-assert it. */
         rb_thread_set_running(self->thread);
     }
 }

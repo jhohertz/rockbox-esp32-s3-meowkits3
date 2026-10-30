@@ -43,22 +43,22 @@
 static int es8311_write_fails;
 static int es8311_writes;
 
-/* i2c_writemem(dev, address, buf, count) always puts `address` on the bus first,
- * as the register byte. This driver used to pass address = 0 and put the register
- * in the payload alongside the value, so every write went out as three bytes --
- * 00, reg, val -- instead of reg, val. The codec saw a write to register 0 whose
- * data was the intended register number, then two stray bytes.
+/* i2c_writemem(dev, address, buf, count) always puts `address` on the bus
+ * first, as the register byte. This driver used to pass address = 0 and put the
+ * register in the payload alongside the value, so every write went out as three
+ * bytes -- 00, reg, val -- instead of reg, val. The codec saw a write to
+ * register 0 whose data was the intended register number, then two stray bytes.
  *
- * Every other device on this bus gets it right: pca9557.c and es7210.c both pass
- * the register as `address` and a single data byte. That mismatch is why the
- * expander, the PMU and the ADC all work while the codec never accepted a single
- * command -- and because the return value was discarded at every call site, it
- * looked identical to a configured chip. The values that appeared to match what we
- * wrote were reset defaults.
+ * Every other device on this bus gets it right: pca9557.c and es7210.c both
+ * pass the register as `address` and a single data byte. That mismatch is why
+ * the expander, the PMU and the ADC all work while the codec never accepted a
+ * single command -- and because the return value was discarded at every call
+ * site, it looked identical to a configured chip. The values that appeared to
+ * match what we wrote were reset defaults.
  *
  * Symptom, for the record: perfect I2S transport at 44.1 kHz, readback showing
- * REG00 = 0x31 (chipen clear, powered down) and REG01 = 0x00 (no clocks enabled),
- * and silence on both the headphone jack and the speaker.
+ * REG00 = 0x31 (chipen clear, powered down) and REG01 = 0x00 (no clocks
+ * enabled), and silence on both the headphone jack and the speaker.
  */
 static int write_reg(int reg, int val)
 {
@@ -86,13 +86,14 @@ static int read_reg(int reg)
 }
 
 /* The codec's internal clock is C = MCLK * 2^pre_multi / pre_div, and the bit
- * clock it produces is BCLK = C / (2 * bclk_div). The datasheet table keeps C at
- * 256 * rate for every rate Rockbox supports, so the pair (pre_multi, pre_div) is
- * not a function of the MCLK multiple alone: it has to satisfy that invariant.
+ * clock it produces is BCLK = C / (2 * bclk_div). The datasheet table keeps C
+ * at 256 * rate for every rate Rockbox supports, so the pair (pre_multi,
+ * pre_div) is not a function of the MCLK multiple alone: it has to satisfy that
+ * invariant.
  *
- * With MCLK = 256 * rate the answer is pre_div = 1, pre_multi = 0, bclk_div = 4,
- * which is exactly the {11289600, 44100, 1, 0, 1, 1, 0, 0, 0xff, 4, 16, 16} entry
- * in the reference table.
+ * With MCLK = 256 * rate the answer is pre_div = 1, pre_multi = 0, bclk_div =
+ * 4, which is exactly the {11289600, 44100, 1, 0, 1, 1, 0, 0, 0xff, 4, 16, 16}
+ * entry in the reference table.
  */
 void es8311_set_clock(unsigned long rate, unsigned long mclk)
 {
@@ -125,9 +126,9 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
     write_reg(REG_CLK04, 16);                                    /* dac_osr = 16 */
     write_reg(REG_CLK05, 0);                                     /* adc_div = 1, dac_div = 1 */
 
-    /* 0x06 is "sclk inverter, bclk divider" and 0x07 is "tri-state, lrck divider".
-     * The reference firmware read-modify-writes both so the bits it does not own
-     * keep their reset values.
+    /* 0x06 is "sclk inverter, bclk divider" and 0x07 is "tri-state, lrck
+     * divider". The reference firmware read-modify-writes both so the bits it
+     * does not own keep their reset values.
      */
     int reg06 = read_reg(REG_CLK06);
     if (reg06 >= 0)
@@ -142,18 +143,19 @@ void es8311_set_clock(unsigned long rate, unsigned long mclk)
 
 /* The codec's own opinion of its state, formatted for the debug screen.
  *
- * Asking the chip is the only way to distinguish "we wrote the right values" from
- * "the chip is configured": an earlier revision of this driver read back values
- * that matched what it had written and was in fact showing reset defaults, because
- * every write was going out malformed and being discarded. w/f are the writes
- * attempted and the ones that did not complete.
+ * Asking the chip is the only way to distinguish "we wrote the right values"
+ * from "the chip is configured": an earlier revision of this driver read back
+ * values that matched what it had written and was in fact showing reset
+ * defaults, because every write was going out malformed and being discarded.
+ * w/f are the writes attempted and the ones that did not complete.
  *
- * Two registers are known to read back different from what we write and neither is
- * explained: 0x08 is written 255 (the low half of the 9-bit LRCK divider for
- * 256*MCLK) and reads 0x00, and 0x0D is written 0x01 and reads 0x02. In slave mode
- * the chip takes LRCK from the pin rather than dividing MCLK, so 0x08 may be
- * don't-care and 0x0D may report status rather than intent -- that is an
- * assumption, not a measurement, and it is the reason this row exists. */
+ * Two registers are known to read back different from what we write and
+ * neither is explained: 0x08 is written 255 (the low half of the 9-bit LRCK
+ * divider for 256*MCLK) and reads 0x00, and 0x0D is written 0x01 and reads
+ * 0x02. In slave mode the chip takes LRCK from the pin rather than dividing
+ * MCLK, so 0x08 may be don't-care and 0x0D may report status rather than
+ * intent -- that is an assumption, not a measurement, and it is the reason
+ * this row exists. */
 int es8311_stat(char *buf, size_t bufsz)
 {
     int chip = read_reg(0x00), clk1 = read_reg(0x01), clk2 = read_reg(0x02);
@@ -172,11 +174,12 @@ int es8311_stat(char *buf, size_t bufsz)
                     es8311_writes, es8311_write_fails);
 }
 
-/* The last volume we were asked for, in centibels, or VOL_UNSET before the first
- * call. Needed because sink_init() runs audiohw_preinit() -> es8311_init() when
- * the PCM core comes up, which is after the apps layer has already applied the
- * stored volume. The reset below wipes REG32 to 0 -- -95.5 dB -- and nothing else
- * re-applies it, so the codec came back muted no matter what the UI showed. */
+/* The last volume we were asked for, in centibels, or VOL_UNSET before the
+ * first call. Needed because sink_init() runs audiohw_preinit() ->
+ * es8311_init() when the PCM core comes up, which is after the apps layer
+ * has already applied the stored volume. The reset below wipes REG32 to 0 --
+ * -95.5 dB -- and nothing else re-applies it, so the codec came back muted
+ * no matter what the UI showed. */
 #define VOL_UNSET 0x7fffffff
 static int last_vol_cB = VOL_UNSET;
 
@@ -204,10 +207,10 @@ void es8311_init(void)
     write_reg(REG_ADC1C, 0x6A);              /* bypass ADC equalizer */
     write_reg(REG_DAC37, 0x08);              /* bypass DAC equalizer */
 
-    /* REG00 = 0x1F above is a full digital reset, which clears the DAC volume
-     * along with everything else. Restore the last value we were given so a reset
-     * that happens after the apps layer set the volume does not silently mute the
-     * codec. */
+    /* REG00 = 0x1F above is a full digital reset, which clears the DAC
+     * volume along with everything else. Restore the last value we were
+     * given so a reset that happens after the apps layer set the volume does
+     * not silently mute the codec. */
     if (last_vol_cB != VOL_UNSET)
         es8311_set_volume(last_vol_cB);
 }
@@ -234,14 +237,14 @@ void es8311_close(void)
  *   +320 -> 255 (+32.0 dB, unreachable: the declared range stops at 0 dB because the
  *                stock firmware caps this amplifier at register 191 for its 1 W rating)
  *
- * The clamp below stays as a guard rather than as the range limit: Rockbox would only
- * reach it if something outside the audiohw setting table handed us a value above the
- * declared maximum.
+ * The clamp below stays as a guard rather than as the range limit: Rockbox
+ * would only reach it if something outside the audiohw setting table handed us
+ * a value above the declared maximum.
  *
- * The previous formula divided by 50 after adding 9550, i.e. it treated val as
- * centibels. On the -25.0 dB default that produced 0xBA, which is -2.5 dB -- 22.5
- * dB louder than intended -- and it made the 0.1 dB keypress step land on the
- * same register value over and over. */
+ * The previous formula divided by 50 after adding 9550, i.e. it treated val
+ * as centibels. On the -25.0 dB default that produced 0xBA, which is -2.5 dB
+ * -- 22.5 dB louder than intended -- and it made the 0.1 dB keypress step
+ * land on the same register value over and over. */
 void es8311_set_volume(int val)
 {
     int reg = (val + 955) / 5;
@@ -253,9 +256,10 @@ void es8311_set_volume(int val)
     if (reg > 255)
         reg = 255;
 
-    /* i2c_writemem returns -1 on a failed transfer. That is the only thing worth
-     * saying here: the register value itself is derived, and a volume change is a
-     * keypress-rate event, so a trace line for every one of them is noise. */
+    /* i2c_writemem returns -1 on a failed transfer. That is the only thing
+     * worth saying here: the register value itself is derived, and a volume
+     * change is a keypress-rate event, so a trace line for every one of them
+     * is noise. */
     if (write_reg(REG_DAC32, reg) < 0)
         printf("ES8311: volume write failed\n");
 }

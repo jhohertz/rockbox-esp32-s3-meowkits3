@@ -51,14 +51,15 @@ static const struct button_mapping button_context_standard[]  = {
     { ACTION_STD_OK,          BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
 
     { ACTION_STD_CONTEXT,     BUTTON_A|BUTTON_REPEAT,       BUTTON_A },
-    /* Screen lock, and the way out of it: A and B held together. While locked,
-     * do_softlock() filters every other action (action.c:885-940) and, under the
-     * default settings, button_enable_touch(false) switches the panel off at the
-     * driver level as well, so this combo is the only input that does anything.
-     * Mapping it is also what makes autolock reachable at all: the settings can
-     * carry SEL_ACTION_AUTOLOCK, but action_autosoftlock_init() only arms it when
-     * unlock_combo != BUTTON_NONE, and that happens solely once something
-     * produces ACTION_STD_KEYLOCK. */
+    /* Screen lock, and the way out of it: A and B held together. While
+     * locked, do_softlock() filters every other action (action.c:885-940)
+     * and, under the default settings, button_enable_touch(false) switches
+     * the panel off at the driver level as well, so this combo is the only
+     * input that does anything. Mapping it is also what makes autolock
+     * reachable at all: the settings can carry SEL_ACTION_AUTOLOCK, but
+     * action_autosoftlock_init() only arms it when unlock_combo !=
+     * BUTTON_NONE, and that happens solely once something produces
+     * ACTION_STD_KEYLOCK. */
     { ACTION_STD_KEYLOCK,     BUTTON_A|BUTTON_B|BUTTON_REPEAT, BUTTON_A|BUTTON_B },
     LAST_ITEM_IN_LIST
 }; /* button_context_standard */
@@ -131,18 +132,19 @@ static const struct button_mapping button_context_wps[]  = {
 }; /* button_context_wps */
 
 #ifdef HAVE_RECORDING
-/* The recording screen. There is no REC key on this board, so the play/pause key
- * takes the role, which is what every target without a dedicated record button
- * does: clip uses SELECT, fuzeplus uses PLAYPAUSE, fiiom3k uses PLAY, and A is
- * our play/pause on the WPS. Without this context the screen falls through to
- * button_context_standard, which never produces ACTION_REC_PAUSE -- so the
- * recording screen could be opened but no key could start or stop a recording.
+/* The recording screen. There is no REC key on this board, so the play/pause
+ * key takes the role, which is what every target without a dedicated record
+ * button does: clip uses SELECT, fuzeplus uses PLAYPAUSE, fiiom3k uses PLAY,
+ * and A is our play/pause on the WPS. Without this context the screen falls
+ * through to button_context_standard, which never produces ACTION_REC_PAUSE --
+ * so the recording screen could be opened but no key could start or stop a
+ * recording.
  *
- * The stick's left/right become value adjusters for whichever item is highlighted
- * (the screen handles ACTION_SETTINGS_INC/DEC for volume, balance, base, treble),
- * matching keymap-fuzeplus. Up/down still move through the list by falling through
- * to CONTEXT_STD, and B backs out -- consistent with the WPS, where B leaves the
- * screen without stopping playback.
+ * The stick's left/right become value adjusters for whichever item is
+ * highlighted (the screen handles ACTION_SETTINGS_INC/DEC for volume, balance,
+ * base, treble), matching keymap-fuzeplus. Up/down still move through the list
+ * by falling through to CONTEXT_STD, and B backs out -- consistent with the
+ * WPS, where B leaves the screen without stopping playback.
  *
  * The explicit LEFT/RIGHT entries are listed before the fallthrough on purpose:
  * the mapping lists are searched in order, so CONTEXT_STD's LEFT=cancel and
@@ -160,7 +162,8 @@ static const struct button_mapping button_context_recscreen[]  = {
      * means "leave this screen" everywhere else too. */
     { ACTION_STD_CANCEL,      BUTTON_B|BUTTON_REL,          BUTTON_B },
 
-    /* Same gestures from the touch grid: right cell records, left cell leaves. */
+    /* Same gestures from the touch grid: right cell records, left cell
+    /* leaves. */
     { ACTION_REC_PAUSE,       BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
     { ACTION_STD_CANCEL,      BUTTON_MIDLEFT,               BUTTON_NONE },
 

@@ -28,17 +28,17 @@
  * Xtensa under ESP-IDF: a Rockbox thread *is* a FreeRTOS task.
  *
  * What used to live here was a hand-rolled context switch -- XtExcFrame laid in
- * the thread table, _xt_context_save/_xt_context_restore, xthal_window_spill_nw,
- * retw back through the blocking primitive. It ran, after a fashion, and it was
- * the largest single source of faults in this port. The reason is structural: a
- * windowed-ABI context switch is exactly the thing IDF already implements,
- * correctly, against the real core configuration, and every re-derivation has
- * to rediscover on its own the base-save geometry, the spill ordering, the fact
- * that wsr.PS is not rfe, and the fact that inline asm cannot tell the compiler
- * that a block changes which physical registers the names refer to. Each of
- * those was a separate debugging campaign here. Hand-transcribing IDF's
- * vPortYield and _frxt_dispatch into a .S file produced three new bugs in an
- * hour, all of which are non-events in IDF's own code.
+ * the thread table, _xt_context_save/_xt_context_restore,
+ * xthal_window_spill_nw, retw back through the blocking primitive. It ran,
+ * after a fashion, and it was the largest single source of faults in this port.
+ * The reason is structural: a windowed-ABI context switch is exactly the thing
+ * IDF already implements, correctly, against the real core configuration, and
+ * every re-derivation has to rediscover on its own the base-save geometry, the
+ * spill ordering, the fact that wsr.PS is not rfe, and the fact that inline asm
+ * cannot tell the compiler that a block changes which physical registers the
+ * names refer to. Each of those was a separate debugging campaign here.
+ * Hand-transcribing IDF's vPortYield and _frxt_dispatch into a .S file produced
+ * three new bugs in an hour, all of which are non-events in IDF's own code.
  *
  * So this layer no longer switches anything. The IDF half lives in
  * target/xtensa/thread-idf.c; what is left here is three one-line calls.

@@ -36,14 +36,14 @@
 #include "debug.h"
 #include "paniclog.h"
 
-/* Opt this file into logf output. logf.h compiles logf() away in any file that
- * does not ask for it, and the crash report below is the only message this file
- * emits -- there is no per-tick flooding here, which is the failure mode the
- * comment in button_read_device() documents. logf() is used rather than a
- * hand-rolled pump because Rockbox already routes it to the USB CDC console
- * (firmware/logf.c flushes its ring through usb_serial_send()) under
- * USB_ENABLE_SERIAL, and it flushes once per message, so a payload is bounded by
- * the call site instead of by a loop. */
+/* Opt this file into logf output. logf.h compiles logf() away in any file
+ * that does not ask for it, and the crash report below is the only message
+ * this file emits -- there is no per-tick flooding here, which is the
+ * failure mode the comment in button_read_device() documents. logf() is used
+ * rather than a hand-rolled pump because Rockbox already routes it to the
+ * USB CDC console (firmware/logf.c flushes its ring through
+ * usb_serial_send()) under USB_ENABLE_SERIAL, and it flushes once per
+ * message, so a payload is bounded by the call site instead of by a loop. */
 #define LOGF_ENABLE
 #include "logf.h"
 
@@ -57,20 +57,20 @@ struct panic_record
 };
 
 /* .noinit: not in the image, not cleared at startup, and placed in internal
- * SRAM by IDF's sections.ld -- which is what survives the reset a panic causes.
- * .noinit is what makes a crash record survivable: IDF's panic path resets through
- * RTC_SW_CPU_RST, which leaves internal SRAM alone. */
+ * SRAM by IDF's sections.ld -- which is what survives the reset a panic
+ * causes. .noinit is what makes a crash record survivable: IDF's panic path
+ * resets through RTC_SW_CPU_RST, which leaves internal SRAM alone. */
 static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
 
 /* ------------------------------------------------------------------ *
  * Breadcrumbs
  *
- * IDF's panic entry is not a registration point: esp_panic_handler() is a strong
- * symbol in esp_system/panic.c, in an object the link pulls anyway for the watchdog
- * helpers it also defines. Taking it over needs an object of the executable plus
- * -Wl,--allow-multiple-definition, which idf-app/panic_cdc.c does; both crashes in
- * the session that produced this file happened before that existed and left nothing
- * but "Panic handler entered multiple times".
+ * IDF's panic entry is not a registration point: esp_panic_handler() is a
+ * strong symbol in esp_system/panic.c, in an object the link pulls anyway for
+ * the watchdog helpers it also defines. Taking it over needs an object of the
+ * executable plus -Wl,--allow-multiple-definition, which idf-app/panic_cdc.c
+ * does; both crashes in the session that produced this file happened before
+ * that existed and left nothing but "Panic handler entered multiple times".
  *
  * Breadcrumbs complement rather than duplicate that: they are written while
  * everything is healthy, so they record a fault the panic entry cannot see -- a
@@ -82,10 +82,11 @@ static struct panic_record rec __attribute__((section(".noinit"), aligned(4)));
  * it survives precisely the failure that destroys the register dump.
  * ------------------------------------------------------------------ */
 
-/* 40 slots. At 16 the periodic attach samples push out the sequence that starts the
- * attach -- usbEn(1), usbIn, usbFifo, usbConn, usbPost -- which is precisely the part
- * that says whether the transport was brought up and then dropped, or never came up.
- * Each slot is 16 bytes, so this costs 384 bytes of .noinit. */
+/* 40 slots. At 16 the periodic attach samples push out the sequence that
+ * starts the attach -- usbEn(1), usbIn, usbFifo, usbConn, usbPost -- which
+ * is precisely the part that says whether the transport was brought up and
+ * then dropped, or never came up. Each slot is 16 bytes, so this costs 384
+ * bytes of .noinit. */
 #define BC_SLOTS 40
 #define BC_MAGIC 0x43415242u   /* "BRAC" -- validates the counters, which
                                 * .noinit does not zero */
@@ -104,12 +105,13 @@ static uint32_t bc_next  __attribute__((section(".noinit")));
 /* Which image is running this boot, stamped by idf-app/main/rockbox_app.c from
  * esp_app_get_description()->version before Rockbox's init starts.
  *
- * It exists because a flash cannot be confirmed by observation: the post-flash
- * reset pulse travels over D+/D-, and once the previously running image has
- * handed those pads to the DWC core the chip never sees the pulse. Anything read
- * immediately after a flash therefore belongs to the old image, and the only way
- * to tell the two apart is to have the running build say so. The panic handler
- * stores the build id of the image that faulted, so a report can show both. */
+ * It exists because a flash cannot be confirmed by observation: the
+ * post-flash reset pulse travels over D+/D-, and once the previously running
+ * image has handed those pads to the DWC core the chip never sees the pulse.
+ * Anything read immediately after a flash therefore belongs to the old
+ * image, and the only way to tell the two apart is to have the running build
+ * say so. The panic handler stores the build id of the image that faulted,
+ * so a report can show both. */
 static char rb_build_now[32] __attribute__((section(".noinit"), aligned(4)));
 
 void xtensa_build_id_stamp(const char *id)
@@ -119,7 +121,8 @@ void xtensa_build_id_stamp(const char *id)
     if (id == NULL)
         return;
 
-    /* 32 characters: `git describe` on this tree gives 31 ("baremetal-pre-idf-323-
+    /* 32 characters: `git describe` on this tree gives 31
+     * ("baremetal-pre-idf-323-
        g122e992e") and the first version of this buffer was 24, which printed
        "baremetal-pre-idf-323-g" -- the hash is the part that identifies the
        build, so a truncated id defeats the whole point of stamping it. */
@@ -164,13 +167,14 @@ void dbg_breadcrumb(const char *tag, unsigned long a, unsigned long b)
     bc_next++;
 }
 
-/* One retained trail entry, counted back from the newest: 0 is the last thing that
- * happened before the reset. This exists because the trail is the only record that
- * survives a hardware exception on this target -- those never reach Rockbox's
- * panic(), they go to IDF's handler, which prints to UART0 and resets, and the
- * .noinit ring is left alone by that reset. A caller with no console (the screen)
- * needs it entry by entry rather than as a dump. Returns 0 when there is nothing at
- * that index -- no trail, or fewer entries than asked for. */
+/* One retained trail entry, counted back from the newest: 0 is the last
+ * thing that happened before the reset. This exists because the trail is the
+ * only record that survives a hardware exception on this target -- those
+ * never reach Rockbox's panic(), they go to IDF's handler, which prints to
+ * UART0 and resets, and the .noinit ring is left alone by that reset. A
+ * caller with no console (the screen) needs it entry by entry rather than as
+ * a dump. Returns 0 when there is nothing at that index -- no trail, or
+ * fewer entries than asked for. */
 int dbg_breadcrumb_back(int back, char *buf, int bufsize)
 {
     uint32_t n;
@@ -185,8 +189,9 @@ int dbg_breadcrumb_back(int back, char *buf, int bufsize)
     if ((uint32_t)back >= n)
         return 0;
 
-    /* bc_next only increases and the ring is written by name, so the newest entry
-     * is the absolute index bc_next - 1 however many times it has wrapped. */
+    /* bc_next only increases and the ring is written by name, so the newest
+     * entry is the absolute index bc_next - 1 however many times it has
+     * wrapped. */
     e = &bc[(bc_next - 1 - (uint32_t)back) % BC_SLOTS];
 
     return snprintf(buf, bufsize, "-%d %s %08lx %08lx", back, e->tag,
@@ -199,19 +204,22 @@ int dbg_breadcrumb_back(int back, char *buf, int bufsize)
  * record of any kind can work here. */
 void paniclog_stamp_boot(unsigned long seq)
 {
-    /* A boundary in the RTC ring. It survives resets, so without a marker there a reader
-     * cannot tell the entries the dead boot wrote from the ones this boot wrote. */
+    /* A boundary in the RTC ring. It survives resets, so without a marker
+     * there a reader cannot tell the entries the dead boot wrote from the
+     * ones this boot wrote. */
     dbg_breadcrumb_retained("rBoot", (unsigned long)seq, 0);
     dbg_breadcrumb("boot", seq, 0);
 }
 
-/* The ring is circular and bc_next only ever increases, so slot j holds the entry whose
- * absolute index is j mod BC_SLOTS. Walking absolute indices upward therefore yields
- * chronological order whether or not the ring has wrapped. */
-/* Reset reason of the reset that produced this boot, stamped by app_main before
- * anything can overwrite it. The breadcrumb ring is only forty slots and a busy USB
- * attach fills them in seconds, so an rstR entry is gone before anyone can read it;
- * this is not. Read back by paniclog_reset_reason(). */
+/* The ring is circular and bc_next only ever increases, so slot j holds the
+ * entry whose absolute index is j mod BC_SLOTS. Walking absolute indices
+ * upward therefore yields chronological order whether or not the ring has
+ * wrapped. */
+/* Reset reason of the reset that produced this boot, stamped by app_main
+ * before anything can overwrite it. The breadcrumb ring is only forty slots
+ * and a busy USB attach fills them in seconds, so an rstR entry is gone
+ * before anyone can read it; this is not. Read back by
+ * paniclog_reset_reason(). */
 static uint32_t xt_reset_reason;
 
 void paniclog_set_reset(unsigned reason)
@@ -245,10 +253,11 @@ void paniclog_set_reset(unsigned reason)
                              * ignored rather than printed as nonsense. */
 #define XT_RTC_SLOTS       24
 
-/* RTC slow memory on this chip only accepts 32-bit accesses: the first version of this
- * stored the tag one byte at a time and those stores did nothing, while the word-wise
- * counter advanced happily -- which is why the ring read back as nothing but stale entries.
- * Every field here is a full word. Tags are truncated to four characters. */
+/* RTC slow memory on this chip only accepts 32-bit accesses: the first
+ * version of this stored the tag one byte at a time and those stores did
+ * nothing, while the word-wise counter advanced happily -- which is why the
+ * ring read back as nothing but stale entries. Every field here is a full
+ * word. Tags are truncated to four characters. */
 struct rtc_slot
 {
     uint32_t tag;   /* up to four characters, little endian */
@@ -263,10 +272,11 @@ struct rtc_store
     struct rtc_slot slot[XT_RTC_SLOTS];
 };
 
-/* The panic record, also in RTC slow. The SRAM copy is cleared by the watchdog reset that
- * follows a hung panic path, which is exactly when its text is wanted: "no panic record" in
- * a post-mortem therefore proves nothing about whether panicf() ran. Written a word at a
- * time, like the ring above, because byte stores to this bank do not land. */
+/* The panic record, also in RTC slow. The SRAM copy is cleared by the
+ * watchdog reset that follows a hung panic path, which is exactly when its
+ * text is wanted: "no panic record" in a post-mortem therefore proves
+ * nothing about whether panicf() ran. Written a word at a time, like the
+ * ring above, because byte stores to this bank do not land. */
 #define XT_PANIC_RTC_BASE  0x50001200u
 #define XT_PANIC_RTC_MAGIC 0x43505254u   /* "CRPT" */
 
@@ -307,10 +317,11 @@ struct frame_rtc
     uint32_t pseudo;      /* info->pseudo_excause */
     uint32_t count;
     uint32_t word[XT_FRAME_WORDS];
-    /* Read from the registers rather than the frame, and only when PS.INTLEVEL
-     * says they are legal. On a double exception the ISA shifts the original
-     * EPC1 down to EPC2, so epc2 is the faulting instruction and depc the address
-     * that doubled -- neither appears in any frame the handler can see. */
+    /* Read from the registers rather than the frame, and only when
+     * PS.INTLEVEL says they are legal. On a double exception the ISA shifts
+     * the original EPC1 down to EPC2, so epc2 is the faulting instruction
+     * and depc the address that doubled -- neither appears in any frame the
+     * handler can see. */
     uint32_t have_regs;   /* magic above, set once the slots are written */
     uint32_t ps;
     uint32_t epc1;
@@ -378,9 +389,9 @@ static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
 /* The head line carries the RTC count as well as the reset reason: after a
  * watchdog reset the SRAM ring is gone, and "rtc 0" is the difference between a
  * hang that never reached the USB teardown and one that did. */
-/* The retained panic message, RTC copy preferred. RTC slow survives the reset that
- * clears internal DRAM, so it is the record that can name a crash the SRAM trail
- * cannot. Returns 0 when nothing was retained. */
+/* The retained panic message, RTC copy preferred. RTC slow survives the
+ * reset that clears internal DRAM, so it is the record that can name a crash
+ * the SRAM trail cannot. Returns 0 when nothing was retained. */
 int paniclog_text(char *buf, int bufsize)
 {
     volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
@@ -425,17 +436,17 @@ int paniclog_text(char *buf, int bufsize)
     return 0;
 }
 
-/* The reset that produced this boot. The breadcrumb ring is only forty slots and a
- * busy USB attach fills them in seconds, so an rstR entry is gone before anyone can
- * read it; this is not. */
+/* The reset that produced this boot. The breadcrumb ring is only forty slots
+ * and a busy USB attach fills them in seconds, so an rstR entry is gone
+ * before anyone can read it; this is not. */
 unsigned long paniclog_reset_reason(void)
 {
     return xt_reset_reason;
 }
 
-/* How many entries the RTC ring holds. Zero on a clean power-on, and the difference
- * between "the dead boot never reached the USB teardown" and "it reached it and
- * hung" once a panic message is on the glass. */
+/* How many entries the RTC ring holds. Zero on a clean power-on, and the
+ * difference between "the dead boot never reached the USB teardown" and "it
+ * reached it and hung" once a panic message is on the glass. */
 unsigned long paniclog_rtc_count(void)
 {
     return rtc_store->magic == XT_RTC_SLOW_MAGIC ? rtc_store->next : 0;
@@ -453,8 +464,9 @@ void panic_console_write(const char *msg)
     memcpy(rec.msg, msg, sizeof rec.msg - 1);
     rec.msg[sizeof rec.msg - 1] = '\0';
 
-    /* Copy it to RTC slow as words: 96 characters, four per word, zero padded. This is
-     * the only record that outlives the reset this panic is about to cause. */
+    /* Copy it to RTC slow as words: 96 characters, four per word, zero
+     * padded. This is the only record that outlives the reset this panic is
+     * about to cause. */
     {
         volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
         int i;
@@ -490,8 +502,8 @@ void panic_console_write(const char *msg)
  * slow is the only thing that survives, so the frame goes there and is read
  * back at the next boot, where the reader is reliably open.
  *
- * The words are copied verbatim rather than decoded. Which layout they are in is
- * the question being asked, and deciding it here would be guessing. */
+ * The words are copied verbatim rather than decoded. Which layout they are
+ * in is the question being asked, and deciding it here would be guessing. */
 void paniclog_frame(const unsigned long *words, int count,
                            int exception, int pseudo)
 {
@@ -536,8 +548,8 @@ void paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
     if (count)     *count = fr->count;
 }
 
-/* Four words per line, line 0 being the frame's first word. Returns 0 when there
- * is nothing retained or the line is past the stored count. */
+/* Four words per line, line 0 being the frame's first word. Returns 0 when
+ * there is nothing retained or the line is past the stored count. */
 int paniclog_frame_words(char *buf, int bufsize, int line)
 {
     volatile struct frame_rtc *fr =
@@ -598,11 +610,11 @@ void paniclog_frame_regs(const unsigned long *regs, int count)
     fr->regs_magic = XT_REGS_RTC_MAGIC;
 }
 
-/* Window state at fault. The frame does not contain windowbase or windowstart, and
- * a fault whose PC equals the interrupted SP is the signature of a register-window
- * spill or underflow walking a chain that does not exist. a5 is the pointer those
- * handlers use as the ancestor frame address, so it is the value that says whether
- * the walk was sane. */
+/* Window state at fault. The frame does not contain windowbase or
+ * windowstart, and a fault whose PC equals the interrupted SP is the
+ * signature of a register-window spill or underflow walking a chain that
+ * does not exist. a5 is the pointer those handlers use as the ancestor frame
+ * address, so it is the value that says whether the walk was sane. */
 void paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
                                   uint32_t a5)
 {
@@ -631,9 +643,9 @@ int paniclog_frame_window_text(char *buf, int bufsize)
                     (unsigned long)fr->a5);
 }
 
-/* One line with the register slots. Returns 0 when nothing was stored. Slots that
- * could not be read at the exception level are printed as ----- so an absent
- * value cannot be mistaken for a legitimate address of 0. */
+/* One line with the register slots. Returns 0 when nothing was stored. Slots
+ * that could not be read at the exception level are printed as ----- so an
+ * absent value cannot be mistaken for a legitimate address of 0. */
 int paniclog_frame_regs_text(char *buf, int bufsize)
 {
     volatile struct frame_rtc *fr =
@@ -647,7 +659,8 @@ int paniclog_frame_regs_text(char *buf, int bufsize)
     return snprintf(buf, bufsize,
                     "ps %08lx sp %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
                     (unsigned long)fr->ps,
-                    /* Word 4 of the frame is XtExcFrame.a1, the stack pointer of
+                    /* Word 4 of the frame is XtExcFrame.a1, the stack pointer
+                     * of
                        the interrupted context. It belongs on this line because
                        the fault address is usually a value inside it, and
                        comparing the two is what distinguishes a hijacked return
@@ -680,16 +693,17 @@ int paniclog_frame_cache(char *buf, int bufsize)
  * Which image faulted, in RTC slow.
  *
  * This record used to carry a caller chain walked with IDF's
- * esp_backtrace_get_next_frame, and that walk is what identified the frames of the
- * recording crash for many builds. It is gone, and the reason is worth keeping:
- * internal DRAM survives a warm reset, so the base-save words at sp-16 and sp-12
- * that the walk reads can belong to the *previous* boot's stack. One capture proved
- * it -- the codec's own stamps showed that enc_pcmbuf_read had never been entered,
- * while the walk still printed codec_run's exact return address for the call to it.
- * A trace that can be stale is worse than no trace. The fault itself turned out to
- * be a stale codec image indexing struct codec_api one field early, which no frame
- * walking could have named; the register slots and the cache latch above are what
- * survive as the permanent record.
+ * esp_backtrace_get_next_frame, and that walk is what identified the frames of
+ * the recording crash for many builds. It is gone, and the reason is worth
+ * keeping: internal DRAM survives a warm reset, so the base-save words at sp-16
+ * and sp-12 that the walk reads can belong to the *previous* boot's stack. One
+ * capture proved it -- the codec's own stamps showed that enc_pcmbuf_read had
+ * never been entered, while the walk still printed codec_run's exact return
+ * address for the call to it. A trace that can be stale is worse than no trace.
+ * The fault itself turned out to be a stale codec image indexing struct
+ * codec_api one field early, which no frame walking could have named; the
+ * register slots and the cache latch above are what survive as the permanent
+ * record.
  *
  * 0x50001600 is past the frame record (which ends at 0x500014bc) and inside the
  * 8 KB RTC-slow bank, which runs to 0x50002000. Word stores only, as everywhere
@@ -711,9 +725,9 @@ struct crash_rtc
     uint32_t id_magic;
 };
 
-/* Record which build faulted. Called from the panic handler, which is the only
- * place that knows the difference between "this image is running" and "this image
- * crashed". */
+/* Record which build faulted. Called from the panic handler, which is the
+ * only place that knows the difference between "this image is running" and
+ * "this image crashed". */
 void paniclog_crash_id(const char *build)
 {
     volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
@@ -733,7 +747,8 @@ void paniclog_crash_id(const char *build)
     cr->id_magic = XT_BT_RTC_MAGIC;
 }
 
-/* One line with the build id of the crash, as stored by the handler. Returns 0 when absent. */
+/* One line with the build id of the crash, as stored by the handler. Returns
+/* 0 when absent. */
 int paniclog_crash_build(char *buf, int bufsize)
 {
     volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;
@@ -806,16 +821,17 @@ void paniclog_dump(void)
     }
     }
 
-    /* Consume the record, so a stale one is not replayed forever: a fault that looks
-     * like it keeps happening is the kind of lead that costs a day. The dump above has
-     * already printed it by now.
+    /* Consume the record, so a stale one is not replayed forever: a fault that
+     * looks like it keeps happening is the kind of lead that costs a day. The
+     * dump above has already printed it by now.
      */
     rec.magic = 0;
 
-    /* Do NOT clear bc_next. The trail is ring-buffered and written by name, so
-     * leaving it in place means the next crash overwrites the oldest entries
-     * rather than starting from a blank slate -- and clearing it here would also
-     * erase the boot stamp that proves the trail survived the reset at all. */
+    /* Do NOT clear bc_next. The trail is ring-buffered and written by name,
+     * so leaving it in place means the next crash overwrites the oldest
+     * entries rather than starting from a blank slate -- and clearing it
+     * here would also erase the boot stamp that proves the trail survived
+     * the reset at all. */
 }
 
 /* Proven on hardware the first time it was used: a crash during WAV resume
@@ -831,8 +847,8 @@ void paniclog_dump(void)
  */
 
 /* What the trail found, first try after widening it to cover backlight, volume
- * and transport stop: a crash reproduced by rapid file cycling and by cancelling
- * at the end of a playlist ended with
+ * and transport stop: a crash reproduced by rapid file cycling and by
+ * cancelling at the end of a playlist ended with
  *
  *   seg, seg, placed, blon x12, stop
  *
@@ -842,8 +858,8 @@ void paniclog_dump(void)
  * had no business being in the teardown path. Removing it from that call site
  * ended both repro modes. Both crashes in this file's history were the probe,
  * not the audio path, not the codec, and not a malformed WAV: the recorder's
- * headers are correct (0x0001, 2ch, 44100, 16-bit, byte_rate 176400, block_align
- * 4, data_chunk == file - 44, riff_size == file - 8).
+ * headers are correct (0x0001, 2ch, 44100, 16-bit, byte_rate 176400,
+ * block_align 4, data_chunk == file - 44, riff_size == file - 8).
  *
  * The lesson worth keeping: an instrument placed in the path it observes can
  * become the fault being observed. This one survived three crashes before the
@@ -853,22 +869,24 @@ void paniclog_dump(void)
 /* Send the surviving crash record over the CDC console, through logf().
  *
  * The hardware-info screen used to be the only readout, and this build does not
- * expose that menu, so a host has to be able to fetch it. Each logf() call is one
- * message: it appends to logfbuffer and flushes through usb_serial_send(), which
- * queues at most TRANSIT_BUFFER_SIZE (32) bytes per transfer and lets the driver's
- * completion handler pick up the rest. Four short messages therefore total well
- * under 200 bytes, inside the 512-byte ring, and nothing loops on the endpoint.
+ * expose that menu, so a host has to be able to fetch it. Each logf() call is
+ * one message: it appends to logfbuffer and flushes through usb_serial_send(),
+ * which queues at most TRANSIT_BUFFER_SIZE (32) bytes per transfer and lets the
+ * driver's completion handler pick up the rest. Four short messages therefore
+ * total well under 200 bytes, inside the 512-byte ring, and nothing loops on
+ * the endpoint.
  *
- * The previous version of this function pushed all forty trail entries in a loop,
- * roughly 1.4 KB, with no guarantee that anyone had the port open. The ring cannot
- * advance while a transfer is outstanding, so it hammered an endpoint that was
- * still holding the first chunk and the board reboot-looped. That is why the depth
- * here is three and the payload is bounded: the trail's full ring stays on the
- * screen and in SRAM, where it costs nothing.
+ * The previous version of this function pushed all forty trail entries in a
+ * loop, roughly 1.4 KB, with no guarantee that anyone had the port open. The
+ * ring cannot advance while a transfer is outstanding, so it hammered an
+ * endpoint that was still holding the first chunk and the board reboot-looped.
+ * That is why the depth here is three and the payload is bounded: the trail's
+ * full ring stays on the screen and in SRAM, where it costs nothing.
  *
- * Call this from thread context. It is called once, from the button tick, which is
- * tick_task_thread -- ordinary thread context, the same place every other logf()
- * caller runs, so there is no second producer racing the filesystem's messages.
+ * Call this from thread context. It is called once, from the button tick, which
+ * is tick_task_thread -- ordinary thread context, the same place every other
+ * logf() caller runs, so there is no second producer racing the filesystem's
+ * messages.
  */
 void paniclog_crash_report_logf(void)
 {
@@ -886,12 +904,13 @@ void paniclog_crash_report_logf(void)
          paniclog_reset_reason(), paniclog_rtc_count(),
          (unsigned long)(bc_magic == BC_MAGIC ? bc_next : 0));
 
-    /* The register slots first, because they are the only thing that can name
-     * the faulting instruction: on a double exception the original EPC1 was
-     * shifted to EPC2 and the frame the handler sees belongs to the debug
-     * context. The frame words follow for context. Both together are roughly 430
-     * bytes, inside the 512-byte ring that overflowed when this reported forty
-     * trail entries; the trail itself stays on the debug page and in SRAM. */
+    /* The register slots first, because they are the only thing that can
+     * name the faulting instruction: on a double exception the original EPC1
+     * was shifted to EPC2 and the frame the handler sees belongs to the
+     * debug context. The frame words follow for context. Both together are
+     * roughly 430 bytes, inside the 512-byte ring that overflowed when this
+     * reported forty trail entries; the trail itself stays on the debug page
+     * and in SRAM. */
     len = paniclog_frame_regs_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
@@ -900,9 +919,9 @@ void paniclog_crash_report_logf(void)
     if (len > 0)
         logf("rb %s", line);
 
-    /* The window state. A fault whose PC is the interrupted SP is what a window
-     * spill or underflow produces when the ancestor chain is wrong, and these are
-     * the three registers that say so. */
+    /* The window state. A fault whose PC is the interrupted SP is what a
+     * window spill or underflow produces when the ancestor chain is wrong,
+     * and these are the three registers that say so. */
     len = paniclog_frame_window_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
@@ -915,18 +934,20 @@ void paniclog_crash_report_logf(void)
      * interrupted SP, the window state and the build line come to roughly 250
      * bytes; the cache line only appears when the latch reported something.
      *
-     * What was dropped, and why it is safe to drop: the backtrace walk reads a
-     * register-window chain through sp-16/sp-12, and DRAM survives a warm reset,
-     * so its slots can belong to the previous boot's stack -- a capture proved
-     * that by showing codec_run's exact return address for a call the encoder
-     * stamps said never happened. The codec API handover and the pcm_record slot
-     * reads existed to chase that fault, and the fault turned out to be a stale
-     * codec image calling the API one field early. */
+     * What was dropped, and why it is safe to drop: the backtrace walk reads
+     * a register-window chain through sp-16/sp-12, and DRAM survives a warm
+     * reset, so its slots can belong to the previous boot's stack -- a
+     * capture proved that by showing codec_run's exact return address for a
+     * call the encoder stamps said never happened. The codec API handover
+     * and the pcm_record slot reads existed to chase that fault, and the
+     * fault turned out to be a stale codec image calling the API one field
+     * early. */
 
-    /* Which image is reporting, and which one crashed. They differ whenever a
-     * flash happened without the chip restarting -- the reset pulse cannot reach
-     * a board whose pads the running image gave to the DWC core -- and a backtrace
-     * resolved against the wrong build is worse than no backtrace at all. */
+    /* Which image is reporting, and which one crashed. They differ whenever
+     * a flash happened without the chip restarting -- the reset pulse cannot
+     * reach a board whose pads the running image gave to the DWC core -- and
+     * a backtrace resolved against the wrong build is worse than no
+     * backtrace at all. */
     {
         const char *now = paniclog_build_id_running();
         int clen = paniclog_crash_build(line, sizeof line);

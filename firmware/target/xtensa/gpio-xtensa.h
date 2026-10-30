@@ -65,16 +65,16 @@
 #define GPIO_IN_FROM_MATRIX (1u << 7)
 
 /* IO MUX: MCU_SEL is bits 14:12 and picks the pad function. GPIO1 and GPIO2
- * default to UART0 RX/TX, so a driver that wants them as plain GPIO has to write
- * 0 here. GPIO0 is at base + 0x04, one word per pin.
+ * default to UART0 RX/TX, so a driver that wants them as plain GPIO has to
+ * write 0 here. GPIO0 is at base + 0x04, one word per pin.
  */
 #define DR_REG_IO_MUX_BASE 0x60009000
 #define IO_MUX_PIN(n) (DR_REG_IO_MUX_BASE + 0x04 + 4u * (n))
 /* MCU_SEL is the pad function selector, and on ESP32-S3 the GPIO function is
  * value 1, not 0. Value 0 is the pad's dedicated peripheral: GPIO47/48 are the
  * SPICLK_P/SPICLK_N pads, so MCU_SEL=0 hands them to the MSPI block and the
- * GPIO matrix cannot drive them at all. See soc/io_mux_reg.h: PIN_FUNC_GPIO = 1,
- * FUNC_SPICLK_P_GPIO47 = 1, FUNC_SPICLK_P_SPICLK_DIFF = 0.
+ * GPIO matrix cannot drive them at all. See soc/io_mux_reg.h: PIN_FUNC_GPIO =
+ * 1, FUNC_SPICLK_P_GPIO47 = 1, FUNC_SPICLK_P_SPICLK_DIFF = 0.
  */
 #define IO_MUX_MCU_SEL (7u << 12)
 #define IO_MUX_FUNC_GPIO (1u << 12)   /* PIN_FUNC_GPIO */
@@ -86,7 +86,8 @@
 #define SIG_I2C0_SCL     89
 #define SIG_I2C0_SDA     90
 
-/* SDHOST slot 0. The two slots share the signal block; slot 0 uses the _1 set. */
+/* SDHOST slot 0. The two slots share the signal block; slot 0 uses the _1
+/* set. */
 #define SIG_SDHOST_CLK   172   /* SDHOST_CCLK_OUT_1 */
 #define SIG_SDHOST_CMD   178   /* SDHOST_CCMD_IN_1 / SDHOST_CCMD_OUT_1 */
 #define SIG_SDHOST_D0    180   /* SDHOST_CDATA_IN_10 / SDHOST_CDATA_OUT_10 */
@@ -101,17 +102,18 @@
 #define SIG_I2S1O_WS_OUT  29
 #define SIG_I2S1O_SD_OUT  30
 
-/* I2S0's receiver side has its own signals. They matter because the RX data line
- * would otherwise share signal 30 with the TX data line on the same port. */
+/* I2S0's receiver side has its own signals. They matter because the RX data
+ * line would otherwise share signal 30 with the TX data line on the same
+ * port. */
 #define SIG_I2S0I_SD_IN   25
 #define SIG_I2S0I_BCK_IN  26
 #define SIG_I2S0I_WS_IN   27
 
 /* The same three slots also carry the receiver's clock OUTPUTS, for when the
- * receiver is the bus master. On esp32s3 each RX clock signal has one matrix slot
- * used in both directions -- I2S0I_BCK_IN_IDX and I2S0I_BCK_OUT_IDX are both 26
- * (gpio_sig_map.h) -- and IDF's i2s_periph.c picks between them with m_rx_bck_sig
- * and s_rx_bck_sig. MCLK is a single shared signal, 23. */
+ * receiver is the bus master. On esp32s3 each RX clock signal has one matrix
+ * slot used in both directions -- I2S0I_BCK_IN_IDX and I2S0I_BCK_OUT_IDX are
+ * both 26 (gpio_sig_map.h) -- and IDF's i2s_periph.c picks between them with
+ * m_rx_bck_sig and s_rx_bck_sig. MCLK is a single shared signal, 23. */
 #define SIG_I2S0_MCLK_OUT 23
 #define SIG_I2S0I_BCK_OUT 26
 #define SIG_I2S0I_WS_OUT  27
@@ -126,10 +128,10 @@ static inline void gpio_write(uint32_t reg, uint32_t val)
     *(volatile uint32_t *)reg = val;
 }
 
-/* ESP32-S3 has 49 general-purpose pads (SOC_GPIO_PIN_COUNT), and every one of them
- * has an IO MUX entry: FUN_PD/FUN_PU/FUN_IE/FUN_DRV/MCU_SEL at bits 7..14 of
- * IO_MUX_GPIO0_REG + 4*n. Pull-ups are in the IO MUX, not in the GPIO block - that
- * is why a search of gpio_reg.h finds nothing.
+/* ESP32-S3 has 49 general-purpose pads (SOC_GPIO_PIN_COUNT), and every one of
+ * them has an IO MUX entry: FUN_PD/FUN_PU/FUN_IE/FUN_DRV/MCU_SEL at bits 7..14
+ * of IO_MUX_GPIO0_REG + 4*n. Pull-ups are in the IO MUX, not in the GPIO block
+ * - that is why a search of gpio_reg.h finds nothing.
  */
 static inline void io_mux_select_gpio(int pin)
 {
@@ -140,8 +142,8 @@ static inline void io_mux_select_gpio(int pin)
     gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
 }
 
-/* GPIO_ENABLE only controls the output driver. A pad whose input enable is clear
- * does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
+/* GPIO_ENABLE only controls the output driver. A pad whose input enable is
+ * clear does not feed GPIO_IN at all, so an input needs FUN_IE as well. */
 static inline void gpio_input_enable(int pin, int enable)
 {
     if (pin > 48)
@@ -164,11 +166,12 @@ static inline void gpio_pullup(int pin, int enable)
 
 /* ESP-IDF's gpio_output_enable() does three things: route the pad to the GPIO
  * matrix default, set the output enable, and select the GPIO function in the IO
- * MUX. The third step is not optional. Pads 39-42 are MTCK/MTDO/MTDI/MTMS (JTAG),
- * 15/16 are the XTAL_32K_P/N pads, 13/14 carry FSPI functions and 47/48 are the
- * MSPI clock pair. With MCU_SEL left at 0 the pad is muxed to that peripheral and
- * a GPIO-matrix signal routed to "GPIO n" never reaches the driver, so the pin
- * reads and stays at its idle level no matter what the controller does.
+ * MUX. The third step is not optional. Pads 39-42 are MTCK/MTDO/MTDI/MTMS
+ * (JTAG), 15/16 are the XTAL_32K_P/N pads, 13/14 carry FSPI functions and 47/48
+ * are the MSPI clock pair. With MCU_SEL left at 0 the pad is muxed to that
+ * peripheral and a GPIO-matrix signal routed to "GPIO n" never reaches the
+ * driver, so the pin reads and stays at its idle level no matter what the
+ * controller does.
  */
 static inline void gpio_set_direction(int pin, int output)
 {
