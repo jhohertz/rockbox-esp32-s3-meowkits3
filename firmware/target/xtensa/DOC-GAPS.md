@@ -42,10 +42,10 @@ the corresponding spike is done and the manual's keymap file should stop saying
   automatic bar zones (`skin_parser.c:1261`). **Pen&Paper Plus has 18**, and its
   set includes `shuffle` and `repmode` — so on that theme the two actions this
   section is about are reachable on screen with no firmware change at all.
-  `tools/rbthemes.py check` reports the count per theme.
+  `tools/meowkits3/rbthemes.py check` reports the count per theme.
 - **What fixing it means:** `%T` regions in a theme, not firmware. Deferred: the
   builtin cabbiev2 stays untouched, so these arrive with the third-party theme
-  packs that define them (`tools/rbthemes.py` should report which ones do).
+  packs that define them (`tools/meowkits3/rbthemes.py` should report which ones do).
   Shuffle and repeat remain settable from the settings menu meanwhile, which is
   what the manual's *not available* note reflects.
 - **Status:** open, deferred to theme packs.

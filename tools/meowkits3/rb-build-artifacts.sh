@@ -105,7 +105,7 @@ make -j"$(nproc)"
 # The layout guard and the loader's own view of the image run before anything is
 # copied out: an arena that has grown into the plugin/codec reservation must fail
 # here rather than appear as a crash on a device after the artifacts shipped.
-echo "-- layout guard (tools/esp-layout-check)"
+echo "-- layout guard (tools/meowkits3/esp-layout-check)"
 make esplayer
 
 echo "-- flash and release artifact set (make espartifacts)"

@@ -61,7 +61,7 @@ FREESTAND_CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_FIRST)
 
 # ESP-IDF-backed targets compile their own sources with Rockbox's build, but the
 # files that reach IDF drivers have to see IDF's headers and IDF's generated
-# sdkconfig.h. The flags are harvested from IDF's own build by tools/idf-flags
+# sdkconfig.h. The flags are harvested from IDF's own build by tools/meowkits3/idf-flags
 # instead of being duplicated here: they follow sdkconfig and shift whenever a
 # component is enabled or disabled, and a hand-kept list fails as a code bug
 # (header found, CONFIG_ define missing).
@@ -327,7 +327,7 @@ endif
 # executable, so the gate is on the artifact rather than on the CPU.
 ifeq (xtensa,$(CPU))
   ifneq (,$(findstring esp32,$(BINARY)))
-    include $(ROOTDIR)/tools/espflash.make
+    include $(ROOTDIR)/tools/meowkits3/espflash.make
   endif
 endif
 
@@ -547,11 +547,11 @@ $(IDFDIR)/rockbox_libs.cmake: $(ROCKBOX_LINK_LIBS) $(IDFDIR)/main/rockbox_memory
 #
 # IDF owns the link, so it owns the ELF and the linker map -- but every other port
 # leaves both in the build directory, and the goals that read them (make elfzip,
-# make mapzip, tools/esp-layout-check, any symbol lookup) look there too. Copy them
+# make mapzip, tools/meowkits3/esp-layout-check, any symbol lookup) look there too. Copy them
 # in rather than making each consumer know IDF's tree.
 $(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake $(ROCKBOX_LINK_LIBS)
 	$(call PRINTS,IDF $(@F))
-	$(SILENT)$(ROOTDIR)/tools/idf-seedcheck $(IDFDIR) "$(IDF_PATH)"
+	$(SILENT)$(ROOTDIR)/tools/meowkits3/idf-seedcheck $(IDFDIR) "$(IDF_PATH)"
 	$(SILENT)cd $(IDFDIR) && $(IDFPY) build
 	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).bin $@
 	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).elf $(BUILDDIR)/rockbox.elf
@@ -563,7 +563,7 @@ $(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake $(ROCKBOX_LINK_LIBS)
 # sdkconfig -- that failure looks like a header found but a CONFIG_ define missing,
 # which reads as a code bug and is not one.
 # IDF's own compile graph. After `make clean` (which fullcleans IDF) this does not
-# exist, and tools/idf-flags cannot harvest from nothing, so generate it with
+# exist, and tools/meowkits3/idf-flags cannot harvest from nothing, so generate it with
 # `reconfigure`: that runs CMake -- which is what emits compile_commands.json --
 # without compiling the components. CMake itself re-runs when sdkconfig or a
 # CMakeLists changes, so this rule only ever fires when the graph is gone.
@@ -574,7 +574,7 @@ $(IDFDIR)/build/compile_commands.json: $(IDFDIR)/CMakeLists.txt $(IDFDIR)/main/C
 
 $(BUILDDIR)/idf.make: $(IDFDIR)/build/compile_commands.json
 	$(call PRINTS,IDF harvest compile flags)
-	$(SILENT)$(TOOLSDIR)/idf-flags $(IDFDIR)/build -o $@
+	$(SILENT)$(TOOLSDIR)/meowkits3/idf-flags $(IDFDIR)/build -o $@
 
 # Rockbox generated rockbox_libs.cmake, so clean removes it. What clean does NOT
 # touch is IDF's build directory, and that is deliberate rather than lazy:
@@ -595,7 +595,7 @@ idf-clean:
 	# compile_commands.json are both needed before the next build can parse, and
 	# reconfigure emits both without compiling the components.
 	$(SILENT)cd $(IDFDIR) && $(IDFPY) reconfigure
-	$(SILENT)$(TOOLSDIR)/idf-flags $(IDFDIR)/build -o $(BUILDDIR)/idf.make
+	$(SILENT)$(TOOLSDIR)/meowkits3/idf-flags $(IDFDIR)/build -o $(BUILDDIR)/idf.make
 .PHONY: idf-clean
 else
 $(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE) $(MKFIRMWARE_TOOL)

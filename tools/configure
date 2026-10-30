@@ -651,7 +651,7 @@ xtensacc () {
  #
  # Only the dialect is overridden, and it has to be: IDF's headers require C17
  # (esp_assert.h defines ESP_STATIC_ASSERT as `static_assert`, which under gnu11 is
- # not a keyword). tools/idf-flags contributes IDF's -std.
+ # not a keyword). tools/meowkits3/idf-flags contributes IDF's -std.
  GCCOPTS=`echo $CCOPTS | sed -e s/\ -std=gnu11//`
  GCCOPTS="$GCCOPTS -mlongcalls"
  GCCOPTS="$GCCOPTS -ffunction-sections -mtext-section-literals"
@@ -5155,7 +5155,7 @@ if [ "$t_cpu" = "xtensa" ]; then
       fi
   fi
   if [ -f "$idfbuild/compile_commands.json" ]; then
-      "$rootdir/tools/idf-flags" "$idfbuild" -o idf.make || exit 1
+      "$rootdir/tools/meowkits3/idf-flags" "$idfbuild" -o idf.make || exit 1
       echo "Created idf.make"
   else
       echo "WARNING: no ESP-IDF compile flags were produced."

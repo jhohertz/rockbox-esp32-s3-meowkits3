@@ -13,13 +13,17 @@
 # This is that check moved to where it can fail a build. It computes the same numbers
 # the headers define, reads the same symbols the runtime guard reads, and compares.
 #
-# Usage: esp-layout-check <map> [config-h] [memory-xtensa-h] [makefile]
+# Usage: esp-layout-check <map> [config-h] [cpu-h] [makefile]
 set -e
 
 MAP="$1"
 shift
-CONFIG="${1:-firmware/export/config/meowkits3.h}"
-MEMHDR="${2:-firmware/target/xtensa/memory-xtensa.h}"
+# Defaults resolve against the repository rather than the working directory, so
+# the guard can be run from a build directory without arguments. The make goal
+# passes explicit paths.
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+CONFIG="${1:-$ROOT/firmware/export/config/meowkits3.h}"
+MEMHDR="${2:-$ROOT/firmware/export/xtensa.h}"
 MAKEFILE="${3:-Makefile}"
 
 die() { echo "esp-layout-check: $*" >&2; exit 2; }

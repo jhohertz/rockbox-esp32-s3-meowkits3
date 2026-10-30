@@ -230,7 +230,7 @@ Arch headers live under `firmware/target/<arch>/` (`ingenic-soc.h`, `irq-x1000.h
 (`BT-AUDIO`, `CDC-UI-RESEARCH`, `DOC-GAPS`, `MEMORY`, `PENDING`, `TX-IDF-MIGRATION`,
 `USB-AUDIO-RESEARCH`, `USB-SPRINT`, `UX-PLAN`, `releases/*.md`) against 10,277 lines of
 code, plus `AGENTS.md` (5,381) and `README.md` (373) at repo root, plus
-`tools/docker/README.md`.
+`tools/meowkits3/README`.
 
 **Why upstream will object.** Upstream tolerance is one doc per port
 (`firmware/target/arm/s5l8702/ipodnano3g/TESTING.md`) and host utilities under
@@ -312,7 +312,7 @@ idiom that expresses the same fact more narrowly.
    `CORE_LDOPTS`, `GLOBAL_LDOPTS`) rather than appending them to `CFLAGS`, rebuild
    `GCCOPTS` from `CCOPTS` so `-nostdlib`/`-ffreestanding` are dropped for the firmware
    domain, and hand IDF-specific variables (`IDF_PROJECT`, core name) to the target
-   makefile. `tools/idf-flags` and `tools/idf-seedcheck` become implementation details of
+   makefile. `tools/meowkits3/idf-flags` and `tools/meowkits3/idf-seedcheck` become implementation details of
    that function.
 3. **Platform fact in the model header.** Add a platform bit for a vendor runtime
    (`config.h`'s list is explicitly extensible) and set
@@ -397,7 +397,7 @@ Phases A → B → C → D → E. A, B and C are independent of the SDK decision
    bare-metal, board wiring) and `TESTING.md`. Move user-facing content into
    `manual/platform/meowkits3.tex`. Keep `PENDING.md`/`MEMORY.md`/research logs on this
    branch only — they are excluded when the submission branch is cut (Phase E).
-7. Move port tooling: `tools/espflash.make`, `tools/esp-*`, `tools/idf-*` →
+7. Move port tooling: `tools/meowkits3/espflash.make`, `tools/esp-*`, `tools/idf-*` →
    `tools/xtensa/` (or `tools/meowkits3/`), included from `root.make` the way
    `tools/echoplayer/openocd.make` is; `esp-trailwatch.py`, `esp-usbflash.py`,
    `esp-stage2`, docker bits → `utils/meowkits3/`.
@@ -458,10 +458,10 @@ Per §4.2. Sub-order, each step independently verifiable:
 
 1. `app_type="esp-idf"` in the target entry; delete the `ifneq (xtensa,$(CPU))` fork and
    move the link/image rules to `firmware/target/xtensa/espressif_esp32s3/idf.make`,
-   included from `root.make`'s `APP_TYPE` dispatch. Also move `tools/espflash.make`
+   included from `root.make`'s `APP_TYPE` dispatch. Also move `tools/meowkits3/espflash.make`
    alongside it.
 2. `idfcc()` in `configure`: `ESP_IDF_PATH` requirement and version check, flag harvest
-   via `tools/idf-flags`, `GCCOPTS` rebuilt from `CCOPTS`, link flags handed to the
+   via `tools/meowkits3/idf-flags`, `GCCOPTS` rebuilt from `CCOPTS`, link flags handed to the
    variables `root.make` already reads, `thread_support` set.
 3. Platform bit for a vendor runtime in `config.h`, set from `config/meowkits3.h`;
    `HAVE_SYSTEM_LIBC` derived from it; the `sleep`/`rtc_init` renames move under that bit

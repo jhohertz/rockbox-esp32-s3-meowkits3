@@ -378,7 +378,7 @@ and now `file` are the ones that have moved.
    shrinking dircache, the theme, or the tree caches -- see §3b before assuming
    there is somewhere to put it.
 
-2. **The arena top is guarded at build time.** `tools/esp-layout-check` reads
+2. **The arena top is guarded at build time.** `tools/meowkits3/esp-layout-check` reads
    `_ext_ram_bss_end` and `rb_ext_ram_end` out of IDF's `rockbox.map`, recomputes the
    reservations from `memory-xtensa.h` and the target config, and fails the build if the
    section reaches into the plugin/codec text or the arena top passes the mapped window.
@@ -1390,7 +1390,7 @@ so it exists when the theme work lands rather than being entangled with it.
 
 ## 6. The arena is 4,325,376 bytes, and what the window actually claims
 
-Measured from `tools/esp-layout-check` on the current build (it reads the map symbols and
+Measured from `tools/meowkits3/esp-layout-check` on the current build (it reads the map symbols and
 recomputes the reservations), not from the figures this file carried:
 
 | | bytes | note |
