@@ -1,5 +1,10 @@
 # Merge plan — conforming the Xtensa port to Rockbox's port shape
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Baseline: upstream `master` = `fe5c0874af`, branch `esp32-s3-idf` at `81cfef65c0`.
 Written 2026-10-29, after the core-touch audit (`81cfef65c0`), before any of it is
 implemented.
@@ -50,7 +55,7 @@ Reproduce these before acting on them.
 |---|---|---|
 | Files differing from upstream | 284 | `git diff --name-only fe5c0874af..HEAD \| wc -l` |
 | Target-tree code | 49 files, 10,277 lines | `wc -l firmware/target/xtensa/*.{c,h,S}` |
-| Markdown inside the target tree | 6,835 lines | `wc -l firmware/target/xtensa/*.md firmware/target/xtensa/releases/*.md` |
+| Markdown inside the target tree | 6,835 lines | `wc -l firmware/target/xtensa/*.md firmware/target/xtensa/notes/releases/*.md` |
 | Root docs | `AGENTS.md` 5,381, `README.md` 373 | `wc -l AGENTS.md README.md` |
 | IDF code in the linked image | 1,140 symbols, ~150 KB | `xtensa-esp32s3-elf-nm -S --defined-only idf-app/build/rockbox.elf` filtered on IDF name prefixes |
 | Rockbox code in the image | 7,640 symbols, ~1.65 MB | same command, complement |

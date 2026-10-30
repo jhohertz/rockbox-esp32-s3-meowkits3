@@ -139,3 +139,58 @@ will need:
 To update Rockbox later, repeat step 3 with a new image. Settings and the
 theme files are untouched by that step; overwriting them requires the
 corresponding zip to be unpacked again.
+
+\subsubsection{After it boots}
+
+The panel is 320 by 240 pixels and 16-bit colour. Brightness is set under
+\fname{Settings --> Display}, together with the timeout that turns the
+backlight off; the panel itself follows a moment later and wakes on the next
+key. There is no separate "screen off while playing" switch -- the backlight
+timeout is what gets you a dark screen while audio continues.
+
+The touchscreen covers a 3 by 3 grid over the display, and \setting{Touchscreen
+Mode} decides whether a tap is reported as a point or as the button that grid
+stands for. Lists size their rows from the panel's dot density, which is the
+setting mentioned above; raise it if you want fewer, bigger rows.
+
+\begin{itemize}
+  \item \textbf{Sound comes out mono.} The board has one digital-to-analogue
+    converter feeding a small class-D amplifier and the 3.5~mm jack; the two
+    channels are mixed rather than separated. The amplifier has an enable of
+    its own, exposed as the speaker setting among the sound settings, so
+    audio can be routed to the jack while the speaker stays quiet.
+  \item \textbf{There is no Bluetooth audio.} The chip's radio is
+    Bluetooth~Low~Energy only, which has no audio transport, so headphones
+    must be wired.
+  \item \textbf{What it plays.} MP3, Ogg, FLAC, ALAC, Monkey's Audio,
+    WavPack, TTA, Shorten, AAC, WMA and WMA Pro, ADX, AIFF, AU, WAV, Speex,
+    Musepack and the chiptune formats (SID, NSF, GBS, HES, KSS, SGC, VGM,
+    SPC, AY, MOD and friends) all decode on the player. WAV files up to
+    192~kHz and 24-bit play through the software resampler, and DSD64 in a DSF
+    container plays with its embedded album art. The processor cannot keep a
+    DSD128 stream fed, so that is the ceiling.
+  \item \textbf{Recording.} The board has a microphone, and \fname{Settings -->
+    Recording} sets the sample rate, the input gain and whether recordings go
+    to the card. Clips are written as WAV files into \fname{/recordings} on
+    the SD card, and the rate can go as high as 96~kHz.
+  \item \textbf{Battery.} The player reports remaining capacity from a
+    coulometer -- it counts charge and discharge rather than guessing from the
+    cell's voltage -- so the percentage is meaningful while charging as well as
+    while playing. Charging state comes from the power management chip on the
+    board, which also handles the power button: pressing and holding it turns
+    the player off cleanly, which lets Rockbox finish the current track's
+    buffer, save its settings and close the card before the supply is cut.
+    With the screen off and nothing playing the board draws about 42~mA, so a
+    dark screen is worth something.
+  \item \textbf{USB.} The socket is the chip's own USB, so plugging in offers
+    the profiles in \fname{Settings --> General Settings --> USB}: mass
+    storage for the card, charge only, or the player as a USB audio device
+    (48~kHz is the most the hardware's FIFO can carry). Holding any button
+    while plugging in forces mass storage even when the mode is charge only.
+\end{itemize}
+
+Plugins need the font package described above; a plugin that draws its own
+bitmaps or plays video also needs its data files on the card. Video in
+particular is a codec rather than a player feature, and it asks for a small
+encode -- the MPEG Player entry in the plugin documentation gives the size and
+rate it wants.

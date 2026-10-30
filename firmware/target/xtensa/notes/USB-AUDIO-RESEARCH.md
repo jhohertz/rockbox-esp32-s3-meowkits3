@@ -1,5 +1,10 @@
 # USB DAC audio corruption -- overnight research notes
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Branch `esp32-s3-idf`, target `meowkits3`. Written after a session in which every
 measurement said the transport is healthy and the sound was still wrong. This is
 research, not a changelog: nothing here is applied except where section 1 says so.

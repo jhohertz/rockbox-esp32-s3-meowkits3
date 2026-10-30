@@ -1,5 +1,10 @@
 # Bluetooth audio out for MeowKit — feasibility and plan
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 **Status: closed.** The goal is hardware-blocked, not deferred — ESP32-S3 has no BR/EDR
 radio, so A2DP and AVRCP cannot be built on it (evidence in §1) and LE Audio is unavailable
 for the same class of reason. Recorded as permanent in `PENDING.md` §4. Kept because §2 and

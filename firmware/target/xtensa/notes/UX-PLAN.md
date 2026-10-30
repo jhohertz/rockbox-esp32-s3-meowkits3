@@ -1,5 +1,10 @@
 # Input & UX plan — MeowKit ESP32-S3
 
+
+> Internal working note. This file and the others in this directory are the
+> port's own records — plans, logs and research threads. The reviewer-facing
+> documents are ../README.md and ../TESTING.md, and the user-facing ones are the
+> repository README and the manual chapter for this target.
 Plan for closing the mapping and usability gaps in `DOC-GAPS.md`. Written after
 the manual was built, because the manual is what made the gaps legible: every
 `\Action*` the body renders under an option we advertise is a promise.

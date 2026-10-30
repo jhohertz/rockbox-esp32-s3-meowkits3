@@ -23,10 +23,12 @@ upstream conventions rather than invent its own.
 Two consequences of that intention:
 
 - **Core behaviour is untouched.** Everything target-specific lives under
-  `firmware/target/xtensa/`, `firmware/target/xtensa/espressif/` and
-  `firmware/export/config/`. Where core code needed a hook, the hook is a weak seam
-  (`#ifndef`, a weak default) that preserves upstream behaviour for every other
-  target. There are no target hacks pretending to be platform policy.
+  `firmware/target/xtensa/` and `firmware/export/config/`, with the arch's
+  register and layout constants in `firmware/export/xtensa.h` alongside every
+  other CPU header. Where core code needed a hook, the hook is a generic seam a
+  target opts into (`HAVE_DBG_BREADCRUMB`, `HAVE_PANIC_CONSOLE`, a weak default)
+  that preserves upstream behaviour for every other target. There are no target
+  hacks pretending to be platform policy.
 - **This was not a sanctioned port to begin with.** Nothing here touches `rbutil`,
   the theme server or the build farm, because those depend on infrastructure that
   only exists on the other side of acceptance. What *is* maintained is the hygiene
@@ -34,9 +36,15 @@ Two consequences of that intention:
   `tools/builds.pm` (which is what `tools/list_targets.pl` reads), a config header, a platform
   manual chapter, and a simulator config that keeps building.
 
-If you want to see where things stand, `firmware/target/xtensa/PENDING.md` is the
+If you want to see where things stand, `firmware/target/xtensa/notes/PENDING.md` is the
 single list: open items, things verified on hardware, things deferred permanently,
 and the core fixes worth proposing upstream.
+
+Two other documents live in the target directory: `firmware/target/xtensa/README.md`
+explains the code -- the two compilation domains, what the platform owns, and the
+rules an edit to this target has to follow -- and `firmware/target/xtensa/TESTING.md`
+records how each subsystem was checked on hardware, and what has *not* been checked.
+The rest of that directory (`notes/`) is the port's own working record.
 
 ---
 
@@ -59,7 +67,7 @@ than assumed:
 
 So Bluetooth audio is closed as a hardware limit, not a software backlog item. The
 sink design that came out of the investigation
-([`firmware/target/xtensa/BT-AUDIO.md`](firmware/target/xtensa/BT-AUDIO.md)) is still
+([`firmware/target/xtensa/notes/BT-AUDIO.md`](firmware/target/xtensa/notes/BT-AUDIO.md)) is still
 kept, because it is a general Rockbox PCM-sink design and transfers to any future
 classic-capable co-processor.
 
@@ -312,14 +320,14 @@ The architecture layer is deliberately generic; the MeowKit-specific parts are t
 board drivers. What an ESP32-S3 port needed, and what is written down rather than
 buried in code:
 
-- [`firmware/target/xtensa/MEMORY.md`](firmware/target/xtensa/MEMORY.md) — the real
+- [`firmware/target/xtensa/notes/MEMORY.md`](firmware/target/xtensa/notes/MEMORY.md) — the real
   memory map: instruction and data buses alias the same SRAM at `+0x6F0000`, the
   512-entry cache-MMU table, the PSRAM window, and the measured budgets.
 - [`AGENTS.md`](AGENTS.md) — the build pipeline, how `SOURCES` files are C
   preprocessor programs, the windowed ABI and why the context switch works the way it
   does, GDMA and cache maintenance, PSRAM bring-up, I²S, SDHOST, the PMU, and the
   register-level facts that were verified against hardware or a ROM image.
-- [`firmware/target/xtensa/PENDING.md`](firmware/target/xtensa/PENDING.md) — status.
+- [`firmware/target/xtensa/notes/PENDING.md`](firmware/target/xtensa/notes/PENDING.md) — status.
 
 The interesting discoveries are in there: the esp32s3 core config has no REGB option
 (so no `spills`/`refill`/`mtsr`), there is no `INTBASE` but `VECBASE` works, the ROM
@@ -361,7 +369,7 @@ this is a seed rather than a one-off.
 | | |
 |---|---|
 | Branch | `esp32-s3-idf`, at <https://gitea.max.optiplexus.org/jhohertz/rockbox> |
-| Releases | [`esp32-s3-idf-20261029`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261029) — current — with [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261029.md), superseding [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027) and [its notes](firmware/target/xtensa/releases/esp32-s3-idf-20261027.md). Both were flashed at `0x0` and verified |
+| Releases | [`esp32-s3-idf-20261029`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261029) — current — with [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261029.md), superseding [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027) and [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261027.md). Both were flashed at `0x0` and verified |
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` ~1.36 MB at `0x0` |

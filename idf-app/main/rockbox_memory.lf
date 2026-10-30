@@ -102,7 +102,7 @@ entries:
     # dir.o and fileobj_mgr.o in PSRAM. This exists to buy back internal SRAM:
     # dram0_0_seg had 4376 bytes free and CONFIG_ESP_PANIC_HANDLER_IRAM needs
     # roughly 5472, so without a donor like this the panic handler cannot be moved
-    # into IRAM at all -- see firmware/target/xtensa/MEMORY.md for the budget.
+    # into IRAM at all -- see firmware/target/xtensa/notes/MEMORY.md for the budget.
     file (rb_psram)
     # system.o -- the cpu_boost() bookkeeping: the CPU_BOOST_LOGGING ring
     # (cpu_boost_calls[64][MAX_PATH] = 16,640 bytes) plus boost_counter, cpu_idle,

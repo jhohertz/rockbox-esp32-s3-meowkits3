@@ -28,7 +28,7 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # Automatic light sleep needs FREERTOS_USE_TICKLESS_IDLE, which depends on this. It is
 # deliberately not enabled yet: sleeping needs locks held by the audio path, and that
 # is a separate change with a hardware question attached -- whether the MSPI MMU table
-# survives a sleep. See the power-management section of firmware/target/xtensa/MEMORY.md
+# survives a sleep. See the power-management section of firmware/target/xtensa/notes/MEMORY.md
 # for the whole ladder.
 CONFIG_PM_ENABLE=y
 
@@ -112,7 +112,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # main/CMakeLists.txt PRIV_REQUIRES, so libbtdm_app.a and libbt.a were LOADed with
 # zero contributing sections -- but it read like a capability the board does not
 # have. ESP32-S3 has no BR/EDR radio, so A2DP/AVRCP cannot be built on it at all,
-# and there is no consumer for BLE either. See firmware/target/xtensa/BT-AUDIO.md.
+# and there is no consumer for BLE either. See firmware/target/xtensa/notes/BT-AUDIO.md.
 # Re-enable here only if a classic-capable co-processor arrives or something on the
 # board actually needs BLE.
 
@@ -163,7 +163,7 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 #
 # i.e. dropping the tick rate would buy 900 fewer interrupts per second and
 # forfeit light sleep entirely, which is the much larger saving. See the
-# power-management section in firmware/target/xtensa/MEMORY.md.
+# power-management section in firmware/target/xtensa/notes/MEMORY.md.
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TICK_HOOK=y
 
