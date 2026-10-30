@@ -6,7 +6,7 @@
  * interface format, REG43..REG46 the per-microphone gain.
  *
  * The clock setup is derived rather than tabulated. The I2S transmitter drives
- * MCLK at 256 * rate (see i2s-xtensa.h), and the ADC's internal clock is
+ * MCLK at 256 * rate (see i2s-esp32s3.h), and the ADC's internal clock is
  *
  *     adc_clk = MCLK * 2^doubler / adc_div
  *

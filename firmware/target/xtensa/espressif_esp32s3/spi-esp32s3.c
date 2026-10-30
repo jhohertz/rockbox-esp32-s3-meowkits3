@@ -30,8 +30,8 @@
  ****************************************************************************/
 #include "config.h"
 #include "xtensa.h"
-#include "spi-xtensa.h"
-#include "gpio-xtensa.h"
+#include "spi-esp32s3.h"
+#include "gpio-esp32s3.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
 

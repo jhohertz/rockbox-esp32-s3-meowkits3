@@ -21,7 +21,7 @@
  * clocks exist only if somebody drives them, and playback is stopped before a
  * recording starts. The three shared pads are handed to this port for the
  * duration and given back to the transmitter afterwards -- see
- * i2s_rx_pads_take() / i2s_rx_pads_release() in i2s-xtensa.c.
+ * i2s_rx_pads_take() / i2s_rx_pads_release() in i2s-esp32s3.c.
  *
  * The pins are deliberately NOT handed to IDF's channel configuration: IDF would
  * claim MCLK/BCLK/WS for I2S0 permanently at init, and the transmitter needs them
@@ -33,7 +33,7 @@
 #include "system.h"
 #include "string.h"
 
-#include "i2s-xtensa.h"
+#include "i2s-esp32s3.h"
 #include "es7210.h"
 #include "pcm-internal.h"
 #include "audiohw.h"

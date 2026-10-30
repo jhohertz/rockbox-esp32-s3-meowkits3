@@ -40,7 +40,7 @@
 #include "kernel.h"
 #include "i2c.h"
 #include "i2c-async.h"   /* i2c_descriptor definition */
-#include "gpio-xtensa.h"
+#include "gpio-esp32s3.h"
 #include "xtensa.h"
 
 #define DR_REG_I2C_BASE 0x60013000

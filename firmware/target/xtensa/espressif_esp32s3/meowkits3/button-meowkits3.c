@@ -13,7 +13,7 @@
 #include "paniclog.h"
 #include "button.h"
 #include "tick.h"     /* current_tick and HZ: the report below is timed in ticks */
-#include "gpio-xtensa.h"
+#include "gpio-esp32s3.h"
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"

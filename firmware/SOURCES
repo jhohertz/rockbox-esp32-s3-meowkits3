@@ -60,7 +60,7 @@ target/hosted/rolo.c
  * file. Hosted targets already replace the loader the same way (lc-unix.c,
  * lc-3ds.c). */
 #if defined(CPU_XTENSA)
-target/xtensa/lc-xtensa.c
+target/xtensa/espressif_esp32s3/lc-esp32s3.c
 #else
 lc-rock.c
 #endif
@@ -680,35 +680,35 @@ target/coldfire/ata-as-coldfire.S
  * rom_cache.c, irq-xtensa.c and app.lds. */
 target/xtensa/paniclog.c
 target/xtensa/thread-idf.c
-target/xtensa/memory-xtensa-syms.S
+target/xtensa/espressif_esp32s3/memory-esp32s3-syms.S
 target/xtensa/cache-xtensa.c
-target/xtensa/system-xtensa.c
-target/xtensa/power-xtensa.c
-target/xtensa/timer-xtensa.c
+target/xtensa/espressif_esp32s3/system-esp32s3.c
+target/xtensa/espressif_esp32s3/meowkits3/power-meowkits3.c
+target/xtensa/espressif_esp32s3/timer-esp32s3.c
 #if CONFIG_I2C == I2C_XTENSA
-target/xtensa/i2c-xtensa.c
-target/xtensa/pca9557.c
+target/xtensa/espressif_esp32s3/i2c-esp32s3.c
+target/xtensa/espressif_esp32s3/meowkits3/pca9557.c
 #endif
-target/xtensa/i2s-xtensa.c
+target/xtensa/espressif_esp32s3/i2s-esp32s3.c
 #ifdef HAVE_RECORDING
-target/xtensa/es7210.c
-target/xtensa/pcm-xtensa.c
+target/xtensa/espressif_esp32s3/meowkits3/es7210.c
+target/xtensa/espressif_esp32s3/pcm-esp32s3.c
 #endif
-target/xtensa/es8311.c
-target/xtensa/audiohw-xtensa.c
-target/xtensa/button-xtensa.c
-target/xtensa/backlight-xtensa.c
-target/xtensa/adc-xtensa.c
-target/xtensa/debug-xtensa.c
-target/xtensa/usb-xtensa.c
-target/xtensa/sd-idf.c
+target/xtensa/espressif_esp32s3/meowkits3/es8311.c
+target/xtensa/espressif_esp32s3/meowkits3/audiohw-meowkits3.c
+target/xtensa/espressif_esp32s3/meowkits3/button-meowkits3.c
+target/xtensa/espressif_esp32s3/meowkits3/backlight-meowkits3.c
+target/xtensa/espressif_esp32s3/adc-esp32s3.c
+target/xtensa/espressif_esp32s3/debug-esp32s3.c
+target/xtensa/espressif_esp32s3/usb-esp32s3.c
+target/xtensa/espressif_esp32s3/sd-esp32s3.c
 #ifdef HAVE_AXP173
 drivers/axp173.c
 #endif
 #ifdef HAVE_LCD_BITMAP
-target/xtensa/spi-xtensa.c
-target/xtensa/st7789.c
-target/xtensa/lcd-xtensa.c
+target/xtensa/espressif_esp32s3/spi-esp32s3.c
+target/xtensa/espressif_esp32s3/meowkits3/st7789.c
+target/xtensa/espressif_esp32s3/meowkits3/lcd-meowkits3.c
 drivers/lcd-memframe.c
 /* The ARM asm version is not available for this core, so use the portable C one. */
 asm/lcd-as-memframe.c

@@ -216,7 +216,7 @@
  * it after config.h, so apps/plugins/plugin.lds and the firmware see the same
  * constants rather than restating them.
  *
- * The buffers themselves are defined by target/xtensa/memory-xtensa-syms.S,
+ * The buffers themselves are defined by target/xtensa/memory-esp32s3-syms.S,
  * because on this path the platform linker script owns placement rather than a
  * Rockbox .lds. rockbox_app.c in the IDF project creates the FreeRTOS task on
  * the buffer named stackbegin here and states its size separately, since that
@@ -231,7 +231,7 @@
  *
  * The deduction is not slack for its own sake -- it is the clearance the
  * section needs above itself. XT_AUDIOBUF_SIZE is only what
- * memory-xtensa-syms.S puts in .ext_ram.bss; IDF's own PSRAM objects and every
+ * memory-esp32s3-syms.S puts in .ext_ram.bss; IDF's own PSRAM objects and every
  * object the ld fragment maps to extern_ram (unicode, language, the skin
  * parser, dir/file/fileobj_mgr, system.o's boost log and, since the feature
  * flags, gui/line.o's layout state) are placed in the same section, so the
@@ -287,7 +287,7 @@
  *
  * Which puts codecbuf and pluginbuf in the top 1.5 MB of the window and leaves
  * the bottom 6.5 MB for the audiobuffer and the rest of .ext_ram.bss.
- * memory-xtensa-syms.S exports rb_ext_ram_end so boot can check that the two
+ * memory-esp32s3-syms.S exports rb_ext_ram_end so boot can check that the two
  * regions do not overlap, rather than letting a collision corrupt silently.
  */
 #define XT_DROMORIG         0x3C000020
@@ -298,7 +298,7 @@
  * +0x20 so flash-mapped segments satisfy the cache's page-congruence rule,
  * and codecbuf / pluginbuf are derived from it, so without subtracting that
  * offset here the top of the arena lands 32 bytes past the last mapped entry
- * -- the defect the boot check in system-xtensa.c reports. Subtracting it
+ * -- the defect the boot check in system-esp32s3.c reports. Subtracting it
  * also page-aligns both buffers, which they wanted anyway. */
 #define XT_CODECBUF_ADDR    (XT_DROMORIG + (MEMORYSIZE * 0x100000) - 0x20 \
                              - PLUGIN_BUFFER_SIZE - CODEC_SIZE)

@@ -87,7 +87,7 @@ target_link_libraries(rockbox.elf PRIVATE "-Wl,--end-group")
 # i.e. the call went to the ROM, not to usb-xtensa.c.
 #
 # --wrap redirects every reference to usb_enable to __wrap_usb_enable, which is the
-# real implementation in firmware/target/xtensa/usb-xtensa.c. __real_usb_enable is
+# real implementation in firmware/target/xtensa/espressif_esp32s3/usb-esp32s3.c. __real_usb_enable is
 # the ROM address and is deliberately never called.
 target_link_options(rockbox.elf PRIVATE "-Wl,--wrap=usb_enable")
 

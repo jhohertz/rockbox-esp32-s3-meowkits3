@@ -13,34 +13,43 @@ This file is about the code.
 
 ## Layout
 
+Three levels, the way `mips/ingenic_x1000/agptekrocker` does it: the manufacturer
+slot carries the SoC.
+
 ```
-firmware/target/xtensa/
-    *-target.h                     the TAL headers this board supplies: system,
-                                   button, lcd, backlight, adc, i2c
-    system-xtensa.c                cpu_frequency, light sleep, boot info
-    memory-xtensa-syms.S           the buffer symbols a linker script would give
-    cache-xtensa.[ch]              per-range cache maintenance
-    thread-idf.c                   Rockbox's scheduler on top of FreeRTOS
-    timer-xtensa.c power-xtensa.c   core timer, and the PEK/power-off path
-    paniclog.c                     the crash record kept in RTC slow RAM
-    st7789.c pca9557.c lcd-xtensa.c backlight-xtensa.c   panel, expander, PWM
-    i2c-xtensa.c                   the command-list I2C master
-    es8311.c es7210.c audiohw-xtensa.c pcm-xtensa.c i2s-xtensa.c   audio
-    sd-idf.c                       SDHOST through IDF's driver
-    spi-xtensa.c                   GPSPI2 for the panel
-    button-xtensa.c adc-xtensa.c debug-xtensa.c usb-xtensa.c
-    lc-xtensa.c                    buflib arena
-firmware/export/xtensa.h           register bases, interrupt sources, layout numbers
-firmware/asm/xtensa/thread.[ch]    context switch
-lib/libsetjmp/xtensa/setjmp.S
-idf-app/                           the ESP-IDF project: main/rockbox_app.c,
-                                   rockbox_memory.lf, sdkconfig.defaults
+firmware/target/xtensa/                     arch: cache maintenance, the crash
+    cache-xtensa.[ch]                       record, the IDF thread layer
+    paniclog.c paniclog.h
+    thread-idf.c
+
+firmware/target/xtensa/espressif_esp32s3/   SoC: everything that is ESP32-S3
+    system-target.h system-esp32s3.c        registers rather than board wiring
+    gpio-esp32s3.h i2c-esp32s3.c i2s-esp32s3.[ch] spi-esp32s3.[ch]
+    usb-esp32s3.c sd-esp32s3.c timer-esp32s3.c pcm-esp32s3.c
+    adc-esp32s3.c debug-esp32s3.c lc-esp32s3.c
+    memory-esp32s3-syms.S                   the buffer symbols a linker script
+                                            would hand out
+
+firmware/target/xtensa/espressif_esp32s3/meowkits3/   board: this panel, this
+    *-target.h        button, lcd, backlight, adc, i2c  codec, this PMU
+    button-meowkits3.c backlight-meowkits3.c lcd-meowkits3.c
+    audiohw-meowkits3.c power-meowkits3.c
+    st7789.[ch] pca9557.[ch] es8311.[ch] es7210.[ch]
 ```
 
-The board is selected by `MEOWKIT_ESP32S3` in
-`firmware/export/config/meowkits3.h`; there is one board, so the tree is flat
-rather than model-under-manufacturer. Restructuring it into
-`target/xtensa/espressif/esp32s3/` is planned in `notes/MERGE-PLAN.md` Phase B.
+`tools/configure` sets `t_cpu="xtensa"`, `t_manufacturer="espressif_esp32s3"`,
+`t_model="meowkits3"`, which is what makes the three `TARGET_INC` directories
+real. A second board on the same silicon would add only a sibling of
+`meowkits3/`.
+
+`firmware/export/xtensa.h` holds the register bases, interrupt sources and the
+memory-layout numbers; `firmware/asm/xtensa/thread.[ch]` the context switch;
+`lib/libsetjmp/xtensa/setjmp.S` the setjmp pair; `idf-app/` the ESP-IDF project
+(`main/rockbox_app.c`, `rockbox_memory.lf`, `sdkconfig.defaults`).
+
+`apps/plugins/plugin.lds` and `lib/rbcodec/codecs/codecs.make` reach the codec
+and plugin window numbers through `cpu.h` -> `xtensa.h`, the same way every
+other target's linker script reads `as3525.h` or `x1000.h`.
 
 `apps/plugins/plugin.lds` and `lib/rbcodec/codecs/codecs.make` reach the codec
 and plugin window numbers through `cpu.h` -> `xtensa.h`, the same way every
@@ -73,7 +82,7 @@ bootloader sits at `0x0`, the partition table at `0x8000`, and Rockbox is an
 application image at `0x10000`. That means IDF, not Rockbox:
 
 - owns the linker script, so Rockbox's buffer symbols come from
-  `memory-xtensa-syms.S` and the arena guard is `tools/meowkits3/esp-layout-check`
+  `memory-esp32s3-syms.S` and the arena guard is `tools/meowkits3/esp-layout-check`
   rather than an `ASSERT()` in a section;
 - owns the caches, and the esp32s3 core config has no cache instructions of its
   own, so maintenance goes through IDF's cache HAL (or, on the bare-metal

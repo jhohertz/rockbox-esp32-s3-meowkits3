@@ -4353,10 +4353,15 @@ fi
     # no memory; what it exercises is the loader path, which lc-xtensa.c already
     # proves works because codecs use it, and PLUGIN_USE_ELF below.
     plugins="yes"
-    # architecture, manufacturer and model for the target-tree build
+    # architecture, manufacturer and model for the target-tree build. The
+    # manufacturer slot carries the SoC, exactly as mips does with
+    # ingenic_x1000/agptekrocker and ingenic_jz47xx/xduoo_x3, because on this arch
+    # the vendor and the silicon are the same unit of reuse: everything in
+    # espressif_esp32s3/ is ESP32-S3 register-level and would serve a different
+    # board on the same chip unchanged.
     t_cpu="xtensa"
-    t_manufacturer="espressif"
-    t_model="esp32s3"
+    t_manufacturer="espressif_esp32s3"
+    t_model="meowkits3"
     ;;
 
 

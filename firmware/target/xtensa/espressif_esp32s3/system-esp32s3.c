@@ -91,7 +91,7 @@ void system_init(void)
         extern char _ext_ram_bss_end[];
 
         /* rb_ext_ram_end alone was the blind spot. It is a label in
-         * memory-xtensa-syms.S sitting right after audiobufend, so it marks the
+         * memory-esp32s3-syms.S sitting right after audiobufend, so it marks the
          * end of what THAT file puts in PSRAM -- not the end of the section.
          * IDF places its own .ext_ram.bss content around and after it, and the
          * linker's real section end is _ext_ram_bss_end. Measured on this

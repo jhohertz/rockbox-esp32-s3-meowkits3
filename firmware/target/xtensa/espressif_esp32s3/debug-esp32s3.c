@@ -26,7 +26,7 @@
 #include "es8311.h"
 #include "es7210.h"
 #include "axp173.h"
-#include "i2s-xtensa.h"
+#include "i2s-esp32s3.h"
 #include "tick.h"
 #include "core_alloc.h"
 #include <stdio.h>

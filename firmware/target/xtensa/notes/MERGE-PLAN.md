@@ -65,7 +65,7 @@ Reproduce these before acting on them.
 | Invented core macros (0 upstream hits) | `HAVE_SYSTEM_LIBC`, `XT_CODECBUF_ADDR`, `PSRAM_BSS_ATTR`, `HAVE_TARGET_TICK_THREAD`, `USB_AUDIO_LOGF_DISABLE`, `IDF_FIRST_CFLAGS`, `FREESTAND_CFLAGS` | `git grep -c -w <name> fe5c0874af` |
 | Native sim builds upstream | clean | `--target=ondavx747 --type=s` and `--target=sansam200v4 --type=s` both `make` with host gcc, zero errors |
 | Our sim build | fails | `--target=meowkits3 --type=s` then `make`: IDF response-file cflags (`-mlongcalls`, `-mdisable-hardware-atomics`), IDF `endian.h` on host gcc, unguarded xtensa `SOURCES`, `test_touchscreen.c: No keymap defined!` |
-| 80-column violations | ~900 lines, worst: `usb-xtensa.c` 404, `i2s-xtensa.c` 270, `button-xtensa.c` 90, `paniclog.c` 89 | `awk 'length>80' firmware/target/xtensa/*.c \| wc -l` per file |
+| 80-column violations | ~900 lines, worst: `usb-esp32s3.c` 404, `i2s-esp32s3.c` 270, `button-meowkits3.c` 90, `paniclog.c` 89 | `awk 'length>80' firmware/target/xtensa/*.c \| wc -l` per file |
 | Plugin/codec API | untouched | `git diff fe5c0874af..HEAD -- firmware/export/plugin.h firmware/export/codec.h` is empty |
 | Bare-metal alternative exists | tag `baremetal-pre-idf` = `3630b5b65f` | `git log --oneline -1 baremetal-pre-idf` |
 | `rombox.elf` on the IDF path | not built | `ls build-meowkits3/rombox.elf` → absent, while `firmware/rom.lds` carries a `CPU_XTENSA` branch |
@@ -165,6 +165,15 @@ style rather than substance.
 
 ### 3.2 Flat target tree, `configure` claims a tree that isn't there
 
+**Resolved 2026-10-30** by Phase B. `TARGET_INC` is now
+`target/xtensa/espressif_esp32s3/meowkits3`, `target/xtensa/espressif_esp32s3`,
+`target/xtensa` and all three exist. SoC drivers are `-esp32s3`, board drivers are
+`-meowkits3`, and the board `*-target.h` files sit in the board directory per the TAL
+rule. SoC drivers are `-esp32s3`, board drivers are `-meowkits3`, and the SDHOST driver
+lost `idf` from its name because the name said which SDK it talks to rather than which
+peripheral it drives. See §5 Phase B for what moved where and for the
+two places the plan was adjusted.
+
 **Evidence.** `build-meowkits3/Makefile`:
 `TARGET_INC=-I$(FIRMDIR)/target/xtensa/espressif/esp32s3 -I$(FIRMDIR)/target/xtensa/espressif -I$(FIRMDIR)/target/xtensa`
 — the first two directories do not exist. `tools/configure` sets
@@ -250,11 +259,11 @@ separation branch, see §5 Phase E).
 
 ### 3.6 Style
 
-**Evidence.** Zero tabs. ~900 lines over 80 columns, concentrated in `usb-xtensa.c`
-(404), `i2s-xtensa.c` (270), `button-xtensa.c` (90), `paniclog.c` (89), `debug-xtensa.c`
-(79), `i2c-xtensa.c` (77), `system-xtensa.c` (61). An upstream target file
-(`audiohw-agptekrocker.c`) has 0. Four `//` comments (`lc-xtensa.c`, `sd-idf.c`,
-`usb-xtensa.c`), which upstream tolerates sporadically in target code.
+**Evidence.** Zero tabs. ~900 lines over 80 columns, concentrated in `usb-esp32s3.c`
+(404), `i2s-esp32s3.c` (270), `button-meowkits3.c` (90), `paniclog.c` (89), `debug-esp32s3.c`
+(79), `i2c-esp32s3.c` (77), `system-esp32s3.c` (61). An upstream target file
+(`audiohw-agptekrocker.c`) has 0. Four `//` comments (`lc-esp32s3.c`, `sd-esp32s3.c`,
+`usb-esp32s3.c`), which upstream tolerates sporadically in target code.
 
 **Adjustment.** Phase A item 5, reflow only, comment text preserved verbatim (a lot of it
 is measured numbers, so re-flowing must not paraphrase).
@@ -363,7 +372,7 @@ What it costs, and why it is not happening now:
 - `set_cpu_frequency()` as `esp_pm_configure()` — CPU boost would need its own divider
   path or become inert; measurable by rechecking codec/plugin throughput and mixer
   headroom with boost off.
-- IDF's SD host driver (`sd-idf.c`) — the bare-metal SDHOST/IDMAC driver exists on that
+- IDF's SD host driver (`sd-esp32s3.c`) — the bare-metal SDHOST/IDMAC driver exists on that
   tag but needs the card soak again (1-bit, non-removable).
 - FreeRTOS tickless idle / light sleep — not enabled today, so nothing is lost now; the
   future plan would need a hand-written sleep path.
@@ -458,11 +467,61 @@ at 9,888,811 B; flashed at `0x0` and boot confirmed by the host seeing
 
 ### Phase B — target tree restructure (~1 day)
 
+**Done 2026-10-30.** The layout below was built, and `tools/configure` now declares
+`t_cpu="xtensa"`, `t_manufacturer="espressif_esp32s3"`, `t_model="meowkits3"` — the same
+shape as `ingenic_x1000/agptekrocker` and `ingenic_jz47xx/xduoo_x3`, where the
+manufacturer slot carries the SoC.
+
+Two places the execution differs from the list as written, and why:
+
+- `cache-xtensa.[ch]`, `paniclog.[ch]` and `thread-idf.c` stayed at arch level rather
+  than moving down. The cache *entry points* are arch-level declarations; only
+  `cache-xtensa.c`'s body reaches the SoC's cache HAL, and that file is deliberately the
+  one object in the tree that does — moving it into the SoC directory would suggest the
+  HAL is reachable from anywhere in that level.
+- `system-esp32s3.c` went to the SoC level as `system-esp32s3.c` instead of staying at
+  arch as the plan said. Its content is IDF startup interaction and this chip's clock and
+  sleep behaviour; an arch-level `system-esp32s3.c` would imply it serves any Xtensa,
+  which it does not — upstream's arch-level `system-mips.c` is generic for that reason.
+
+**Gate:** passed. `TARGET_INC`'s three directories all exist; the build is clean; the
+simulator builds; `make esplayer` and `make espverify` pass; the arena symbols are
+unchanged (`codecbuf 0x3c680000`, `pluginbuf 0x3c780000`, `audiobuffer 0x3c155800`,
+`.ext_ram.bss` ends `0x3c5b3244`); `flac.codec` and `pong.rock` still link their RW halves
+at `0x3c680000`/`0x3c780000` and their text at `0x42640000`/`0x425c0000`, so the firmware
+and the loaded-image scripts agree exactly as before. The image is **the same
+1,307,856 bytes**, and comparing the pre-move objects (still in the build directory)
+against the post-move ones section by section shows **no difference in any non-debug
+section** — no `.text`, no `.rodata`, no `.data`, no `.bss`. Only `.debug_*` moved, because
+those carry source paths. The validation hash differs because IDF's `esp_app_desc`, at the
+head of the app partition, embeds Rockbox's version string and the build timestamp
+(`v4.0-final-2683-g39d9de21a0-dir`, `Oct 30 2026`, `02:07:04`); both change on any commit
+and rebuild. "This phase must not move code" is therefore proven rather than assumed.
+
+The first attempt at this gate *did* move code, and that is the finding worth keeping.
+`firmware/firmware.make`'s `XTENSA_IDF_FIRST_SRC` still named `target/xtensa/sd-idf.c` and
+`target/xtensa/spi-xtensa.c`; after the move those resolved to nothing, so those two files
+quietly lost the IDF-first include order, the build still succeeded, and `.text.sd_init`
+grew 21 bytes with `.text.spi_init` 25. An earlier version of this paragraph explained that
+away as IDF's error macros embedding `__FILE__`, which shifts the literal pools beside the
+longer strings — the attribution was wrong, and the real cause was a build input naming a
+file instead of a rule. With the list corrected the sizes return to their originals. Same
+class of failure as `TARGET_INC` pointing at directories that don't exist, and it was found
+only because the rename was followed by a sweep for the old names rather than by trusting
+the build to fail.
+
+The simulator build also needed its dependency file regenerated: `build-sim/make.dep` still
+listed `lib/rbcodec/codecs/libgme/inflate/mallocer.h`, a header upstream removed during the
+rebase, so the sim failed with "No rule to make target". That is a stale build directory,
+not a tree problem; after `rm make.dep` the sim builds clean.
+
+Original plan text:
+
 Layout, matching the `ingenic_x1000/agptekrocker` convention:
 
 ```
 firmware/target/xtensa/                     arch: vectors.S, crt0.S, thread switch,
-                                            cache-*, system-xtensa.c, xtensa.h, app.lds
+                                            cache-*, system-esp32s3.c, xtensa.h, app.lds
 firmware/target/xtensa/espressif_esp32s3/   SoC: i2s, spi, i2c, gpio, gdma, usb, memory,
                                             mmu, psram, timer, sdmmc, rom_cache, irq
 firmware/target/xtensa/espressif_esp32s3/meowkits3/

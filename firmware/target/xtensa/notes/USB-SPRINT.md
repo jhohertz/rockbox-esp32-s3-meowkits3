@@ -116,7 +116,7 @@ profile the hardware cannot build.
   very likely bit-rotted. Compiling it is step 0 and may itself be work.
 - `HAVE_USB_AUDIO` plus the settings exposure (`usb_set_audio()` already exists in
   `firmware/usb.c`).
-- Drop `USB_NONE`, and un-guard `usb-xtensa.c`.
+- Drop `USB_NONE`, and un-guard `usb-esp32s3.c`.
 
 ## The seams the target has to bridge
 
@@ -215,7 +215,7 @@ that a hang *inside* USB mode needs a power cycle (or the AXP173 long-press).
 
 ## Discarded premise
 
-`usb-xtensa.c` currently says "nothing on this target needs the OTG core" and
+`usb-esp32s3.c` currently says "nothing on this target needs the OTG core" and
 defines the whole file out under `USB_NONE`. That was true while the port could not
 boot; it is the thing being replaced. The VBUS monitor inside it is worth keeping.
 
@@ -293,7 +293,7 @@ is a secondary-output option, not a way to reach the OTG core.
 
 ### Already built, worth reusing
 
-`firmware/target/xtensa/debug-xtensa.c` has an `INFO_USB` debug-menu row that reads
+`firmware/target/xtensa/espressif_esp32s3/debug-esp32s3.c` has an `INFO_USB` debug-menu row that reads
 `XT_PERIP_CLK_EN0 & XT_USB_CLK_EN` (bit 23) to say whether the DWC core is clock-gated,
 and otherwise reads the Synopsys signature at `OTGBASE + 0x40` (`GSNPSID`), noting that
 `0x31304040` is the DWC2 family. `XT_USB_DWC_BASE` is defined as `OTGBASE` in
@@ -381,8 +381,8 @@ this core does not fault -- it writes into reserved space or reads zero.
 
 ## Interrupt level: the USB ISR and the audio ISR are peers, not nested
 
-Both are allocated `ESP_INTR_FLAG_LEVEL1` (`i2s-xtensa.c:807` for GDMA OUT channel 0,
-`usb-xtensa.c:149` for the OTG core). On Xtensa, same-level interrupts do not nest,
+Both are allocated `ESP_INTR_FLAG_LEVEL1` (`i2s-esp32s3.c:807` for GDMA OUT channel 0,
+`usb-esp32s3.c:149` for the OTG core). On Xtensa, same-level interrupts do not nest,
 so while the GDMA handler runs the USB interrupt is held pending, and the reverse.
 That is acceptable rather than ideal, for a reason that is about *when* each is live:
 
@@ -691,7 +691,7 @@ close that gap:
 
 - `paniclog.c` re-prints the trail from the tick task thread every 10 s
   (`XT_BRINGUP_TRAIL_REPEAT`).
-- `usb-xtensa.c` judges an attach after 90 s: if `xt_usb_irqs == 0` it records
+- `usb-esp32s3.c` judges an attach after 90 s: if `xt_usb_irqs == 0` it records
   `usbDead` and calls `esp_restart()`. A chip reset keeps `.noinit`, and the boot hook
   restores the USJ pads, so the board returns to a readable console and repeats while
   the transport is dead. If interrupts were seen it records `usbAlive` and leaves the
@@ -1029,7 +1029,7 @@ useful as the endpoint state, but read `DSTS` with the correct field layout.
 
 ## The DAC probe answered: the core is suspended and drops the isochronous packets
 
-The endpoint report (`usb-xtensa.c`, committed as `3f50201653`) settled the question that
+The endpoint report (`usb-esp32s3.c`, committed as `3f50201653`) settled the question that
 `rxframe=0` could not. Measured while PipeWire streamed for 25 s into the sink:
 
 ```

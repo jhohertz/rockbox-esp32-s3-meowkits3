@@ -16,7 +16,7 @@
 # __xtensa_libgcc_window_spill with a stack pointer in the PSRAM window: the
 # register spill area and the stack both live in cache-backed memory the core
 # cannot maintain per address. That is the same hazard that keeps
-# memory-xtensa-syms.S's thread-0 stack out of PSRAM, just arrived at by
+# memory-esp32s3-syms.S's thread-0 stack out of PSRAM, just arrived at by
 # accident. Anything that can *be* a stack has to stay in DRAM, and there is no
 # complete list of those objects, so the safe rule is: stay in DRAM unless a
 # named object is known to be pure data.
@@ -28,11 +28,11 @@
 # esp_cache_msync() calls are compiled out behind SOC_CACHE_INTERNAL_MEM_VIA_-
 # L1CACHE, which this part does not define. So anything that can be the
 # destination of a storage or audio transfer stays in DRAM too: that rules out
-# disk_cache.o, which is an SDHOST read destination, and pcm-xtensa.o,
+# disk_cache.o, which is an SDHOST read destination, and pcm-esp32s3.o,
 # usb.o and usb_storage.o, whose thread stacks and DWC buffers are on a master
 # that cannot reach the PSRAM window.
 #
-# i2s-xtensa.o is the exception that proves the rule rather than breaks it: it is
+# i2s-esp32s3.o is the exception that proves the rule rather than breaks it: it is
 # pinned to rb_dram, yet its dma_buf carries PSRAM_BSS_ATTR of its own, because
 # GDMA can reach PSRAM for *buffers* (the 20-bit window is only the descriptor
 # address register) while its desc[] must stay internal. Per-symbol attributes
@@ -125,13 +125,13 @@ entries:
     # covers .bss: cpu_frequency is .data and stays in internal DRAM, so udelay()
     # does not start reading a clock word out of PSRAM on every call.
     system (rb_psram)
-    # memory-xtensa-syms holds rockbox_stack and the audio/codec/plugin buffers.
+    # memory-esp32s3-syms holds rockbox_stack and the audio/codec/plugin buffers.
     # The stack must be in DRAM (FreeRTOS switches to it in assembly); the big
     # buffers are already in .ext_ram.bss by their own section attribute, which
     # this archive-level entry does not override.
-    memory-xtensa-syms (rb_dram)
-    pcm-xtensa (rb_dram)
-    i2s-xtensa (rb_dram)
+    memory-esp32s3-syms (rb_dram)
+    pcm-esp32s3 (rb_dram)
+    i2s-esp32s3 (rb_dram)
     * (rb_dram)
 
 [mapping:rb_apps]

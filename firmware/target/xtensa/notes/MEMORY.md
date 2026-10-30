@@ -199,7 +199,7 @@ above the damage. The boot guard was watching `codecbuf`, so it reported a clean
 `XT_PLUGIN_TEXT_ADDR` and prints the clearance on every boot.
 
 Note the asymmetry that makes this easy to get wrong: `XT_AUDIOBUF_SIZE` is only what
-`memory-xtensa-syms.S` contributes. The real section end is `_ext_ram_bss_end`, which
+`memory-esp32s3-syms.S` contributes. The real section end is `_ext_ram_bss_end`, which
 includes IDF's PSRAM objects and every object the ld fragment maps to `extern_ram` --
 unicode, language, the skin parser, dir/file/fileobj_mgr, `system.o`'s boost log. The
 gap between `audiobufend` and the section end was 117,372 bytes on a recent build, so
@@ -245,14 +245,14 @@ for (i = 0; i < arr_sz; i++)
 reached by "all tracks" from the database. Fixed by subtracting the offset in
 `XT_CODECBUF_ADDR`; the arena now ends flush with `0x3C000000 + MEMORYSIZE MB`.
 
-**A boot check in `system-xtensa.c` now reports any future overrun**, alongside
+**A boot check in `system-esp32s3.c` now reports any future overrun**, alongside
 the pre-existing one that compares `rb_ext_ram_end` against `codecbuf`. The old
 check only guarded the *bottom* of the arena; nothing guarded the top, which is
 why this sat latent.
 
 ### That second check has its own blind spot (open)
 
-`memory-xtensa-syms.S` describes `rb_ext_ram_end` as the end of `.ext_ram.bss`
+`memory-esp32s3-syms.S` describes `rb_ext_ram_end` as the end of `.ext_ram.bss`
 and the boot check trusts it. It is not:
 
 ```
@@ -337,7 +337,7 @@ Largest DRAM objects in the linked image:
 | Bytes | Symbol | In DRAM because | Could move? |
 |---|---|---|---|
 | 2,108 | `open_streams` (`file.o`) | **moved to PSRAM** | Freed deliberately: it is the donor that let `CONFIG_ESP_PANIC_HANDLER_IRAM` fit. File-descriptor table, metadata only |
-| 32,768 | `cache_buffer` | default | **No** -- `sd-idf.c` passes it straight to `sdmmc_read_sectors()`, so it is a DMA destination |
+| 32,768 | `cache_buffer` | default | **No** -- `sd-esp32s3.c` passes it straight to `sdmmc_read_sectors()`, so it is a DMA destination |
 | 20,480 | `tagcache_stack` | default | Thread stack; risky, PSRAM faults with cache off |
 | 13,312 | `lcd_scroll` | default | Not investigated -- see the `scroll_stack` note below before assuming this is easy |
 | 12,288 | `scroll_stack$0` | default | **No** -- despite the name this is a *thread stack* (`static long scroll_stack[DEFAULT_STACK_SIZE*3]` in `scroll_engine.c`). Context switches happen in assembly and a PSRAM stack would be fatal with the cache disabled |
@@ -436,7 +436,7 @@ bytes and a 192 kHz one is 4096.
 
 The transmit ring has to be capacity for the largest frame the target's
 `HW_SAMPR_CAPS` can ask for, and arm length for the rate in effect. Both are
-derived from the same multiplier (`XT_MIX_MULT`) in `i2s-xtensa.c`:
+derived from the same multiplier (`XT_MIX_MULT`) in `i2s-esp32s3.c`:
 
 | `HW_SAMPR_CAPS` | `HW_SAMPR_MAX` | slot | armed |
 |---|---|---|---|
@@ -589,7 +589,7 @@ $BIN/xtensa-esp32s3-elf-nm --print-size --size-sort rockbox.elf \
 
 Device FIFO RAM is 200 words (GHWCFG3[31:16]), not the 256 the header implies, and there are
 **4** dedicated IN FIFOs (GHWCFG4), not the 6 that `USB_NUM_ENDPOINTS` suggests. The split in
-`usb-xtensa.c` is NPTX 16, PTX 16 x 4, RX 120 words = 480 bytes.
+`usb-esp32s3.c` is NPTX 16, PTX 16 x 4, RX 120 words = 480 bytes.
 
 PTX has to be at least 16 words: `usb_dw_handle_dtxfifo()` pushes whole packets, computing
 `words = (fifospace/maxpktwords)*maxpktwords`, so a 32-byte FIFO and a 64-byte full-speed
@@ -640,7 +640,7 @@ than from the IDF source line that looked authoritative:
 
 | source | level | where it is decided |
 |---|---|---|
-| audio GDMA OUT channel 0 | 1 | `ESP_INTR_FLAG_LEVEL1` in `gdma_init()`, i2s-xtensa.c; runs the mixer refill |
+| audio GDMA OUT channel 0 | 1 | `ESP_INTR_FLAG_LEVEL1` in `gdma_init()`, i2s-esp32s3.c; runs the mixer refill |
 | FreeRTOS tick | 1 | sdkconfig sets `CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1=y`; the `ESP_INTR_FLAG_LEVEL3` line at `components/freertos/port_systick.c:64` is inside `#ifdef CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL3`, which is not set |
 | esp_timer | 1 | `CONFIG_ESP_TIMER_INTERRUPT_LEVEL=1`; its Kconfig gives `range 1 1` when the target is not esp32 |
 | SD host | 1 | `sdmmc_host.c:539` allocates with flags 0, and `intr_alloc.c` turns a zero level mask into level 1 |
@@ -725,7 +725,7 @@ measured facts, in the order they matter:
 | REG **0x32 bit 7** is a separate mechanism | measured to drop every rail except LDO1, on battery and on cable, with bit 3 clear too |
 
 So a press that Rockbox intends to refuse must be vetoed before it is acked: clear bit 3,
-then clear the latch. `firmware/target/xtensa/button-xtensa.c` does exactly that while
+then clear the latch. `firmware/target/xtensa/espressif_esp32s3/meowkits3/button-meowkits3.c` does exactly that while
 `usb_host_session()` is true.
 
 `usb_host_session()` is a new accessor in `firmware/usb.c` (`usb_state == USB_INSERTED`).
@@ -949,7 +949,7 @@ Two consequences of DFS that are already accounted for:
   and I2S, I2C and the timer groups stay on XTAL (`system-target.h:30-38`). Scaling the
   core moves nothing else.
 - `udelay()` counts core cycles and `system_init()` caches `cpu_frequency`
-  (`system-xtensa.c:129-135`). With DFS that cache is wrong, and the file already says
+  (`system-esp32s3.c:129-135`). With DFS that cache is wrong, and the file already says
   what to do: read `esp_clk_cpu_freq()` and stop caching. This is a prerequisite, not
   a refinement.
 
@@ -1010,7 +1010,7 @@ player.
 ## The frequency seam is wired (2026-10-25)
 
 `HAVE_ADJUSTABLE_CPU_FREQ` is now defined for meowkits3 and
-`set_cpu_frequency()` is implemented in `system-xtensa.c` as `esp_pm_configure()`
+`set_cpu_frequency()` is implemented in `system-esp32s3.c` as `esp_pm_configure()`
 with **max == min**. Rockbox's ladder (240 / 160 / 80 MHz, `system-target.h`) is
 therefore applied by asking IDF for the frequency rather than writing CPUPERIOD_SEL
 and the LDO slaves -- dbias travels with the core clock through REGI2C and the ROM's
@@ -1100,8 +1100,8 @@ esp32s3 -- it is the Kconfig symbol or nothing -- so it is written explicitly in
 `sdkconfig.defaults` rather than inherited silently.
 
 **One lock, and it is the USB one.** `xt_light_sleep_block(bool)`
-(`system-xtensa.c`, declared in `system-target.h`) holds `ESP_PM_NO_LIGHT_SLEEP`, created
-on first use, and `usb-xtensa.c` acquires it in `usb_dw_target_enable_clocks()` and
+(`system-esp32s3.c`, declared in `system-target.h`) holds `ESP_PM_NO_LIGHT_SLEEP`, created
+on first use, and `usb-esp32s3.c` acquires it in `usb_dw_target_enable_clocks()` and
 releases it in `usb_dw_target_disable_clocks()`. The reason is that a peripheral
 interrupt is not a light-sleep wake source: with the core asleep, a DesignWare frame
 completion would sit pending until the next tick, and with two frames of RX FIFO
@@ -1160,7 +1160,7 @@ still permanently on was the amplifier.
 ### The amplifier is now switched off when nothing is playing
 
 `audiohw_enable_speaker(true)` ran once at startup and nothing ever turned it off, so a
-class-D stage with no signal to amplify stayed enabled indefinitely. `audiohw-xtensa.c`
+class-D stage with no signal to amplify stayed enabled indefinitely. `audiohw-meowkits3.c`
 now runs an idle policy as a `tick_add_task()`: ~250 ms after the transmit engine stops
 carrying real audio it drops the amp (PCA9557 IO3) and then mutes the codec; when audio
 returns it unmutes the codec first and enables the amp second, so the amp switches on into
@@ -1172,7 +1172,7 @@ Two constraints that shaped where this lives:
 
 - **Not in the sink.** `usb_audio.c` calls `mixer_channel_play_data()` inside
   `disable_irq_save()` (see `sink_play()`), and both the amp and the codec are I2C. The
-  tick thread is the same place `power-xtensa.c` and `usb-xtensa.c` already do periodic
+  tick thread is the same place `power-meowkits3.c` and `usb-esp32s3.c` already do periodic
   work.
 - **Not `audio_status()`.** A USB-DAC stream is the host driving the mixer and Rockbox's
   audio state does not report it, so keying the amp off `audio_status()` would mute a
@@ -1415,7 +1415,7 @@ Successive figures this file has carried -- 4 MiB at `0x3c1612e0`, then 4,063,23
 "3,875,072 usable" -- are all superseded. The arithmetic is now exact and checkable: the
 buflib context is `buflib_init(&core_ctx, start, audiobufend - start)` at
 `firmware/core_alloc.c:72`, and `audiobufend` is the label directly after
-`.space XT_AUDIOBUF_SIZE` in `memory-xtensa-syms.S`, so **the arena is `XT_AUDIOBUF_SIZE`
+`.space XT_AUDIOBUF_SIZE` in `memory-esp32s3-syms.S`, so **the arena is `XT_AUDIOBUF_SIZE`
 and nothing else**. That is the fact that matters when sizing anything: the text
 reservations, codecbuf and pluginbuf sit above the arena and do not bound it.
 
@@ -1477,7 +1477,7 @@ two separate bugs:
 - **A playback rate change reprogrammed an ADC that was being clocked by the other port.**
   `i2s_set_frequency()` did ES8311 and ES7210 in one call unconditionally.
 
-The state is now split, in `i2s-xtensa.c`: `tx_rate` (what pcm.c last asked for) and
+The state is now split, in `i2s-esp32s3.c`: `tx_rate` (what pcm.c last asked for) and
 `rx_owns_bus` + `rx_bus_rate` (what the receiver is actually clocking the codecs at).
 `i2s_rx_take_bus(rate)` runs `es7210_init(rate)`, `es7210_start()` and takes the pads in
 one place, and refuses the pads if the ADC did not answer on I2C — a dead ADC cannot leave

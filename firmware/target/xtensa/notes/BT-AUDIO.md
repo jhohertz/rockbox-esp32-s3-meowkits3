@@ -179,8 +179,8 @@ The rules `play()` has to obey, all learned the hard way on this board:
   (`usbstack/iap/audio.c:155-160`).
 - **Non-blocking, no allocation, no printing, no I2C.** The play path runs under
   `pcm_play_lock()` with our `sink_lock()`/`sink_unlock()` masking GDMA `out_eof`
-  (`i2s-xtensa.c:1210-1246`), and the USB DAC path calls into the mixer inside
-  `disable_irq_save()` (`usb_audio.c:1380-1396`, noted at `i2s-xtensa.c:1250`). A ring
+  (`i2s-esp32s3.c:1210-1246`), and the USB DAC path calls into the mixer inside
+  `disable_irq_save()` (`usb_audio.c:1380-1396`, noted at `i2s-esp32s3.c:1250`). A ring
   write with a dropped-oldest policy is the correct shape; blocking is fatal.
 - **Rate changes arrive as `set_freq(index)`,** an index into our caps, and the mixer has
   already been retargeted by `mixer_switch_sink()`. No renegotiation needed beyond
@@ -241,7 +241,7 @@ feature interact.
 ## 6. Coexistence questions the goal raises
 
 - **USB audio in, BT out: works.** Our USB DAC mode is on the *source* side —
-  `usb_audio.c` calls `mixer_channel_play_data()` (`i2s-xtensa.c:1250`,
+  `usb_audio.c` calls `mixer_channel_play_data()` (`i2s-esp32s3.c:1250`,
   `usb_audio.c:1380-1396`), so host audio becomes a mixer channel and the BT sink plays
   whatever the mixer outputs. "BT indifferent to USB audio" is satisfied by the existing
   model, and the USB feedback/timing machinery is untouched by a sink switch.
@@ -271,7 +271,7 @@ feature interact.
   that heap or from PSRAM with cache maintenance, and DMA-facing buffers must be internal.
   There is nothing further there to reclaim.
 - **Sleep.** Light sleep must be blocked while a link is active, exactly as
-  `xt_light_sleep_block(true)` does while USB is armed (`usb-xtensa.c:348`). A BT link that
+  `xt_light_sleep_block(true)` does while USB is armed (`usb-esp32s3.c:348`). A BT link that
   isn't blocked means the core powers down mid-stream (`CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y`).
 - **Power.** Wireless audio adds real current on top of the ~42 mA dark-idle floor, which
   the parked battery-bench run should measure with BT active rather than assumed.

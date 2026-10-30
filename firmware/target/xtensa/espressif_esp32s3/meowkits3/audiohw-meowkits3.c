@@ -11,7 +11,7 @@
 #include "audiohw.h"
 #include "pcm_sampr.h"
 #include "es8311.h"
-#include "i2s-xtensa.h"
+#include "i2s-esp32s3.h"
 #include "pca9557.h"
 #include "tick.h"
 #ifdef HAVE_RECORDING
@@ -42,7 +42,7 @@ void audiohw_init(void)
  * cannot do it: usb_audio.c calls mixer_channel_play_data() inside
  * disable_irq_save() (see sink_play()), and the amp and the codec are both I2C.
  * tick_add_task() runs in the tick thread with interrupts enabled, which is the
- * same arrangement power-xtensa.c and usb-xtensa.c already use.
+ * same arrangement power-meowkits3.c and usb-esp32s3.c already use.
  *
  * The state is i2s_tx_playing(), not audio_status(): a USB-DAC stream is the
  * host driving the mixer and Rockbox's audio state does not report it, so

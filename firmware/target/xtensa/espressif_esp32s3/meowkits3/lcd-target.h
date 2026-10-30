@@ -16,7 +16,7 @@
  * viewport change (backdrop, plugin, lcd-memframe double buffering) moves
  * fb_ptr, and a fixed address would keep pushing the old buffer.
  *
- * Requires lcd.h to have been included first, which lcd-xtensa.c does.
+ * Requires lcd.h to have been included first, which lcd-meowkits3.c does.
  */
 extern struct frame_buffer_t lcd_framebuffer_default;
 

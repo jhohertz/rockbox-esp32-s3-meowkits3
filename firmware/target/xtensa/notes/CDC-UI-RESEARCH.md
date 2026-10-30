@@ -55,8 +55,8 @@ replacement for the on-device UI.
 | Settings are addressable by cfg name with string conversion in both directions | `apps/settings.h:301-305,333` (`find_setting_by_cfgname`, `cfg_to_string`, `cfg_string_to_int`, `setting_get_cfgvals`) | the CLI's `set <name> <value>` is already implementable, language-independent |
 | UI labels are lang ids with a voice backend | `settings_list.c:252-303` (`get_talk_id`, formatter), `apps/menus/main_menu.c:235-310` (`talk_id(LANG_*)`) | the voice UI is the existing precedent for mapping screen function to a non-visual medium |
 | Playback/system state is exposed | `firmware/export/audio.h:57` (`audio_status()`), `apps/settings.h:952` (`global_status`) | now-playing, recording and track position sources |
-| Our debug rows are already a "fetch a named value" namespace | `firmware/target/xtensa/debug-xtensa.c:120-215` (`INFO_CPU`…`INFO_CC`, `INFO_RXSTAT`, trail rows) | free read side for diagnostics |
-| LCD flush hooks exist, and our driver **drops draws when the panel is off** | `firmware/export/lcd.h:220/256`, `firmware/target/xtensa/lcd-xtensa.c:118-147`, `:228-244` | any framebuffer-derived mirror would stop when the screen sleeps — a hook must read the buffer, not the flush path |
+| Our debug rows are already a "fetch a named value" namespace | `firmware/target/xtensa/espressif_esp32s3/debug-esp32s3.c:120-215` (`INFO_CPU`…`INFO_CC`, `INFO_RXSTAT`, trail rows) | free read side for diagnostics |
+| LCD flush hooks exist, and our driver **drops draws when the panel is off** | `firmware/export/lcd.h:220/256`, `firmware/target/xtensa/espressif_esp32s3/meowkits3/lcd-meowkits3.c:118-147`, `:228-244` | any framebuffer-derived mirror would stop when the screen sleeps — a hook must read the buffer, not the flush path |
 | Endpoint budget on the DWC core | `firmware/drivers/usb-designware.c:160` (`USB_NUM_ENDPOINTS`), FS device | room for a dedicated endpoint if one is wanted |
 
 ---
@@ -94,7 +94,7 @@ Three decisions to make, each with a cheap default:
   stream.
 - **Both**: control requests for command/query, bulk OUT for keystrokes. That is the
   shape I'd pick, and it means the dangerous thing (an old keystroke honoured as a new
-  command — the exact failure that killed the flash handover, `usb-xtensa.c:617-623`)
+  command — the exact failure that killed the flash handover, `usb-esp32s3.c:617-623`)
   only ever applies to the input channel, where a nonce makes it harmless.
 
 **Framing.** Text lines (UTF-8, `\n`-terminated) or binary frames (magic + length +
@@ -178,7 +178,7 @@ The mapping is a lookup table over things the tree already names:
 | Labels | lang ids (`Lang[]`/`lang_gets()` from the generated `apps/lang/lang.h`), same ids the voice UI uses (`get_talk_id`) | text; a `lang` command could switch the terminal's language independently |
 | Now playing | `audio_status()`, `global_status`, playlist position | header block: track, artist, elapsed/total, repeat/shuffle, volume |
 | Recorder | `audio_status() & AUDIO_STATUS_RECORD`, `INFO_RXSTAT` | status row + level meter from the RX counters |
-| Debug state | `INFO_*` rows in `debug-xtensa.c` | a `stat <name>` verb, and a live tail pane for CPU/MMU/CC/RXSTAT |
+| Debug state | `INFO_*` rows in `debug-esp32s3.c` | a `stat <name>` verb, and a live tail pane for CPU/MMU/CC/RXSTAT |
 | Battery | `battery_level()`, `battery_voltage()`, `battery_current()`, `axp173_coulomb_*` | gauge row; the CC columns land here for free |
 | Storage | `storage_status()`, free space, card state | rows, plus `mount` warnings when MSC is active |
 | Text entry | `on_screen_keyboard` equivalent | **terminal is strictly better**: a `/`-prefixed line replaces the on-screen keyboard for paths, filenames and search |
@@ -303,7 +303,7 @@ measurements need a screen and a thumb.
 
 | Idea | Why not |
 |---|---|
-| LCD framebuffer mirroring over CDC | bandwidth (§3), and the panel-off drop (`lcd-xtensa.c:228-244`) |
+| LCD framebuffer mirroring over CDC | bandwidth (§3), and the panel-off drop (`lcd-meowkits3.c:228-244`) |
 | HID as the control channel | HID is already used for remote-control *out*; making it bidirectional means a new report model and it is less inspectable than a serial stream |
 | A plugin hosting the server | cannot reach CDC without a plugin API bump (§7) |
 | Bluetooth / Wi-Fi | no classic BT on S3 (`BT-AUDIO.md`), no Wi-Fi path in the port |

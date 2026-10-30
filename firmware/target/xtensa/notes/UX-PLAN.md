@@ -149,7 +149,7 @@ while there are unimplemented gestures that map to functions Rockbox already
 has. Short PEK stays unused; long PEK continues to mean shutdown.
 
 If it is revisited, the groundwork is worth keeping in mind: the short press is
-bit 1 of REG `0x46`, the register `button-xtensa.c` already reads for the long
+bit 1 of REG `0x46`, the register `button-meowkits3.c` already reads for the long
 press, so it would cost no extra I2C; `BUTTON_POWER` at `0x00008000` is free
 (our keys use `0x00000001`–`0x00004000`, `BUTTON_REL` is `0x02000000`,
 `BUTTON_REPEAT` is `0x04000000`); and `firmware/drivers/button.c:374-397`

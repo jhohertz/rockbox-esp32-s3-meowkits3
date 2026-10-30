@@ -74,7 +74,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
      `axp173_init()` clears both counters, so a session's history dies with the session.
      Consumption does not have to be even. The counters integrate instantaneous current, so
      a varied load still gives correct mAh; what varies is the *usable* total, because a run
-     ends at a voltage rather than at a charge. The floor is `power-xtensa.c:36-37`:
+     ends at a voltage rather than at a charge. The floor is `power-meowkits3.c:36-37`:
      disksafe 3400 mV, shutoff 3300 mV, which is also the 0 % entry of
      `percent_to_volt_discharge[]`. So the last CC reading that exists is whatever the
      screen shows above 3.3 V, and a run-to-shutdown figure measures the capacity above
@@ -101,7 +101,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   self-clears. Tightening it further needs a steady load (screen off, idle) or a shorter
   sample interval; neither is required to build a percentage on it.
   **Wired on 2026-10-28, pending hardware confirmation.** `CONFIG_BATTERY_MEASURE` gained
-  `PERCENTAGE_MEASURE`, and `power-xtensa.c` now has `_battery_level()`: it anchors to the
+  `PERCENTAGE_MEASURE`, and `power-meowkits3.c` now has `_battery_level()`: it anchors to the
   voltage-derived percent on the first reading (the counters are cleared at boot, so they
   cannot know the cell's state), then moves from that anchor by
   `100 × Δ(dis − chg) / get_battery_capacity()`. Voltage stays in the config for the anchor,
@@ -350,7 +350,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   closing on one press), while a build whose queue drain happened first — a tracer that
   consumed the events before the handler could — worked for every cell the state machine
   covers and failed only for the three it did not. That is what proved touch cells arrive
-  as held state via `button_status()` (`button-xtensa.c:190-203`, `button.c:414`) and
+  as held state via `button_status()` (`button-meowkits3.c:190-203`, `button.c:414`) and
   that the queue path was redundant at best. The fix was to delete the queue handler and
   add the three missing cases to the state machine.
 
@@ -414,7 +414,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   - *The status bar's disk icon is now driven.* `CONFIG_LED` defaults to `LED_VIRTUAL`, so
     `apps/gui/statusbar.c:123-129` reserved 12 px and drew `bitmap_icon_disk` from
     `led_read(HZ/2)` — but nothing on xtensa ever called `led()`, so the icon was dead space.
-    `sd-idf.c` now brackets both sector calls with `led(true)`/`led(false)`, which is the
+    `sd-esp32s3.c` now brackets both sector calls with `led(true)`/`led(false)`, which is the
     shape every storage driver in the tree uses (`sd-as3525.c:694/854`,
     `sdmmc-imx233.c:702/801`, `nand-nano2g.c`). **Confirmed on hardware**: the activity icon
     shows during access, including inside themes.
@@ -446,7 +446,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   `HAVE_HEADPHONE_DETECTION` is correctly absent), which leaves Settings → Speaker as the only
   lever a headphone user has. It had two problems:
   - the idle policy re-enabled the amp on every playback start whatever the user had set, so
-    "Off" was display-only. `audiohw-xtensa.c` now keeps `pa_wanted` (the request) separate
+    "Off" was display-only. `audiohw-meowkits3.c` now keeps `pa_wanted` (the request) separate
     from `pa_on` (the expander), and never mutes the codec when only the amp is off —
     `es8311_mute()` stops the DAC, which would take the jack down with the speaker.
   - upstream's default for `speaker_mode` is `0` = Off, which on a board whose speaker is the
@@ -506,7 +506,7 @@ Each of these was checked on the board, not inferred.
   rect. On targets where video works the LCD has CPU-writable display memory or a hardware
   YUV mode, so the blit lands on the glass by itself. `LCD_OPTIMIZED_BLIT_YUV` in
   `lcd-target.h` hands the function to the target (the same seam `config/3ds.h` uses) and
-  `lcd-xtensa.c` walks the planes exactly as memframe does, calls the shared line helper, and
+  `lcd-meowkits3.c` walks the planes exactly as memframe does, calls the shared line helper, and
   pushes once per frame. Two things worth remembering: the panel's rect updates were never
   the problem (the OSD updates through the identical `lcd_update_rect` path and draws fine),
   and the conversion must stay shared — writing it locally and packing with
@@ -602,7 +602,7 @@ Each of these was checked on the board, not inferred.
   `apps/codec_thread.c` gained the `size == 0` guard, which mpegplayer cannot reach (it
   never calls `read_filebuf`). `plugin.lds` gained only an X1600 branch; `plugins.make`
   only renamed `ctru-app` to `3ds-homebrew`, so plugin build flags are unchanged.
-  `firmware/lc-rock.c`, `lcd.h`, `lcd-xtensa.c`, `st7789.c`, `cache-xtensa.h` and
+  `firmware/lc-rock.c`, `lcd.h`, `lcd-meowkits3.c`, `st7789.c`, `cache-xtensa.h` and
   `asm/lcd-as-memframe.c` are byte-identical, including the `lcd_write_yuv420_lines()`
   signature our blit re-declares locally. Plugin API went 285 → 286 with two tail entries
   mpegplayer does not reference. The clip was verified healthy (320×240 MPEG-2 in a
@@ -851,6 +851,65 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
 
+### Phase B — target tree restructure (2026-10-30)
+
+`TARGET_INC` no longer names two directories that do not exist.
+
+```
+firmware/target/xtensa/                         cache-xtensa.[ch]  paniclog.[ch]
+                                                thread-idf.c
+firmware/target/xtensa/espressif_esp32s3/       system-target.h  system-esp32s3.c
+  gpio-esp32s3.h  i2c-esp32s3.c  i2s-esp32s3.[ch]  spi-esp32s3.[ch]
+  usb-esp32s3.c   sd-esp32s3.c   timer-esp32s3.c   pcm-esp32s3.c
+  adc-esp32s3.c   debug-esp32s3.c lc-esp32s3.c   memory-esp32s3-syms.S
+firmware/target/xtensa/espressif_esp32s3/meowkits3/
+  button-  lcd-  backlight-  audiohw-  power-meowkits3.c
+  button-target.h  lcd-target.h  backlight-target.h  adc-target.h  i2c-target.h
+  st7789.[ch]  pca9557.[ch]  es8311.[ch]  es7210.[ch]
+```
+
+`tools/configure` sets `t_manufacturer="espressif_esp32s3"`, `t_model="meowkits3"` —
+the `ingenic_x1000/agptekrocker` shape, where the manufacturer slot carries the SoC.
+34 files moved; `-xtensa` became `-esp32s3` for register-level code and `-meowkits3`
+for board code; the SDHOST driver lost `idf` from its name because that name said which
+SDK it talks to rather than which peripheral it drives.
+
+Numbers after the move:
+
+- Arena symbols unchanged: `codecbuf` `0x3c680000`, `pluginbuf` `0x3c780000`,
+  `loadaddress` `0x3c800000`, `.ext_ram.bss` ends `0x3c5b3244`, plugin text reserved at
+  `0x3c5c0000`. `flac.codec` loads its RW half at `0x3c680000` and its text at
+  `0x42640000`; `pong.rock` at `0x3c780000` / `0x425c0000` — identical to before.
+- IRAM segment still `0x13a9c` at `0x40374000`; RTC segments unchanged.
+- Image **byte-for-byte the same size** as before the move: 1,307,856 B. Comparing the
+  pre-move objects against the post-move ones section by section — 21 pairs — found **no
+  difference in any non-debug section**: no `.text`, no `.rodata`, no `.data`, no `.bss`.
+  Only `.debug_*` differs, because debug info carries source paths. The validation hash
+  moves regardless, because IDF's `esp_app_desc` at the head of the app partition embeds
+  the version string (`v4.0-final-2683-g39d9de21a0-dir`) and the build timestamp.
+- Which matters because the first attempt at this gate *did* change code. `firmware/
+  firmware.make`'s `XTENSA_IDF_FIRST_SRC` still named the old paths for `sd-` and `spi-`,
+  so those two objects silently lost IDF's include order; the build passed anyway and
+  `.text.sd_init` grew 21 B with `.text.spi_init` 25. The mistake was in a build input
+  that names files rather than a rule — the same class as `TARGET_INC` pointing at
+  directories that don't exist — and it surfaced only because the rename was followed by a
+  sweep for the old names, not because the build complained. The sweep also corrected three
+  archive-member selectors in `idf-app/main/rockbox_memory.lf` (`memory-`, `pcm-`, `i2s-`),
+  which had silently stopped matching and were falling through to the `* (rb_dram)`
+  wildcard — harmless today because the wildcard gives the same placement, but a trap for
+  whoever next tries to pin one of them.
+- Build warnings still 17, all upstream. `-Wno-undef`'s target-directory scoping still
+  works after the move: `$(BUILDDIR)/firmware/target/xtensa/%.o` matches the new
+  subdirectories.
+- Simulator build: `build-sim/make.dep` still referenced
+  `lib/rbcodec/codecs/libgme/inflate/mallocer.h`, a header upstream deleted during the
+  rebase, so the sim died with "No rule to make target". Deleting the dep file fixed it;
+  the sim now builds clean. Worth remembering — a stale build directory can report a tree
+  problem that isn't one.
+
+**Not yet done:** the confirmation flash (`rockbox-flash.bin` 1,373,456 B is built and the
+layout guard passed; the board needs BOOT-then-RESET again to accept it).
+
 ### Phase A — conformance cleanup (2026-10-30)
 
 Five commits, no behaviour change by design:
@@ -983,7 +1042,7 @@ from the same tree, which is the check that backs the "weak seams only" claim.
      | DSD256 | 11,289,600 | 2 | 2.82 MB/s | above the 1-bit bus, unreachable |
 
      The same file doubles both costs, so the two candidate limits move together: the SD
-     path (`sd-idf.c`, 1-bit, 20 MHz card clock, theoretical 2.5 MB/s) and the CIC
+     path (`sd-esp32s3.c`, 1-bit, 20 MHz card clock, theoretical 2.5 MB/s) and the CIC
      decimator (11.3 M bits/s through a 3-stage 64-bit integrator/delay loop, code resident
      in PSRAM). The gap *pattern* — play, run dry, refill in a burst — is the signature of a
      producer under real time on average rather than a one-off stall, and the periodicity is
