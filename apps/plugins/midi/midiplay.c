@@ -351,13 +351,18 @@
 #define MIDI_VOL_DOWN   BUTTON_DOWN
 #define MIDI_PLAYPAUSE  BUTTON_USER
 
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* MeowKit ESP32-S3: stick is seek and volume, A toggles playback, B held
+ * quits. Same convention as every other MeowKit plugin keymap. */
+#define MIDI_QUIT       (BUTTON_B | BUTTON_REPEAT)
+#define MIDI_FFWD       BUTTON_RIGHT
+#define MIDI_REWIND     BUTTON_LEFT
+#define MIDI_VOL_UP     BUTTON_UP
+#define MIDI_VOL_DOWN   BUTTON_DOWN
+#define MIDI_PLAYPAUSE  BUTTON_A
+
 #else
-#if !defined(HAVE_TOUCHSCREEN)
-/* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
- * chain left undefined, so a touchscreen target is not missing a keymap --
- * it is using the one upstream already provides for it. */
 #error No keymap defined!
-#endif
 #endif
 
 #ifdef HAVE_TOUCHSCREEN

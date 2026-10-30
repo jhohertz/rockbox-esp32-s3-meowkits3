@@ -401,11 +401,10 @@ CONFIG_KEYPAD == SANSA_M200_PAD
 #define QUIT      BUTTON_B
 /* no RC_QUIT: this board has no infrared remote, and the code guards
  * it with #ifdef, so leaving it undefined is what we want */
-/* the alternate set is the touch row under the pad: same game, no need to
- * reach for the physical keys */
-#define ALTLEFT   BUTTON_MIDLEFT
-#define ALTRIGHT  BUTTON_MIDRIGHT
-#define ALTSELECT BUTTON_CENTER
+/* no alternate set here: the HAVE_TOUCHSCREEN block below already sets
+ * ALTLEFT/ALTRIGHT/ALTSELECT to the grid cells under the pad, which is the
+ * same row this keymap would have chosen. Defining them above that block only
+ * produces a redefinition warning, so they are left to it. */
 /* no scroll wheel on this hardware */
 #define SCROLL_FWD(x)  (0)
 #define SCROLL_BACK(x) (0)

@@ -35,13 +35,7 @@
 #define MIN_MEMMARGIN (4*1024)
 
 /** Video thread **/
-/* Reservation for libmpeg2's own allocations. A target may override it: the
- * amount libmpeg2 actually needs scales with the *coded* frame size, and 2 MiB is
- * sized for 352x288 sources. Targets whose panel cannot show more than 320x240
- * cannot use a larger coded frame, so they can claim far less. */
-#ifndef LIBMPEG2_ALLOC_SIZE
 #define LIBMPEG2_ALLOC_SIZE (2*1024*1024)
-#endif
 
 /** MPEG audio buffer **/
 #define AUDIOBUF_GUARD_SIZE (MPA_MAX_FRAME_SIZE + 2*MAD_BUFFER_GUARD)

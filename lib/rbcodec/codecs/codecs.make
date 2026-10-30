@@ -28,7 +28,7 @@ CODEC_LIBS := $(CODECLIB) $(FIXEDPOINTLIB) $(ARMSUPPORTLIB)
 # library in its link, so it must be compiled against Rockbox's libc headers (and
 # with no SDK flags of any kind), not the platform library the firmware links.
 CODECFLAGS := $(FREESTAND_CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
-			 -I$(RBCODECLIB_DIR)/codecs -I$(RBCODECLIB_DIR)/codecs/lib -DCODEC
+            -I$(RBCODECLIB_DIR)/codecs -I$(RBCODECLIB_DIR)/codecs/lib -DCODEC
 
 # ESP32-S3 reaches external RAM through two cache windows that share MMU pages
 # but decode different bus ranges: instruction fetch only in the 0x42... window,

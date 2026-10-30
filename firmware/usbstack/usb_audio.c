@@ -43,29 +43,18 @@
 #include "pcm_mixer.h"
 #include "dsp_core.h"
 
-/* Off for shipping, as every sibling usbstack class keeps it.
+/* Upstream enables logf() in this file, and that stays the default.
  *
- * The reason is now measurement rather than assumption. With LOGF_ENABLE on, the
- * isochronous completion path emitted roughly three lines per packet -- ~45 kB/s pushed
- * through the CDC bulk IN endpoint, ~30k lines per 10 s -- and the transport still accepted
- * 980 of the 1000 frames arriving each second, with zero underflows. So formatting is not
- * what was corrupting the audio, and the earlier claim that enabling it "sounds like
- * static" was never true on this port.
- *
- * It does, however, spend part of the ~2% of interrupt headroom in which the remaining
- * frame gaps live, so the diagnostic comes out before the next change is judged. Uncomment
- * to read packet arrival straight off /dev/ttyACM0: frame number and byte count per
- * completion, mixer pulls, underflow and restart cycles, alternate-setting changes and
- * volume control requests -- which is what located the frame-number defect and the 11/s
- * underflow cycles.
- *
- * Note where the build-level gate actually sits: meowkits3.h:552 defines ROCKBOX_HAS_LOGF
- * deliberately, because GPIO19/20 moving to the OTG core takes the console away and logf
- * over CDC is then the only way to see usb_core.c and usb-designware.c messages during an
- * attach. config.h includes the model header after autoconf.h, so that define wins and
- * configure's -l option is not what enables or disables logging -- this line is.
- */
-/* #define LOGF_ENABLE */
+ * A target whose log transport is USB itself cannot afford it: logf() formats
+ * and submits over the bulk-IN endpoint, and the isochronous path below calls
+ * it on every completion. Measured on ESP32-S3 with the flag on, that was about
+ * three lines per packet -- ~45 kB/s through the CDC endpoint, ~30k lines per
+ * 10 s -- which spends interrupt headroom the audio path needs. Such a target
+ * opts out with USB_AUDIO_LOGF_DISABLE and reads the same messages by turning
+ * the flag back on in a debug build. */
+#ifndef USB_AUDIO_LOGF_DISABLE
+#define LOGF_ENABLE
+#endif
 #include "logf.h"
 
 // is there a "best practices" for converting between floats and fixed point?
@@ -773,7 +762,7 @@ int usb_audio_request_buf(void)
     {
         alloc_failed = true;
         if (rx_buffer_handle >= 0)
-            rx_buffer_handle = core_free(rx_buffer_handle);
+        rx_buffer_handle = core_free(rx_buffer_handle);
         rx_buffer = NULL;
         rx_buffer_alt = NULL;
         return -1;
@@ -796,7 +785,7 @@ void usb_audio_free_buf(void)
 {
     // logf("usbaudio: free buffer");
     if (rx_buffer_handle >= 0)
-        rx_buffer_handle = core_free(rx_buffer_handle);
+    rx_buffer_handle = core_free(rx_buffer_handle);
     rx_buffer = NULL;
     rx_buffer_alt = NULL;
 
@@ -923,9 +912,9 @@ static void playback_audio_get_more(const void **start, size_t *size)
     }
     else
     {
-        *start = dsp_buf + (rx_play_idx * REAL_DSP_BUF_SIZE/sizeof(*dsp_buf));
-        *size = dsp_buf_size[rx_play_idx];
-        rx_play_idx = (rx_play_idx + 1) % NR_BUFFERS;
+    *start = dsp_buf + (rx_play_idx * REAL_DSP_BUF_SIZE/sizeof(*dsp_buf));
+    *size = dsp_buf_size[rx_play_idx];
+    rx_play_idx = (rx_play_idx + 1) % NR_BUFFERS;
     }
 
     /* if usb RX buffers had overflowed, we can start to receive again
@@ -1713,10 +1702,10 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             }
             if (target_filled < 0)
             {
-                buffers_filled_accumulator = buffers_filled_accumulator - buffers_filled_accumulator_old;
-                buffers_filled_avgcount = buffers_filled_avgcount - buffers_filled_avgcount_old;
-                buffers_filled_accumulator_old = buffers_filled_accumulator;
-                buffers_filled_avgcount_old = buffers_filled_avgcount;
+            buffers_filled_accumulator = buffers_filled_accumulator - buffers_filled_accumulator_old;
+            buffers_filled_avgcount = buffers_filled_avgcount - buffers_filled_avgcount_old;
+            buffers_filled_accumulator_old = buffers_filled_accumulator;
+            buffers_filled_avgcount_old = buffers_filled_avgcount;
             }
 
             // someone who has implemented actual PID before might be able to do this correctly,

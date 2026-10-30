@@ -538,7 +538,6 @@ static void init_rec_buffers(void)
 
     /* PCMBUF */
     pcm_buffer = CACHEALIGN_UP(buf); /* Line align */
-
     size -= pcm_buffer + PCM_BUF_SIZE - buf;
     buf = pcm_buffer + PCM_BUF_SIZE;
 

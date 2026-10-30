@@ -1239,25 +1239,9 @@ Lyre prototype 1 */
 
 #ifdef USE_IRAM
 # define ICODE_ATTR     __attribute__ ((section(".icode")))
-# if defined(CPU_XTENSA)
-/* ESP32-S3's "IRAM" is the instruction-bus view of internal SRAM. That bus only
- * carries 32-bit data: a byte or halfword load or store at an 0x4037xxxx address
- * faults with EXCCAUSE 3 (LoadStoreError), even though the same physical bytes are
- * reachable at their data-bus alias 0x3FC8xxxx. Verified on hardware with a
- * load_ram probe: s32i at 0x40378100 succeeds, l16ui at the same address traps.
- * So only code and its literal pools may live on the instruction bus; "internal
- * RAM" data still belongs on the data bus.
- *
- * Kept for the day USE_IRAM comes back for this target, which it is not on: see
- * the note above where USE_IRAM is decided. */
-#  define ICONST_ATTR   __attribute__ ((section(".data")))
-#  define IDATA_ATTR    __attribute__ ((section(".data")))
-#  define IBSS_ATTR     __attribute__ ((section(".srambss")))
-# else
-#  define ICONST_ATTR   __attribute__ ((section(".irodata")))
-#  define IDATA_ATTR    __attribute__ ((section(".idata")))
-#  define IBSS_ATTR     __attribute__ ((section(".ibss")))
-# endif
+# define ICONST_ATTR    __attribute__ ((section(".irodata")))
+# define IDATA_ATTR     __attribute__ ((section(".idata")))
+# define IBSS_ATTR      __attribute__ ((section(".ibss")))
 #else
 # define ICODE_ATTR
 # define ICONST_ATTR

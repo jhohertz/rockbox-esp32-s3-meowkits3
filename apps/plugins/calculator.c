@@ -587,12 +587,7 @@ F3: equal to "="
 #define CALCULATOR_UP_W_SHIFT     BUTTON_TOPLEFT
 #define CALCULATOR_DOWN_W_SHIFT   BUTTON_BOTTOMLEFT
 #else
-#if !defined(HAVE_TOUCHSCREEN)
-/* The HAVE_TOUCHSCREEN block below fills in any action macro this keypad
- * chain left undefined, so a touchscreen target is not missing a keymap --
- * it is using the one upstream already provides for it. */
 #error No keymap defined!
-#endif
 #endif
 
 #ifdef HAVE_TOUCHSCREEN

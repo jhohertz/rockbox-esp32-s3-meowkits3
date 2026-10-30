@@ -745,6 +745,10 @@ Not being submitted now. Kept so the work can be split for a merge.
 | `249f58a5fb` | `apps/plugins/doom/i_system.c`, `rockdoom.c` | `I_Error()` exits through the plugin's `exit()` instead of returning | Returning from `I_Error()` returns into a NULL caller. `rb_atexit()` cleanup then still runs. Applies to every plugin that can hit a fatal Doom error. |
 | new | `apps/plugins/doom/m_misc.c` | `enable_sound` default 1, matching `doomstat.c:102`'s initialiser | The table's default was 0 and `rockdoom.c` deletes `config.cfg` before every launch, so Doom was silent on every target on every start and the menu setting could not persist. One-word fix; changes audible behaviour for everyone. |
 | new | `apps/plugins/doom/i_video.c` | Keypad block for `ESP32S3_PAD` and the three cells no other keypad defines | Target-specific, listed only so the doom diff is complete: the four rows above are the ones worth proposing. |
+| new | `apps/plugins/metronome.c` | `tap()` clamps `bpm` to at least 1 | A tap interval above 60 s divides to 0, `calc_period()` then does `fp_div(..., bpm<<16, 16)` with `bpm == 0`, and the plugin traps out of the timer path. `change_bpm()` already clamps to [1,400]; `tap()` was the only writer that skipped it. Any target. |
+| new | `manual/plugins/xworld.tex` | Four rows gated on `\opt{HAVE_TOUCHSCREEN}` retyped to `\opt{touchscreen}`, and `\ButtonBottomLeft` to `\TouchBottomLeft` | `HAVE_TOUCHSCREEN` is not a token in the manual's opt list (`touchscreen` is, and is what every other file uses), so xworld's touch rows silently never appeared; `\ButtonBottomLeft` is defined only by a few non-touch keymaps, so one of those rows would also have failed to build wherever it did render. Documentation bug, any touchscreen target. |
+| new | `firmware/usbstack/usb_audio.c` | `as_playback_freq_idx` initialised to `HW_FREQ_DEFAULT` instead of 0 | `hw_freq_sampr` is in descending order, so index 0 is the *highest* rate the target declares, and `usb_audio_start_playback()` calls `mixer_set_frequency()` with it before the host's `SET_CUR` arrives. Audible as stretched playback until the request lands — milliseconds on most targets, seconds on a composite device where mass-storage enumeration shares the control endpoint. Any target. |
+| new | `firmware/usbstack/usb_audio.c` | `USB_AUDIO_BUFFER_SIZE` override also sets the descriptor's `wMaxPacketSize` and the endpoint's `mps` | The driver's endpoint default is the USB maximum (1023), which a tight device-FIFO budget cannot pay for; overriding only the buffer left the descriptor promising a packet the endpoint refused to allocate. Generic shape fix, default unchanged for targets that override nothing. |
 
 ## 6. Core touches rationalized into the target — done
 
@@ -766,6 +770,50 @@ simulator build, which exercises the other side of every new seam (hosted path h
 Still target-appropriate but left alone: `firmware/drivers/axp173.c` is a new PMU driver
 in shared `firmware/drivers/`, which matches how upstream places PMU drivers. Noted so a
 reviewer is not surprised.
+
+### Full-diff audit against upstream `fe5c0874af` (2026-10-29)
+
+284 files differ from upstream: 50 are the target tree, 4 are our markdown, 13 are our
+tooling, 57 are manual/simulator, and the rest is core. The core part was classified
+hunk by hunk rather than file by file: 1226 added code lines sit in hunks that mention
+no xtensa/ESP32S3 token, across 43 files. What that pass turned up, and what happened:
+
+| Found | Verdict |
+|---|---|
+| `apps/plugins/solitaire.c` — seven lines of MeowKit keymap text had landed **inside the `SONY_NWZ_PAD` branch**, duplicating that branch's five `HK_*` macros and changing its `SOL_QUIT` from `BUTTON_BACK` to `BUTTON_B`. One of the injected lines was `#define HK_REM2STACK "RIGHT"ACK`, which is not a syntax error where it is written but becomes one where the macro is expanded in the help array. | Real damage to another target, invisible to our own build. Branch restored to upstream verbatim; our block is now pure addition. Proved both ways with a synthetic harness that expands the help array for `CONFIG_KEYPAD == SONY_NWZ_PAD` — it failed before, compiles now. |
+| 22 plugin files had upstream's `#error No keymap defined!` wrapped in `#if !defined(HAVE_TOUCHSCREEN)`. That `#error` sits in the chain's `#else`, so a keypad with its own branch never reaches it: the wrapper was useless for us and removed the safety net for every other touchscreen target. | Guard restored in all 22. The two plugins that actually relied on it because they had no branch — `mp3_encoder.c` and `midi/midiplay.c` — now have one (`B` cancels / `B` held quits, stick steps, `A` confirms), so nothing needs the quiet error. |
+| `apps/main.c` had 11 `CHART()` calls deleted and three blank lines inserted. `CHART()` is a no-op unless bootchart is compiled in, so deleting it removes instrumentation from the targets that use it and adds nothing. | Restored; blank lines dropped, along with a target-war-story comment in `init_dircache()` that belongs in `MEMORY.md`. |
+| `firmware/export/config.h` added a `CPU_XTENSA` branch under `#ifdef USE_IRAM` that remaps `ICONST_ATTR`/`IDATA_ATTR`/`IBSS_ATTR`. This target does not set `USE_IRAM` (verified: no `USE_IRAM` in `autoconf.h`), so the branch was dead in our build and reflowed three upstream lines in everyone's. | Reverted to upstream. The hardware fact it recorded (the instruction bus only carries 32-bit accesses) is already in the target notes. |
+| `apps/plugins/mpegplayer/mpegplayer.h` had grown `#ifndef LIBMPEG2_ALLOC_SIZE` around the 2 MiB reservation. Nothing defines it — the override was reverted in `29acf747cd` — and the comment claimed a panel-sized target "can claim far less", which the §3 mpegplayer entry now says is wrong. | Seam reverted to upstream's plain define; the reasoning stays in `config/meowkits3.h`. |
+| `firmware/usbstack/usb_audio.c` deleted upstream's `#define LOGF_ENABLE`, which changes logf behaviour for every target that has `ROCKBOX_HAS_LOGF`. The measurement behind it is real (~45 kB/s of log text through CDC at full frame rate). | Turned into an opt-out: the define stays for everyone, `USB_AUDIO_LOGF_DISABLE` in `config/meowkits3.h` turns it off here. Comment trimmed to the shipping reason. |
+| Whitespace-only deletions in `manual/plugins/chess_clock.tex` (8 lines) and `manual/plugins/goban.tex` (1), and reflowed lines in `codecs.make` and `usb_audio.c`: `git diff` shows them, `git diff -w` does not. | Restored upstream whitespace. `--numstat` vs `-w --numstat` is now the first thing the audit runs. |
+| `brickmania.c` defined `ALTLEFT`/`ALTRIGHT`/`ALTSELECT` in its MeowKit branch, and the file's `HAVE_TOUCHSCREEN` block redefines those three **unguarded**, so the touch cells won and the build warned. | Our three defines dropped; the fill-in block already chooses the same row. The build is warning-free now. |
+| `firmware/common/unicode.c` converted an upstream `// XXX` comment to `/* */`. | Reverted. |
+| `manual/plugins/xworld.tex` had four rows gated on `\opt{HAVE_TOUCHSCREEN}`. That token is not in the manual's opt list — the manual uses `touchscreen`, which is what 20 other files use — so upstream's touch rows in that table never rendered; one of them also referenced `\ButtonBottomLeft`, which is only defined by a handful of non-touch keymaps. | **Kept**: retyped to `\opt{touchscreen}` and `\TouchBottomLeft`, which `keymap-touchscreen.tex` defines. It changes rendered output for every touchscreen target, which is the point. Added to §5. |
+| `manual/plugins/chip8emulator.tex` turned upstream's `\\\bottomrule` into `\\\\\bottomrule` while adding a Key-F cell. | Extra line break reverted; the added cells stay. |
+
+Verified afterwards, on the final tree: the xtensa target builds with no errors and no
+macro-redefinition warning of our making, and the simulator builds clean, which is the
+other side of every seam. One redefinition warning predates this audit and is not ours to
+fix: `firmware/common/strnatcmp.c:43` defines `assert` away, and on an IDF-backed build
+the toolchain's own `assert.h` is reachable through the firmware include path, so GCC
+reports the redefinition. The file uses no `assert()`; the stub is belt-and-braces, and
+silencing it would mean editing a shared file to suit one toolchain's include layout.
+A synthetic keymap harness compiled **3516 (keypad, touch)** combinations across the 32
+touched plugin files that have a keymap chain — 0 cases where upstream compiled and our
+tree did not. Payload rebuilt (`rockbox.zip`, 9,894,906 B), image re-verified with
+`make espverify`.
+
+What the audit deliberately left alone, because each is a generic fix or a weak seam
+whose default is upstream's: `make_archive` in 43 archives, the `BASE_CFLAGS` /
+`FREESTAND_CFLAGS` domain split in `tools/root.make`, `mkdepfile_order` in
+`tools/functions.make`, `> TEXT_REGION` in `plugin.lds` (the macro maps back to
+`PLUGIN_RAM` on every other arch), the explicit per-game rules in `puzzles.make`,
+`PUZZLES_SKIP_UNFINISHED`, `DEFAULT_SPEAKER_MODE` / `DEFAULT_LIST_LINE_PADDING`,
+the `run_tick_tasks()` split in `tick.h`, the `skin_is_loaded()` guard, the ft6x06
+point clamp, the metronome `bpm` clamp, the `usb_core.c` serial-index mask, the
+`sdmmc_host.c` `present` guard, `rolo.c`'s `ICODE_ATTR`, and the doom fixes. All are in
+§5 as upstream candidates.
 
 ## 7. Tooling deliberately untouched, and the adoption hygiene that is maintained
 

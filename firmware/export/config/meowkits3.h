@@ -375,18 +375,21 @@
  * unreachable rather than off. */
 #define USB_SERIAL_DEFAULT_ON
 
-/* LIBMPEG2_ALLOC_SIZE is deliberately NOT overridden here, and the reasoning is worth
- * keeping because the obvious override is wrong. mpegplayer reserves this much of the
- * buflib arena up front and libmpeg2 then asks for YUV and converted frame buffers
- * sized by the *coded* resolution; mpegplayer only clips at blit time
- * (`mpegplayer.c:818`, `:851`) and never rejects a stream whose coded frame is larger
- * than the panel. alloc.c returns NULL when the reservation runs out, and
- * libmpeg2/header.c assigns those results straight into mpeg2dec->yuv_buf[][] with no
- * NULL check -- so an under-sized reservation is not a clean failure, it is a write
- * through a NULL pointer and a watchdog reset. 2 MiB is what covers 352x288 coded
- * frames; it is still short of 720x576, which is a mpegplayer-wide fragility rather
- * than something this target can fix by tuning the number. If the arena ever grows,
- * raising this is the right lever; lowering it is not. */
+/* mpegplayer.h's LIBMPEG2_ALLOC_SIZE is deliberately left at upstream's 2 MiB.
+ * The reasoning is worth keeping because the obvious override is wrong.
+ * mpegplayer reserves this much of the buflib arena up front and libmpeg2 then
+ * asks for YUV and converted frame buffers sized by the *coded* resolution;
+ * mpegplayer only clips at blit time (`mpegplayer.c:818`, `:851`) and never
+ * rejects a stream whose coded frame is larger than the panel. alloc.c returns
+ * NULL when the reservation runs out, and libmpeg2/header.c assigns those
+ * results straight into mpeg2dec->yuv_buf[][] with no NULL check -- so an
+ * under-sized reservation is not a clean failure, it is a write through a NULL
+ * pointer and a watchdog reset. 2 MiB is what covers 352x288 coded frames; it
+ * is still short of 720x576, which is a mpegplayer-wide fragility rather than
+ * something this target can fix by tuning the number. Our encode recipe
+ * (manual/plugins/mpegplayer.tex) keeps coded size at 320x240, which needs far
+ * less than the reservation, so the number is never the constraint. Raising it
+ * is safe if the arena ever grows; lowering it is not. */
 
 /* Don't ship the three sgt puzzles that live in apps/plugins/puzzles/src/unfinished/:
  * group, slide and sokoban. All three crash on launch on this board, and upstream's own
@@ -900,3 +903,9 @@
  * ipod6g.h, ipodnano3g.h, ipodnano4g.h.
  */
 #define ROCKBOX_HAS_LOGF 1
+
+/* ... but not in usb_audio.c, whose isochronous path logs on every completion.
+ * Measured with it on: ~45 kB/s of log text through the CDC bulk-IN endpoint at
+ * full frame rate, which spends interrupt headroom the audio path needs. The
+ * messages are still readable by dropping this define in a debug build. */
+#define USB_AUDIO_LOGF_DISABLE
