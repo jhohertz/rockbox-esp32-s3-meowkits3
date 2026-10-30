@@ -73,7 +73,7 @@ static const char TAG[] = "rbtick";
  * and a Rockbox semaphore wait switches threads, which an exception frame on
  * a core with no REGB option cannot do. apps/main.c's tick thread runs them.
  */
-/* Authoritative kernel tick rate. Defined in idf-app/main/rockbox_app.c,
+/* Authoritative kernel tick rate. Defined in espressif_esp32s3/idf-app/main/rockbox_app.c,
  * which is compiled by the IDF build, so its configTICK_RATE_HZ is the rate
  * the kernel was actually configured with -- unlike this translation unit,
  * whose view of that macro comes from IDF headers the Rockbox makefiles do
@@ -134,7 +134,7 @@ void vApplicationTickHook(void)
      * catch that because 100 % 100 == 0 is perfectly valid -- the disagreement
      * is between two build systems, not within one.
      *
-     * rb_kernel_tick_hz is defined in idf-app/main/rockbox_app.c, which the
+     * rb_kernel_tick_hz is defined in espressif_esp32s3/idf-app/main/rockbox_app.c, which the
      * IDF build compiles, so its configTICK_RATE_HZ is by construction the
      * rate the kernel was actually configured with. tick_start() checks the
      * seam and says what it found, because this cost a long detour. */

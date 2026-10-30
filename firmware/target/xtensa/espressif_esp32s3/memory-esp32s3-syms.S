@@ -93,7 +93,7 @@ rb_ext_ram_end:
 /*
  * Thread 0's stack, and therefore the stack every Rockbox thread runs on: the
  * cooperative scheduler switches contexts inside one FreeRTOS task, and that
- * task is created from this buffer (see idf-app/main/rockbox_app.c). Plain
+ * task is created from this buffer (see espressif_esp32s3/idf-app/main/rockbox_app.c). Plain
  * .bss, which is internal DRAM under IDF's script. 16-byte aligned for the
  * Xtensa ABI.
  */

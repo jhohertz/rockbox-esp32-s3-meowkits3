@@ -108,7 +108,7 @@ void rb_thread_task_create(struct rb_thread_ref *ref, unsigned int slot)
        moment on two cores -- which happened when this project was built on the
        SMP kernel, as CPU 0 running "tick" while CPU 1 ran "scroll".
 
-       That kernel is not in use now: idf-app/sdkconfig leaves
+       That kernel is not in use now: espressif_esp32s3/idf-app/sdkconfig leaves
        CONFIG_FREERTOS_SMP unset and the build links
        components/freertos/FreeRTOS-Kernel, so core 1 runs no tasks. The pin is
        kept anyway, because Rockbox's single-core assumption is what makes the

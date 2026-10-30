@@ -70,7 +70,8 @@ docker run --rm -it --entrypoint bash   -v "$PWD:/src/rockbox" -v "$PWD/out:/out
 
 Out-of-tree builds work because `tools/meowkits3/espflash.make` derives its paths from
 `$(ROOTDIR)` rather than from the build directory's parent — which used to make
-`make esplayer` look for `<build-dir>/../idf-app/build/rockbox.map` and fail with
+`make esplayer` look for
+`<build-dir>/../espressif_esp32s3/idf-app/build/rockbox.map` and fail with
 `No rule to make target`.
 
 `SKIP_MANUAL=1` leaves the PDF out; everything else is still emitted and

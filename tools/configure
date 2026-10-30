@@ -659,6 +659,96 @@ xtensacc () {
  endian="little"
 }
 
+idfcc () {
+ app_type="esp-idf"
+ # APP_TYPE says who supplies the runtime environment, not how code that is
+ # loaded at run time is produced. This target still links its codecs and
+ # plugins itself, as relocatable images placed by apps/plugins/plugin.lds --
+ # what the native targets do -- so IMAGE_LINK below keeps that on.
+ #
+ # The SDK is checked, and its compile flags harvested, further down, once the
+ # build type is known: a simulator or host-tool build of this target is a host
+ # build that links no SDK, and it must not be made to install one.
+}
+
+idf_sdk_setup () {
+ # ESP-IDF is a build dependency of this target, in the same sense the Android
+ # NDK is for android_ndk targets: it is not part of Rockbox, and where it lives
+ # has to be told to configure.
+ #
+ # IDF's own export.sh sets IDF_PATH; ESP_IDF_PATH is accepted as well because
+ # tools/rockboxdev.sh prints a path rather than an environment, and a container
+ # build wants to pass one without sourcing anything.
+ if [ -z "$ESP_IDF_PATH" ] && [ -n "$IDF_PATH" ]; then
+     ESP_IDF_PATH="$IDF_PATH"
+ fi
+
+ if ! [ -f "$ESP_IDF_PATH/tools/idf.py" ]; then
+     echo "ERROR: this target builds against ESP-IDF, and no SDK was found."
+     if [ -n "$ESP_IDF_PATH" ]; then
+         echo "ERROR: ESP_IDF_PATH=$ESP_IDF_PATH has no tools/idf.py in it."
+     fi
+     echo "ERROR: point ESP_IDF_PATH (or IDF_PATH) at the SDK root, or source its"
+     echo "ERROR: environment first:  . <sdk>/export.sh"
+     echo "ERROR: tools/rockboxdev.sh --target=e installs the SDK and the toolchain."
+     exit 7
+ fi
+
+ verhdr="$ESP_IDF_PATH/components/esp_common/include/esp_idf_version.h"
+ if [ -f "$verhdr" ]; then
+     idf_major=`sed -n 's/#define ESP_IDF_VERSION_MAJOR *\([0-9]*\)/\1/p' "$verhdr"`
+     idf_minor=`sed -n 's/#define ESP_IDF_VERSION_MINOR *\([0-9]*\)/\1/p' "$verhdr"`
+     echo "Using ESP-IDF ${idf_major}.${idf_minor} at ${ESP_IDF_PATH}"
+     # The project, its sdkconfig defaults and the linker fragment were written
+     # against IDF 5. Older majors name different startup entry points and do not
+     # accept the LDFRAGMENT mechanism, so the link fails in ways that read like a
+     # Rockbox bug.
+     if [ -z "$idf_major" ] || [ "$idf_major" -lt 5 ]; then
+         echo "ERROR: ESP-IDF 5 or newer is required, found ${idf_major}.${idf_minor}."
+         exit 7
+     fi
+ fi
+
+ # The IDF project lives in the target tree; its linker fragment decides where
+ # Rockbox's statics go, which is the target's business, not the SDK's.
+ idfproject="$rootdir/firmware/target/xtensa/espressif_esp32s3/idf-app"
+
+ # Rockbox compiles its own sources against IDF's headers, so it needs the exact
+ # flags IDF uses for its own. They are harvested from IDF's build rather than
+ # written out here: they follow sdkconfig and shift whenever a component is
+ # enabled or disabled, and a hand-kept list fails as a code bug (header found,
+ # CONFIG_ define missing). They have to exist before make parses the Makefile --
+ # CFLAGS consumes IDF_CFLAGS at parse time -- which is why this runs here and
+ # cannot be a make rule.
+ idfbuild="$idfproject/build"
+ if ! [ -f "$idfbuild/compile_commands.json" ]; then
+     echo "Configuring ESP-IDF project ..."
+     if ! command -v idf.py >/dev/null 2>&1; then
+         echo "ERROR: IDF_PATH is set but idf.py is not on PATH."
+         echo "ERROR: source the SDK environment:  . $ESP_IDF_PATH/export.sh"
+         exit 7
+     fi
+     # CMake's progress chatter on stdout is noise; stderr is the diagnosis.
+     # Suppressing both left a failing reconfigure -- wrong target, missing
+     # component -- indistinguishable from "idf.py was never run".
+     if ! ( cd "$idfproject" && idf.py reconfigure 2>&1 >/dev/null ); then
+         echo "ERROR: idf.py reconfigure failed in $idfproject"
+         echo "ERROR: see the messages above; Rockbox cannot compile without the"
+         echo "ERROR: flags IDF reports for its own sources."
+         exit 7
+     fi
+ fi
+
+ if [ -f "$idfbuild/compile_commands.json" ]; then
+     "$rootdir/tools/meowkits3/idf-flags" "$idfbuild" -o idf.make || exit 1
+     echo "Created idf.make"
+ else
+     echo "ERROR: $idfbuild has no compile_commands.json."
+     echo "ERROR: run  idf.py reconfigure  in $idfproject, then re-run configure."
+     exit 7
+ fi
+}
+
 arm1176jzlinuxcc () {
  GCCOPTS=`echo $CCOPTS | sed -e s/-ffreestanding// -e s/-nostdlib//`
  # Although the ARM1176JZ-S supports unaligned accesses, those seems to disabled
@@ -4323,6 +4413,7 @@ fi
     # other target.
     memory=8 # always
     xtensacc
+    idfcc
     # A loaded codec is linked into two disjoint windows (see the CPU_XTENSA note
     # in apps/plugins/plugin.lds), so a flat binary would have to span the
     # 0x06000000 gap between them -- which is how objcopy emits a 100 MB file of
@@ -5038,6 +5129,10 @@ fi
 
 ### end of cmdline
 
+if [ "$app_type" = "esp-idf" ]; then
+    idf_sdk_setup
+fi
+
 # How codecs and plugins are produced is a separate question from APP_TYPE, which
 # says who supplies the runtime environment: a native build links its own images,
 # and so does an SDK-backed target that still loads them as images rather than
@@ -5134,6 +5229,7 @@ export ANDROID_NDK_PATH=${ANDROID_NDK_PATH}
 export ANDROID_SDK_PATH=${ANDROID_SDK_PATH}
 export FUNKEY_SDK_PATH=${FUNKEY_SDK_PATH}
 export ANDROID_PLATFORM_VERSION=${ANDROID_PLATFORM_VERSION}
+export IDF_PATH=${ESP_IDF_PATH}
 export TOOLSET=${toolset}
 export PIPER_MODEL_DIR=${PIPER_MODEL_DIR}
 export NO_UTF8PROC=${no_utf8proc}
@@ -5146,34 +5242,3 @@ include \$(TOOLSDIR)/root.make
 EOF
 
 echo "Created Makefile"
-
-if [ "$t_cpu" = "xtensa" ]; then
-  # Rockbox compiles its own sources against ESP-IDF's headers, so it needs the
-  # exact flags IDF uses for its own. They are harvested from IDF's build rather
-  # than written out here, and they have to exist before make parses the Makefile
-  # -- CFLAGS consumes IDF_CFLAGS at parse time -- which is why this runs in
-  # configure and cannot be a make rule.
-  idfbuild="$rootdir/idf-app/build"
-  if [ ! -f "$idfbuild/compile_commands.json" ]; then
-      echo "Configuring ESP-IDF project (idf-app) ..."
-      if ! command -v idf.py >/dev/null 2>&1; then
-          echo "WARNING: idf.py is not on PATH."
-          echo "WARNING: this target builds on ESP-IDF; source its environment"
-          echo "WARNING: (source ~/esp/esp-idf/export.sh) before running configure."
-      else
-          # CMake's progress chatter on stdout is noise; stderr is the diagnosis.
-          # Suppressing both left a failing reconfigure -- no IDF_PATH, wrong
-          # target, missing component -- indistinguishable from "idf.py was never
-          # run", with only the generic warning below to explain it.
-          ( cd "$rootdir/idf-app" && idf.py reconfigure 2>&1 >/dev/null )
-      fi
-  fi
-  if [ -f "$idfbuild/compile_commands.json" ]; then
-      "$rootdir/tools/meowkits3/idf-flags" "$idfbuild" -o idf.make || exit 1
-      echo "Created idf.make"
-  else
-      echo "WARNING: no ESP-IDF compile flags were produced."
-      echo "WARNING: this target builds on ESP-IDF; source its environment"
-      echo "WARNING: (source ~/esp/esp-idf/export.sh) before running configure."
-  fi
-fi

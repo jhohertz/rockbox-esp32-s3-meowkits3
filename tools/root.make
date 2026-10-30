@@ -14,12 +14,14 @@ DEFINES = -DROCKBOX -DMEMORYSIZE=$(MEMORYSIZE) $(TARGET) \
 INCLUDES = -I$(BUILDDIR) -I$(BUILDDIR)/lang $(TARGET_INC)
 
 # There are two compilation domains in a Rockbox build, and on most targets they
-# are the same. On an ESP-IDF target they are not, and conflating them breaks the
+# are the same. A target whose firmware links an external C library has to give
+# that library's headers to the first domain only; conflating them breaks the
 # second one silently.
 #
-#   firmware domain   firmware/, apps/, most of lib/rbcodec. These objects end up
-#                     in the firmware image, so on this target they are linked
-#                     against the platform C library and have to see its headers.
+#   firmware domain   firmware/, apps/, most of lib/rbcodec. These objects end
+#                     up in the firmware image, so on such a target they are
+#                     linked against the platform C library and have to see
+#                     its headers.
 #
 #   freestanding      lib/rbcodec/codecs/ and apps/plugins/. A codec or a plugin
 #       domain        is a separate executable with its own crt0, its own linker
@@ -31,138 +33,29 @@ INCLUDES = -I$(BUILDDIR) -I$(BUILDDIR)/lang $(TARGET_INC)
 #                     Everything else libc-shaped has to be resolved at compile
 #                     time by Rockbox's own libc headers, which are deliberately
 #                     macro-based so no call is emitted: `#define abs(x)
-#                     ((int)ABS(x))`, and assert() expanding to panicf(). Get that
-#                     wrong and abs()/llabs()/__assert_func become real calls to a
-#                     library that is not in the link.
+#                     ((int)ABS(x))`, and assert() expanding to panicf(). Get
+#                     that wrong and abs()/llabs()/__assert_func become real
+#                     calls to a library that is not in the link.
 #
-# BASE_CFLAGS is what every target has always used, and it is what the
-# freestanding domain must keep. CFLAGS is the firmware domain's, and on this
-# target it gains IDF's flags.
+# BASE_CFLAGS is the part of the compile flags that belongs to every domain. A
+# target whose firmware domain needs an external SDK's flags overrides CFLAGS in
+# its own makefile; the freestanding domain -- codecs and plugins, separate
+# executables with no C library in their link -- keeps BASE_CFLAGS, so that
+# override cannot reach it.
 BASE_CFLAGS = $(INCLUDES) $(DEFINES) $(GCCOPTS)
 CFLAGS = $(BASE_CFLAGS)
-# Built from BASE_CFLAGS, not from CFLAGS. Both variables are recursively
-# expanded, so deriving PPCFLAGS from CFLAGS "before" IDF is added to it does not
-# capture the earlier value -- it re-expands at use time and picks the IDF flags
-# up anyway. That matters because a SOURCES file is a C preprocessor program: if
-# IDF's CONFIG_ defines reach it, IDF's configuration starts deciding which
-# Rockbox files get compiled.
-#
-# LIBC_HDR_AFTER is in it because preprocessing is a firmware-domain activity and
-# those directories are no longer on INCLUDES on this target: apps/rbcodecconfig.h
-# includes file.h, which lives in firmware/include, and preprocessing that file
-# with a path that omits it fails at parse time, before any rule runs.
-PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(BASE_CFLAGS) $(LIBC_HDR_AFTER)) # cygwin sdl-config fix
+# Built from BASE_CFLAGS rather than CFLAGS: both are recursively expanded, so
+# deriving PPCFLAGS from CFLAGS picks up whatever a target later adds to
+# CFLAGS. That matters because a SOURCES file is a C preprocessor program --
+# defines that belong only to the compiled domain must not reach it.
+PPCFLAGS = $(filter-out -g -Dmain=SDL_main,$(BASE_CFLAGS)) # cygwin sdl-config fix
 
-# The freestanding domain: Rockbox's include order, Rockbox's defines, Rockbox's
-# warning and codegen policy, and nothing belonging to any external SDK.
-# LIBC_HDR_FIRST is empty except on targets that move the libc-replacement
-# directories off INCLUDES; see firmware/firmware.make.
+# The freestanding domain: Rockbox's include order and Rockbox's defines, with
+# nothing belonging to an external SDK. LIBC_HDR_FIRST is empty except on
+# targets that move the libc-replacement directories off INCLUDES; see their
+# makefile.
 FREESTAND_CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_FIRST)
 
-# ESP-IDF-backed targets compile their own sources with Rockbox's build, but the
-# files that reach IDF drivers have to see IDF's headers and IDF's generated
-# sdkconfig.h. The flags are harvested from IDF's own build by tools/meowkits3/idf-flags
-# instead of being duplicated here: they follow sdkconfig and shift whenever a
-# component is enabled or disabled, and a hand-kept list fails as a code bug
-# (header found, CONFIG_ define missing).
-#
-# Whether that is true is not a question about the CPU. The simulator shares this
-# arch -- tools/configure gives it t_cpu="xtensa" -- but it is a host executable
-# that links no SDK, so every block below has to be off for it. Keying on
-# $(CPU) alone handed the host compiler IDF's response-file flags
-# (-mlongcalls, -mdisable-hardware-atomics) and IDF's endian.h, which is exactly
-# how the simulator used to fail. The discriminator is the artifact, the same one
-# tools/meowkits3/espflash.make already uses: a build whose output is
-# rockbox.<chip> is an image for an ESP part.
-XTENSA_IDF :=
-ifeq (xtensa,$(CPU))
-ifneq (,$(findstring esp32,$(BINARY)))
-XTENSA_IDF := 1
-endif
-endif
-
-ifdef XTENSA_IDF
--include $(BUILDDIR)/idf.make
-#
-# Ordering is the whole problem here, and it cuts both ways:
-#
-#   - IDF's headers must get the real C library.
-#     components/newlib/platform_include/assert.h is a shim whose entire job is
-#     `#include_next <assert.h>` to reach "newlib's own unmodified assert.h". If
-#     Rockbox's firmware/include is a plain -I, the next assert.h it finds is
-#     Rockbox's, which pulls in panic.h and never reaches the libc. The failure
-#     then surfaces as an unrelated parse error inside IDF (a missing
-#     ESP_STATIC_ASSERT, an unknown `FILE`), which is why it reads like a dialect
-#     problem and is not.
-#   - Rockbox's headers must keep their own names. With IDF's flags first,
-#     apps/main.c's `#include "rtc.h"` landed on IDF's deprecated
-#     esp_hw_support/include/soc/esp32s3/rtc.h, and rtc_init() became an implicit
-#     declaration.
-#
-# firmware/include holds both assert.h (which must lose to the libc) and rtc.h
-# (which must win over IDF), so no permutation of -I flags settles it. What does
-# settle it is -idirafter on the two directories that hold libc replacements, and
-# only for the firmware domain: the freestanding domain has no system libc to
-# reach, and needs those headers ahead of everything instead. Both are set in
-# firmware/firmware.make.
-#
-# Rockbox builds with -Wundef. IDF headers test generated sdkconfig names bare
-# (`#if CONFIG_COMPILER_OPTIMIZATION`, `#if __clang__`, `#if BOOTLOADER_BUILD`),
-# and IDF's own build never notices because it does not use -Wundef. Silencing
-# that for the whole firmware domain, though, also silences it for every Rockbox
-# file -- which is how a typo in `#if CONFIG_FOO` would go unnoticed here while
-# every other target reported it. Measured on a full rebuild, the noise is not
-# spread evenly: 241 of the 683 warnings are one macro in one IDF header that
-# every file including <stdio.h> hits, and the rest sit in files that reach IDF's
-# own API headers. So the macro is supplied and the flag is scoped.
-#
-# CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY is absent from this project's
-# sdkconfig.h because the build selects newlib rather than picolibc; the header
-# asks `#if` that name, and 0 is what the configuration means.
-#
-# HAVE_SYSTEM_LIBC is defined here rather than in the target's config header for
-# the same reason the include directories are split: it describes what the link
-# contains, and only this domain's link contains a C library. The freestanding
-# domain must not see it -- see the note in config/meowkits3.h. PPCFLAGS carries it
-# too because that is where firmware/SOURCES and firmware/asm/SOURCES get their
-# `#if`s evaluated.
-CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_AFTER) $(IDF_CFLAGS) -DHAVE_SYSTEM_LIBC \
-         -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
-PPCFLAGS += -DHAVE_SYSTEM_LIBC
-#
-# Include directories, and only include directories, do go to PPCFLAGS. The
-# invariant that matters is that IDF's CONFIG_ defines must not reach a SOURCES
-# file, because that would let IDF's configuration decide which Rockbox files get
-# compiled; IDF's search paths decide nothing of the kind. They are needed because
-# mkdepfile scans with PPCFLAGS under -MG, which does not fail on an unresolved
-# include -- it emits the name as written, and addtargetdir.pl then turns
-# `esp_err.h` into $(BUILDDIR)/esp_err.h, a prerequisite with no rule, which is a
-# hard make error rather than a missing dependency.
-PPCFLAGS += $(filter -I%,$(IDF_CFLAGS))
-
-# One more ordering case, and this one is a name collision rather than a
-# preference. A firmware object that reaches an ESP-IDF driver can pull IDF's
-# FreeRTOS headers, and FreeRTOS.h includes <queue.h> to get its own queue API.
-# Rockbox has a queue.h as well, in firmware/kernel/include, and the firmware
-# domain puts that directory on the path ahead of IDF's. The two files even share
-# a guard name (QUEUE_H), so IDF's is skipped entirely and every FreeRTOS type
-# declared after it comes out unknown -- reported as errors inside IDF's
-# idf_additions.h, which reads like a broken toolchain and is really two
-# projects' headers arriving at the same name. Objects in that group are compiled
-# with IDF's search path leading; none of them use Rockbox's queue API.
-IDF_FIRST_CFLAGS = $(IDF_CFLAGS) $(BASE_CFLAGS) $(LIBC_HDR_AFTER) \
-                   -DHAVE_SYSTEM_LIBC -Wno-undef \
-                   -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
-
-# The remaining -Wno-undef scope. Only the objects that include an IDF API header
-# can see IDF's bare sdkconfig tests, and they are confined to the target
-# directory: firmware/target/xtensa/cache-xtensa.c is the single object that
-# includes the cache HAL, and the rest of the vendor headers arrive through the
-# handful of drivers that talk to IDF directly. Everything else in the firmware
-# -- apps, the codec library, the kernel, the generic drivers -- keeps -Wundef
-# on, exactly as it is on every other target.
-$(BUILDDIR)/firmware/target/xtensa/%.o: CFLAGS += -Wno-undef
-endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 
 TOOLS = $(TOOLSDIR)/rdf2binary $(TOOLSDIR)/convbdf \
@@ -213,6 +106,15 @@ all: $(DEPFILE) build
 # compile rules
 include $(TOOLSDIR)/tools.make
 
+# A target that compiles against an external SDK needs the SDK's flags before
+# any SOURCES file is preprocessed: a SOURCES file is a C preprocessor program,
+# evaluated while the subdir makefiles below are read, and firmware/asm/SOURCES
+# decides which libc implementation to build from a define the SDK domain sets.
+# Hence this include here rather than with the app_type dispatch further down.
+ifneq (,$(findstring esp-idf, $(APP_TYPE)))
+  include $(FIRMDIR)/target/xtensa/espressif_esp32s3/idf.make
+endif
+
 ifeq (,$(findstring checkwps,$(APP_TYPE)))
   ifeq (,$(findstring database,$(APP_TYPE)))
     ifeq (,$(findstring warble,$(APP_TYPE)))
@@ -239,7 +141,11 @@ ifeq (,$(findstring checkwps,$(APP_TYPE)))
 endif
 
 #included before codecs.make and plugins.make so they see them)
-ifndef APP_TYPE
+# The assembler thread switch, setjmp and the arch support archives belong to
+# targets that build native images. APP_TYPE alone does not decide that: an
+# SDK-backed target that still links its own codec and plugin images needs these
+# too -- see IMAGE_LINK in tools/configure.
+ifdef IMAGE_LINK
   include $(ROOTDIR)/lib/libsetjmp/libsetjmp.make
   ifeq (arch_arm,$(ARCH))
     include $(ROOTDIR)/lib/arm_support/arm_support.make
@@ -338,13 +244,6 @@ ifeq (echor1,$(MODELNAME))
   include $(ROOTDIR)/tools/echoplayer/openocd.make
 endif
 
-# ESP32 targets have no bootloader stage to write, so flashing is one esptool
-# call on the packed image. XTENSA_IDF already carries the artifact test, so the
-# simulator -- same arch, host executable -- gets no flash goal.
-ifdef XTENSA_IDF
-  include $(ROOTDIR)/tools/meowkits3/espflash.make
-endif
-
 # One or more subdir makefiles requested --gc-sections?
 ifdef CORE_GCSECTIONS
   # Do not use '--gc-sections' when compiling sdl-sim
@@ -364,19 +263,20 @@ $(RBINFO): $(BUILDDIR)/$(BINARY)
 	$(SILENT)echo Creating $(@F)
 	$(SILENT)$(TOOLSDIR)/mkinfo.pl $@
 
-# Sources whose dependencies are scanned with the default include order. A target
-# that compiles part of its tree with another project's headers leading overrides
-# this and scans those files separately, so a dependency is recorded against the
-# header the compile actually used rather than the one this order happened to find.
-# See mkdepfile_order in tools/functions.make.
-DEP_SRCS = $(SRC)
+# Sources whose dependencies are scanned with the default include order. A
+# target that compiles some files with another project's headers leading sets
+# DEP_SRCS to exclude them and DEPSCAN_EXTRA to scan those separately, so a
+# dependency is recorded against the header the compile actually used. See
+# mkdepfile_order in tools/functions.make.
+DEP_SRCS ?= $(SRC)
+DEPSCAN_EXTRA ?=
 
 $(DEPFILE) dep:
 	$(call PRINTS,Generating dependencies)
 	$(call mkdepfile,$(DEPFILE)_,$(DEP_SRCS))
 	$(call mkdepfile,$(DEPFILE)_,$(OTHER_SRC:%.lua=))
 	$(call mkdepfile,$(DEPFILE)_,$(ASMDEFS_SRC))
-	$(IDF_DEPSCAN)
+	$(DEPSCAN_EXTRA)
 	$(call bmpdepfile,$(DEPFILE)_,$(BMP) $(PBMP))
 	@mv $(DEPFILE)_ $(DEPFILE)
 
@@ -435,7 +335,6 @@ $(LINKROM): $(ROMLDS)
 	$(call PRINTS,PP $(@F))
 	$(call preprocess2file,$<,$@,)
 
-ifndef XTENSA_IDF
 # Note: make sure -Wl,--gc-sections comes before -T in the linker options.
 # Having the latter first caused crashes on (at least) mini2g.
 $(BUILDDIR)/rockbox.elf : $$(OBJ) $(FIRMLIB) $(VOICESPEEXLIB) $(CORE_LIBS) $$(LINKRAM)
@@ -459,162 +358,9 @@ $(BUILDDIR)/rockbox.bin : $(BUILDDIR)/rockbox.elf
 
 $(BUILDDIR)/rombox.bin : $(BUILDDIR)/rombox.elf
 	$(call PRINTS,OC $(@F))$(call objcopy,$<,$@)
-endif # !XTENSA_IDF
 
-ifdef XTENSA_IDF
-#### ESP-IDF-backed link ####
-#
-# Rockbox compiles and archives; ESP-IDF links. IDF owns the linker script, the
-# startup (call_start_cpu0 -> esp_startup_start_app -> app_main), the cache/MMU
-# and PSRAM bring-up, the C library and FreeRTOS. Those are precisely the things
-# the bare-metal branch had to reimplement by hand, and doing it again here would
-# be the entire difficulty of the port for no benefit. The bare-metal link lives
-# on the tagged branch (baremetal-pre-idf).
-#
-# Consequence worth stating: Rockbox's own linker script (app.lds), crt0 and
-# tools/esp-elf2image are not used on this path.
-
-IDFDIR ?= $(ROOTDIR)/idf-app
-IDF_PROJECT ?= rockbox
-IDFPY ?= idf.py
-
-# Everything Rockbox compiled that is not already an archive, in one archive.
-#
-# $(OBJ) is only the apps/ and other non-library sources -- a few dozen objects.
-# The firmware sources live in FIRMLIB_OBJ and are already archived in
-# libfirmware.a, which is a member of CORE_LIBS. Building librockbox.a from
-# $(OBJ) alone and then excluding libfirmware.a from the link (on a duplicate
-# symbol concern that does not apply here -- the two sets are disjoint) left every
-# firmware symbol unreachable and the IDF link failed on a single undefined
-# reference. Both are needed.
-ROCKBOX_ARCHIVE := $(BUILDDIR)/lib/librockbox.a
-
-$(ROCKBOX_ARCHIVE): $$(OBJ)
-	$(call make_archive)
-
-# VOICESPEEXLIB is not a codec: it is the second copy of libspeex that
-# apps/voice_thread.c links against, built with VOICESPEEXFLAGS (no -DCODEC, no
-# -ffunction-sections, -DROCKBOX_VOICE_CODEC) so the voice path can call the
-# decoder directly from the firmware. Rockbox's own link rule listed it
-# explicitly (see the rockbox.elf rule above); dropping it here showed up as
-# undefined reference to `speex_decode_int' rather than as anything that named
-# the cause. It has to be a prerequisite of the generated cmake file as well as
-# linked, because nothing else in the tree builds it.
-ROCKBOX_LINK_LIBS := $(ROCKBOX_ARCHIVE) $(CORE_LIBS) $(VOICESPEEXLIB)
-
-# Everything compiled in the firmware domain gets $(IDF_CFLAGS) -- the CFLAGS line
-# above adds it to every object here, not only the few that also need IDF's include
-# path leading. A sdkconfig or component-set change therefore invalidates all of
-# them. Without this the harvest refreshes the handful bound to idf.make elsewhere
-# and leaves the rest of the firmware compiled against an obsolete sdkconfig, which
-# surfaces as a header found but a CONFIG_ define missing.
-IDF_FLAGGED_OBJ := $(call c2obj,$(filter %.c %.S,$(SRC) $(OTHER_SRC)))
-$(IDF_FLAGGED_OBJ): $(BUILDDIR)/idf.make
-
-# The objects compiled with IDF's headers leading (XTENSA_IDF_FIRST_SRC, listed in
-# firmware/firmware.make) are excluded from the default dependency scan and scanned
-# with IDF's include order instead, so make.dep records FreeRTOS's queue.h for them
-# rather than Rockbox's. Same list, same order, three consumers.
-IDF_FIRST_PPCFLAGS = $(filter -I%,$(IDF_CFLAGS))
-IDF_DEPSCAN = $(call mkdepfile_order,$(DEPFILE)_,$(XTENSA_IDF_FIRST_SRC),$(IDF_FIRST_PPCFLAGS))
-DEP_SRCS = $(filter-out $(XTENSA_IDF_FIRST_SRC),$(SRC))
-
-# Hand the archive list to CMake rather than writing it in idf-app: which archives
-# exist depends on what the Rockbox configuration enables (rbcodec, skin_parser,
-# utf8proc and fixedpoint are all conditional), so a list maintained in two places
-# would silently link a stale set.
-#
-# The linker mapping and the two CMakeLists are prerequisites as well: they are
-# the inputs that decide where sections go and what the link line looks like, and
-# without them a change to main/rockbox_memory.lf would be picked up only by
-# accident.
-# Rewrite, and nudge CMake, only when the list actually changed. The archives are
-# prerequisites of this file, so an unconditional rewrite plus touch re-ran CMake on
-# every single build to tell it nothing. Nudging is needed at all because IDF builds
-# the ninja graph itself: registering the generated file via CMAKE_CONFIGURE_DEPENDS
-# makes ninja see it as an output twice and refuse to build. Touching a file CMake
-# already tracks is the nudge that works, and it has to happen here rather than in
-# CMake -- this file is generated after IDF has already been configured.
-$(IDFDIR)/rockbox_libs.cmake: $(ROCKBOX_LINK_LIBS) $(IDFDIR)/main/rockbox_memory.lf \
-                              $(IDFDIR)/CMakeLists.txt $(IDFDIR)/main/CMakeLists.txt
-	$(call PRINTS,GEN $(@F))
-	$(SILENT)rm -f $@.new; \
-	   echo '# generated by tools/root.make -- do not edit' >> $@.new; \
-	   echo 'set(ROCKBOX_LIBS' >> $@.new; \
-	   for l in $(ROCKBOX_LINK_LIBS); do echo "    $$l" >> $@.new; done; \
-	   echo ')' >> $@.new
-	$(SILENT)if cmp -s $@.new $@; then \
-		rm -f $@.new; \
-	else \
-		mv -f $@.new $@; \
-		touch $(IDFDIR)/main/CMakeLists.txt; \
-	fi
-
-# The archives are prerequisites of the image too, not just of the list above: an
-# archive whose *contents* changed while its name stayed the same has to relink,
-# and before this the image moved only when the set of archives moved.
-#
-# sdkconfig.defaults only *seeds* sdkconfig: IDF writes the file once and ignores the
-# defaults forever after, so a change there lands in neither sdkconfig nor the
-# harvested idf.make and the image is unchanged with nothing to say why. tools/
-# idf-seedcheck makes the decision on content rather than mtime and explains itself.
-#
-# IDF owns the link, so it owns the ELF and the linker map -- but every other port
-# leaves both in the build directory, and the goals that read them (make elfzip,
-# make mapzip, tools/meowkits3/esp-layout-check, any symbol lookup) look there too. Copy them
-# in rather than making each consumer know IDF's tree.
-$(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake $(ROCKBOX_LINK_LIBS)
-	$(call PRINTS,IDF $(@F))
-	$(SILENT)$(ROOTDIR)/tools/meowkits3/idf-seedcheck $(IDFDIR) "$(IDF_PATH)"
-	$(SILENT)cd $(IDFDIR) && $(IDFPY) build
-	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).bin $@
-	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).elf $(BUILDDIR)/rockbox.elf
-	$(SILENT)cp $(IDFDIR)/build/$(IDF_PROJECT).map $(BUILDDIR)/rockbox.map
-
-# The flags IDF compiles its own sources with. tools/configure harvests this once;
-# making it a target here means a rebuilt IDF graph (sdkconfig or a component set
-# change) refreshes it instead of leaving Rockbox compiled against an obsolete
-# sdkconfig -- that failure looks like a header found but a CONFIG_ define missing,
-# which reads as a code bug and is not one.
-# IDF's own compile graph. After `make clean` (which fullcleans IDF) this does not
-# exist, and tools/meowkits3/idf-flags cannot harvest from nothing, so generate it with
-# `reconfigure`: that runs CMake -- which is what emits compile_commands.json --
-# without compiling the components. CMake itself re-runs when sdkconfig or a
-# CMakeLists changes, so this rule only ever fires when the graph is gone.
-$(IDFDIR)/build/compile_commands.json: $(IDFDIR)/CMakeLists.txt $(IDFDIR)/main/CMakeLists.txt \
-                                       $(IDFDIR)/main/rockbox_memory.lf
-	$(call PRINTS,IDF reconfigure)
-	$(SILENT)cd $(IDFDIR) && $(IDFPY) reconfigure
-
-$(BUILDDIR)/idf.make: $(IDFDIR)/build/compile_commands.json
-	$(call PRINTS,IDF harvest compile flags)
-	$(SILENT)$(TOOLSDIR)/meowkits3/idf-flags $(IDFDIR)/build -o $@
-
-# Rockbox generated rockbox_libs.cmake, so clean removes it. What clean does NOT
-# touch is IDF's build directory, and that is deliberate rather than lazy:
-# SOURCES files are run through the *target compiler* while make parses the
-# makefile, and those compilations need IDF's generated sdkconfig.h. Fullcleaning
-# IDF from clean therefore breaks the very next `make`, at parse time, with
-# "fatal error: sdkconfig.h: No such file or directory" -- and because a failed
-# preprocess silently yields an empty file list, it does so in a way that looks
-# like a missing source rather than a missing header. `idf-clean` is the goal that
-# resets IDF state, and it rebuilds what it removes.
-clean::
-	$(SILENT)rm -f $(IDFDIR)/rockbox_libs.cmake
-
-idf-clean:
-	$(SILENT)cd $(IDFDIR) && $(IDFPY) fullclean
-	$(SILENT)rm -f $(IDFDIR)/rockbox_libs.cmake
-	# Re-establish the generated headers immediately: sdkconfig.h and
-	# compile_commands.json are both needed before the next build can parse, and
-	# reconfigure emits both without compiling the components.
-	$(SILENT)cd $(IDFDIR) && $(IDFPY) reconfigure
-	$(SILENT)$(TOOLSDIR)/meowkits3/idf-flags $(IDFDIR)/build -o $(BUILDDIR)/idf.make
-.PHONY: idf-clean
-else
 $(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE) $(MKFIRMWARE_TOOL)
 	$(call PRINTS,SCRAMBLE $(notdir $@)) $(MKFIRMWARE) $< $@
-endif
 
 $(MAXOUTFILE):
 	$(call PRINTS,Creating $(@F))
@@ -765,7 +511,6 @@ fullinstall: simext1
 
 symlinkinstall: simext1
 	@echo "Installing a full setup with links in your '$(RBPREFIX)' dir"
-	$(SILENT)$(TOOLSDIR)/buildzip.pl $(VERBOSEOPT) --app=$(APPLICATION) -m "$(MODELNAME)" -i "$(TARGET_ID)" $(INSTALL) -z "zip -r0" -r "$(ROOTDIR)" --rbdir="$(RBDIR)" -f 2 $(TARGET) $(BINARY) -l
 endif
 
 help:
@@ -777,7 +522,6 @@ help:
 	@echo "codecs         - builds only codecs"
 	@echo "dep            - regenerates make dependency database"
 	@echo "clean          - cleans a build directory (not tools)"
-	@echo "idf-clean      - reset ESP-IDF build state and regenerate its headers (IDF-backed targets)"
 	@echo "veryclean      - cleans the build and tools directories"
 	@echo "manual         - builds a manual (pdf)"
 	@echo "manual-html    - HTML manual"

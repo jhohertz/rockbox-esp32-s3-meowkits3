@@ -1069,8 +1069,9 @@ void usb_init_device(void)
  * a word of warning. Rockbox's usb_init() therefore called the ROM's function,
  * which is part of the download/console path and not the USB transport API --
  * the crash was a LoadProhibited at EXCVADDR 0x0c on the first boot with
- * HAVE_USBSTACK. idf-app/CMakeLists.txt adds -Wl,--wrap=usb_enable, which is
- * what makes this the function that actually runs. Do not rename it back.
+ * HAVE_USBSTACK. espressif_esp32s3/idf-app/CMakeLists.txt adds
+ * -Wl,--wrap=usb_enable, which is what makes this the function that actually
+ * runs. Do not rename it back.
  *
  * usb.h maps usb_hw_open()/usb_hw_close() onto this, and usb.c calls them when
  * it enters and leaves USB mode. Note that usb.c calls usb_enable(true) on
