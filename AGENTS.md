@@ -70,21 +70,37 @@ Build flow for a target:
 
 On the `esp32-s3-idf` branch the pipeline above stops at the archives. Rockbox
 compiles everything, produces `lib/librockbox.a` plus the `CORE_LIBS` archives,
-writes their paths to `idf-app/rockbox_libs.cmake`, and then runs `idf.py build`,
-which links those archives with the IDF components and owns the linker script, the
-startup, the cache/MMU and PSRAM bring-up, the C library and FreeRTOS.
+writes their paths to
+`firmware/target/xtensa/espressif_esp32s3/idf-app/rockbox_libs.cmake`, and then
+runs `idf.py build`, which links those archives with the IDF components and owns
+the linker script, the startup, the cache/MMU and PSRAM bring-up, the C library
+and FreeRTOS. `app_type="esp-idf"` is what selects that path; the rules live in
+`firmware/target/xtensa/espressif_esp32s3/idf.make`, which `root.make` includes
+before the subdir makefiles (a `SOURCES` file is a preprocessor program, read
+while those makefiles are parsed, and one of them reaches the platform headers).
+`IMAGE_LINK`, exported by `configure`, is the separate statement that this target
+still links its own codec and plugin images rather than dlopening them — APP_TYPE
+alone would imply the hosted shape.
 
-The ordering is forced, not chosen: `idf.py reconfigure` has to run *before* Rockbox
-compiles, because `tools/meowkits3/idf-flags` harvests the flags for IDF's headers from
-`compile_commands.json` in IDF's build tree — a hand-kept include list would follow
-`sdkconfig` only by hand and would fail as a code bug (header found, `CONFIG_` define
-missing). `tools/configure` performs that reconfigure and writes `$(BUILDDIR)/idf.make`,
-which `root.make` includes. Because `rockbox_libs.cmake` is generated *after* IDF has
-been configured, `root.make` touches `idf-app/main/CMakeLists.txt` to make ninja
-re-run CMake; `CMAKE_CONFIGURE_DEPENDS` cannot be used here, because IDF generates
-its own ninja graph and the file then appears as an output twice.
+The ordering is forced, not chosen: `idf.py reconfigure` has to run *before*
+Rockbox compiles, because `tools/meowkits3/idf-flags` harvests the flags for IDF's
+headers from `compile_commands.json` in IDF's build tree — a hand-kept include list
+would follow `sdkconfig` only by hand and would fail as a code bug (header found,
+`CONFIG_` define missing). `tools/configure` performs that reconfigure and writes
+`$(BUILDDIR)/idf.make`, which `idf.make` includes; it requires `ESP_IDF_PATH` (or
+`IDF_PATH`) and fails with a named remedy if there is no SDK, which is also why a
+simulator or host-tool build of this target skips the whole check. Because
+`rockbox_libs.cmake` is generated *after* IDF has been configured, `idf.make`
+touches `idf-app/main/CMakeLists.txt` to make ninja re-run CMake;
+`CMAKE_CONFIGURE_DEPENDS` cannot be used here, because IDF generates its own ninja
+graph and the file then appears as an output twice.
 
 Build with the IDF environment sourced: `. ~/esp/esp-idf/export.sh && make`.
+Flashing needs the board in download mode — hold BOOT, press RESET. The serial port
+is the chip's own USB-CDC, with no DTR or RTS wired to the boot straps, so
+`sdkconfig.defaults` sets `CONFIG_ESPTOOLPY_BEFORE="no_reset"` and
+`make flash ESPPORT=/dev/ttyACM0` talks to a board that is already listening rather
+than trying to reset it.
 
 Read "Two compilation domains", below, before changing any flag set.
 
@@ -259,9 +275,9 @@ Two mechanical notes for files that include IDF headers:
 
 - `CFLAGS` already carries `$(IDF_CFLAGS)` for the whole firmware domain, so IDF
   headers are reachable from any target file. But `tools/configure` harvests those
-  flags from `$rootdir/idf-app/build`, **not** from the build directory being
-  configured. Adding a component to `idf-app/main/CMakeLists.txt` therefore needs
-  `idf.py reconfigure` in `idf-app/` before `configure` will see its include path;
+  flags from `$rootdir/espressif_esp32s3/idf-app/build`, **not** from the build directory being
+  configured. Adding a component to `espressif_esp32s3/idf-app/main/CMakeLists.txt` therefore needs
+  `idf.py reconfigure` in `espressif_esp32s3/idf-app/` before `configure` will see its include path;
   re-running `cmake` in `build-meowkits3` updates the wrong `compile_commands.json`
   and `idf.make` silently keeps the old flag set.
 - `firmware/target/xtensa/espressif_esp32s3/gpio-esp32s3.h` declares `gpio_set_direction(int, int)` as
@@ -424,7 +440,7 @@ armed — MMU[0..7] = 1..8 for DROM and MMU[144..148] = 9..13 for IROM.
 What the stage-2 loader does *not* do is bring up the octal PSRAM: that lives in
 the application, in `components/esp_psram/esp32s3/esp_psram_impl_octal.c`. On this
 branch that application is IDF's own startup, configured from
-`idf-app/sdkconfig.defaults` (`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT`,
+`espressif_esp32s3/idf-app/sdkconfig.defaults` (`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT`,
 `CONFIG_SPIRAM_SPEED_80M`, `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y`,
 `CONFIG_SPIRAM_XIP_FROM_PSRAM=y`). The hand-written `psram-xtensa.c` and `crt0.S`
 are bare-metal-branch files and no longer exist.
@@ -775,7 +791,7 @@ Four related facts, all measured rather than read:
   therefore rank a *better* ring as worse. Judge by FIFO state and listening.
 - **`ICODE_ATTR` is inert on this target, so the TX completion ISR executes from
   PSRAM.** `firmware/export/config.h` defines it as
-  `__attribute__((section(".icode")))`, and nothing in `idf-app/main/rockbox_memory.lf`
+  `__attribute__((section(".icode")))`, and nothing in `espressif_esp32s3/idf-app/main/rockbox_memory.lf`
   or any xtensa linker script provides a `.icode` region -- `readelf -S` on the built
   ELF shows no such section, so it is absorbed into `.flash.text` at `0x42000020`,
   which is PSRAM-backed because `CONFIG_SPIRAM_XIP_FROM_PSRAM`,
@@ -2450,17 +2466,19 @@ firmware/include/assert.h:       #define assert(e) ... panicf("Assertion failed:
 ```
 
 On this target the firmware links ESP-IDF's C library; the freestanding domain must
-not. `tools/root.make` therefore carries two flag sets:
+not. `tools/root.make` therefore keeps the shared part of the flags apart
+(`BASE_CFLAGS`), and `firmware/target/xtensa/espressif_esp32s3/idf.make` overrides
+`CFLAGS` for the firmware domain. Two flag sets:
 
 | flag set | used by | libc-replacement dirs | IDF flags |
 |---|---|---|---|
 | `CFLAGS` | `firmware/`, `apps/`, most of `lib/rbcodec` | `-idirafter` — lose to the system libc | yes |
 | `FREESTAND_CFLAGS` | codecs, plugins | `-I` — win, as on every other target | **none** |
 
-`firmware/firmware.make` takes `firmware/include` and `firmware/libc/include` off
-`INCLUDES` entirely for xtensa and hands each domain the form it needs
-(`LIBC_HDR_AFTER`, `LIBC_HDR_FIRST`); `codecs.make` and `plugins.make` build their
-flags from `FREESTAND_CFLAGS`.
+`firmware/target/xtensa/espressif_esp32s3/idf.make` removes `firmware/include` and
+`firmware/libc/include` from the firmware domain's flags with `filter-out` and hands
+each domain the form it needs (`LIBC_HDR_AFTER`, `LIBC_HDR_FIRST`); `codecs.make` and
+`plugins.make` build their flags from `FREESTAND_CFLAGS`.
 
 What it looks like when the domains leak:
 
@@ -2473,7 +2491,7 @@ What it looks like when the domains leak:
   `firmware/include/file.h` reaches for `<unistd.h>`, which resolves to the
   toolchain's copy inside a `-ffreestanding` TU whose include order shadows the
   `sys/cdefs.h` that copy depends on. One header line, 24 000 parse errors. It is
-  now supplied by `root.make` to the firmware domain only.
+  now supplied by the target makefile to the firmware domain only.
 
 `PPCFLAGS` — `SOURCES` preprocessing, linker scripts, and `mkdepfile` — is a
 firmware-domain thing, built from `BASE_CFLAGS` plus `LIBC_HDR_AFTER` plus **only**
@@ -2538,7 +2556,7 @@ version used `IDF_PATH`, so running it without `export.sh` in the environment
 silently harvested some arbitrary **IDF component's** flags — common components
 only, no driver includes — and the symptom was a Rockbox file failing on
 `#include "esp_cache.h"` while the generated `idf.make` looked well-formed.
-Adding a component to `idf-app/main/CMakeLists.txt` (`PRIV_REQUIRES`) therefore
+Adding a component to `espressif_esp32s3/idf-app/main/CMakeLists.txt` (`PRIV_REQUIRES`) therefore
 requires re-running `idf-flags` (and `idf.py reconfigure` first, so
 `compile_commands.json` reflects it).
 
@@ -3006,7 +3024,7 @@ PS says interrupts are allowed.
   `icons`, `lang` and friends have to be recreated by hand.
 - **`sdkconfig.defaults` only applies when `sdkconfig` is regenerated.** Adding
   a line to the defaults and rebuilding changes nothing; the existing
-  `idf-app/sdkconfig` wins. Delete it to pick the new defaults up.
+  `espressif_esp32s3/idf-app/sdkconfig` wins. Delete it to pick the new defaults up.
 - `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n`: Rockbox owns core 0 outright
   and, when every Rockbox thread is blocked, waits for the next tick inside the
   FreeRTOS task rather than returning from it, so that core's idle task never
@@ -3199,7 +3217,7 @@ current_tick = (long)(xTaskGetTickCount() / (rb_kernel_tick_hz / HZ));
 ```
 
 The divisor must come from the kernel that is actually running, which is why
-`rb_kernel_tick_hz` is a const defined in `idf-app/main/rockbox_app.c`
+`rb_kernel_tick_hz` is a const defined in `espressif_esp32s3/idf-app/main/rockbox_app.c`
 (`= configTICK_RATE_HZ`) rather than the macro read in this translation unit. Rockbox's
 objects are compiled by the Rockbox makefiles against IDF's generated headers, and those
 are not reliably regenerated when `sdkconfig` changes. Measured failure: with the kernel
@@ -3515,9 +3533,10 @@ than written as a page of zeros. Verified byte-for-byte against esptool 4.7.0; t
 only difference is the append-digest flag, which we clear because we do not append
 the SHA-256 that flag promises.
 
-`root.make` packs xtensa from `rockbox.elf`, not `rockbox.bin`: `objcopy -O binary`
-has to span the gap between the two flash windows (0x3C000020 to 0x42000020) and
-produces a 100 MB file of zeros.
+IDF packs the image from `rockbox.elf`; Rockbox's own `objcopy` path is not used.
+`objcopy -O binary` would have to span the gap between the two flash windows
+(0x3C000020 to 0x42000020) and produces a 100 MB file of zeros, which is why the
+bare-metal branch shipped ELF program headers instead.
 
 **Unverified:** codecs and plugins execute out of PSRAM. The instruction cache only
 covers the IROM window; PSRAM is on the data bus. ESP-IDF supports running from
@@ -3557,7 +3576,7 @@ make
 
 ### One `make` builds everything — do not run CMake in the Rockbox build dir
 
-For this target Rockbox drives ESP-IDF itself. `tools/root.make` has the rule:
+For this target Rockbox drives ESP-IDF itself. The target makefile has the rule:
 
 ```make
 $(BUILDDIR)/$(BINARY): $(IDFDIR)/rockbox_libs.cmake
@@ -3574,15 +3593,15 @@ mkdir build-meowkits3 && cd build-meowkits3
 make            # compiles Rockbox, then calls idf.py build, then copies the image
 ```
 
-**IDF's binary directory is `idf-app/build`, never the Rockbox build dir.**
-`tools/configure` harvests flags from `idf-app/build/compile_commands.json`
+**IDF's binary directory is `espressif_esp32s3/idf-app/build`, never the Rockbox build dir.**
+`tools/configure` harvests flags from `espressif_esp32s3/idf-app/build/compile_commands.json`
 (running `idf.py reconfigure` there if absent), and `idf.py build` writes to the
 same place.
 
 #### The trap, and why it used to be documented as required
 
 Running `cmake .` inside `build-meowkits3` makes CMake treat that directory as a
-binary dir (`CMAKE_HOME_DIRECTORY` = `idf-app`) and **overwrite Rockbox's
+binary dir (`CMAKE_HOME_DIRECTORY` = `espressif_esp32s3/idf-app`) and **overwrite Rockbox's
 `Makefile` with CMake's**. From then on plain `make` compiles no Rockbox source:
 it re-links whatever archives are already there and exits 0, so an edit to any
 `.c` or `.h` vanishes from the image silently. It also removes the `zip` and
@@ -3622,9 +3641,10 @@ make espartifacts  # everything a release consists of, in $(BUILDDIR)/esp-artifa
 make idf-clean  # drop IDF's build tree (make clean deliberately does not)
 ```
 
-`make flash` and `make espverify` come from `tools/meowkits3/espflash.make`, included from
-`root.make` only when the build output is an ESP image (the simulator shares the
-arch but produces a host executable, so it has no flash goal). Overridable
+`make flash` and `make espverify` come from `tools/meowkits3/espflash.make`, included
+from `firmware/target/xtensa/espressif_esp32s3/idf.make`, which only an
+`app_type=esp-idf` build reads (the simulator shares the arch but produces a host
+executable, so it has no flash goal). Overridable
 variables: `ESPTOOL` (default `esptool`), `ESPPORT` (empty means let esptool
 probe), `ESPCHIP` (derived from the artifact name), `ESPADDR` (default `0x0`).
 
@@ -3635,8 +3655,8 @@ drives it. Three things decide whether a step re-runs, and each was found by
 measuring a no-op `make` rather than by reading the rules:
 
 - **`$(BUILDDIR)/idf.make` is a prerequisite of every firmware-domain object**, not
-  only the few compiled with IDF's include path leading. `root.make`'s `CFLAGS`
-  line adds `$(IDF_CFLAGS)` to all of them, so a sdkconfig or component-set change
+  only the few compiled with IDF's include path leading. The target makefile's
+  `CFLAGS` line adds `$(IDF_CFLAGS)` to all of them, so a sdkconfig or component-set change
   invalidates the whole firmware domain. Touching it rebuilds ~1100 objects.
 - **`rockbox_libs.cmake` is rewritten only when its content changes.** The archives
   are its prerequisites, so an unconditional rewrite plus `touch main/CMakeLists.txt`
@@ -3652,9 +3672,10 @@ measuring a no-op `make` rather than by reading the rules:
   An IDF upgrade is caught because the version is part of the stamp.
 
 Sources compiled with IDF's headers leading are listed once, in
-`firmware/firmware.make` (`XTENSA_IDF_FIRST_SRC`), and that list drives the compile
-flags, the rebuild trigger, *and* a second dependency pass with IDF's include order
-(`mkdepfile_order` in `tools/functions.make`). The dep pass is why `make.dep` can
+`firmware/target/xtensa/espressif_esp32s3/idf.make` (`XTENSA_IDF_FIRST_SRC`), and
+that list drives the compile flags, the rebuild trigger, *and* a second dependency
+pass with IDF's include order (`mkdepfile_order` in `tools/functions.make`, reached
+through the `DEPSCAN_EXTRA` hook in `root.make`). The dep pass is why `make.dep` can
 record FreeRTOS's `queue.h` for those objects: the default scan puts Rockbox's
 `firmware/kernel/include/queue.h` first, and the two headers share the guard name
 `QUEUE_H`, so whichever is opened first wins and the other is skipped. A dep file
@@ -3664,7 +3685,7 @@ IDF writes `rockbox.elf` and `rockbox.map` next to its own build tree; the image
 rule copies both into `$(BUILDDIR)`, where every other port leaves them, so
 `make elfzip`, `make mapzip`, `tools/meowkits3/esp-layout-check` and any symbol lookup work
 without knowing IDF's layout. `tools/meowkits3/rb-build-artifacts.sh` ships
-`make espartifacts` output rather than reaching into `idf-app/build/` itself.
+`make espartifacts` output rather than reaching into `espressif_esp32s3/idf-app/build/` itself.
 
 **`make flash` needs download mode every time the player is running.** Its
 `--before=default_reset` drives RTS/DTR to reboot into the ROM loader, but while
@@ -4392,7 +4413,7 @@ version of this note claimed a minimal `#include <freertos/FreeRTOS.h>` test
 compiled cleanly "with the same flags", which narrowed the suspects to Rockbox
 headers included before it. That test was invalid: `firmware/kernel/thread.c` is
 built by Rockbox's own make and does **not** appear in
-`idf-app/build/compile_commands.json`, and the flags were silently harvested from
+`espressif_esp32s3/idf-app/build/compile_commands.json`, and the flags were silently harvested from
 `pthread.c` instead. The failure is un-narrowed. Reproduce it from the real
 command line -- `touch ../firmware/kernel/thread.c && make V=1
 firmware/kernel/thread.o` in the build dir -- never from
@@ -4466,12 +4487,12 @@ Two build consequences for any Rockbox file that includes an IDF driver header:
 
 - it needs `CFLAGS := $(IDF_FIRST_CFLAGS)` in `firmware/firmware.make` (the
   per-file rule `sd-esp32s3.o` already had), and
-- the component must be in `idf-app/main/CMakeLists.txt` `PRIV_REQUIRES`, or
+- the component must be in `espressif_esp32s3/idf-app/main/CMakeLists.txt` `PRIV_REQUIRES`, or
   `tools/meowkits3/idf-flags` never harvests its include directory.
 
 `idf.make` is generated by `tools/configure`, so adding a component requires
-`idf.py reconfigure` in `idf-app/` **and** a re-run of
-`tools/meowkits3/idf-flags ../idf-app/build -o idf.make` from the build directory. `make`
+`idf.py reconfigure` in `espressif_esp32s3/idf-app/` **and** a re-run of
+`tools/meowkits3/idf-flags ../espressif_esp32s3/idf-app/build -o idf.make` from the build directory. `make`
 alone will not notice.
 
 ## JTAG does not hold GPIO 39/40/41 — measured, so no boot-button cycle needed
@@ -4945,7 +4966,7 @@ matching them against function definitions in the tree — 15 collisions:
 | `atoi`, `strtol`, `strtoul`, `strstr`, `strcasecmp`, `strcasestr`, `strncasecmp`, `strcat`, `strlcpy`, `strtok_r`, `rand`, `srand` | `0x400012xx`–`0x400014xx` | harmless; correct C implementations |
 | **`usb_enable`** | `0x4000297c` | **fatal.** It is Rockbox's target hook (`usb.h`), called by `usb_init()` with a bool. The ROM's `usb_enable` is part of the USB download/console path. First boot with `HAVE_USBSTACK` died with `LoadProhibited`, `EXCVADDR 0x0c`, and `usb_init()` disassembled to `l32r a8, (4000297c <usb_enable>) ; callx8 a8` |
 
-Fixed with `-Wl,--wrap=usb_enable` in `idf-app/CMakeLists.txt`; the real
+Fixed with `-Wl,--wrap=usb_enable` in `espressif_esp32s3/idf-app/CMakeLists.txt`; the real
 implementation is `__wrap_usb_enable` in `firmware/target/xtensa/espressif_esp32s3/usb-esp32s3.c`.
 Any new target hook whose name appears in the ROM list needs the same treatment —
 check with `nm rockbox.elf | awk '$2=="A"'` against the names you are adding.
@@ -5018,11 +5039,11 @@ later exceed.
 - `firmware/SOURCES` lists `usb.c` **unconditionally**, so `USB_NONE` is
   load-bearing: without it, nothing provides the dummy `usb_detect()` /
   `usb_inserted()` and the link fails.
-- `tools/root.make` now owns IDF's state: `$(BUILDDIR)/idf.make` is a rule
-  harvested from `idf-app/build/compile_commands.json`, that file is regenerated
-  by `idf.py reconfigure`, the three objects compiled with IDF flags depend on
-  `idf.make`, and the binary rule **reseeds `sdkconfig` whenever
-  `sdkconfig.defaults` is newer** — IDF seeds `sdkconfig` once and ignores the
+- The target makefile owns IDF's state: `$(BUILDDIR)/idf.make` is a rule harvested
+  from `idf-app/build/compile_commands.json`, that file is regenerated by
+  `idf.py reconfigure`, the objects compiled with IDF's include path leading depend
+  on `idf.make`, and the image rule runs `tools/meowkits3/idf-seedcheck`, which
+  **reseeds `sdkconfig` on content, not mtime** — IDF seeds `sdkconfig` once and ignores the
   defaults forever after, so an edit there silently changes nothing.
 - `make clean` deliberately does **not** fullclean IDF. `SOURCES` files are run
   through the target compiler while make parses the makefile, and those
@@ -5156,7 +5177,7 @@ the rest populate the card or document the target.
 
 | Artifact | How it is made | Contents |
 |---|---|---|
-| `rockbox.esp32s3` | `make` (IDF link) | ESP *app* image, flashed at `0x10000`; the stage-2 bootloader is `bootloader.bin` at `0x000000` and the partition table at `0x008000` (`idf-app/build/flash_args` lists all three) |
+| `rockbox.esp32s3` | `make` (IDF link) | ESP *app* image, flashed at `0x10000`; the stage-2 bootloader is `bootloader.bin` at `0x000000` and the partition table at `0x008000` (`espressif_esp32s3/idf-app/build/flash_args` lists all three) |
 | `rockbox-flash.bin` | `make espfull` | the three pieces merged by `esptool merge_bin --target-offset 0x0` into one file, for a single-offset flash (web installer, plain `esptool write_flash 0x0`). Gaps between the regions are filled with `0xFF`, which is what erased flash holds |
 | `rockbox.zip` | `make zip` | card payload **without** fonts: default theme + failsafe cfg, icons, backdrops, plugins, codecs, languages, the image itself |
 | `rockbox-fonts.zip` | `tools/buildzip.pl … -f 1` | 88 `.fnt` files converted from `fonts/*.bdf` by `tools/convbdf` |

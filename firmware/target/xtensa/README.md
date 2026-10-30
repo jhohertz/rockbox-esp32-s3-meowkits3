@@ -52,8 +52,9 @@ real. A second board on the same silicon would add only a sibling of
 
 `firmware/export/xtensa.h` holds the register bases, interrupt sources and the
 memory-layout numbers; `firmware/asm/xtensa/thread.[ch]` the context switch;
-`lib/libsetjmp/xtensa/setjmp.S` the setjmp pair; `idf-app/` the ESP-IDF project
-(`main/rockbox_app.c`, `rockbox_memory.lf`, `sdkconfig.defaults`).
+`lib/libsetjmp/xtensa/setjmp.S` the setjmp pair; `espressif_esp32s3/idf-app/`
+the ESP-IDF project (`main/rockbox_app.c`, `rockbox_memory.lf`,
+`sdkconfig.defaults`).
 
 `apps/plugins/plugin.lds` and `lib/rbcodec/codecs/codecs.make` reach the codec
 and plugin window numbers through `cpu.h` -> `xtensa.h`, the same way every
@@ -83,11 +84,12 @@ Anything that used to include an IDF header from `system-target.h` — and
 `system-target.h` is reached from `system.h`, so that meant nearly every file in
 the build — now declares the entry points instead.
 
-The gate on all of it is `XTENSA_IDF` in `tools/root.make`: `CPU=xtensa` *and* a
-`rockbox.<chip>` output. That is what makes `--target=meowkits3 --type=s` work.
-The simulator shares the arch name because `t_cpu` is what selects the target
-directories, but it is a host executable, and it must not see the SDK's
-response-file flags or headers. So a reviewer can run this port without hardware:
+The gate on all of it is `APP_TYPE=esp-idf`: only a native build of this target
+gets `firmware/target/xtensa/espressif_esp32s3/idf.make` at all. That is what
+makes `--target=meowkits3 --type=s` work. The simulator shares the arch name
+because `t_cpu` is what selects the target directories, but it is a host
+executable, and it must not see the SDK's response-file flags or headers. So a
+reviewer can run this port without hardware:
 
 ```sh
 mkdir build-sim-meowkits3 && cd build-sim-meowkits3
@@ -121,6 +123,33 @@ application image at `0x10000`. That means IDF, not Rockbox:
 
 The bare-metal variant, with its own crt0, vectors, MMU and image packer, is on
 the tag `baremetal-pre-idf`.
+
+## The build
+
+`tools/configure` gives the target `app_type="esp-idf"`, which is what tells the
+build that an external SDK supplies the runtime environment -- the same mechanism
+`android_ndk`, `sonynwz` and `hibyos` use. Two consequences are worth naming:
+
+- `IMAGE_LINK` (set by configure, exported to the makefiles) says that this
+  target still links its own codec and plugin images. APP_TYPE alone would imply
+  `dlopen`, and nothing on this SoC can do that. It decides the plugin and codec
+  link flags, the PIC bitmaps a shared-object build needs, the overlay goals,
+  and whether Rockbox's setjmp archive is built.
+- The SDK is a configured dependency, like the Android NDK: `configure` requires
+  `ESP_IDF_PATH` (or `IDF_PATH`, which `export.sh` sets), checks the SDK version,
+  and harvests IDF's own compile flags into `$(BUILDDIR)/idf.make`. A simulator
+  or host-tool build of this target is a host build and needs none of that.
+
+`firmware/target/xtensa/espressif_esp32s3/idf.make` holds everything about this
+combination: the flag split between the two domains, the archive that IDF links,
+the image rule, and `idf-clean`. It is included early in `tools/root.make` --
+before the subdir makefiles, because a `SOURCES` file is a C preprocessor program
+and one of them reaches the platform headers while the makefiles are being read.
+
+Flashing needs the board in download mode (hold BOOT, press RESET): the serial
+port is the chip's own USB-CDC, with no DTR or RTS wired to the boot straps, so
+`sdkconfig.defaults` sets `--before no_reset` and `make flash ESPPORT=...` talks
+to a board that is already listening rather than trying to reset it.
 
 ## Rules worth knowing before editing
 
