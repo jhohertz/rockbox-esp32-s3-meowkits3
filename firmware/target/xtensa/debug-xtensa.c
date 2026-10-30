@@ -15,6 +15,7 @@
  ****************************************************************************/
 #include "config.h"
 #include "system.h"
+#include "paniclog.h"
 #include "kernel.h"
 #include "list.h"
 #include "xtensa.h"
@@ -245,7 +246,7 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     {
         int k = item - INFO_TRAIL_BASE;   /* 0 = the last thing that ran */
 
-        if (xtensa_breadcrumb_back(k, buf, bufsz) == 0)
+        if (dbg_breadcrumb_back(k, buf, bufsz) == 0)
             snprintf(buf, bufsz, "%s",
                      k == 0 ? "trail: nothing retained" : "");
         return buf;
@@ -290,7 +291,7 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
          * resets, so this is the copy you get if you missed it. It is the RTC-slow
          * record, which survives the reset that clears the SRAM one. */
         char msg[48];
-        int n = xtensa_paniclog_text(msg, sizeof msg);
+        int n = paniclog_text(msg, sizeof msg);
 
         snprintf(buf, bufsz, "Prev panic: %s", n > 0 ? msg : "none");
         break;
@@ -301,7 +302,7 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
          * clean shutdown. rtc 0 with a panic message means it died before the USB
          * teardown ran at all. */
         snprintf(buf, bufsz, "Reset %lu, rtc trail %lu",
-                 xtensa_paniclog_reset_reason(), xtensa_paniclog_rtc_count());
+                 paniclog_reset_reason(), paniclog_rtc_count());
         break;
     case INFO_TXSTAT: {
         unsigned int sessions, err, recover, silence;

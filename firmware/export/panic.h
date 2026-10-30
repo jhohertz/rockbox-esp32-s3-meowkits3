@@ -26,4 +26,13 @@
 
 void panicf( const char *fmt, ... ) ATTRIBUTE_PRINTF(1, 2) NORETURN_ATTR;
 
+#ifdef HAVE_PANIC_CONSOLE
+/* Target hook: put the panic text somewhere a host can still read after the
+ * reset. panicf() draws the message on the LCD and then aborts, which is
+ * useless when the only console resets with the chip. Called with interrupts
+ * masked, so the implementation must not take a lock, allocate, or write
+ * through stdio. */
+void panic_console_write(const char *msg);
+#endif
+
 #endif /* __PANIC_H__ */

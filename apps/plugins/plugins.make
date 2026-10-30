@@ -95,18 +95,19 @@ $(PLUGINLIB): $(PLUGINLIB_OBJ)
 	$(call make_archive)
 
 # plugin.lds is preprocessed, so the expanded constants are baked into the output.
-# Its includes have to be dependencies here or a size change in memory-xtensa.h
+# Its includes have to be dependencies here or a size change in the CPU header
 # silently links images against the old layout -- measured: shrinking
 # XT_CODEC_TEXT_SIZE left every .rock and .codec pointing 256 KB below the region
 # the firmware now reserves, which is silent corruption rather than an error.
-$(PLUGINLINK_LDS): $(PLUGIN_LDS) $(CONFIGFILE) \
-                   $(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)
+ifeq ($(ARCH),arch_xtensa)
+PLUGINLDS_DEPS += $(FIRMDIR)/export/xtensa.h
+endif
+$(PLUGINLINK_LDS): $(PLUGIN_LDS) $(CONFIGFILE) $(PLUGINLDS_DEPS)
 	$(call PRINTS,PP $(@F))
 	$(shell mkdir -p $(dir $@))
 	$(call preprocess2file,$<,$@,-DPLUGIN)
 
-$(OVERLAYREF_LDS): $(PLUGIN_LDS) $(CONFIGFILE) \
-                   $(wildcard $(FIRMDIR)/target/$(CPU)/memory-xtensa.h)
+$(OVERLAYREF_LDS): $(PLUGIN_LDS) $(CONFIGFILE) $(PLUGINLDS_DEPS)
 	$(call PRINTS,PP $(@F))
 	$(shell mkdir -p $(dir $@))
 	$(call preprocess2file,$<,$@,-DPLUGIN -DOVERLAY_OFFSET=0)

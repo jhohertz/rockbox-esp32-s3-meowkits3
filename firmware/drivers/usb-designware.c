@@ -461,7 +461,7 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
         {
             if (--n == 0)
             {
-                xtensa_breadcrumb_rtc("flshTO", fflsh, DWC_GRSTCTL);
+                dbg_breadcrumb_retained("flshTO", fflsh, DWC_GRSTCTL);
                 return;
             }
         }
@@ -1406,12 +1406,12 @@ static void usb_dw_init(void)
     DWC_PCGCCTL = 0;
 
     usb_dw_check_hw();
-#if defined(CPU_XTENSA)
+#ifdef HAVE_DBG_BREADCRUMB
     /* Console-less bring-up: if what follows ever stalls, the trail says where.
-     * xtensa_breadcrumb() is a .noinit store; it needs no console, no lock, no
+     * dbg_breadcrumb() is a .noinit store; it needs no console, no lock, no
      * stack and no working panic handler. */
-    xtensa_breadcrumb("usbPhy", DWC_GUSBCFG, DWC_GSNPSID);
-#endif
+    dbg_breadcrumb("usbPhy", DWC_GUSBCFG, DWC_GSNPSID);
+#endif /* HAVE_DBG_BREADCRUMB */
 
     /* Configure PHY type (must be done before reset) */
 #ifndef USB_DW_TURNAROUND
@@ -1434,9 +1434,9 @@ static void usb_dw_init(void)
     usb_dw_wait_for_ahb_idle();
 
     /* Configure FIFOs */
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb("usbRst", DWC_GRSTCTL, DWC_GHWCFG3);
-#endif
+#ifdef HAVE_DBG_BREADCRUMB
+    dbg_breadcrumb("usbRst", DWC_GRSTCTL, DWC_GHWCFG3);
+#endif /* HAVE_DBG_BREADCRUMB */
     DWC_GRXFSIZ = c->rx_fifosz;
 #ifdef USB_DW_SHARED_FIFO
     DWC_GNPTXFSIZ = (c->nptx_fifosz << 16) | c->rx_fifosz;
@@ -1451,9 +1451,9 @@ static void usb_dw_init(void)
      * fifos are flushed before continuing.
      */
     usb_dw_flush_fifo(TXFFLSH|RXFFLSH, 0x10);
-#if defined(CPU_XTENSA)
-    xtensa_breadcrumb("usbFifo", DWC_GRXFSIZ, n_ptxfifos);
-#endif
+#ifdef HAVE_DBG_BREADCRUMB
+    dbg_breadcrumb("usbFifo", DWC_GRXFSIZ, n_ptxfifos);
+#endif /* HAVE_DBG_BREADCRUMB */
 
     /* Configure the core */
     DWC_GUSBCFG = gusbcfg;

@@ -41,7 +41,7 @@
  */
 
 #include "config.h"
-#include "memory-xtensa.h"
+#include "xtensa.h"
 
 /*
  * PSRAM. IDF's sections.ld matches *(.ext_ram.bss*) and zeroes the region when
@@ -69,7 +69,7 @@ rb_ext_ram_end:
     /*
      * Codec and plugin load buffers.
      *
-     * Pinned, not placed. See XT_CODECBUF_ADDR in memory-xtensa.h for the
+     * Pinned, not placed. See XT_CODECBUF_ADDR in firmware/export/xtensa.h for the
      * derivation and for why this side and apps/plugins/plugin.lds have to
      * produce the same number: apps/codecs.c and apps/plugin.c reject a loaded
      * image whose declared load address is not these symbols, and the images

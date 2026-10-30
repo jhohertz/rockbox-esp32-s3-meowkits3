@@ -29,7 +29,7 @@
  * interrupt, so a CDC write cannot drain no matter how it is queued -- an earlier
  * version of this file wrote logf lines here and none of them ever arrived. The
  * only channel that works from this context is RTC slow, so everything goes there
- * and is printed by xtensa_crash_report_logf() at the next boot. Dropping the
+ * and is printed by paniclog_crash_report_logf() at the next boot. Dropping the
  * console writes also removes a suspect: a fault inside our own handler would
  * itself promote to a double exception.
  *
@@ -51,13 +51,13 @@
 
 /* Rockbox, declared here rather than included: this file is compiled by IDF, which
  * does not carry Rockbox's include paths. Same seam rockbox_app.c uses. */
-extern void xtensa_panic_log(const char *msg);
-extern void xtensa_paniclog_frame(const unsigned long *words, int count,
+extern void panic_console_write(const char *msg);
+extern void paniclog_frame(const unsigned long *words, int count,
                                   int exception, int pseudo);
-extern void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
-extern void xtensa_paniclog_frame_window(uint32_t windowbase,
+extern void paniclog_frame_regs(const unsigned long *regs, int count);
+extern void paniclog_frame_window(uint32_t windowbase,
                                          uint32_t windowstart, uint32_t a5);
-extern void xtensa_paniclog_crash_id(const char *build);
+extern void paniclog_crash_id(const char *build);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
 
@@ -68,7 +68,7 @@ extern void esp_panic_handler_feed_wdts(void);
 #define RB_PANIC_HOLD_MS 2000
 #define RB_PANIC_STEP_MS 100
 
-/* Order of the register array handed to xtensa_paniclog_frame_regs():
+/* Order of the register array handed to paniclog_frame_regs():
  * ps, epc1, epc2, epc3, epc4, depc, cache_vaddr, cache_size, windowbase,
  * windowstart, a5. */
 #define RB_REGS 11
@@ -122,7 +122,7 @@ void esp_panic_handler(panic_info_t *info)
 
         for (i = 0; i < 32; i++)
             fw[i] = raw[i];
-        xtensa_paniclog_frame(fw, 32, (int)info->exception,
+        paniclog_frame(fw, 32, (int)info->exception,
                               info->pseudo_excause ? 1 : 0);
     }
 
@@ -163,7 +163,7 @@ void esp_panic_handler(panic_info_t *info)
         regs[6] = ci.err_str != NULL ? (unsigned long)ci.vaddr : 0UL;
         regs[7] = ci.err_str != NULL ? (unsigned long)ci.size : 0UL;
     }
-    xtensa_paniclog_frame_regs(regs, RB_REGS);
+    paniclog_frame_regs(regs, RB_REGS);
 
     /* The window state, which is not in the frame. The fault's PC equals the
      * interrupted SP, which is what a window spill or underflow produces when it
@@ -184,7 +184,7 @@ void esp_panic_handler(panic_info_t *info)
 
         __asm__ volatile ("rsr.windowbase %0" : "=r"(wb));
         __asm__ volatile ("rsr.windowstart %0" : "=r"(ws));
-        xtensa_paniclog_frame_window(wb, ws,
+        paniclog_frame_window(wb, ws,
                                     f != NULL ? (uint32_t)f->a5 : 0);
     }
 
@@ -199,13 +199,13 @@ void esp_panic_handler(panic_info_t *info)
      * trace that can be stale is worse than no trace, and the fault it was chasing
      * turned out to be a stale codec image indexing struct codec_api one field early,
      * which no amount of frame walking would have named. */
-    xtensa_paniclog_crash_id(esp_app_get_description()->version);
+    paniclog_crash_id(esp_app_get_description()->version);
 
     /* Short form in the text record, bounded by its 96-character field, so the
      * fault is identifiable from the debug page as well as the serial report. */
     snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
              RB_PANIC_TAG, reason, pc, excv, cause);
-    xtensa_panic_log(line);
+    panic_console_write(line);
 
     /* Two seconds, feeding the RTC watchdog IDF armed for ten. */
     while (waited < RB_PANIC_HOLD_MS)

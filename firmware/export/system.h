@@ -349,58 +349,5 @@ bool dbg_ports(void);
 bool dbg_hw_info(void);
 #endif
 
-#if defined(CPU_XTENSA)
-/* Target hook: put a panic message on the console and into retained memory.
- * panicf() draws the text on the LCD and then aborts, and IDF's abort banner
- * carries no message, so without this the panic text exists only on the glass.
- * Implemented in target/xtensa/paniclog.c. */
-void xtensa_panic_log(const char *msg);
-void xtensa_paniclog_dump(void);
-/* Read the retained panic record back from a context that has no console: the
- * screen. text() prefers the RTC-slow copy, which survives the reset that clears
- * internal DRAM, and returns 0 when nothing was retained. reset_reason() is the
- * reset that produced this boot; rtc_count() says whether the surviving trail was
- * ever written -- zero means the dead boot never reached the steps that stamp it. */
-int xtensa_paniclog_text(char *buf, int bufsize);
-unsigned long xtensa_paniclog_reset_reason(void);
-/* Write the surviving crash record -- panic text, reset reason, the last few trail
- * entries -- over the USB CDC console, using logf(). Bounded on purpose: four short
- * messages, because the CDC ring is 512 bytes and a burst with no reader open
- * reboot-loops the board. Call from thread context only. */
-void xtensa_crash_report_logf(void);
-unsigned long xtensa_paniclog_rtc_count(void);
-/* Record a step that might be the last one. Read back by
- * xtensa_paniclog_dump() on the next boot; see paniclog.c for why this exists
- * rather than a panic-time hook. */
-void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
-/* Same idea, but the ring lives in RTC slow memory and therefore survives the reset a
- * watchdog or a panic performs. Use it for the steps that can end in a hang. */
-void xtensa_breadcrumb_rtc(const char *tag, unsigned long a, unsigned long b);
-/* Retain the raw exception frame across the reset. The frame is copied verbatim
- * because which layout it is in (XtExcFrame or XtDbFrame) is the open question --
- * EPC1 holding the vector address means a second exception overwrote it -- and
- * decoding that at fault time would be guessing. exception/pseudo come from IDF's
- * panic_info_t and say which layout to read the words with. */
-void xtensa_paniclog_frame(const unsigned long *words, int count,
-                           int exception, int pseudo);
-void xtensa_paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
-                                unsigned long *count);
-/* Four retained frame words per line, line 0 first. 0 when nothing is stored. */
-int xtensa_paniclog_frame_words(char *buf, int bufsize, int line);
-/* Store ps, epc1..epc4, depc and the cache-error detail alongside the frame.
- * These are read from the registers, not the frame: on a double exception the ISA
- * shifts the original EPC1 down to EPC2, so the faulting instruction is nowhere
- * in the frame the handler sees. */
-void xtensa_paniclog_frame_regs(const unsigned long *regs, int count);
-int xtensa_paniclog_frame_regs_text(char *buf, int bufsize);
-/* The address and width the cache refused; 0 when the latch reported nothing. */
-int xtensa_paniclog_frame_cache(char *buf, int bufsize);
-/* Read the SRAM trail back one entry at a time, newest first, for a caller that has
- * no console: the screen. Hardware exceptions go to IDF's handler and reset without
- * ever reaching Rockbox's panic(), so the trail is what survives them. Returns 0
- * when there is nothing at that index. */
-int xtensa_breadcrumb_back(int back, char *buf, int bufsize);
-void xtensa_paniclog_stamp_boot(unsigned long seq);
-#endif
 
 #endif /* __SYSTEM_H__ */

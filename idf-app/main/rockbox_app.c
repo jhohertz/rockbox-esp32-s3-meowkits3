@@ -29,9 +29,9 @@
 #include "esp_system.h"   /* esp_reset_reason */
 #include "esp_app_desc.h" /* esp_app_get_description: the build id of this image */
 
-extern void xtensa_paniclog_dump(void);
-extern void xtensa_breadcrumb(const char *tag, unsigned long a, unsigned long b);
-extern void xtensa_paniclog_set_reset(unsigned reason);
+extern void paniclog_dump(void);
+extern void dbg_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+extern void paniclog_set_reset(unsigned reason);
 extern void xtensa_build_id_stamp(const char *id);
 
 /* Rockbox's own top level. Declared rather than included: apps/main.c has no
@@ -127,7 +127,7 @@ void app_main(void)
     xtensa_build_id_stamp(esp_app_get_description()->version);
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */
-    xtensa_paniclog_dump();
+    paniclog_dump();
     /* The reset reason lives in the RTC domain, so it survives the reset that
      * clears internal DRAM -- which the breadcrumb trail does not. Telling
      * ESP_RST_PANIC from ESP_RST_TASK_WDT or ESP_RST_BROWNOUT is the first
@@ -146,8 +146,8 @@ void app_main(void)
                : why == ESP_RST_BROWNOUT ? "brownout"
                : why == ESP_RST_USB ? "usb peripheral"
                : why == ESP_RST_UNKNOWN ? "unknown" : "other");
-        xtensa_breadcrumb("rstR", (unsigned long)why, 0);
-        xtensa_paniclog_set_reset((unsigned)why);
+        dbg_breadcrumb("rstR", (unsigned long)why, 0);
+        paniclog_set_reset((unsigned)why);
     }
     /* The task control block is ours too. pvPortMalloc would put it in the
      * internal heap, which works, but a static buffer means the one thing

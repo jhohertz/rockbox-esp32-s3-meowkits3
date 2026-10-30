@@ -110,13 +110,13 @@ int sd_init(void)
     /* Stamped either way, not only on success: the trail is how a crash inside the
      * first card access after recording starts gets attributed, and a step that
      * never returns leaves its completion note absent. */
-    xtensa_breadcrumb("sdHost", (unsigned long)err, 0);
+    dbg_breadcrumb("sdHost", (unsigned long)err, 0);
     if (err == ESP_OK)
         err = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot);
-    xtensa_breadcrumb("sdSlot", (unsigned long)err, 0);
+    dbg_breadcrumb("sdSlot", (unsigned long)err, 0);
     if (err == ESP_OK)
         err = sdmmc_card_init(&host, &card);
-    xtensa_breadcrumb("sdCard", (unsigned long)err, 0);
+    dbg_breadcrumb("sdCard", (unsigned long)err, 0);
 
     if (err != ESP_OK)
     {
@@ -165,11 +165,11 @@ int sd_read_sectors(IF_MD(int drive,) sector_t start, int count, void *buf)
          * delays the off edge by HZ/2 (statusbar.c:248), so a short access is
          * still visible for up to half a second. */
         led(true);
-        xtensa_breadcrumb("sdRd", (unsigned long)start, (unsigned long)count);
+        dbg_breadcrumb("sdRd", (unsigned long)start, (unsigned long)count);
         e = sdmmc_read_sectors(&card, buf, (uint32_t)start,
                                (uint32_t)count);
         led(false);
-        xtensa_breadcrumb("sdRc", (unsigned long)e, (unsigned long)count);
+        dbg_breadcrumb("sdRc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }
@@ -189,11 +189,11 @@ int sd_write_sectors(IF_MD(int drive,) sector_t start, int count, const void *bu
          * recorder faults, so both edges are marked: "sdWr" present with no
          * "sdWc" means the call itself did not return. */
         led(true);
-        xtensa_breadcrumb("sdWr", (unsigned long)start, (unsigned long)count);
+        dbg_breadcrumb("sdWr", (unsigned long)start, (unsigned long)count);
         e = sdmmc_write_sectors(&card, buf, (uint32_t)start,
                                 (uint32_t)count);
         led(false);
-        xtensa_breadcrumb("sdWc", (unsigned long)e, (unsigned long)count);
+        dbg_breadcrumb("sdWc", (unsigned long)e, (unsigned long)count);
         return e == ESP_OK ? 0 : EIO;
     }
 }

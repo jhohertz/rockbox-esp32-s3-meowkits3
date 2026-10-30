@@ -375,6 +375,16 @@
  * unreachable rather than off. */
 #define USB_SERIAL_DEFAULT_ON
 
+/* The target keeps a crash trail in memory that outlives a reset, and puts the
+ * panic text on a console that does too: the only console on this board is USB,
+ * which resets with the chip, so without them a panic leaves nothing a host can
+ * read. Both are generic core hooks -- see panic.h and debug.h -- implemented in
+ * firmware/target/xtensa/paniclog.c. */
+#ifndef SIMULATOR
+#define HAVE_DBG_BREADCRUMB
+#define HAVE_PANIC_CONSOLE
+#endif
+
 /* mpegplayer.h's LIBMPEG2_ALLOC_SIZE is deliberately left at upstream's 2 MiB.
  * The reasoning is worth keeping because the obvious override is wrong.
  * mpegplayer reserves this much of the buflib arena up front and libmpeg2 then

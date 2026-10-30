@@ -38,7 +38,8 @@
 #include <stdio.h>
 
 #include "system.h"
-#include "memory-xtensa.h"   /* XT_LOADADDRESS_ADDR -- needs config.h first */
+#include "paniclog.h"
+#include "xtensa.h"         /* XT_LOADADDRESS_ADDR -- needs config.h first */
 #include "button-target.h"   /* button_hw_any_pressed() -- the panic hold */
 #include "lcd.h"             /* the panic screen is already drawn; this adds the hint */
 #include "font.h"            /* FONT_SYSFIXED, FONT_HEIGHT */
@@ -65,7 +66,7 @@ void system_init(void)
      * paniclog.c), so calling the dump again here printed the same breadcrumb
      * list twice on every boot. The boot stamp is still recorded here because it
      * belongs to Rockbox's own init, not to IDF's entry point. */
-    xtensa_paniclog_stamp_boot(0);
+    paniclog_stamp_boot(0);
 
     /* The codec and plugin buffers are pinned to a fixed address so that this
      * side agrees with the CODEC_ORIGIN / PLUGIN_ORIGIN that plugin.lds gives
