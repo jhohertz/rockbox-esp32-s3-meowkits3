@@ -23,7 +23,10 @@ convention, and the untouched plugin/codec APIs all look like a normal Rockbox p
 What will draw review fire:
 
 1. **ESP-IDF owns the link** — a second build system at repo root, ~150 KB of IDF code
-   in the image, and four core-shape deviations that exist only because of it.
+   in the image, and four core-shape deviations that exist only because of it. Upstream
+   precedent for a vendor-runtime port exists (§4.1); what does not exist upstream is the
+   *way* we express it — a link rule forked by CPU, SDK flags injected from the makefile,
+   and an SDK project at repo root.
 2. **The target tree is flat** while `tools/configure` declares a manufacturer/model
    tree whose directories do not exist.
 3. **A simulator build of the model cannot be produced**, even though several native
@@ -34,7 +37,8 @@ What will draw review fire:
 5. **More prose than code in the tree** — 6,835 lines of planning markdown inside
    `firmware/target/xtensa/`, plus 5,754 at repo root, against 10,277 lines of port code.
 
-Items 2–5 are mechanical. Item 1 is the only real decision, and it is Phase D.
+Items 2–5 are mechanical. Item 1 is a decision, and it has been taken (§4): the SDK
+dependency stays, so its *expression* has to change.
 
 ---
 
@@ -58,8 +62,14 @@ Reproduce these before acting on them.
 | Our sim build | fails | `--target=meowkits3 --type=s` then `make`: IDF response-file cflags (`-mlongcalls`, `-mdisable-hardware-atomics`), IDF `endian.h` on host gcc, unguarded xtensa `SOURCES`, `test_touchscreen.c: No keymap defined!` |
 | 80-column violations | ~900 lines, worst: `usb-xtensa.c` 404, `i2s-xtensa.c` 270, `button-xtensa.c` 90, `paniclog.c` 89 | `awk 'length>80' firmware/target/xtensa/*.c \| wc -l` per file |
 | Plugin/codec API | untouched | `git diff fe5c0874af..HEAD -- firmware/export/plugin.h firmware/export/codec.h` is empty |
-| Bare-metal branch exists | tag `baremetal-pre-idf` = `3630b5b65f` | `git log --oneline -1 baremetal-pre-idf` |
+| Bare-metal alternative exists | tag `baremetal-pre-idf` = `3630b5b65f` | `git log --oneline -1 baremetal-pre-idf` |
 | `rombox.elf` on the IDF path | not built | `ls build-meowkits3/rombox.elf` → absent, while `firmware/rom.lds` carries a `CPU_XTENSA` branch |
+| Upstream precedent for an external SDK | `androidcc()` requires `ANDROID_SDK_PATH`/`ANDROID_NDK_PATH`, builds a toolchain, rebuilds `GCCOPTS` from `CCOPTS`, adds `LDOPTS`/`SHARED_LDFLAGS`/`GLOBAL_LDOPTS`, sets `thread_support`, hands `ANDROID_ARCH` to a target make | `tools/configure:695-760` |
+| Upstream precedent for a target owning its link rule | `firmware/target/hosted/sonynwz/sonynwz.make` redefines `$(BUILDDIR)/rockbox.elf` without `-nostdlib`/`-T`; the generic native rules live under `ifndef APP_TYPE` | `git show fe5c0874af:tools/root.make` lines 255-284 and 111-119 |
+| Upstream precedent for platform bits set by the model header | `firmware/export/config/android.h`: `#define CONFIG_PLATFORM (PLATFORM_HOSTED\|PLATFORM_ANDROID)`; `config.h` comment says the bits are OR-able and extensible | `git show fe5c0874af:firmware/export/config/android.h` |
+| Upstream precedent for vendored vendor code in the target tree | `firmware/target/hosted/tinyalsa/` ships tinyalsa's `mixer.c`, `pcm.c` and its headers, added to `TARGET_INC` by `configure` | `git ls-tree -r fe5c0874af firmware/target/hosted/tinyalsa` |
+| Upstream precedent for a configure-selected threading model | `thread_support="…"` → `#define ${thread_support}` in `autoconf.h` (`configure:4935`), values `ASSEMBLER_THREADS`, `HAVE_SIGALTSTACK_THREADS`, `HAVE_WIN32_FIBER_THREADS`, `HAVE_SDL_THREADS` | `grep -n thread_support tools/configure` |
+| Our build's divergence from that idiom | `ifneq (xtensa,$(CPU))` fork of the link rules, `-DHAVE_SYSTEM_LIBC` injected in `root.make:104`, `idf-app/` at repo root, `thread_support` left at its default | `grep -n 'xtensa,$(CPU)' tools/root.make` |
 
 ---
 
@@ -86,7 +96,39 @@ Reproduce these before acting on them.
 
 ## 3. Divergences, ranked
 
-### 3.1 ESP-IDF owns the link  — blocker
+### 3.1 ESP-IDF owns the link
+
+**Evidence.** `tools/root.make:404` wraps the standard `rockbox.elf`/`rombox.elf` rules
+in `ifneq (xtensa,$(CPU))` and replaces them with an `idf.py` link against a generated
+`rockbox_libs.cmake`. `idf-app/` at repo root carries `CMakeLists.txt`,
+`sdkconfig.defaults`, `main/CMakeLists.txt` (with `PRIV_REQUIRES` on ten IDF components
+and `LDFRAGMENTS rockbox_memory.lf`), `main/rockbox_app.c`, `panic_cdc.c`,
+`rockbox_memory.lf`. Link hacks: `--allow-multiple-definition` so our `esp_panic_handler`
+beats IDF's, a re-grouped archive list because IDF does not `--start-group`, and
+`--wrap usb_enable` because IDF links `esp32s3.rom.ld`, whose ~2100 absolute symbol
+assignments silently substitute the ROM routine for 15 same-named Rockbox functions
+(`usb_enable` being the one that mattered).
+
+**What is acceptable here, and what is not.** Upstream already ships ports that link a
+platform runtime rather than a bare-metal self-contained image — the Android and HiByOS
+ports require an SDK in the environment, get their toolchain from it, link system
+libraries, and let a target-local makefile own the link rule (§4.1). So "this port needs
+ESP-IDF" is defensible. "This port forks `root.make`'s link rules on `CPU`, injects SDK
+flags into `CFLAGS` from the makefile, and puts a CMake project at repo root" is not,
+and none of it is necessary — all three have existing upstream idioms to replace them.
+
+**Core deviations it currently forces** (each a shared-file change a reviewer must
+swallow, and each removable without dropping IDF):
+`HAVE_SYSTEM_LIBC` excluding Rockbox's libc in `firmware/SOURCES` and
+`firmware/asm/SOURCES`; `#define sleep rockbox_sleep` and `#define rtc_init
+rockbox_rtc_init` in `firmware/export/config.h`; the `BASE_CFLAGS` / `FREESTAND_CFLAGS`
+/ `IDF_FIRST_CFLAGS` domain split in `tools/root.make` and `firmware/firmware.make`;
+`mkdepfile_order` in `tools/functions.make`; IDF include paths added to `PPCFLAGS`;
+`-Wno-undef` on every firmware-domain compile (which also silences `-Wundef` in our own
+code, a self-inflicted loss).
+
+**Adjustment.** Phase D, per §4.2. None of it requires giving up IDF; the goal is that a
+reviewer reads the build diff and recognises the Android/NDK shape.
 
 **Evidence.** `tools/root.make:404` wraps the standard `rockbox.elf`/`rombox.elf` rules
 in `ifneq (xtensa,$(CPU))` and replaces them with an `idf.py` link against a generated
@@ -113,7 +155,8 @@ rockbox_rtc_init` in `firmware/export/config.h`; the `BASE_CFLAGS` / `FREESTAND_
 `-Wno-undef` on every firmware-domain compile (which also silences `-Wundef` in our own
 code, a self-inflicted loss).
 
-**Adjustment.** See §4. Everything in this list disappears under D1.
+**Adjustment.** See §4 for the decision; Phase D removes the parts of this list that are
+style rather than substance.
 
 ### 3.2 Flat target tree, `configure` claims a tree that isn't there
 
@@ -230,66 +273,106 @@ is measured numbers, so re-flowing must not paraphrase).
 
 ---
 
-## 4. The one decision: who owns the link
+## 4. Decision: the SDK dependency stays
 
-### D1 — bare-metal default, IDF optional  (recommended)
+**Decision log — 2026-10-29.** Going off ESP-IDF is **not** on the table right now.
+Rockbox has precedent for ports that run on top of a platform runtime rather than a bare
+metal, and IDF is that kind of runtime even though it blurs the `PLATFORM_HOSTED`
+definition. The bare-metal alternative (§4.3) is parked, not discarded, and this plan's
+Phase D is about making the IDF path look like something upstream already knows how to
+build.
 
-Make Rockbox compile *and* link, as every other port does. Restore from the
-`baremetal-pre-idf` tag (`3630b5b65f`), which is hardware-verified:
-`crt0.S`, `vectors.S`, `irq-xtensa.c`, `irom-map.c`, `mmu-xtensa.c`, `psram-xtensa.c`,
-`rom_cache.{c,S}`, `app.lds`, `boot.lds`, `tools/esp-elf2image` (byte-identical to
-`esptool elf2image` except the digest flag, verified against esptool 4.7.0).
+### 4.1 Precedent the IDF path can lean on
 
-Then delete from the merge tree: `idf-app/`, `HAVE_SYSTEM_LIBC`, the `sleep`/`rtc_init`
-renames, `BASE_CFLAGS`/`FREESTAND_CFLAGS`/`IDF_FIRST_CFLAGS`, `mkdepfile_order`,
-`-Wno-undef`, `--wrap usb_enable`, `--allow-multiple-definition`, `tools/idf-*`, and the
-`rockbox_libs.cmake` generation. Memory placement returns to `app.lds` plus a
-`PSRAM_BSS_ATTR` that the target defines — or, better, to the ldfragment equivalent
-Rockbox already uses elsewhere; note upstream has **no** `.lf` files, so the fragment
-must live in `firmware/target/xtensa/` and be consumed by Rockbox's own link.
+| Precedent | What it establishes | Where |
+|---|---|---|
+| `androidcc()` | A port may demand an external SDK via environment variables (`ANDROID_SDK_PATH`, `ANDROID_NDK_PATH`), derive its compiler setup from it, rebuild `GCCOPTS` from `CCOPTS` (dropping `-ffreestanding`/`-nostdlib`), append `LDOPTS`/`GLOBAL_LDOPTS`, declare its threading model with `thread_support`, and hand a variable (`ANDROID_ARCH`) to a target makefile. | `tools/configure:695-760` |
+| `firmware/target/hosted/sonynwz/sonynwz.make`, `hiby/hiby.make`, `hibyos.make`, `ibasso/android_ndk.make`, `packaging/psp/psp-eboot.make`, `tools/echoplayer/openocd.make` | A target owns its own link and packaging rules in a makefile **inside the target tree**, included by `root.make`'s `APP_TYPE` dispatch. The generic native rules (`-nostdlib -T$(LINKRAM)`) live under `ifndef APP_TYPE`, so a target with a different link environment simply does not get them — no CPU-keyed fork. | `tools/root.make:111-119`, `:255-284` upstream |
+| `firmware/export/config/android.h` → `#define CONFIG_PLATFORM (PLATFORM_HOSTED\|PLATFORM_ANDROID)` | The model header declares the platform, and `config.h`'s comment explicitly anticipates OR-ing extra platform bits. A "runs on a vendor runtime" fact belongs here, not in a `-D` on the makefile's `CFLAGS` line. | `firmware/export/config.h:89-97`, `config/android.h` |
+| `firmware/target/hosted/tinyalsa/` | Vendoring a third party's sources and headers into the target tree, with the include dir added to `TARGET_INC` by `configure`, is accepted. | `git ls-tree fe5c0874af firmware/target/hosted/tinyalsa` |
+| `thread_support` → `#define ${thread_support}` in `autoconf.h` | The threading model is a configure-selected define (`ASSEMBLER_THREADS`, `HAVE_SIGALTSTACK_THREADS`, `HAVE_WIN32_FIBER_THREADS`, `HAVE_SDL_THREADS`), not an arch check scattered through `SOURCES`. | `tools/configure:30,517-531,723,4935` |
+| sims for native models | `--type=s` on a native model builds with host gcc and keeps `CPU`; several native targets carry `sim => 1`. Measured here: `ondavx747` and `sansam200v4` both compile clean. | §3.3 |
 
-Keep IDF as an alternate for developers: a configure flag (`--with-idf` or a separate
-`make idf` goal) that runs the current path. The IDF branch stays as a regression
-harness and as the source of PSRAM/PM behaviour.
+The reading: **an SDK-backed port is allowed; an SDK-backed port that rewrites the
+generic build machinery is not.** Everything in §3.1's deviation list has an existing
+idiom that expresses the same fact more narrowly.
 
-**What we lose on the default path, and what re-verifying it costs:**
-- PSRAM timing sweep — ESP-IDF's `mspi_timing_by_mspi_delay` search. Mitigation already
-  measured: copy the entry IDF falls back to when the sweep fails (config id 5:
-  `spi_din_mode=4` on every DIN line and DQS, `spi_din_num=0`, `extra_dummy_len=2`),
-  which is a known-good configuration rather than an estimate.
-- `set_cpu_frequency()` as `esp_pm_configure()` (and thus `cpu_boost`). Bare-metal needs
-  its own divider path, or CPU boost becomes a no-op — measurable: recheck codec/plugin
-  throughput and the mixer's headroom with boost inert.
-- IDF's SD host driver (`sd-idf.c`) — replaced by the bare-metal SDHOST/IDMAC driver that
-  already exists on the tagged branch; needs the card soak again (1-bit, non-removable).
-- FreeRTOS tickless idle / light sleep — not enabled today, so nothing lost now; it was
-  the future plan and would have to go back to a hand-written sleep path.
-- IDF's windowed spill helper and its vectors — the bare-metal branch already carries
-  `_WindowOverflow*/_WindowUnderflow*` vectors and the same context switch.
+### 4.2 What the IDF path must look like to be reviewable
 
-**Acceptance test for D1:** image boots to the root menu; audio plays and records; SD
-mounts and reads at ≥0.7 MB/s; USB MSC/CDC/DAC work; doom and mpegplayer worst case run;
-`make espverify` passes; PSRAM reports "responding" via `dbg_hw_info()`; audiobuffer,
-framebuffer, codecbuf and pluginbuf land in the PSRAM window in the map.
+1. **`app_type` instead of a CPU fork.** Give the build an `app_type` (proposal:
+   `"esp-idf"`). Upstream's generic native link rules are already inside
+   `ifndef APP_TYPE`, so the fork at `root.make:404` disappears; the IDF link rules move
+   to a target makefile (`firmware/target/xtensa/espressif_esp32s3/idf.make`) that
+   `root.make` includes in the same dispatch that already includes `sonynwz.make`,
+   `hiby.make`, `hibyos.make` and `psp-eboot.make`. `root.make`'s diff collapses to an
+   `include` line plus variable definitions.
+2. **`idfcc()` in `configure`, mirroring `androidcc()`.** Require `ESP_IDF_PATH` (and a
+   version check) in the environment, fail with a clear message, harvest the compile and
+   link flags into the variables `root.make` already consumes (`INCLUDES`, `LDOPTS`,
+   `CORE_LDOPTS`, `GLOBAL_LDOPTS`) rather than appending them to `CFLAGS`, rebuild
+   `GCCOPTS` from `CCOPTS` so `-nostdlib`/`-ffreestanding` are dropped for the firmware
+   domain, and hand IDF-specific variables (`IDF_PROJECT`, core name) to the target
+   makefile. `tools/idf-flags` and `tools/idf-seedcheck` become implementation details of
+   that function.
+3. **Platform fact in the model header.** Add a platform bit for a vendor runtime
+   (`config.h`'s list is explicitly extensible) and set
+   `#define CONFIG_PLATFORM (PLATFORM_NATIVE|PLATFORM_ESP_IDF)` in `config/meowkits3.h`.
+   Derive `HAVE_SYSTEM_LIBC` from that bit in one place, so the `SOURCES` conditions read
+   as platform facts and `root.make` stops defining it.
+4. **Narrow the flag surface.** Today every firmware-domain object gets `IDF_CFLAGS`.
+   Reduce that to the objects that actually include IDF headers (the existing
+   `XTENSA_IDF_FIRST_SRC` list plus any that pull `sdkconfig.h`), which removes the need
+   for `FREESTAND_CFLAGS` in `codecs.make`/`plugins.make` and shrinks the
+   `firmware.make` include-order flip to a documented per-file exception.
+   `mkdepfile_order` then stays, but only for that list — same three consumers, one
+   narrow purpose.
+5. **`-Wno-undef` scoped, not global.** Apply it to the IDF-facing objects only, so our
+   own code keeps `-Wundef`.
+6. **The IDF project lives in the target tree.** `idf-app/` → under
+   `firmware/target/xtensa/espressif_esp32s3/` (or `utils/meowkits3/idf/` if it is
+   developer tooling rather than firmware). Nothing at repo root. `rockbox_libs.cmake`
+   stays generated, but written into the build directory rather than next to the project.
+7. **Threading model via `thread_support`.** Set it in `idfcc()` (proposal:
+   `HAVE_IDF_THREADS` or reuse `ASSEMBLER_THREADS` if the asm switch is what actually
+   runs) and select `thread-idf.c` in `firmware/SOURCES` off that define rather than off
+   `CPU_XTENSA`.
+8. **Keep the honest notes.** The `--wrap usb_enable` ROM collision, the
+   `--allow-multiple-definition` panic-handler override and the archive re-grouping are
+   real and stay — but they move into the target's makefile with their explanation, where
+   a reviewer reads them as target-specific rather than as core surgery.
 
-### D2 — keep IDF, submit around it
+### 4.3 Parked: the bare-metal alternative
 
-Accept that the port cannot merge as-is. Submit only the arch plumbing
-(`ARCH_XTENSA`/`CPU_XTENSA`, `elf-target.h`, `rom.lds`, `configure`, `xtensacc`,
-`rockboxdev.sh --target=e`, `builds.pm`, manual wiring) plus the generic core fixes from
-`PENDING.md` §5, and keep the port downstream. Cheaper, but the port stays a fork
-forever and the build farm never covers it.
+Kept here because it may come back. `baremetal-pre-idf` (`3630b5b65f`) is
+hardware-verified and already contains `crt0.S`, `vectors.S`, `irq-xtensa.c`,
+`irom-map.c`, `mmu-xtensa.c`, `psram-xtensa.c`, `rom_cache.{c,S}`, `app.lds`, `boot.lds`
+and `tools/esp-elf2image` (byte-identical to `esptool elf2image` except the digest flag,
+checked against esptool 4.7.0). Under it, everything in §3.1's deviation list disappears,
+and the port becomes self-contained like every other native port.
 
-**Recommendation: D1, staged.** Do not delete the IDF path — demote it to opt-in. The
-bare-metal pieces are already written and hardware-verified, which is what makes this
-tractable rather than a rewrite.
+What it costs, and why it is not happening now:
+- PSRAM timing sweep — ESP-IDF's `mspi_timing_by_mspi_delay` search would be gone.
+  Mitigation is known: IDF's own fallback entry (config id 5: `spi_din_mode=4` on every
+  DIN line and DQS, `spi_din_num=0`, `extra_dummy_len=2`) is a measured-good
+  configuration, not an estimate.
+- `set_cpu_frequency()` as `esp_pm_configure()` — CPU boost would need its own divider
+  path or become inert; measurable by rechecking codec/plugin throughput and mixer
+  headroom with boost off.
+- IDF's SD host driver (`sd-idf.c`) — the bare-metal SDHOST/IDMAC driver exists on that
+  tag but needs the card soak again (1-bit, non-removable).
+- FreeRTOS tickless idle / light sleep — not enabled today, so nothing is lost now; the
+  future plan would need a hand-written sleep path.
+
+Reopen conditions: upstream rejects any external-SDK requirement; or the build farm
+cannot host IDF; or we want light sleep and IDF's PM becomes a liability rather than a
+help.
 
 ---
 
 ## 5. Phases
 
-Phases A, B and C are worth doing regardless of the D decision. Order: A → B → C, then
-D, then E.
+Phases A → B → C → D → E. A, B and C are independent of the SDK decision; D is now
+"make the IDF dependency look like the Android/NDK shape" (§4.2), not "remove it".
 
 ### Phase A — conformance with no hardware risk (~1 day)
 
@@ -369,37 +452,55 @@ segment sizes and load addresses identical to before (this phase must not move c
 **Gate:** `--target=meowkits3 --type=s` builds and runs; the sim shows the 320×240
 panel, the joystick buttonmap responds, and the touch grid maps; native build unchanged.
 
-### Phase D — the build owner (~1–2 weeks if D1)
+### Phase D — conform the SDK dependency to the existing idioms (~3–5 days)
 
-Per §4. Sub-order:
-1. Restore bare-metal startup/link from `baremetal-pre-idf` onto the current tree
-   (files listed above), keeping the current driver layer where it is hardware-verified.
-2. Re-verify on hardware in this order: boot + panic trail → cache/MMU + PSRAM
-   ("responding", audiobuffer read/write test) → LCD → I2S output → GDMA completion
-   semantics → SD → USB (MSC, CDC, DAC) → recording → codec load and plugin load.
-3. Make IDF an opt-in path: `--with-idf` sets the CMake link, and the IDF-only drivers
-   (`sd-idf.c`, `timer-xtensa.c` gptimer, `backlight-xtensa.c` LEDC, `pcm-xtensa.c`
-   i2s_common, `system-xtensa.c` esp_pm, `thread-idf.c`) get bare-metal counterparts or
-   a compile-time choice. Each IDF-facing driver needs both variants before the default
-   flips.
-4. Delete `HAVE_SYSTEM_LIBC`, the symbol renames, the CFLAGS domain split,
-   `mkdepfile_order`, `--wrap usb_enable`, `--allow-multiple-definition` from the
-   default path.
-5. Retire `idf-app/` from the merge tree into `utils/meowkits3/idf/` for the opt-in path.
+Per §4.2. Sub-order, each step independently verifiable:
 
-**Gate:** D1 acceptance test in §4, plus a measured comparison against the IDF image
-(size, boot time to root menu, sustained audio, card read rate, plugin arena figures).
+1. `app_type="esp-idf"` in the target entry; delete the `ifneq (xtensa,$(CPU))` fork and
+   move the link/image rules to `firmware/target/xtensa/espressif_esp32s3/idf.make`,
+   included from `root.make`'s `APP_TYPE` dispatch. Also move `tools/espflash.make`
+   alongside it.
+2. `idfcc()` in `configure`: `ESP_IDF_PATH` requirement and version check, flag harvest
+   via `tools/idf-flags`, `GCCOPTS` rebuilt from `CCOPTS`, link flags handed to the
+   variables `root.make` already reads, `thread_support` set.
+3. Platform bit for a vendor runtime in `config.h`, set from `config/meowkits3.h`;
+   `HAVE_SYSTEM_LIBC` derived from it; the `sleep`/`rtc_init` renames move under that bit
+   with their measurement kept as the comment.
+4. Narrow `IDF_CFLAGS` to the objects that include IDF headers; drop `FREESTAND_CFLAGS`
+   from `codecs.make`/`plugins.make` if the freestanding domain no longer needs a
+   separate variable; scope `-Wno-undef` to that object list.
+5. Move `idf-app/` into the target tree (or `utils/meowkits3/idf/`), and generate
+   `rockbox_libs.cmake` into the build directory.
+6. Select `thread-idf.c` from `thread_support`, not from `CPU_XTENSA`.
+
+**Gate:** `make` produces a byte-comparable image (same segments, same load addresses,
+identical `.text`/`.data` sizes); `make espverify` passes; `make flash` still works; a
+board run confirms boot, audio, SD, USB, recording and one plugin. Then the negative
+tests: `tools/root.make` diff must not mention `xtensa` at all, and an
+`--target=meowkits3` configure with `ESP_IDF_PATH` unset must fail with the same clarity
+as `androidcc()` does.
+
+**Open risk to state plainly:** upstream may still refuse a port that requires ESP-IDF in
+the build environment, however well-shaped. §4.1 is the argument for it; §4.3 is the
+fallback if the argument fails.
 
 ### Phase E — submission shape (after A–D)
 
 Cut a `upstream/xtensa-port` branch containing only what belongs upstream. Split:
 
-1. **Series 1 — arch plumbing:** `ARCH_XTENSA`/`CPU_XTENSA` dispatch, `elf-target.h`
-   `EM_XTENSA`, `rom.lds`, `firmware/asm/xtensa/*`, `lib/libsetjmp/xtensa/*`,
-   `tools/configure` (`arch_xtensa`, `xtensacc`, the target entry), `tools/rockboxdev.sh`
-   `--target=e` plus the archive-name and `getfile_ex` fixes, `tools/builds.pm`,
-   `list_targets.pl`, manual and keymap wiring, target tree.
-2. **Series 2 — generic core fixes**, one per bug, subject line naming the bug not the
+1. **Series 1 — arch plumbing, no SDK in it:** `ARCH_XTENSA`/`CPU_XTENSA` dispatch,
+   `elf-target.h` `EM_XTENSA`, `rom.lds`, `firmware/asm/xtensa/*`,
+   `lib/libsetjmp/xtensa/*`, `tools/configure` (`arch_xtensa`, `xtensacc`),
+   `tools/rockboxdev.sh` `--target=e` plus the archive-name and `getfile_ex` fixes,
+   `tools/builds.pm`, `list_targets.pl`. Deliberately SDK-free so a reviewer can accept
+   the architecture support before deciding about ESP-IDF.
+2. **Series 2 — the SDK-backed target build:** `app_type="esp-idf"`, `idfcc()` with its
+   `ESP_IDF_PATH` requirement and version pin (documented the way `rockboxdev.sh` pins
+   binutils and gcc), the target's `idf.make`, the platform bit, and the IDF-facing
+   object group. This is where the Android/NDK precedent (§4.1) is cited, and it is the
+   series most likely to be argued about — keeping it separate means series 1 and the
+   generic fixes (§3) survive that argument.
+3. **Series 3 — generic core fixes**, one per bug, subject line naming the bug not the
    port (inventory already in `PENDING.md` §5): skin_engine `skin_is_loaded()`,
    `audio_path.c` input-source guard, `tick.h` `run_tick_tasks()` split, `i2c-async`
    submit seam, `usb_core.c` serial index mask, `ft6x06` point clamp, metronome `bpm`
@@ -408,12 +509,12 @@ Cut a `upstream/xtensa-port` branch containing only what belongs upstream. Split
    `keymaps.h` touch exclusion, `pcm_record.c` short-grant panic, `fs_defines.h` /
    `dircache.h` seams, `settings_list.c` seams, `thread.c` `THREAD_EXTRA_CHECKS`,
    `xworld.tex` opt token, `make_archive`.
-3. **Series 3 — the port itself:** SoC and board drivers, model config, manual, sim
-   buttonmap, plugin keymap blocks.
-4. **Series 4 — tooling:** `tools/xtensa/`, `utils/meowkits3/`.
+4. **Series 4 — the port itself:** SoC and board drivers, model config, manual and
+   keymap wiring, sim buttonmap, plugin keymap blocks.
+5. **Series 5 — tooling:** `tools/xtensa/`, `utils/meowkits3/`.
 
 Commit-message policy: a reviewer should be able to read a series and say "this cannot
-break my target". Anything that changes behaviour on another target goes in series 2
+break my target". Anything that changes behaviour on another target goes in series 3
 with its own bug report.
 
 ---
@@ -444,6 +545,12 @@ Run all of these against `upstream/master` at submission time, not against memor
   only what we intend.
 - Identity scan: `MODEL_NUMBER`, `target_id`, `RTC_*`, `*_PAD` unique against upstream
   tip; two targets built after any rebase.
+- Build-shape scan: `grep -n 'xtensa\|idf\|ESP' tools/root.make` should show only the
+  `include` line for the target make and configure-provided variables; no forked link
+  rule, no `-D` defining platform facts. Nothing at repo root but the normal tree.
+- `git diff fe5c0874af..HEAD -- tools/root.make tools/functions.make firmware/firmware.make`
+  read line by line: every hunk must be explainable as "a target makefile needs this hook",
+  not "this target is special".
 - `make zip` payload figures recorded; `make espverify` passes.
 - `PENDING.md` §5 inventory updated to match what was actually proposed.
 
@@ -461,7 +568,7 @@ Run all of these against `upstream/master` at submission time, not against memor
 - The weak seams (`DEFAULT_SPEAKER_MODE`, `DEFAULT_LIST_LINE_PADDING`,
   `DIRCACHE_*`, `MAX_OPEN_FILES`/`DC_NUM_ENTRIES`, `THREAD_EXTRA_CHECKS`,
   `NR_BUFFERS`/`MINIMUM_BUFFERS_QUEUED`, `USB_AUDIO_*`): all default to upstream
-  behaviour and are proposed in series 2 as shape fixes, not as port requirements.
+  behaviour and are proposed in series 3 as shape fixes, not as port requirements.
 - `docs/CREDITS`, `tools/configure`'s `--target=` hyphen fix, `make_archive` — keep,
   propose separately.
 
@@ -469,14 +576,28 @@ Run all of these against `upstream/master` at submission time, not against memor
 
 ## 8. Open questions for you
 
-1. **D1 or D2.** D1 costs roughly two weeks and re-tests the whole board; D2 costs
-   nothing but keeps the port a fork permanently.
-2. If D1: do we keep IDF reachable as `--with-idf`, or drop it entirely from the tree
-   and keep it only on this branch? Keeping it means maintaining two driver variants for
-   five files.
-3. Where do the working docs live once the submission branch is cut — stay on
-   `esp32-s3-idf` only, or move to a separate `docs/meowkits3` branch so this branch can
-   mirror upstream exactly?
-4. `release/` artifacts: currently gitignored and out of the tree — confirm that stays.
-5. Sim buttonmap and UI bitmap: keep (Phase C makes them reachable) or drop with
+Settled:
+- **The SDK dependency stays** (2026-10-29). Bare-metal is parked as §4.3 with explicit
+  reopen conditions.
+- `idf-app/` leaves the repo root — target tree or `utils/`, either is fine, but not root.
+
+Still open:
+1. **`app_type` name.** `"esp-idf"` reads best next to `"sonynwz"`, `"hibyos"`,
+   `"psp-homebrew"`. Alternative: `"esp32"` if we want the name to survive a future
+   non-IDF path.
+2. **Platform bit name.** `PLATFORM_ESP_IDF` (names the runtime) versus
+   `PLATFORM_VENDOR_RT` (names the category). `config/android.h` precedent suggests
+   naming the runtime.
+3. **How far to narrow the IDF flag surface.** Step 4 of Phase D could remove
+   `FREESTAND_CFLAGS` entirely, or keep it as a documented two-domain split. The narrow
+   version is more reviewable but needs a build test to prove no firmware object secretly
+   needs IDF's include path.
+4. **Whether to vendor the small IDF pieces we rely on** the way `hosted/tinyalsa/`
+   vendors tinyalsa — e.g. the cache/MMU and PSRAM helpers — so a reviewer can read them
+   without an IDF checkout. Apache-2.0 permits it with attribution; the trade is a
+   vendoring problem (drift from IDF versions) versus a smaller external surface.
+5. Where the working docs live once the submission branch is cut — stay on
+   `esp32-s3-idf` only, or move to a separate docs branch so the submission mirrors
+   upstream exactly.
+6. Sim buttonmap and UI bitmap: keep (Phase C makes them reachable) or drop with
    `sim => 0`.
