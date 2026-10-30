@@ -144,6 +144,11 @@ the `BASE_CFLAGS` split, and two dependency-scan hooks. `idf-app/` is in the SoC
 both are the honest description of what the platform library replaces, and the measurement
 behind them is recorded in the comments.
 
+Three of the eight `IMAGE_LINK` gates were written with inverted polarity and were fixed
+the same day (`0d1f930a53`). That fix also restored a fresh simulator build: Phase C had
+reported it clean on the strength of a directory that had already been built once, which was
+not a valid measurement of a new build directory.
+
 **Evidence.** `tools/root.make:404` wraps the standard `rockbox.elf`/`rombox.elf` rules
 in `ifneq (xtensa,$(CPU))` and replaces them with an `idf.py` link against a generated
 `rockbox_libs.cmake`. `idf-app/` at repo root carries `CMakeLists.txt`,
@@ -826,10 +831,17 @@ Settled:
 - **Sim buttonmap and UI bitmap stay.** `sim => 1` since Phase C, so they are reachable.
 
 Still open:
-1. **How far to narrow the IDF flag surface.** The SDK's include path is still given to
-   the whole firmware domain, because the dependency scan needs it there. Narrowing it to
-   the 16 objects that reach an IDF header would mean scanning those separately from the
-   rest, which `DEPSCAN_EXTRA` already does for three of them.
+1. **How far to narrow the IDF flag surface.** Measured in a throwaway worktree
+   rather than argued (`PENDING.md` §1 has the numbers): 64 include directories are
+   currently given to all 766 firmware-domain objects that reach the platform libc,
+   while 13 reach an IDF component header. Narrowing to 2 directories globally
+   builds clean, leaves the warning profile untouched, and changes exactly two
+   sections in `debug-esp32s3.o`; it needs a `dbg_hw_info` check on the board. A
+   second variant that also restores Rockbox's own `-Os` and warning policy saves
+   4 % of image size with 2 new warnings, and is a separate decision. Prerequisite
+   for either: the dependency-scan hook has to exclude the IDF files from
+   `$(OTHER_SRC)` as well as `$(SRC)` — firmware sources are in `OTHER_SRC`, so the
+   `DEP_SRCS` hook Phase D shipped never actually excluded them.
 2. **Whether to vendor the small IDF pieces we rely on** the way `hosted/tinyalsa/`
    vendors tinyalsa — e.g. the cache/MMU and PSRAM helpers — so a reviewer can read them
    without an IDF checkout. Apache-2.0 permits it with attribution; the trade is a

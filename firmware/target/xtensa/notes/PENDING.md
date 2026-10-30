@@ -20,8 +20,39 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **Narrowing the SDK include path — measured, decision pending.** Built in a
+  throwaway worktree (`/tmp/rb-narrow`), not applied to the branch. `IDF_CFLAGS`
+  is 64 `-I` directories plus 33 defines and codegen flags, and today the whole
+  firmware domain gets it — 766 objects reach the newlib shim through
+  `rbendian.h`'s `<endian.h>`, but only **13** reach an IDF component header, and
+  those are exactly the target files that name one.
+  The narrowed shape gives every firmware-domain object 2 directories
+  (`components/newlib/platform_include` — the only `endian.h` in sight, the
+  toolchain sysroot has none — and the project's `build/config`, which that shim
+  includes) and the full 64 only to the 13, compiled with IDF's path leading.
+  Result: clean build, identical warning profile (35 `-Wchar-subscripts` and 28
+  `-Wcomment` come from the platform libc and upstream code in both trees; they
+  are not new), 1259 objects with **exactly two changed sections**
+  (`debug-esp32s3.o`: `.text.core_prid` −8, `.text.pm_cycle_tick` +57, because
+  IDF's `esp_cpu.h`/`esp_timer.h` inlines now resolve ahead of Rockbox's), image
+  1,306,912 B (−944), same segment layout, layout guard passes, zip entry list
+  identical. Needs a board check of `dbg_hw_info` — the two changed functions are
+  exactly its core-id and cycle-tick readers — before it is committed.
+  Two prerequisites it exposes: the dep-scan hook has to be `DEP_EXCLUDE` applied
+  to both `$(SRC)` and `$(OTHER_SRC)` (firmware sources live in `OTHER_SRC`, so
+  `DEP_SRCS` alone never excluded them), and `-Wno-undef` retargets from the
+  directory to the object list.
+  A second variant also measured (`/tmp/rb-v2`): dropping IDF's codegen flags
+  globally so Rockbox's own `-Os` and warning policy apply to Rockbox's code.
+  Image 1,256,176 B — **4 % smaller**, no new warnings except 2 `-Wsign-compare`
+  in `power-meowkits3.c`. It is a bigger claim than the include narrowing and
+  wants its own hardware pass; it also showed that IDF's libc feature macros are
+  load-bearing (`-D_GNU_SOURCE`, or `firmware/include/string-extra.h` fails on
+  `mempcpy`), so the honest form is naming them in the target makefile rather
+  than inheriting 97 SDK flags.
 - **Simulator: built and running, not interactively verified.** `--target=meowkits3
-  --type=s` compiles and the 7,645,576-byte `rockboxui` stays alive under
+  --type=s` compiles from a new directory (7,645,176-byte `rockboxui` after the
+  `IMAGE_LINK` polarity fix) and stays alive under
   `SDL_VIDEODRIVER=dummy`, and the buttonmap, touch conversion and skin touch objects are
   in the binary. What no headless run can show is the part a reviewer actually looks at:
   the 320×240 panel on screen, the stick mapping to `BUTTON_UP/DOWN/LEFT/RIGHT`, and the
@@ -905,6 +936,20 @@ Three real differences the comparison caught, all of them consequences of
   `firmware/export` on the path, so it printed `config.h: No such file or
   directory` and silently yielded an empty file list. The only visible symptom was
   a missing `lib/libsetjmp.a`.
+
+**A follow-up fix, and a correction to §Phase C.** Three of those gates —
+`imageviewer.make`, `zxbox.make`, `sdl.make` — were written with inverted
+polarity (`ifndef IMAGE_LINK` where the upstream condition was `ifndef APP_TYPE`).
+The effect was twice wrong: the device lost the per-decoder linker script on its
+imageviewer overlays, and a *fresh* simulator build added a `.link` prerequisite
+whose rule ran `-T -Wl,--gc-sections` against an undefined `PLUGINLINK_LDS` and
+failed with "cannot open linker script file". Phase C's "simulator builds clean"
+row below was measured in a directory that had already been built once, so it did
+not exercise that path — the claim was wrong as written. `0d1f930a53` fixes the
+polarity and re-verifies against a worktree at `3064dce1df`: all 208 plugin,
+codec and overlay artifacts match in size, `bmp.ovl`/`jpeg.ovl` have identical
+LOAD segments, a fresh `--type=s` build completes, and checkwps and the device
+image are unchanged.
 
 Where the plan and the execution diverged:
 
