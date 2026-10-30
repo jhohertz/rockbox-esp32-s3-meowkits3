@@ -10,21 +10,22 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#ifdef HAVE_SYSTEM_LIBC
-#include <xtensa/hal.h>
-#include "cache-xtensa.h"
-#else
-/* The freestanding domain - codecs and plugins, linked by plugin.lds against a
- * jump table rather than a C library - has no ESP-IDF to include and no DMA of
- * its own. It reaches the cache through codec_api/plugin_api (ci->commit_dcache
- *()), which the firmware side fills in with the real thing. These declarations
- * exist so this header still parses there; a codec that called one directly
- * would fail at link time, which is the correct outcome rather than a silent
- * no-op. */
+#include "cache-xtensa.h"   /* per-range maintenance, declared not inlined */
+/*
+ * Whole-cache maintenance comes from xtensa HAL asm objects on the firmware
+ * side and does not exist on the freestanding side, where codecs reach the
+ * cache through codec_api instead. Declaring the three entry points rather than
+ * including <xtensa/hal.h> matters more than it looks: system-target.h is
+ * reached from system.h, so an IDF include here puts the vendor's headers in
+ * front of every Rockbox file in the build -- measured at 919 objects, which is
+ * what made -Wno-undef a global flag. The prototypes below are the same three
+ * extern declarations hal.h itself carries. Per-range maintenance, which needs
+ * IDF's cache HAL, is in cache-xtensa.h and is included by the three drivers
+ * that actually call it.
+ */
 void xthal_dcache_all_writeback(void);
 void xthal_dcache_all_writeback_inv(void);
 void xthal_icache_all_invalidate(void);
-#endif
 
 extern long cpu_frequency;   /* set by system_init */
 

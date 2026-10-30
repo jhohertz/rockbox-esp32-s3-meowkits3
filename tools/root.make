@@ -90,10 +90,19 @@ ifeq (xtensa,$(CPU))
 # reach, and needs those headers ahead of everything instead. Both are set in
 # firmware/firmware.make.
 #
-# -Wno-undef is not cosmetic either. Rockbox builds with -Wundef, and IDF headers
-# test generated sdkconfig names bare (`#if CONFIG_COMPILER_OPTIMIZATION_PERF`,
-# `#if __clang__`), which produces hundreds of warnings per file. IDF's headers
-# are not ours to fix.
+# Rockbox builds with -Wundef. IDF headers test generated sdkconfig names bare
+# (`#if CONFIG_COMPILER_OPTIMIZATION`, `#if __clang__`, `#if BOOTLOADER_BUILD`),
+# and IDF's own build never notices because it does not use -Wundef. Silencing
+# that for the whole firmware domain, though, also silences it for every Rockbox
+# file -- which is how a typo in `#if CONFIG_FOO` would go unnoticed here while
+# every other target reported it. Measured on a full rebuild, the noise is not
+# spread evenly: 241 of the 683 warnings are one macro in one IDF header that
+# every file including <stdio.h> hits, and the rest sit in files that reach IDF's
+# own API headers. So the macro is supplied and the flag is scoped.
+#
+# CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY is absent from this project's
+# sdkconfig.h because the build selects newlib rather than picolibc; the header
+# asks `#if` that name, and 0 is what the configuration means.
 #
 # HAVE_SYSTEM_LIBC is defined here rather than in the target's config header for
 # the same reason the include directories are split: it describes what the link
@@ -101,7 +110,8 @@ ifeq (xtensa,$(CPU))
 # domain must not see it -- see the note in config/meowkits3.h. PPCFLAGS carries it
 # too because that is where firmware/SOURCES and firmware/asm/SOURCES get their
 # `#if`s evaluated.
-CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_AFTER) $(IDF_CFLAGS) -DHAVE_SYSTEM_LIBC -Wno-undef
+CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_AFTER) $(IDF_CFLAGS) -DHAVE_SYSTEM_LIBC \
+         -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
 PPCFLAGS += -DHAVE_SYSTEM_LIBC
 #
 # Include directories, and only include directories, do go to PPCFLAGS. The
@@ -112,7 +122,7 @@ PPCFLAGS += -DHAVE_SYSTEM_LIBC
 # include -- it emits the name as written, and addtargetdir.pl then turns
 # `esp_err.h` into $(BUILDDIR)/esp_err.h, a prerequisite with no rule, which is a
 # hard make error rather than a missing dependency.
-PPCFLAGS += $(filter -I%,$(IDF_CFLAGS)) -Wno-undef
+PPCFLAGS += $(filter -I%,$(IDF_CFLAGS))
 
 # One more ordering case, and this one is a name collision rather than a
 # preference. A firmware object that reaches an ESP-IDF driver can pull IDF's
@@ -125,7 +135,17 @@ PPCFLAGS += $(filter -I%,$(IDF_CFLAGS)) -Wno-undef
 # projects' headers arriving at the same name. Objects in that group are compiled
 # with IDF's search path leading; none of them use Rockbox's queue API.
 IDF_FIRST_CFLAGS = $(IDF_CFLAGS) $(BASE_CFLAGS) $(LIBC_HDR_AFTER) \
-                   -DHAVE_SYSTEM_LIBC -Wno-undef
+                   -DHAVE_SYSTEM_LIBC -Wno-undef \
+                   -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
+
+# The remaining -Wno-undef scope. Only the objects that include an IDF API header
+# can see IDF's bare sdkconfig tests, and they are confined to the target
+# directory: firmware/target/xtensa/cache-xtensa.c is the single object that
+# includes the cache HAL, and the rest of the vendor headers arrive through the
+# handful of drivers that talk to IDF directly. Everything else in the firmware
+# -- apps, the codec library, the kernel, the generic drivers -- keeps -Wundef
+# on, exactly as it is on every other target.
+$(BUILDDIR)/firmware/target/xtensa/%.o: CFLAGS += -Wno-undef
 endif
 CORE_LDOPTS = $(GLOBAL_LDOPTS)  # linker ops specifically for core build
 
