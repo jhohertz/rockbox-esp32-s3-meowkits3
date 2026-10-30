@@ -30,13 +30,14 @@ extern struct frame_buffer_t lcd_framebuffer_default;
 #define LCD_OPTIMIZED_UPDATE_RECT
 
 /* Same reasoning for the YUV path: the generic lcd_blit_yuv in
- * drivers/lcd-memframe.c only fills the shadow framebuffer, and mpegplayer never
- * issues an update for the video band itself -- it blits through this entry and
- * then pushes only its OSD strip (mpegplayer.c:1665) and, when the FPS overlay is
- * on, the FPS rect. So on a panel with no CPU-writable display memory the video
- * area stays as whatever the last full update left. Defining this makes the target
- * own the function, which is the contract targets with a real YUV path use
- * (firmware/export/config/3ds.h, the as3525 and ipod LCD drivers). */
+ * drivers/lcd-memframe.c only fills the shadow framebuffer, and mpegplayer
+ * never issues an update for the video band itself -- it blits through this
+ * entry and then pushes only its OSD strip (mpegplayer.c:1665) and, when the
+ * FPS overlay is on, the FPS rect. So on a panel with no CPU-writable
+ * display memory the video area stays as whatever the last full update left.
+ * Defining this makes the target own the function, which is the contract
+ * targets with a real YUV path use (firmware/export/config/3ds.h, the as3525
+ * and ipod LCD drivers). */
 #define LCD_OPTIMIZED_BLIT_YUV
 
 #endif /* LCD_TARGET_H */

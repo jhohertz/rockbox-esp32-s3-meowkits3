@@ -130,7 +130,8 @@ static void begin_list(void)
     ntx = 0;
 }
 
-/* Writing a command clears its DONE bit, which is what the controller looks for. */
+/* Writing a command clears its DONE bit, which is what the controller looks
+/* for. */
 static bool add_cmd(unsigned opcode, unsigned nbytes,
                     unsigned ack_check, unsigned ack_expected, unsigned ack_value)
 {
@@ -222,10 +223,10 @@ static bool build_read(int device, const unsigned char *pre, int npre, int count
 }
 
 /* Reset both FIFOs. This has to happen *before* the TX bytes are pushed: the
- * reset clears the FIFO, so doing it after build_write/build_read leaves a WRITE
- * command with a byte count and an empty FIFO. The controller then stalls on the
- * write and reports TRANS_COMPLETE together with TIME_OUT, which reads as a
- * successful transaction that never touched the bus.
+ * reset clears the FIFO, so doing it after build_write/build_read leaves a
+ * WRITE command with a byte count and an empty FIFO. The controller then stalls
+ * on the write and reports TRANS_COMPLETE together with TIME_OUT, which reads
+ * as a successful transaction that never touched the bus.
  */
 static void reset_fifos(void)
 {
@@ -233,25 +234,26 @@ static void reset_fifos(void)
     gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) & ~((1u << 12) | (1u << 13)));
 }
 
-/* Latch the programmed list and trigger the controller. The registers live in the
- * APB clock domain and the controller in the asynchronous I2C_SCLK domain, so the
- * config has to be copied across before the transaction is started. The caller is
- * responsible for the terminating STOP or END command. */
+/* Latch the programmed list and trigger the controller. The registers live
+ * in the APB clock domain and the controller in the asynchronous I2C_SCLK
+ * domain, so the config has to be copied across before the transaction is
+ * started. The caller is responsible for the terminating STOP or END
+ * command. */
 static void start_list(void)
 {
     gpio_write(I2C_INT_CLR, 0xFFFF);
 
-    /* FSM_RST is a write trigger like TRANS_START: pulse it so the command pointer
-     * starts at slot 0 rather than wherever a previous list left it.
+    /* FSM_RST is a write trigger like TRANS_START: pulse it so the command
+     * pointer starts at slot 0 rather than wherever a previous list left it.
      */
     /* ESP-IDF's master init clears arbitration_en (default 1). Left set, the
      * controller compares the driven SDA against the sampled line and reports
      * ARB_LOST on any stretch, which aborts the list. */
-    /* CTR is written whole, so the second write clears arbitration_en (default 1)
-     * as well as fsm_rst. ESP-IDF's master init does the same via
-     * i2c_ll_enable_arbitration(hw, false): with arbitration on, the controller
-     * compares the driven SDA against the sampled line and aborts the list on any
-     * slave stretch. */
+    /* CTR is written whole, so the second write clears arbitration_en
+     * (default 1) as well as fsm_rst. ESP-IDF's master init does the same
+     * via i2c_ll_enable_arbitration(hw, false): with arbitration on, the
+     * controller compares the driven SDA against the sampled line and aborts
+     * the list on any slave stretch. */
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_FSM_RST);
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE);
 
@@ -259,10 +261,10 @@ static void start_list(void)
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_CONF_UPGATE | CTR_TRANS_START);
 }
 
-/* The CMD_Controller is a one-shot machine: it reads the eight command registers
- * from slot 0, executes them in order and stops at STOP or END. A transaction is
- * therefore atomic, and the only way to drive it is to program the whole list,
- * latch it and wait for TRANS_COMPLETE.
+/* The CMD_Controller is a one-shot machine: it reads the eight command
+ * registers from slot 0, executes them in order and stops at STOP or END. A
+ * transaction is therefore atomic, and the only way to drive it is to program
+ * the whole list, latch it and wait for TRANS_COMPLETE.
  */
 static int forced_status;
 static volatile int cb_done;
@@ -271,12 +273,12 @@ static volatile int cb_status;
 /*
  * The transaction is polled to completion in the calling thread.
  *
- * The esp32s3 CMD_Controller is a one-shot machine: it executes the eight command
- * slots in order and stops at STOP or END. A transaction is short - a 32-byte read
- * at 100 kHz is under 4 ms - so polling costs nothing that an interrupt would save,
- * and it keeps the whole I2C path out of the level-1 handler, which already carries
- * the tick and the audio DMA. The controller interrupt is therefore left masked in
- * i2c_init().
+ * The esp32s3 CMD_Controller is a one-shot machine: it executes the eight
+ * command slots in order and stops at STOP or END. A transaction is short - a
+ * 32-byte read at 100 kHz is under 4 ms - so polling costs nothing that an
+ * interrupt would save, and it keeps the whole I2C path out of the level-1
+ * handler, which already carries the tick and the audio DMA. The controller
+ * interrupt is therefore left masked in i2c_init().
  */
 /* The poll has to fit inside the tick: a 32-byte transaction at 100 kHz needs
  * under 4 ms, so 5 ms is generous. A 60 ms bound turns every failed read into a
@@ -329,8 +331,9 @@ void __i2c_async_submit(int bus, i2c_descriptor *desc)
 
             if (status == I2C_STATUS_OK && desc->tran_mode == I2C_READ &&
                 desc->count[1] > 0) {
-                /* RX RAM is read through I2C_DATA in FIFO mode; the read pointer
-                 * auto-advances, so each read returns the next received byte.
+                /* RX RAM is read through I2C_DATA in FIFO mode; the read
+                 * pointer auto-advances, so each read returns the next received
+                 * byte.
                  */
                 unsigned char *buf = (unsigned char *)desc->buffer[1];
 
@@ -340,14 +343,15 @@ void __i2c_async_submit(int bus, i2c_descriptor *desc)
         }
     }
 
-    /* Completion is inline: the queue is drained before this returns, so a caller
-     * waiting on the semaphore is released by the same call that queued the work.
+    /* Completion is inline: the queue is drained before this returns, so a
+     * caller waiting on the semaphore is released by the same call that queued
+     * the work.
      */
     __i2c_async_complete_callback(bus, status);
 }
 
-/* Kept for the dispatch: the controller interrupt is masked, so this should never
- * run. If it ever does, clearing the pending bits is the safe response.
+/* Kept for the dispatch: the controller interrupt is masked, so this should
+ * never run. If it ever does, clearing the pending bits is the safe response.
  */
 void ICODE_ATTR i2c_irq(void)
 {
@@ -379,28 +383,30 @@ static void i2c_bus_recovery(void)
 static void set_timing(unsigned freq)
 {
     /* The module clock is XTAL (40 MHz) when SCLK_SEL is 0. One bit period is
-     * (low + high) module cycles, so a half period is sclk / (2 * freq). With no
-     * divider that is 200 cycles at 100 kHz, which is what ESP-IDF programs.
+     * (low + high) module cycles, so a half period is sclk / (2 * freq). With
+     * no divider that is 200 cycles at 100 kHz, which is what ESP-IDF programs.
      *
-     * The previous formula, I2C_SRC_CLK / (freq * 1024) + 1, produced a divider of
-     * 391 and a half period of zero, so every timing field wrapped to 0x1FF.
+     * The previous formula, I2C_SRC_CLK / (freq * 1024) + 1, produced a divider
+     * of 391 and a half period of zero, so every timing field wrapped to 0x1FF.
      */
     unsigned clkm_div = I2C_SRC_CLK / (freq * 1024) + 1;
     unsigned sclk = I2C_SRC_CLK / clkm_div;
     unsigned half = sclk / (2 * freq);
-    /* Below 80 kHz a long wait-high makes the bus faster than requested; above it,
-     * the shorter one is what holds the frequency. */
+    /* Below 80 kHz a long wait-high makes the bus faster than requested;
+     * above it, the shorter one is what holds the frequency. */
     unsigned wait_high = (freq >= 80000) ? (half / 2 - 2) : (half / 4);
     unsigned scl_high = half - wait_high;
-    /* The SCL timeout is armed on the *level* of SCL: it triggers when SCL stays
-     * unchanged for 2 * I2C_TIME_OUT_VALUE module-clock cycles. At 100 kHz with no
-     * divider the high period alone is 102 cycles, so ESP-IDF's tabulated value
-     * (12) fires in the middle of every bit. The timeout is left disabled; a stuck
-     * bus is detected by the transaction never reporting TRANS_COMPLETE.
+    /* The SCL timeout is armed on the *level* of SCL: it triggers when SCL
+     * stays unchanged for 2 * I2C_TIME_OUT_VALUE module-clock cycles. At 100
+     * kHz with no divider the high period alone is 102 cycles, so ESP-IDF's
+     * tabulated value (12) fires in the middle of every bit. The timeout is
+     * left disabled; a stuck bus is detected by the transaction never reporting
+     * TRANS_COMPLETE.
      */
 
-    /* SCLK_ACTIVE (bit 21) defaults to 1 and gates the module clock: writing the
-     * register without it turns the peripheral off and no transaction ever runs.
+    /* SCLK_ACTIVE (bit 21) defaults to 1 and gates the module clock: writing
+     * the register without it turns the peripheral off and no transaction ever
+     * runs.
      */
     gpio_write(I2C_CLK_CONF, (clkm_div - 1) | (1u << 21));            /* SCLK_SEL = 0: XTAL */
     gpio_write(I2C_SCL_LOW_PERIOD, half - 1);
@@ -430,16 +436,17 @@ void i2c_init(void)
 
     /* ESP-IDF idles the lines high and enables the internal pull-ups before
      * connecting the peripheral. The latch matters: if the matrix input samples
-     * the output register rather than the pad, a cleared latch reads as a held-low
-     * bus and the FSM aborts with arbitration lost.
+     * the output register rather than the pad, a cleared latch reads as a
+     * held-low bus and the FSM aborts with arbitration lost.
      */
     gpio_write(GPIO_OUT_W1TS, (1u << I2C_SDA_PIN) | (1u << I2C_SCL_PIN));
 
-    /* TRM 27.4.6: an open-drain master needs I2C_SDA_FORCE_OUT/I2C_SCL_FORCE_OUT
-     * set *and* the pad driver set to open drain. Without the pad driver the FSM
-     * drives SDA push-pull, the slave cannot pull it low during the acknowledge
-     * slot, and every transaction with ack_check_en set reports NACK. This is the
-     * single bit that separates a working bus from one that never ACKs.
+    /* TRM 27.4.6: an open-drain master needs
+     * I2C_SDA_FORCE_OUT/I2C_SCL_FORCE_OUT set *and* the pad driver set to open
+     * drain. Without the pad driver the FSM drives SDA push-pull, the slave
+     * cannot pull it low during the acknowledge slot, and every transaction
+     * with ack_check_en set reports NACK. This is the single bit that separates
+     * a working bus from one that never ACKs.
      */
     gpio_write(GPIO_PIN_REG(I2C_SDA_PIN),
                gpio_read(GPIO_PIN_REG(I2C_SDA_PIN)) | GPIO_PIN_PAD_DRIVER);
@@ -448,12 +455,13 @@ void i2c_init(void)
     gpio_write(IO_MUX_PIN(I2C_SDA_PIN), gpio_read(IO_MUX_PIN(I2C_SDA_PIN)) | (1u << 8));
     gpio_write(IO_MUX_PIN(I2C_SCL_PIN), gpio_read(IO_MUX_PIN(I2C_SCL_PIN)) | (1u << 8));
 
-    /* Output: the controller does not drive pads directly, signals have to be routed
-     * through the matrix. oen_sel = 1 makes the GPIO_ENABLE bit the output enable. */
+    /* Output: the controller does not drive pads directly, signals have to
+     * be routed through the matrix. oen_sel = 1 makes the GPIO_ENABLE bit
+     * the output enable. */
     gpio_matrix_out(I2C_SDA_PIN, SIG_I2C0_SDA);
     gpio_matrix_out(I2C_SCL_PIN, SIG_I2C0_SCL);
-    /* Input: the controller also has to see the lines, and the matrix input slots are
-     * indexed by signal rather than by pin. */
+    /* Input: the controller also has to see the lines, and the matrix input
+     * slots are indexed by signal rather than by pin. */
     gpio_matrix_in(I2C_SDA_PIN, SIG_I2C0_SDA);
     gpio_matrix_in(I2C_SCL_PIN, SIG_I2C0_SCL);
 
@@ -462,39 +470,40 @@ void i2c_init(void)
 
     set_timing(I2C_BUS_FREQ);
 
-    /* Digital filter on both lines. The bus is loaded with about 100 pF per line and
-     * 10K pull-ups, so a few module-clock cycles of threshold is cheap insurance
-     * against ringing on the SCL edge. */
+    /* Digital filter on both lines. The bus is loaded with about 100 pF per
+     * line and 10K pull-ups, so a few module-clock cycles of threshold is
+     * cheap insurance against ringing on the SCL edge. */
     gpio_write(I2C_FILTER_CFG, 7u | (7u << 4) | (1u << 8) | (1u << 9));
 
-    /* Direct (non-FIFO) access to TX and RX RAM: each byte occupies a whole word at a
-     * fixed address, which is simpler than the auto-advancing pointers and is what
-     * double addressing requires anyway. */
+    /* Direct (non-FIFO) access to TX and RX RAM: each byte occupies a whole
+     * word at a fixed address, which is simpler than the auto-advancing
+     * pointers and is what double addressing requires anyway. */
     /* FIFO mode: RX watermark 11, TX watermark 5, FIFO protection on. This is
      * what ESP-IDF's HAL programs; direct (non-FIFO) addressing is only needed
      * for slave-mode double addressing.
      */
     gpio_write(I2C_FIFO_CONF, 11u | (5u << 5) | (1u << 14));
 
-    /* The transaction is polled to completion, so the controller's interrupt stays
-     * masked. An unmasked TRANS_COMPLETE would enter i2c_irq() with no transaction
-     * in flight.
+    /* The transaction is polled to completion, so the controller's interrupt
+     * stays masked. An unmasked TRANS_COMPLETE would enter i2c_irq() with no
+     * transaction in flight.
      */
     if (!async_ready) {
         __i2c_async_init();
         async_ready = true;
     }
-    /* The transaction is polled inside __i2c_async_submit, so the controller's own
-     * interrupt is deliberately left masked: an unmasked TRANS_COMPLETE would enter
-     * the level-1 handler with kernel work in flight on the interrupted thread.
+    /* The transaction is polled inside __i2c_async_submit, so the controller's
+     * own interrupt is deliberately left masked: an unmasked TRANS_COMPLETE
+     * would enter the level-1 handler with kernel work in flight on the
+     * interrupted thread.
      */
     gpio_write(I2C_INT_ENA, 0u);
-    /* Same master configuration as start_list uses, so the peripheral is in master
-     * mode with arbitration off before the first transaction. */
+    /* Same master configuration as start_list uses, so the peripheral is in
+     * master mode with arbitration off before the first transaction. */
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE);
 
-    /* Recovery polls rather than interrupts, and a stale TRANS_COMPLETE bit would
-     * otherwise complete a transaction that never started. */
+    /* Recovery polls rather than interrupts, and a stale TRANS_COMPLETE bit
+     * would otherwise complete a transaction that never started. */
     i2c_bus_recovery();
     gpio_write(I2C_INT_CLR, 0xFFFF);
 }
@@ -524,8 +533,8 @@ static int sync_run(i2c_descriptor *desc)
         return I2C_STATUS_ERROR;
     }
 
-    /* __i2c_async_submit runs the transaction to completion before returning, so
-     * the callback has already fired by the time the queue call does.
+    /* __i2c_async_submit runs the transaction to completion before returning,
+     * so the callback has already fired by the time the queue call does.
      */
     return cb_done ? cb_status : I2C_STATUS_ERROR;
 }

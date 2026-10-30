@@ -3,10 +3,10 @@
 #include "i2c.h"
 #include "pca9557.h"
 
-/* The reference firmware reads the output register before every write. That is two
- * I2C transactions per pin change, which is fine for control signals but wasteful.
- * We keep a local copy instead — safe as long as nothing else writes the register,
- * which is true here since Rockbox owns the expander. */
+/* The reference firmware reads the output register before every write. That
+ * is two I2C transactions per pin change, which is fine for control signals
+ * but wasteful. We keep a local copy instead — safe as long as nothing else
+ * writes the register, which is true here since Rockbox owns the expander. */
 static unsigned char out_reg;
 static unsigned char config_reg;
 
@@ -63,9 +63,10 @@ int pca9557_read(int pin)
     return (v >> pin) & 1;
 }
 
-/* The reference firmware verifies the expander actually answers before relying on it,
- * and retries with a bus recovery if not. i2c_init() performs the recovery, so the
- * retry uses only the shared I2C API rather than a target-local symbol. */
+/* The reference firmware verifies the expander actually answers before
+ * relying on it, and retries with a bus recovery if not. i2c_init() performs
+ * the recovery, so the retry uses only the shared I2C API rather than a
+ * target-local symbol. */
 void pca9557_init(void)
 {
     unsigned char v;

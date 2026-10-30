@@ -19,11 +19,11 @@
  * enable them: Rockbox has to. */
 #define SYSTEM_PERIP_CLK_EN0 (SYSTEM_BASE + 0x18)
 #define SYSTEM_PERIP_CLK_EN1 (SYSTEM_BASE + 0x1C)
-/* Assert-high reset, one bit per peripheral at the same position as its clock
- * enable. Enabling the clock without clearing this leaves the peripheral held in
- * reset: its registers then accept no writes and read back as zero, which looks
- * identical to a wrong base address. ESP-IDF releases these in periph_ctrl rather
- * than leaving it to each driver. */
+/* Assert-high reset, one bit per peripheral at the same position as its
+ * clock enable. Enabling the clock without clearing this leaves the
+ * peripheral held in reset: its registers then accept no writes and read
+ * back as zero, which looks identical to a wrong base address. ESP-IDF
+ * releases these in periph_ctrl rather than leaving it to each driver. */
 #define SYSTEM_PERIP_RST_EN0 (SYSTEM_BASE + 0x20)
 #define SYSTEM_PERIP_RST_EN1 (SYSTEM_BASE + 0x24)
 #define CLK_EN_I2S0 (1u << 4)
@@ -51,8 +51,8 @@
  * An earlier revision of this file claimed bit 29 was not a field and removed
  * it. That was wrong and the claim is recorded here so it is not repeated: the
  * field is named I2S_CLK_EN with no TX_ prefix, so a scan for I2S_TX_* does not
- * find it. Concluding that something is absent from a search that could not have
- * found it is the failure mode this port has hit repeatedly.
+ * find it. Concluding that something is absent from a search that could not
+ * have found it is the failure mode this port has hit repeatedly.
  *
  * clk_sel encoding is taken from i2s_ll_tx_clk_set_src() in
  * components/hal/esp32s3/include/hal/i2s_ll.h, not guessed:
@@ -60,9 +60,9 @@
  * An earlier comment here called 1 "APLL", which this part does not offer.
  *
  * PLL_F160M is what ESP-IDF picks for I2S_CLK_SRC_DEFAULT. Note that switching
- * to it changed nothing measurable on the stall, so the clock source was not the
- * fault; it is kept because it is IDF's supported audio path and removes the
- * fractional modulator from 40 MHz from the list of suspects.
+ * to it changed nothing measurable on the stall, so the clock source was not
+ * the fault; it is kept because it is IDF's supported audio path and removes
+ * the fractional modulator from 40 MHz from the list of suspects.
  */
 #define CLKM_CONF_CLK_ACTIVE (1u << 26)
 /* I2S_CLK_EN -- note the name carries no TX/RX prefix, which is exactly how it
@@ -108,15 +108,15 @@
 #define GDMA_RX_LINK    (GDMA_BASE + 0x20)
 #define GDMA_RX_PERI_SEL (GDMA_BASE + 0x48)
 
-/* IN_DONE (bit 0) is the last data of a descriptor landing in memory; IN_EOF (bit 1)
- * fires when the data has merely been read out of the peripheral. */
+/* IN_DONE (bit 0) is the last data of a descriptor landing in memory; IN_EOF
+ * (bit 1) fires when the data has merely been read out of the peripheral. */
 #define GDMA_INT_IN_DONE    (1u << 0)
 #define GDMA_INT_IN_EOF     (1u << 1)
 #define GDMA_INT_IN_DSCR_ERR (1u << 3)
 #define GDMA_INT_IN_DSCR_EMPTY (1u << 4)
 
-/* The IN link has auto_ret between addr and stop, which shifts stop and start up by
- * one relative to the OUT link. */
+/* The IN link has auto_ret between addr and stop, which shifts stop and
+ * start up by one relative to the OUT link. */
 #define GDMA_RX_LINK_START  (1u << 22)
 #define GDMA_RX_LINK_STOP   (1u << 21)
 
@@ -156,8 +156,8 @@
  * treats as the transmit-complete callback. An earlier note here claimed bit 0
  * was DONE and bit 1 an earlier EOF; bit 0 is actually out_reach_target, which
  * only fires when out_eof_num is programmed, and it never is. Enabling bit 0
- * therefore meant the transmit interrupt never fired, the ring starved after two
- * descriptors, and nothing played.
+ * therefore meant the transmit interrupt never fired, the ring starved after
+ * two descriptors, and nothing played.
  */
 #define GDMA_INT_DONE (1u << 1)          /* out_eof: this descriptor is finished */
 #define GDMA_INT_DSCR_ERR (1u << 2)
@@ -181,8 +181,9 @@
  * is where .bss is placed. The buffer field is a full 32-bit address. */
 #define GDMA_MAX_DESC_LEN 4095
 
-/* A descriptor cannot exceed 4095 bytes, and the DMA moves in whole words, so the
- * recording chunk is the largest multiple of 4 below the limit: 1023 stereo frames.
+/* A descriptor cannot exceed 4095 bytes, and the DMA moves in whole words, so
+ * the recording chunk is the largest multiple of 4 below the limit: 1023 stereo
+ * frames.
  */
 #define GDMA_RX_CHUNK 4092
 
@@ -214,7 +215,8 @@ struct gdma_desc {
     uint32_t pad[5];   /* to one esp32s3 D-cache line; see above */
 } __attribute__((aligned(32)));
 
-/* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA moves. */
+/* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA
+/* moves. */
 #define DESC_SUC_EOF (1u << 30)
 #define DESC_OWNER   (1u << 31)
 
@@ -238,23 +240,24 @@ void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
  * host-driven stream. */
 bool i2s_tx_playing(void);
 #ifdef HAVE_RECORDING
-/* The receiver is a full ESP-IDF I2S channel, owned by pcm-xtensa.c, so there is
- * no rx init/start/stop declared here. What this file owns is the bus: which port
- * drives the three clock pads, and what the ADC has been told about the rate.
+/* The receiver is a full ESP-IDF I2S channel, owned by pcm-xtensa.c, so there
+ * is no rx init/start/stop declared here. What this file owns is the bus: which
+ * port drives the three clock pads, and what the ADC has been told about the
+ * rate.
  *
  * The two directions never overlap (audiohw_set_input_source() stops the sink
- * before a capture starts), so "who owns the bus" is a single flag rather than a
- * negotiation, and everything that would otherwise reprogram the other side can
- * be refused instead of racing it.
+ * before a capture starts), so "who owns the bus" is a single flag rather than
+ * a negotiation, and everything that would otherwise reprogram the other side
+ * can be refused instead of racing it.
  */
 
-/* The rate pcm.c last asked the sink for, i.e. the transmitter's rate. This is
- * only the rate a capture session defaults to -- the receiver does not inherit it
- * silently, it is programmed to it explicitly at session start. */
+/* The rate pcm.c last asked the sink for, i.e. the transmitter's rate. This
+ * is only the rate a capture session defaults to -- the receiver does not
+ * inherit it silently, it is programmed to it explicitly at session start. */
 unsigned long i2s_rx_default_rate(void);
 
-/* The rate the receiver is clocked at right now, or the default when it does not
- * own the bus. */
+/* The rate the receiver is clocked at right now, or the default when it does
+ * not own the bus. */
 unsigned long i2s_rx_bus_rate(void);
 
 /* Whether the receiver currently drives the clock pads. While this is true,
@@ -269,14 +272,15 @@ bool i2s_rx_owns_bus(void);
  * were -- the caller decides whether an absent ADC is worth continuing for. */
 bool i2s_rx_take_bus(unsigned long rate);
 
-/* Give the bus back. Idempotent, and cheap: three OUT_SEL writes. Called on both
- * the stopped and the never-started paths of a session, because pads left pointing
- * at the receiver mean the transmitter can never clock the codecs again. */
+/* Give the bus back. Idempotent, and cheap: three OUT_SEL writes. Called on
+ * both the stopped and the never-started paths of a session, because pads
+ * left pointing at the receiver mean the transmitter can never clock the
+ * codecs again. */
 void i2s_rx_release_bus(void);
 
-/* Cumulative receive-path counters plus the state the reader is in, for the debug
- * screen. Implemented in pcm-xtensa.c, declared here because that is where the
- * capture path's users look. Reading them changes nothing. */
+/* Cumulative receive-path counters plus the state the reader is in, for the
+ * debug screen. Implemented in pcm-xtensa.c, declared here because that is
+ * where the capture path's users look. Reading them changes nothing. */
 struct pcm_rx_stats
 {
     unsigned int sessions;    /* capture sessions started */

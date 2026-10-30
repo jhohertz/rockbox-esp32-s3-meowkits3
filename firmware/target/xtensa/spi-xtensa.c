@@ -48,9 +48,9 @@ static void spi_apply_config(void)
 
 /* GPSPI clock. The module clock is PLL_CLK_80M (CLK_GATE bit 2) and the SPI
  * clock is that divided by (clkdiv_pre+1) * (clkcnt_n+1), so 80/(2*2) = 20 MHz.
- * The panel is specced to 80 MHz and the reference firmware drives it there, but
- * that path uses DMA; the polled CPU-buffer path should be proven at a slower
- * rate before trusting the top of the range.
+ * The panel is specced to 80 MHz and the reference firmware drives it there,
+ * but that path uses DMA; the polled CPU-buffer path should be proven at a
+ * slower rate before trusting the top of the range.
  */
 /* func_out_sel_cfg value meaning "drive this pad from GPIO_OUT_REG". */
 #ifndef SIG_GPIO_OUT_IDX
@@ -70,18 +70,20 @@ static void spi_apply_config(void)
  * 80 MHz / 4 = 20 MHz is N=3, H=1, L=1.
  */
 #define SPI_CLK_20M     ((3u << 12) | (1u << 6) | (1u << 0))
-/* The value the display was confirmed working with, recorded in e2a8c24dd4 when
- * the RGBW quadrant test pattern rendered correctly on this glass: bit 31
- * CLK_EQU_SYSCLK, taking the source clock undivided -- 80 MHz from the PLL that
- * CLK_GATE bit 2 selects. Not a divided clock. Both the reference firmware and our own bring-up measurement
- * drive the panel this way, and every divided configuration tried since has
- * produced banding and noise over a solid fill. */
+/* The value the display was confirmed working with, recorded in e2a8c24dd4
+ * when the RGBW quadrant test pattern rendered correctly on this glass: bit
+ * 31 CLK_EQU_SYSCLK, taking the source clock undivided -- 80 MHz from the
+ * PLL that CLK_GATE bit 2 selects. Not a divided clock. Both the reference
+ * firmware and our own bring-up measurement drive the panel this way, and
+ * every divided configuration tried since has produced banding and noise
+ * over a solid fill. */
 #define SPI_CLK_80M     SPI_CLK_EQU_SYSCLK
 
-/* Measure the bit stream at the pin. A 64-byte transfer must produce exactly 512
- * clock edges; anything else means MS_DLEN is not being honoured and the panel is
- * receiving a stream that is longer or shorter than the buffer we filled.
- * The clock is dropped to 1 MHz so a software loop can resolve individual edges.
+/* Measure the bit stream at the pin. A 64-byte transfer must produce exactly
+ * 512 clock edges; anything else means MS_DLEN is not being honoured and the
+ * panel is receiving a stream that is longer or shorter than the buffer we
+ * filled. The clock is dropped to 1 MHz so a software loop can resolve
+ * individual edges.
  */
 /* The bus, brought up the way the two implementations that actually paint this
  * panel do it. Both the reference's LovyanGFX bus and the bare-metal driver
@@ -121,15 +123,16 @@ void spi_init(void)
 
     if (!initialised)
     {
-        /* SPI_DMA_DISABLED, deliberately. We need spi_bus_initialize() for the
-         * clock and pin routing and nothing else, and AUTO allocates a GDMA
-         * channel plus the burst-read configuration. LovyanGFX's Bus_SPI.cpp:561
-         * records that a DMA burst read at 1:1 with the APB clock corrupts the
-         * tail of any transfer whose length is not a multiple of 4 -- and our
-         * command and argument transfers are 1, 2, 5 and 14 bytes, all of which
-         * have a remainder. We drive the CPU buffer, not the DMA, so there is
-         * nothing for that erratum to corrupt, but there is also no reason to
-         * keep the variable in the experiment. */
+        /* SPI_DMA_DISABLED, deliberately. We need spi_bus_initialize() for
+         * the clock and pin routing and nothing else, and AUTO allocates a
+         * GDMA channel plus the burst-read configuration. LovyanGFX's
+         * Bus_SPI.cpp:561 records that a DMA burst read at 1:1 with the APB
+         * clock corrupts the tail of any transfer whose length is not a
+         * multiple of 4 -- and our command and argument transfers are 1, 2,
+         * 5 and 14 bytes, all of which have a remainder. We drive the CPU
+         * buffer, not the DMA, so there is nothing for that erratum to
+         * corrupt, but there is also no reason to keep the variable in the
+         * experiment. */
         esp_err_t e = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_DISABLED);
         if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
             printf("spi_init: spi_bus_initialize: %d\n", (int)e);
@@ -178,14 +181,15 @@ void spi_init(void)
     wr(SPI_USER1, 0);
 
     /* spi_clk = the 80 MHz source, divided. 80/(2*2) = 20 MHz. The reference
-     * drives this panel at 80 MHz, but that path uses DMA; the polled CPU-buffer
-     * path is proven at 20 MHz first.
+     * drives this panel at 80 MHz, but that path uses DMA; the polled
+     * CPU-buffer path is proven at 20 MHz first.
      */
     /* The one register IDF must not keep. spi_bus_add_device() programmed a
-     * legal 20 MHz divider, and it is the last thing standing between us and the
-     * configuration that is known to paint: e2a8c24dd4 confirmed the quadrant
-     * test pattern with clk=0x80000000, source undivided. Everything else in
-     * that record -- user 0x18000001, ctrl 0, gate 7 -- is now matched. */
+     * legal 20 MHz divider, and it is the last thing standing between us and
+     * the configuration that is known to paint: e2a8c24dd4 confirmed the
+     * quadrant test pattern with clk=0x80000000, source undivided.
+     * Everything else in that record -- user 0x18000001, ctrl 0, gate 7 --
+     * is now matched. */
     wr(SPI_CLOCK, SPI_CLK_80M);
     spi_apply_config();
 
@@ -215,9 +219,10 @@ void spi_write(const unsigned char *data, int len)
             words = SPI_BUF_WORDS;
 
         /* The FIFO is addressed in whole words, but the transfer length is not:
-         * MS_DLEN is an exact bit count. Rounding it up to a multiple of 32 pads
-         * every command with 24 zero bits, which the panel reads as argument
-         * bytes, so CASET/RASET never receive the window they were given.
+         * MS_DLEN is an exact bit count. Rounding it up to a multiple of 32
+         * pads every command with 24 zero bits, which the panel reads as
+         * argument bytes, so CASET/RASET never receive the window they were
+         * given.
          */
         int n = len < words * 4 ? len : words * 4;
 
@@ -242,7 +247,8 @@ void spi_write(const unsigned char *data, int len)
          * self-clearing, and OR-ing a stale read back in re-triggers it. */
         wr(SPI_CMD, SPI_CMD_USR);
 
-        /* USR is self-clearing: it drops when the transfer completes. Bounded so
+        /* USR is self-clearing: it drops when the transfer completes. Bounded
+         * so
            a stalled transfer is countable rather than a silent hang -- an
            unbounded spin here is indistinguishable from never having arrived. */
         unsigned spins = 0;

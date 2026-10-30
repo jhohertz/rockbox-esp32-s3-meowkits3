@@ -15,9 +15,10 @@
  * point, so it reports a delta rather than a state of charge. Voltage is the
  * honest measurement here.
  ****************************************************************************/
-/* The one line in power_off() that reports what the PMU's shutdown register ended on is
- * worth having permanently; autoconf.h leaves ROCKBOX_HAS_LOGF undefined and logf.h makes
- * logf() a no-op in any file that does not ask for it. */
+/* The one line in power_off() that reports what the PMU's shutdown register
+ * ended on is worth having permanently; autoconf.h leaves ROCKBOX_HAS_LOGF
+ * undefined and logf.h makes logf() a no-op in any file that does not ask
+ * for it. */
 #define LOGF_ENABLE
 
 #include "config.h"
@@ -64,9 +65,9 @@ void ICODE_ATTR feed_rwdt(void);
 
 void power_init(void)
 {
-    /* The bootloader enables the RTC watchdog with a timeout sized for itself.
-     * Keeping it and feeding it from the tick is the only freeze protection this
-     * target has. */
+    /* The bootloader enables the RTC watchdog with a timeout sized for
+     * itself. Keeping it and feeding it from the tick is the only freeze
+     * protection this target has. */
     if (rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & RWDT_EN_BIT)
         tick_add_task(feed_rwdt);
 
@@ -74,8 +75,9 @@ void power_init(void)
      * skipped: cold, the chip leaves LDO4 at 1.2 V, and LDO4 feeds the PCA9557
      * that holds the LCD reset and chip select -- below about 2 V the expander
      * does not answer on the bus at all, so every display and touch operation
-     * that follows fails in a way that looks like a display problem. DCDC1 feeds
-     * the SoC and LDO2/LDO3 the rest of the board, including the card slot.
+     * that follows fails in a way that looks like a display problem. DCDC1
+     * feeds the SoC and LDO2/LDO3 the rest of the board, including the card
+     * slot.
      *
      * This call was commented out during bare-metal fault isolation and never
      * put back. The trace line below is why nobody noticed: it printed 'W'
@@ -101,12 +103,13 @@ void power_off(void)
        rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & ~RWDT_EN_BIT);
     wr(XT_RTCCNTL_BASE + RWDT_WPROTECT, 0);             /* lock */
 
-    /* REG 0x32 bit 7 is the chip's software shutdown: it drops every output except
-     * LDO1, and DCDC1 is what feeds this SoC. axp173_power_off() is a read-modify-write
-     * that gives up silently if its read fails, and our I2C path returns an error rather
-     * than waiting when the queue is busy -- so retry, and read the register back to see
-     * whether the bit actually took. Without this the board sat in the halt below until
-     * the chip's own OFFLEVEL counter expired, which is the ten-second delay this replaces.
+    /* REG 0x32 bit 7 is the chip's software shutdown: it drops every output
+     * except LDO1, and DCDC1 is what feeds this SoC. axp173_power_off() is a
+     * read-modify-write that gives up silently if its read fails, and our I2C
+     * path returns an error rather than waiting when the queue is busy -- so
+     * retry, and read the register back to see whether the bit actually took.
+     * Without this the board sat in the halt below until the chip's own
+     * OFFLEVEL counter expired, which is the ten-second delay this replaces.
      */
     int tries;
     for (tries = 0; tries < 5; tries++)
@@ -123,8 +126,8 @@ void power_off(void)
     logf("power_off: REG32=%d after %d attempt(s), halting",
          axp173_read_reg(AXP_REG_SHUTDOWN), tries + 1);
 
-    /* In case the PMU does not shut down (no battery, or VBUS holding IPSOUT up),
-     * do not spin: the watchdog is off, so this is a real halt. */
+    /* In case the PMU does not shut down (no battery, or VBUS holding IPSOUT
+     * up), do not spin: the watchdog is off, so this is a real halt. */
     while (1)
         asm volatile ("waiti 0");
 }
@@ -149,35 +152,39 @@ int _battery_voltage(void)
 #if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
 int _battery_current(void)
 {
-    /* The chip's current-direction bit rather than charging_state(): REG 01H bit 6 reads
-     * 0 both when the charger is idle and when the cell is finished, so keying the
-     * register choice off it can sample the discharge register while current is flowing
-     * the other way, and report a negative-looking charge as a discharge. */
+    /* The chip's current-direction bit rather than charging_state(): REG 01H
+     * bit 6 reads 0 both when the charger is idle and when the cell is
+     * finished, so keying the register choice off it can sample the
+     * discharge register while current is flowing the other way, and report
+     * a negative-looking charge as a discharge. */
     return axp173_current_is_charging() ? axp173_charge_current()
                                         : axp173_discharge_current();
 }
 #endif
 
 #if CONFIG_BATTERY_MEASURE & PERCENTAGE_MEASURE
-/* Battery percentage from the PMU's coulomb counters, replacing the voltage-table
- * mapping.
+/* Battery percentage from the PMU's coulomb counters, replacing the
+ * voltage-table mapping.
  *
- * The counters are cleared by axp173_init() at boot, so they measure this session only
- * and cannot know what the cell held when the player started. That is what the voltage
- * tables are still for: the first reading anchors the coulometer to the voltage-derived
- * percent, and every reading after it moves from that anchor by the charge actually
- * transferred. The anchor is a guess with a short life; the deltas are measurements.
- * The reason to bother is linearity -- on the 2026-10-28 run, 81 mAh left the cell while
- * the voltage gauge moved 93% to 88%, because the top of a Li-ion curve is stretched:
- * roughly 16 mAh per gauge percent there, against the ~14 mAh a 1400 mAh cell implies.
- * Charge and discharge are separate cumulative registers, so charging is counted rather
- * than guessed, and the capacity used here is `get_battery_capacity()`, the same number
- * battery_time() divides by, so the bar and the estimate cannot drift apart.
+ * The counters are cleared by axp173_init() at boot, so they measure this
+ * session only and cannot know what the cell held when the player started. That
+ * is what the voltage tables are still for: the first reading anchors the
+ * coulometer to the voltage-derived percent, and every reading after it moves
+ * from that anchor by the charge actually transferred. The anchor is a guess
+ * with a short life; the deltas are measurements. The reason to bother is
+ * linearity -- on the 2026-10-28 run, 81 mAh left the cell while the voltage
+ * gauge moved 93% to 88%, because the top of a Li-ion curve is stretched:
+ * roughly 16 mAh per gauge percent there, against the ~14 mAh a 1400 mAh cell
+ * implies. Charge and discharge are separate cumulative registers, so charging
+ * is counted rather than guessed, and the capacity used here is
+ * `get_battery_capacity()`, the same number battery_time() divides by, so the
+ * bar and the estimate cannot drift apart.
  *
- * Returning -1 is deliberate and safe: powermgmt.c falls back to voltage_to_battery_level()
- * whenever the target has nothing to report (powermgmt.c:388-392), and the shutoff and
- * disksafe thresholds stay voltage-based either way (powermgmt.c:503, :537), so a failed
- * read costs accuracy, not protection.
+ * Returning -1 is deliberate and safe: powermgmt.c falls back to
+ * voltage_to_battery_level() whenever the target has nothing to report
+ * (powermgmt.c:388-392), and the shutoff and disksafe thresholds stay
+ * voltage-based either way (powermgmt.c:503, :537), so a failed read costs
+ * accuracy, not protection.
  */
 #define CC_UPDATE_TICKS      (5 * HZ)   /* the counters integrate over minutes; polling
                                         * them twice a second only burns the shared bus */
@@ -189,10 +196,11 @@ static int cc_anchor_net;
 static uint32_t cc_anchor_dis, cc_anchor_chg;
 static long cc_last_update;
 
-/* Voltage to percent over this target's own tables. The core's equivalent is static in
- * powermgmt.c, so the rule is repeated here rather than exported: charging uses the
- * charge table and never reads full until charging finishes (powermgmt.c:356-372). Used
- * only as the anchor, so its inaccuracy is bounded by the first update. */
+/* Voltage to percent over this target's own tables. The core's equivalent is
+ * static in powermgmt.c, so the rule is repeated here rather than exported:
+ * charging uses the charge table and never reads full until charging
+ * finishes (powermgmt.c:356-372). Used only as the anchor, so its inaccuracy
+ * is bounded by the first update. */
 static int volt_percent(void)
 {
     int mv = axp173_battery_voltage();
@@ -231,8 +239,9 @@ int _battery_level(void)
 
     net = dis - chg;
 
-    /* First reading, or the counters went backwards. Only a clear or a corrupted read
-     * can do that, and both make the anchor meaningless, so take a new one. */
+    /* First reading, or the counters went backwards. Only a clear or a
+     * corrupted read can do that, and both make the anchor meaningless, so
+     * take a new one. */
     if (cc_percent < 0 || dis < cc_anchor_dis || chg < cc_anchor_chg) {
         cc_anchor_percent = volt_percent();
         if (cc_anchor_percent < 0)
@@ -244,12 +253,13 @@ int _battery_level(void)
 
     percent = cc_anchor_percent - (100 * (net - cc_anchor_net)) / capacity;
 
-    /* "Full", as far as this chip can say so. It has no charge-done flag -- REG 01H
-     * bit 6 reads 0 both when the charger is idle and when it has finished -- so the
-     * taper is the only signal: the direction bit still says charging while the charge
-     * current has fallen to the termination threshold, which for our init is 10% of the
-     * programmed current (REG 33H bit 4 left clear, so 45 mA at 450 mA). Not yet
-     * confirmed on hardware; see PENDING.md. */
+    /* "Full", as far as this chip can say so. It has no charge-done flag --
+     * REG 01H bit 6 reads 0 both when the charger is idle and when it has
+     * finished -- so the taper is the only signal: the direction bit still
+     * says charging while the charge current has fallen to the termination
+     * threshold, which for our init is 10% of the programmed current (REG
+     * 33H bit 4 left clear, so 45 mA at 450 mA). Not yet confirmed on
+     * hardware; see PENDING.md. */
     if (axp173_current_is_charging()) {
         taper_ma = axp173_charge_current_setting_mA() / 10;
         if (taper_ma < CC_TAPER_FLOOR_MA)

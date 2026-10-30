@@ -61,15 +61,15 @@
         .text
         .align 4
 
-/* l32r reaches its operand through a PC-relative literal, and the pool entry has
- * to exist. Letting the assembler synthesise one for an external symbol does not
- * survive this binutils and linker-script combination: inside a codec image the
- * reference resolved to the symbol's own address instead of to a literal, so
- * l32r loaded the contents of that address -- the first word of
- * __xtensa_libgcc_window_spill, `entry a1, ...' = 0x75006136 -- and the very next
- * instruction callx8'd to it. IllegalInstruction at a garbage PC, identical on
- * every attempt, which is what made it look like a corrupt image rather than a
- * missing literal.
+/* l32r reaches its operand through a PC-relative literal, and the pool entry
+ * has to exist. Letting the assembler synthesise one for an external symbol
+ * does not survive this binutils and linker-script combination: inside a codec
+ * image the reference resolved to the symbol's own address instead of to a
+ * literal, so l32r loaded the contents of that address -- the first word of
+ * __xtensa_libgcc_window_spill, `entry a1, ...' = 0x75006136 -- and the very
+ * next instruction callx8'd to it. IllegalInstruction at a garbage PC,
+ * identical on every attempt, which is what made it look like a corrupt image
+ * rather than a missing literal.
  *
  * Emitting the literal explicitly, in the same section and ahead of the use, is
  * the same workaround this tree already needs for linker-script-defined symbols
@@ -150,8 +150,9 @@ longjmp:
         entry   a1, 16                    /* a2 = jmp_buf, a3 = value */
 
         /* Mark only the current window active. This is not a rotation --
-         * WINDOWBASE is left exactly as it is, so a2 keeps naming the buffer for
-         * the whole routine, which is the property the old version lacked. */
+         * WINDOWBASE is left exactly as it is, so a2 keeps naming the buffer
+         * for the whole routine, which is the property the old version
+         * lacked. */
         rsr.windowbase a5
         movi    a4, 1
         ssl     a5
@@ -172,8 +173,8 @@ longjmp:
         s32i.n  a4, a7, 8
         s32i.n  a5, a7, 12
 
-        /* And the ancestor windows, back onto their own frames' base-save areas,
-         * so that unwinding through them refills each in turn. */
+        /* And the ancestor windows, back onto their own frames' base-save
+         * areas, so that unwinding through them refills each in turn. */
         extui   a7, a0, 30, 2
         blti    a7, 2, .Llongjmp_ancestors_done
 

@@ -60,11 +60,12 @@ static const char TAG[] = "rbtick";
  * the same moment. Two consumers of one interrupt line, going silent together.
  *
  * Rockbox's HZ is 100 and IDF's tick rate is configurable, so sdkconfig sets
- * CONFIG_FREERTOS_HZ and CONFIG_FREERTOS_USE_TICK_HOOK=y and the clock is taken from the
- * tick the kernel is already taking -- no second timer, no group to contend with, and the
- * clock cannot drift from the scheduler that decides which thread runs. The kernel rate is
- * not Rockbox's: it stays at IDF's granularity and the seam below divides it down, so the
- * only requirement is that it be an exact multiple of HZ.
+ * CONFIG_FREERTOS_HZ and CONFIG_FREERTOS_USE_TICK_HOOK=y and the clock is taken
+ * from the tick the kernel is already taking -- no second timer, no group to
+ * contend with, and the clock cannot drift from the scheduler that decides
+ * which thread runs. The kernel rate is not Rockbox's: it stays at IDF's
+ * granularity and the seam below divides it down, so the only requirement is
+ * that it be an exact multiple of HZ.
  *
  * The hook runs in the tick ISR, so the rule that governed the alarm still
  * applies: advance the clock and nothing else. The registered tick functions
@@ -72,11 +73,11 @@ static const char TAG[] = "rbtick";
  * and a Rockbox semaphore wait switches threads, which an exception frame on
  * a core with no REGB option cannot do. apps/main.c's tick thread runs them.
  */
-/* Authoritative kernel tick rate. Defined in idf-app/main/rockbox_app.c, which
- * is compiled by the IDF build, so its configTICK_RATE_HZ is the rate the kernel
- * was actually configured with -- unlike this translation unit, whose view of
- * that macro comes from IDF headers the Rockbox makefiles do not guarantee to
- * regenerate. */
+/* Authoritative kernel tick rate. Defined in idf-app/main/rockbox_app.c,
+ * which is compiled by the IDF build, so its configTICK_RATE_HZ is the rate
+ * the kernel was actually configured with -- unlike this translation unit,
+ * whose view of that macro comes from IDF headers the Rockbox makefiles do
+ * not guarantee to regenerate. */
 extern const unsigned int rb_kernel_tick_hz;
 
 void tick_start(unsigned int interval_in_ms)
@@ -110,33 +111,33 @@ void vApplicationTickHook(void)
      * look idle.
      *
      * xTaskGetTickCount() is a single global counter advanced exactly once per
-     * tick, so mirroring it is correct whichever context delivers the hook. When
-     * this project ran on the SMP kernel the hook arrived on core 1 rather than
-     * core 0 even though core 0's tick ISR was fine, which is what first made
-     * the unconditional mirror necessary; the kernel is not SMP now, but the
-     * requirement does not depend on that.
+     * tick, so mirroring it is correct whichever context delivers the hook.
+     * When this project ran on the SMP kernel the hook arrived on core 1 rather
+     * than core 0 even though core 0's tick ISR was fine, which is what first
+     * made the unconditional mirror necessary; the kernel is not SMP now, but
+     * the requirement does not depend on that.
      *
-     * The two clocks do not run at the same rate, and they must not be forced to
-     * agree. Rockbox's HZ is 100 and is not a per-target knob (kernel/include/
-     * tick.h), and this build sets configTICK_RATE_HZ to 1000 -- note that IDF's
-     * own default is 100 (components/freertos/Kconfig:37), so 1000 is a choice
-     * made here rather than something inherited, and the claim that IDF
-     * components need it is being tested separately. So the OS keeps its rate
-     * and this seam divides down to Rockbox's.
+     * The two clocks do not run at the same rate, and they must not be forced
+     * to agree. Rockbox's HZ is 100 and is not a per-target knob
+     * (kernel/include/ tick.h), and this build sets configTICK_RATE_HZ to 1000
+     * -- note that IDF's own default is 100 (components/freertos/Kconfig:37),
+     * so 1000 is a choice made here rather than something inherited, and the
+     * claim that IDF components need it is being tested separately. So the OS
+     * keeps its rate and this seam divides down to Rockbox's.
      *
      * The divisor must come from the kernel that is actually running, NOT from
      * configTICK_RATE_HZ as seen from this translation unit. Rockbox's objects
-     * are compiled by the Rockbox makefiles against IDF's generated headers, and
-     * those are not reliably regenerated when sdkconfig changes: with the rate
-     * raised to 1000, the macro here still read 100, the division folded to 1,
-     * and current_tick ran ten times fast. A compile-time #error cannot catch
-     * that because 100 % 100 == 0 is perfectly valid -- the disagreement is
-     * between two build systems, not within one.
+     * are compiled by the Rockbox makefiles against IDF's generated headers,
+     * and those are not reliably regenerated when sdkconfig changes: with the
+     * rate raised to 1000, the macro here still read 100, the division folded
+     * to 1, and current_tick ran ten times fast. A compile-time #error cannot
+     * catch that because 100 % 100 == 0 is perfectly valid -- the disagreement
+     * is between two build systems, not within one.
      *
-     * rb_kernel_tick_hz is defined in idf-app/main/rockbox_app.c, which the IDF
-     * build compiles, so its configTICK_RATE_HZ is by construction the rate the
-     * kernel was actually configured with. tick_start() checks the seam and says
-     * what it found, because this cost a long detour. */
+     * rb_kernel_tick_hz is defined in idf-app/main/rockbox_app.c, which the
+     * IDF build compiles, so its configTICK_RATE_HZ is by construction the
+     * rate the kernel was actually configured with. tick_start() checks the
+     * seam and says what it found, because this cost a long detour. */
     current_tick = (long)(xTaskGetTickCount() / (rb_kernel_tick_hz / HZ));
 }
 

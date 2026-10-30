@@ -47,9 +47,10 @@
 #include "sdkconfig.h"
 #include "esp_pm.h"
 
-/* cpu_frequency is declared in system.h and defined by firmware/kernel/system.c
- * for every target; this file puts the right number in it, and keeps it right when
- * the number changes -- see set_cpu_frequency(). */
+/* cpu_frequency is declared in system.h and defined by
+ * firmware/kernel/system.c for every target; this file puts the right number
+ * in it, and keeps it right when the number changes -- see
+ * set_cpu_frequency(). */
 
 /* CPU_FREQ lives in the target config and CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ in
  * the IDF project, and only the second one is real. Drift between them shows
@@ -61,39 +62,41 @@ _Static_assert(CPU_FREQ ==
 
 void system_init(void)
 {
-    /* app_main() already replayed the previous boot's trail before anything here
-     * could overwrite it, and the trail is deliberately *not* consumed (see
-     * paniclog.c), so calling the dump again here printed the same breadcrumb
-     * list twice on every boot. The boot stamp is still recorded here because it
-     * belongs to Rockbox's own init, not to IDF's entry point. */
+    /* app_main() already replayed the previous boot's trail before anything
+     * here could overwrite it, and the trail is deliberately *not* consumed
+     * (see paniclog.c), so calling the dump again here printed the same
+     * breadcrumb list twice on every boot. The boot stamp is still recorded
+     * here because it belongs to Rockbox's own init, not to IDF's entry
+     * point. */
     paniclog_stamp_boot(0);
 
     /* The codec and plugin buffers are pinned to a fixed address so that this
      * side agrees with the CODEC_ORIGIN / PLUGIN_ORIGIN that plugin.lds gives
-     * the images -- apps/codecs.c and apps/plugin.c reject anything else. Because
-     * they are absolute symbols rather than .space, no section reserves the range,
-     * so the only thing standing between a growing .ext_ram.bss and silent
-     * corruption of a loaded image is this check. Loud beats corrupt.
+     * the images -- apps/codecs.c and apps/plugin.c reject anything else.
+     * Because they are absolute symbols rather than .space, no section reserves
+     * the range, so the only thing standing between a growing .ext_ram.bss and
+     * silent corruption of a loaded image is this check. Loud beats corrupt.
      *
      * The bound is the *lowest* reserved address, XT_PLUGIN_TEXT_ADDR, not
-     * codecbuf. Checking codecbuf was the bug that let every plugin crash: the
-     * region between plugin_text and codecbuf is reserved too (plugin text, then
-     * codec text), and .ext_ram.bss is memset at boot, so reaching into
-     * plugin_text zeroes the head of the area plugins are loaded into while the
-     * codecbuf test still reports a clean layout. Codecs kept working precisely
-     * because they sit above the damage -- which is why a wrong boundary here is
-     * so easy to mistake for a plugin bug. */
+     * codecbuf. Checking codecbuf was the bug that let every plugin crash:
+     * the region between plugin_text and codecbuf is reserved too (plugin
+     * text, then codec text), and .ext_ram.bss is memset at boot, so
+     * reaching into plugin_text zeroes the head of the area plugins are
+     * loaded into while the codecbuf test still reports a clean layout.
+     * Codecs kept working precisely because they sit above the damage --
+     * which is why a wrong boundary here is so easy to mistake for a plugin
+     * bug. */
     {
         extern char rb_ext_ram_end[];
         extern char _ext_ram_bss_end[];
 
         /* rb_ext_ram_end alone was the blind spot. It is a label in
          * memory-xtensa-syms.S sitting right after audiobufend, so it marks the
-         * end of what THAT file puts in PSRAM -- not the end of the section. IDF
-         * places its own .ext_ram.bss content around and after it, and the
-         * linker's real section end is _ext_ram_bss_end. Measured on this build:
-         * rb_ext_ram_end 0x3c55d2c0 against _ext_ram_bss_end 0x3c579d3c, so
-         * 117,372 bytes of the section were invisible to the one check whose
+         * end of what THAT file puts in PSRAM -- not the end of the section.
+         * IDF places its own .ext_ram.bss content around and after it, and the
+         * linker's real section end is _ext_ram_bss_end. Measured on this
+         * build: rb_ext_ram_end 0x3c55d2c0 against _ext_ram_bss_end 0x3c579d3c,
+         * so 117,372 bytes of the section were invisible to the one check whose
          * entire job is to watch that section. It would have reported a clean
          * layout while .ext_ram.bss was already growing toward the pinned codec
          * image.
@@ -117,22 +120,23 @@ void system_init(void)
 
     /* The other end of the same problem, and the check that was missing.
      *
-     * The external window is MEMORYSIZE MB starting at 0x3C000000, and the flash
-     * MMU has exactly that many 64 KB entries pointing at PSRAM -- entries
-     * 0..(MEMORYSIZE*16 - 1), ending at 0x3C000000 + MEMORYSIZE MB. There is no
-     * entry beyond that to map: all 128 physical pages are already claimed.
+     * The external window is MEMORYSIZE MB starting at 0x3C000000, and the
+     * flash MMU has exactly that many 64 KB entries pointing at PSRAM --
+     * entries 0..(MEMORYSIZE*16 - 1), ending at 0x3C000000 + MEMORYSIZE MB.
+     * There is no entry beyond that to map: all 128 physical pages are already
+     * claimed.
      *
      * XT_DROMORIG carries a +0x20 so that flash-mapped segments satisfy the
      * cache's page-congruence rule (paddr % 64KB == vaddr % 64KB), but codecbuf
-     * and pluginbuf are derived from it and inherit that offset -- which puts the
-     * top of the arena 32 bytes PAST the last mapped entry.
+     * and pluginbuf are derived from it and inherit that offset -- which puts
+     * the top of the arena 32 bytes PAST the last mapped entry.
      *
      * Not academic: the last 32 bytes of the plugin buffer are served by MMU
      * entry 128, which the boot map reports as INVALID, and
-     * fill_random_playlist_indexes() in apps/tagtree.c writes the whole buffer
-     * -- for (i = 0; i < arr_sz; i++) -- making it the one thing in the tree that
-     * ever touches them. Observed as A9 = 0x3c80001f in a Core 0
-     * IllegalInstruction crash entered by "all tracks" from the database. */
+     * fill_random_playlist_indexes() in apps/tagtree.c writes the whole
+     * buffer -- for (i = 0; i < arr_sz; i++) -- making it the one thing in
+     * the tree that ever touches them. Observed as A9 = 0x3c80001f in a Core
+     * 0 IllegalInstruction crash entered by "all tracks" from the database. */
     {
         unsigned long top = XT_LOADADDRESS_ADDR;
         unsigned long win = 0x3C000000UL + (MEMORYSIZE * 0x100000);
@@ -144,13 +148,14 @@ void system_init(void)
                    (unsigned long)(MEMORYSIZE * 16) - 1);
     }
 
-    /* udelay() in system-target.h counts core cycles, so cpu_frequency has to be
-     * the frequency the core is actually on. Rockbox owns that choice through
-     * set_cpu_frequency() below and nothing else moves the clock, so assigning it
-     * here is enough -- but it is assigned through the same function, so the value
-     * and the hardware cannot disagree. If IDF's dynamic frequency scaling is ever
-     * enabled (max != min, or light sleep), this has to become esp_clk_cpu_freq()
-     * and udelay() has to stop caching it. */
+    /* udelay() in system-target.h counts core cycles, so cpu_frequency has
+     * to be the frequency the core is actually on. Rockbox owns that choice
+     * through set_cpu_frequency() below and nothing else moves the clock, so
+     * assigning it here is enough -- but it is assigned through the same
+     * function, so the value and the hardware cannot disagree. If IDF's
+     * dynamic frequency scaling is ever enabled (max != min, or light
+     * sleep), this has to become esp_clk_cpu_freq() and udelay() has to stop
+     * caching it. */
     set_cpu_frequency(CPU_FREQ);
 
     /* Nothing else. Anything added here should be checked against the list at
@@ -158,26 +163,28 @@ void system_init(void)
 }
 
 /*
- * Rockbox's one clock entry point. firmware/system.c calls this with CPUFREQ_MAX,
- * CPUFREQ_NORMAL or CPUFREQ_DEFAULT, picked by the boost counter and cpu_idle_mode();
- * the ladder itself is in system-target.h.
+ * Rockbox's one clock entry point. firmware/system.c calls this with
+ * CPUFREQ_MAX, CPUFREQ_NORMAL or CPUFREQ_DEFAULT, picked by the boost counter
+ * and cpu_idle_mode(); the ladder itself is in system-target.h.
  *
- * Applied through esp_pm_configure() with max == min, which is deliberate. It asks
- * IDF to put the core on that frequency and leaves dynamic frequency scaling inert,
- * so: dbias and the rest of the clock tree move the way IDF moves them; Rockbox's
- * notion of "the frequency" is the whole truth rather than a floor under a scaler;
- * and the PM locks IDF's own drivers take -- the I2S driver acquires one around
- * every transfer, at i2s_common.c:1235, of type ESP_PM_CPU_FREQ_MAX -- cannot move
- * the clock out from under udelay().
+ * Applied through esp_pm_configure() with max == min, which is deliberate. It
+ * asks IDF to put the core on that frequency and leaves dynamic frequency
+ * scaling inert, so: dbias and the rest of the clock tree move the way IDF
+ * moves them; Rockbox's notion of "the frequency" is the whole truth rather
+ * than a floor under a scaler; and the PM locks IDF's own drivers take -- the
+ * I2S driver acquires one around every transfer, at i2s_common.c:1235, of type
+ * ESP_PM_CPU_FREQ_MAX -- cannot move the clock out from under udelay().
  *
  * light_sleep_enable is on, which is what makes the idle task's tickless branch
- * actually sleep. It needs CONFIG_FREERTOS_USE_TICKLESS_IDLE; if that is ever turned
- * off again, esp_pm_configure() returns ESP_ERR_NOT_SUPPORTED for this call, so the
- * retry below keeps the frequency working even when sleeping is gone.
+ * actually sleep. It needs CONFIG_FREERTOS_USE_TICKLESS_IDLE; if that is ever
+ * turned off again, esp_pm_configure() returns ESP_ERR_NOT_SUPPORTED for this
+ * call, so the retry below keeps the frequency working even when sleeping is
+ * gone.
  *
- * The three points are all BBPLL taps, so APB and AHB (which is GDMA's clock) stay
- * at 80 MHz and I2S, I2C and the timer groups stay on XTAL; only the core moves.
- * CPUFREQ_MAX is what CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ boots at, asserted above.
+ * The three points are all BBPLL taps, so APB and AHB (which is GDMA's clock)
+ * stay at 80 MHz and I2S, I2C and the timer groups stay on XTAL; only the core
+ * moves. CPUFREQ_MAX is what CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ boots at, asserted
+ * above.
  */
 void set_cpu_frequency(long frequency)
 {
@@ -188,10 +195,10 @@ void set_cpu_frequency(long frequency)
         .light_sleep_enable = true,
     };
 
-    /* On failure leave cpu_frequency alone: udelay() counts cycles against it, so
-     * a value that matches the hardware is worth more than a value Rockbox asked
-     * for. esp_pm_configure() rejects values it cannot express as a rtc clock
-     * config, and 240/160/80 all can be. */
+    /* On failure leave cpu_frequency alone: udelay() counts cycles against
+     * it, so a value that matches the hardware is worth more than a value
+     * Rockbox asked for. esp_pm_configure() rejects values it cannot express
+     * as a rtc clock config, and 240/160/80 all can be. */
     if (esp_pm_configure(&cfg) != ESP_OK) {
         cfg.light_sleep_enable = false;   /* tickless idle not compiled in */
         if (esp_pm_configure(&cfg) != ESP_OK)
@@ -204,25 +211,27 @@ void set_cpu_frequency(long frequency)
 /*
  * One ESP_PM_NO_LIGHT_SLEEP lock, held while the USB device is armed.
  *
- * Light sleep is entered from the idle task, i.e. when no Rockbox thread is ready.
- * Nothing in the digital domain stops -- CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
- * is off, so GDMA keeps walking the audio ring and the I2S clocks keep running while
- * the core is asleep -- but a peripheral interrupt is not a light-sleep wake source,
- * and the DesignWare core's is not one. So while USB is enabled, an isochronous frame
- * arriving from the host would set a pending interrupt that cannot wake the core, and
- * the data would sit in the RX FIFO until the next tick; that is a stall, and with two
- * frames of FIFO headroom it becomes a drop. Holding the lock makes the USB path
- * un-sleepable instead, which costs the whole saving while a host is attached --
- * correct, because a host session is not an idle machine.
+ * Light sleep is entered from the idle task, i.e. when no Rockbox thread is
+ * ready. Nothing in the digital domain stops --
+ * CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP is off, so GDMA keeps walking
+ * the audio ring and the I2S clocks keep running while the core is asleep --
+ * but a peripheral interrupt is not a light-sleep wake source, and the
+ * DesignWare core's is not one. So while USB is enabled, an isochronous frame
+ * arriving from the host would set a pending interrupt that cannot wake the
+ * core, and the data would sit in the RX FIFO until the next tick; that is a
+ * stall, and with two frames of FIFO headroom it becomes a drop. Holding the
+ * lock makes the USB path un-sleepable instead, which costs the whole saving
+ * while a host is attached -- correct, because a host session is not an idle
+ * machine.
  *
- * SD and I2C do not need the same treatment: their transfers are driven by a thread
- * that is running, and with the peripheral domain powered the hardware keeps going
- * even if a sleep slips in during a wait.
+ * SD and I2C do not need the same treatment: their transfers are driven by a
+ * thread that is running, and with the peripheral domain powered the hardware
+ * keeps going even if a sleep slips in during a wait.
  *
- * Created on first use rather than in system_init(), because the USB clock hook can
- * legitimately be reached before Rockbox has finished initialising. An unbalanced
- * release is not a hazard: IDF reports the error and the lock simply stays acquired,
- * which is the safe direction.
+ * Created on first use rather than in system_init(), because the USB clock hook
+ * can legitimately be reached before Rockbox has finished initialising. An
+ * unbalanced release is not a hazard: IDF reports the error and the lock simply
+ * stays acquired, which is the safe direction.
  */
 static esp_pm_lock_handle_t sleep_block_lock;
 static bool sleep_block_created;
@@ -250,13 +259,13 @@ void system_reboot(void)
 }
 
 /*
- * Reached from firmware/panic.c after the message has been drawn on the glass and
- * written to retained memory. It used to call abort(), which runs IDF's panic
- * handler: that prints a backtrace to a console this board only has while the USB
- * pads are still its -- the pads pass to the OTG core about a second after boot --
- * and CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT then resets within milliseconds. The
- * result was a panic message nobody could read: on the screen for long enough to
- * flash, and gone.
+ * Reached from firmware/panic.c after the message has been drawn on the glass
+ * and written to retained memory. It used to call abort(), which runs IDF's
+ * panic handler: that prints a backtrace to a console this board only has while
+ * the USB pads are still its -- the pads pass to the OTG core about a second
+ * after boot -- and CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT then resets within
+ * milliseconds. The result was a panic message nobody could read: on the screen
+ * for long enough to flash, and gone.
  *
  * Holding the screen is the target's job, and it has to be polled rather than
  * waited on: interrupts are masked on this path, so the tick never runs and
@@ -264,9 +273,9 @@ void system_reboot(void)
  * IO MUX with pull-ups, so a plain level read works with nothing scheduled.
  *
  * Bounded, because a device hanging with a dead button while the screen already
- * says it died is worse than a reboot you missed. IDF arms the RTC watchdog only
- * inside its own handler, which no longer runs here, so this loop is the only
- * timer -- nothing will reset us out from under it.
+ * says it died is worse than a reboot you missed. IDF arms the RTC watchdog
+ * only inside its own handler, which no longer runs here, so this loop is the
+ * only timer -- nothing will reset us out from under it.
  */
 #define PANIC_HOLD_STEP_MS  100
 #define PANIC_HOLD_MAX_MS   20000

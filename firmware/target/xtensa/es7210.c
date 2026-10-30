@@ -67,11 +67,11 @@
 
 #define MODE_MASTER        (1u << 0)   /* clear: WS/BCLK come from the SoC */
 /* SPEED_MODE, not bit 6. Bits 7:4 of REG08 are LRCK_RATE_MODE and only mean
- * anything when SDOUT_MODE = 11 (multi-LRCK TDM); writing bit 6 as the speed flag
- * configured a channel count and left the chip in single-speed mode at 88.2 and
- * 96 kHz, where the datasheet says the ADC clock has to be 256 * rate rather than
- * 512. Single speed is the reset default, which is why every rate below 64 kHz was
- * fine and the mistake stayed invisible. */
+ * anything when SDOUT_MODE = 11 (multi-LRCK TDM); writing bit 6 as the speed
+ * flag configured a channel count and left the chip in single-speed mode at
+ * 88.2 and 96 kHz, where the datasheet says the ADC clock has to be 256 *
+ * rate rather than 512. Single speed is the reset default, which is why
+ * every rate below 64 kHz was fine and the mistake stayed invisible. */
 #define MODE_DOUBLE_SPEED  (1u << 1)
 
 /* Bits 0, 1 and 3 are the ADC1/ADC2 clock gates. Clearing them is what lets the
@@ -82,35 +82,36 @@
 #define GAIN_MASK          0x0f
 
 /*
- * REG41/REG42, mic bias. Bits 6:4 set the bias voltage (111 = 2.87 V with VDDM =
- * 3.3 V) and bits 1:0 are ADCnBIAS_SWH, whose reset value is 01. The reference
- * driver -- and this driver, until it was measured -- writes 0x70, which leaves
- * that switch at level 0.
+ * REG41/REG42, mic bias. Bits 6:4 set the bias voltage (111 = 2.87 V with VDDM
+ * = 3.3 V) and bits 1:0 are ADCnBIAS_SWH, whose reset value is 01. The
+ * reference driver -- and this driver, until it was measured -- writes 0x70,
+ * which leaves that switch at level 0.
  *
- * Measured, this build vs the previous one, both at the setting's 30 dB: captured
- * RMS went from -60.9 dBFS to -23.9 dBFS, and the 0 dB vs 30 dB span went from
- * 3.3 dB (a ladder that does nothing) to 32 dB (the ladder's real 31.6x). The PGA
- * code was 10 in both builds, so the analog path changed state through this byte
- * alone. The schematic shows the mic's own VDD fed from AUDIO_3V3 through 0 ohm
- * (R15/R16/R29/R31), which is why an external bias looked like it made REG41
- * irrelevant -- it doesn't: ADCnBIAS_SWH belongs to the PGA/ADC bias, not to the
- * mic's supply.
+ * Measured, this build vs the previous one, both at the setting's 30 dB:
+ * captured RMS went from -60.9 dBFS to -23.9 dBFS, and the 0 dB vs 30 dB span
+ * went from 3.3 dB (a ladder that does nothing) to 32 dB (the ladder's real
+ * 31.6x). The PGA code was 10 in both builds, so the analog path changed state
+ * through this byte alone. The schematic shows the mic's own VDD fed from
+ * AUDIO_3V3 through 0 ohm (R15/R16/R29/R31), which is why an external bias
+ * looked like it made REG41 irrelevant -- it doesn't: ADCnBIAS_SWH belongs to
+ * the PGA/ADC bias, not to the mic's supply.
  */
 #define MIC_BIAS_VALUE     0x71
 
 /*
  * REG1B..REG1E are ADCn_DIRECT_DB: the post-ADC digital gain when ALC is off
- * (REG16 resets to 0, so ALC is off). 0xBF is 0 dB and each step is 0.5 dB, up to
- * 0xFF = +32 dB. Neither this port nor the reference driver has ever touched these,
- * which is why the board's own firmware multiplies the samples by 8 in software
- * (Mic_Class: magnification 16 with oversampling 2, f_gain = 16/(os<<1)) to get a
- * usable level out of a 2 Vrms full-scale input fed by a -38 dBV/Pa MEMS element.
+ * (REG16 resets to 0, so ALC is off). 0xBF is 0 dB and each step is 0.5 dB, up
+ * to 0xFF = +32 dB. Neither this port nor the reference driver has ever touched
+ * these, which is why the board's own firmware multiplies the samples by 8 in
+ * software (Mic_Class: magnification 16 with oversampling 2, f_gain =
+ * 16/(os<<1)) to get a usable level out of a 2 Vrms full-scale input fed by a
+ * -38 dBV/Pa MEMS element.
  *
- * The analog PGA tops out at 37.5 dB, and speech 300 mm from this mic needs roughly
- * 35 dB to land near -18 dBFS, so a fixed slice of digital gain is board
- * calibration rather than a preference. 12 dB is deliberately modest: it is what
- * makes a quiet mic audible without clipping, and if the PGA turns out to work after
- * the bias fix, 12 + 30 dB still leaves headroom for loud input.
+ * The analog PGA tops out at 37.5 dB, and speech 300 mm from this mic needs
+ * roughly 35 dB to land near -18 dBFS, so a fixed slice of digital gain is
+ * board calibration rather than a preference. 12 dB is deliberately modest: it
+ * is what makes a quiet mic audible without clipping, and if the PGA turns out
+ * to work after the bias fix, 12 + 30 dB still leaves headroom for loud input.
  */
 #define ADC12_DIGITAL_GAIN_DB 12
 #define DIGITAL_GAIN_UNITY 0xbf   /* 0 dB */
@@ -140,8 +141,8 @@ static unsigned char digital_code(int db)
  * Code 15 is undefined in the datasheet. audiohw_set_recvol() used to pass the
  * setting value straight through as a code, so the setting's 30 dB became 30,
  * clamped to 15 -- an undefined gain state -- and the setting's 12 dB became
- * 34.5 dB. Whole dB are what the UI offers, so the top of the ladder is reached in
- * 1 dB increments that land on the nearest defined code.
+ * 34.5 dB. Whole dB are what the UI offers, so the top of the ladder is reached
+ * in 1 dB increments that land on the nearest defined code.
  */
 static unsigned char gain_code(int db)
 {
@@ -247,16 +248,18 @@ bool es7210_init(unsigned long rate)
 
     program_clock(rate);
 
-    /* 16-bit samples, standard I2S (REG11 bits 1:0 = 0), two channels on SDOUT1.
+    /* 16-bit samples, standard I2S (REG11 bits 1:0 = 0), two channels on
+     * SDOUT1.
      *
      * Bits 7:6 select the word length and the encoding is NOT a bit count:
      * 0x60 is 16-bit, 0x00 is 24-bit and 0x80 is 32-bit. This was written as
-     * (16 << 5), which is 0x200 -- and reg_write() takes an unsigned char, so it
-     * silently landed as 0x00, configuring the ADC for 24-bit. The receiver then
-     * sampled 16 of every 24-bit word, which is why captured peaks sat around 90
-     * out of 32767 no matter what the mic gain was set to. The truncation is also
-     * why the mistake was invisible: the expression looks deliberate and no
-     * warning is possible on a constant argument to a narrowing parameter. */
+     * (16 << 5), which is 0x200 -- and reg_write() takes an unsigned char,
+     * so it silently landed as 0x00, configuring the ADC for 24-bit. The
+     * receiver then sampled 16 of every 24-bit word, which is why captured
+     * peaks sat around 90 out of 32767 no matter what the mic gain was set
+     * to. The truncation is also why the mistake was invisible: the
+     * expression looks deliberate and no warning is possible on a constant
+     * argument to a narrowing parameter. */
     reg_write(REG_SDP_IF1, 0x60);
     reg_write(REG_SDP_IF2, 0x00);
 
@@ -294,8 +297,8 @@ void es7210_set_frequency(unsigned long rate)
  * Set the mic gain in dB, on the scale the Rockbox setting uses (0 dB up to the
  * top of the ladder declared in es8311.h). The analog PGA takes the requested
  * figure and the fixed board calibration goes into the chip's own digital gain
- * registers, so one knob covers both stages instead of leaving the missing half to
- * a software multiplier somewhere above this driver.
+ * registers, so one knob covers both stages instead of leaving the missing half
+ * to a software multiplier somewhere above this driver.
  */
 void es7210_set_gain(int db)
 {
@@ -305,15 +308,16 @@ void es7210_set_gain(int db)
     reg_update(REG_MIC1_GAIN, GAIN_MASK, pga);
     reg_update(REG_MIC2_GAIN, GAIN_MASK, pga);
 
-    /* ADC1 is the left slot and ADC2 the right on SDOUT1, and ALC is off, so these
-     * are direct dB rather than ALC ceilings. */
+    /* ADC1 is the left slot and ADC2 the right on SDOUT1, and ALC is off, so
+     * these are direct dB rather than ALC ceilings. */
     reg_write(REG_ADC1_MAXGAIN, dig);
     reg_write(REG_ADC2_MAXGAIN, dig);
 }
 
 void es7210_start(void)
 {
-    /* The clock-off register is restored from the saved pattern rather than from
+    /* The clock-off register is restored from the saved pattern rather than
+     * from
        what the chip currently reports, because stop() deliberately leaves 0x7f
        there. Reading it back and writing it unchanged would keep the ADC powered
        down forever after the first session. The readback still refreshes the
@@ -341,11 +345,12 @@ void es7210_start(void)
     es7210_set_gain(global_settings.rec_mic_gain);
 }
 
-/* What the chip actually holds, for the debug screen. The register values are the
- * only way to separate "we wrote the wrong thing" from "the chip ignored what we
- * wrote": a PGA gain setting that changes the captured level by 3 dB instead of 30
- * looks like a broken caller or a broken device, and the two need different fixes.
- * Reads cost six polled I2C transactions and are drawn when the screen opens. */
+/* What the chip actually holds, for the debug screen. The register values
+ * are the only way to separate "we wrote the wrong thing" from "the chip
+ * ignored what we wrote": a PGA gain setting that changes the captured level
+ * by 3 dB instead of 30 looks like a broken caller or a broken device, and
+ * the two need different fixes. Reads cost six polled I2C transactions and
+ * are drawn when the screen opens. */
 void es7210_stat(char *buf, int bufsz)
 {
     unsigned char v43 = 0, v1e = 0, v1d = 0, v41 = 0, v01 = 0, v08 = 0;

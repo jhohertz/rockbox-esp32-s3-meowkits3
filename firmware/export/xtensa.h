@@ -56,28 +56,29 @@
 /*
  * USB.
  *
- * The SoC has a Synopsys DWC2 OTG core at 0x60080000. Its configuration is not a
- * guess: ESP-IDF ships it generated for this core in
+ * The SoC has a Synopsys DWC2 OTG core at 0x60080000. Its configuration is not
+ * a guess: ESP-IDF ships it generated for this core in
  * components/soc/esp32s3/include/soc/usb_dwc_cfg.h -- OTG_ARCHITECTURE 2 (the
  * core has its own internal DMA, so a transfer is programmed with an address
  * rather than pushed through the FIFOs by hand), OTG_FSPHY_INTERFACE 1,
  * OTG_NUM_EPS 6, OTG_NUM_IN_EPS 5, OTG_DFIFO_DEPTH 256 words. Register offsets
  * and field positions likewise come from IDF's generated usb_dwc_struct.h, and
  * they agree with firmware/export/usb-designware.h exactly: GUSBCFG at 0x0c
- * rather than the classic 0x28, DIEPDMA and DOEPDMA at +0x14 inside an endpoint's
- * 0x20 stride, and the FS PHY selected by fsintf (bit 5) instead of the classic
- * UTMI/ULPI/PHYSEL encoding.
+ * rather than the classic 0x28, DIEPDMA and DOEPDMA at +0x14 inside an
+ * endpoint's 0x20 stride, and the FS PHY selected by fsintf (bit 5) instead of
+ * the classic UTMI/ULPI/PHYSEL encoding.
  *
- * The DWC does not own the pins. A "USB wrap" muxes the internal FSLS PHY between
- * the DWC and the USB serial jtag block, and that mux only answers to software
- * when the RTC's usb_conf says so. Both have to be set before the DWC can talk to
- * a host.
+ * The DWC does not own the pins. A "USB wrap" muxes the internal FSLS PHY
+ * between the DWC and the USB serial jtag block, and that mux only answers to
+ * software when the RTC's usb_conf says so. Both have to be set before the DWC
+ * can talk to a host.
  *
- * There are two clock gates, and enabling only one is the mistake that makes every
- * OTG register read 0x00000000 without faulting: usb_clk_en (bit 23 of
- * PERIP_CLK_EN0) belongs to the wrap and PHY domain, while usb_device_clk_en (bit
- * 10 of PERIP_CLK_EN1) belongs to the DWC core itself. Each has a matching reset
- * bit in PERIP_RST_EN0/EN1, where 0 means not in reset and both default to 0.
+ * There are two clock gates, and enabling only one is the mistake that makes
+ * every OTG register read 0x00000000 without faulting: usb_clk_en (bit 23 of
+ * PERIP_CLK_EN0) belongs to the wrap and PHY domain, while usb_device_clk_en
+ * (bit 10 of PERIP_CLK_EN1) belongs to the DWC core itself. Each has a matching
+ * reset bit in PERIP_RST_EN0/EN1, where 0 means not in reset and both default
+ * to 0.
  */
 #define OTGBASE                 0x60080000     /* for usb-designware.h */
 #define XT_USB_DWC_BASE         OTGBASE
@@ -85,8 +86,8 @@
 #define XT_USB_OTG_CONF         (XT_USB_WRAP_BASE + 0x00)
 #define XT_USB_PHY_SEL_EXT      (1u << 2)      /* 1 = external PHY */
 /* The wrap's own PHY pad loads, from IDF 4.4's usb_phy_ll.h for this chip
- * (usb_phy_ll_int_load_conf(), which is what usb_enable(USB_MODE_DEVICE) called).
- * A full-speed device needs D+ pulled up *and* D- pulled down, with
+ * (usb_phy_ll_int_load_conf(), which is what usb_enable(USB_MODE_DEVICE)
+ * called). A full-speed device needs D+ pulled up *and* D- pulled down, with
  * pad_pull_override set so these values actually drive the pads. */
 #define XT_USB_PAD_PULL_OVERRIDE  (1u << 12)
 #define XT_USB_DP_PULLUP          (1u << 13)
@@ -120,18 +121,19 @@
 
 /*
  * The L1 data cache works in 32-byte lines. DMA buffers have to be aligned to a
- * line so that committing or invalidating a range never touches a line belonging
- * to something else.
+ * line so that committing or invalidating a range never touches a line
+ * belonging to something else.
  */
 #define CACHEALIGN_BITS         5
 #define CACHEALIGN_SIZE         (1 << CACHEALIGN_BITS)
 
 /*
- * A dedicated vector section used to live here (VEC_ATTR, ".icode.irq"), because the
- * bare-metal branch wrote its own table and the `j` in it has only an 18-bit signed
- * range, forcing the handler to sit next to the table. ESP-IDF owns the vectors on this
- * path and Rockbox installs handlers through esp_intr_alloc(), so there is nothing for
- * such a section to place and the macro is gone rather than unused.
+ * A dedicated vector section used to live here (VEC_ATTR, ".icode.irq"),
+ * because the bare-metal branch wrote its own table and the `j` in it has only
+ * an 18-bit signed range, forcing the handler to sit next to the table. ESP-IDF
+ * owns the vectors on this path and Rockbox installs handlers through
+ * esp_intr_alloc(), so there is nothing for such a section to place and the
+ * macro is gone rather than unused.
  */
 
 /*
@@ -188,10 +190,10 @@
 #define XT_PLL_FREQ_SEL         (1u << 2)       /* 1 = 480 MHz, 0 = 320 MHz */
 
 /*
- * RTC_CNTL_DATE_REG bits [18:13] are the LDO slaves powered down; the rest of the
- * register is the RTC date and has to be preserved. ESP-IDF writes
- * DEFAULT_LDO_SLAVE (0x7) >> (frequency / 80), i.e. 0 slaves off at 240 MHz, 1 at
- * 160 MHz and 3 at 80 MHz.
+ * RTC_CNTL_DATE_REG bits [18:13] are the LDO slaves powered down; the rest of
+ * the register is the RTC date and has to be preserved. ESP-IDF writes
+ * DEFAULT_LDO_SLAVE (0x7) >> (frequency / 80), i.e. 0 slaves off at 240 MHz, 1
+ * at 160 MHz and 3 at 80 MHz.
  */
 #define XT_RTC_DATE_REG         (XT_RTCCNTL_BASE + 0x1FC)
 #define XT_LDO_SLAVE_MASK       0x3F
@@ -228,38 +230,40 @@
  * PSRAM heap.
  *
  * The deduction is not slack for its own sake -- it is the clearance the
- * section needs above itself. XT_AUDIOBUF_SIZE is only what memory-xtensa-syms.S
- * puts in .ext_ram.bss; IDF's own PSRAM objects and every object the ld fragment
- * maps to extern_ram (unicode, language, the skin parser, dir/file/fileobj_mgr,
- * system.o's boost log and, since the feature flags, gui/line.o's layout state) are
- * placed in the same section, so the section ends well past audiobufend. Above it
- * sit the codec and plugin text reservations, and .ext_ram.bss is memset to zero at
- * boot by esp_psram_bss_init() -- so a section that reaches into plugin_text
- * silently zeroes the head of the region every plugin is loaded into. That is
- * exactly what happened: moving system.o's 16,664 bytes of .bss to PSRAM put the
+ * section needs above itself. XT_AUDIOBUF_SIZE is only what
+ * memory-xtensa-syms.S puts in .ext_ram.bss; IDF's own PSRAM objects and every
+ * object the ld fragment maps to extern_ram (unicode, language, the skin
+ * parser, dir/file/fileobj_mgr, system.o's boost log and, since the feature
+ * flags, gui/line.o's layout state) are placed in the same section, so the
+ * section ends well past audiobufend. Above it sit the codec and plugin text
+ * reservations, and .ext_ram.bss is memset to zero at boot by
+ * esp_psram_bss_init() -- so a section that reaches into plugin_text silently
+ * zeroes the head of the region every plugin is loaded into. That is exactly
+ * what happened: moving system.o's 16,664 bytes of .bss to PSRAM put the
  * section end at 0x3c58290c, 10,508 bytes past XT_PLUGIN_TEXT_ADDR, and every
- * plugin crashed on arrival while codecs (at XT_CODEC_TEXT_ADDR, further up) kept
- * working. The guard in system_init() now watches that boundary; keep this
+ * plugin crashed on arrival while codecs (at XT_CODEC_TEXT_ADDR, further up)
+ * kept working. The guard in system_init() now watches that boundary; keep this
  * deduction large enough that it never fires.
  *
- * It has to be a whole page, not merely "a bit more", and that is the part worth
- * remembering. .ext_ram.bss does not start at a fixed address: IDF's .ext_ram.dummy
- * advances the location counter past the flash rodata and then aligns to the 64 KB
- * MMU page, so the section's start moves in 64 KB steps whenever code or rodata
- * growth crosses a boundary. Enabling HAVE_ALBUMART, HAVE_JPEG, HAVE_QUICKSCREEN
- * and AB_REPEAT_ENABLE grew the image by ~24 KB, which pushed _ext_ram_bss_start
- * from 0x3c120000 to 0x3c130000 -- a full page for a 24 KB change -- and a 64 KB
- * deduction was therefore consumed entirely, putting the end at 0x3c582e8c and
- * reproducing the original crash figure almost exactly. 128 KB covers one page of
- * growth plus the donated objects. If the image grows another page this moves
+ * It has to be a whole page, not merely "a bit more", and that is the part
+ * worth remembering. .ext_ram.bss does not start at a fixed address: IDF's
+ * .ext_ram.dummy advances the location counter past the flash rodata and
+ * then aligns to the 64 KB MMU page, so the section's start moves in 64 KB
+ * steps whenever code or rodata growth crosses a boundary. Enabling
+ * HAVE_ALBUMART, HAVE_JPEG, HAVE_QUICKSCREEN and AB_REPEAT_ENABLE grew the
+ * image by ~24 KB, which pushed _ext_ram_bss_start from 0x3c120000 to
+ * 0x3c130000 -- a full page for a 24 KB change -- and a 64 KB deduction was
+ * therefore consumed entirely, putting the end at 0x3c582e8c and reproducing
+ * the original crash figure almost exactly. 128 KB covers one page of growth
+ * plus the donated objects. If the image grows another page this moves
  * again, so read the MEMORY: line printed at boot rather than trusting this
- * number. The deduction is now 128 KB below half of PSRAM plus the 256 KB the
- * codec text reservation gave up (see XT_CODEC_TEXT_SIZE): the arena is sized by
- * this constant alone -- core_alloc.c does buflib_init(start, audiobufend - start)
- * and audiobufend is the label right after the .space below -- so shrinking the
- * text reservations without raising this buys nothing but unused slack. Growing it
- * takes the space straight out of IDF's PSRAM heap, and the boot guard keeps watch
- * on the boundary either way. */
+ * number. The deduction is now 128 KB below half of PSRAM plus the 256 KB
+ * the codec text reservation gave up (see XT_CODEC_TEXT_SIZE): the arena is
+ * sized by this constant alone -- core_alloc.c does buflib_init(start,
+ * audiobufend - start) and audiobufend is the label right after the .space
+ * below -- so shrinking the text reservations without raising this buys
+ * nothing but unused slack. Growing it takes the space straight out of IDF's
+ * PSRAM heap, and the boot guard keeps watch on the boundary either way. */
 #define XT_AUDIOBUF_SIZE    ((MEMORYSIZE * 0x80000) + 0x20000)
 
 /*
@@ -287,15 +291,15 @@
  * regions do not overlap, rather than letting a collision corrupt silently.
  */
 #define XT_DROMORIG         0x3C000020
-/* The window is MEMORYSIZE MB from 0x3C000000 and the flash MMU has exactly that
- * many 64 KB entries pointing at PSRAM, so the arena must END at
- * 0x3C000000 + MEMORYSIZE MB -- there is no entry beyond it to map, because all
- * MEMORYSIZE*16 physical pages are already claimed. XT_DROMORIG carries +0x20 so
- * flash-mapped segments satisfy the cache's page-congruence rule, and codecbuf /
- * pluginbuf are derived from it, so without subtracting that offset here the top
- * of the arena lands 32 bytes past the last mapped entry -- the defect the boot
- * check in system-xtensa.c reports. Subtracting it also page-aligns both buffers,
- * which they wanted anyway. */
+/* The window is MEMORYSIZE MB from 0x3C000000 and the flash MMU has exactly
+ * that many 64 KB entries pointing at PSRAM, so the arena must END at
+ * 0x3C000000 + MEMORYSIZE MB -- there is no entry beyond it to map, because
+ * all MEMORYSIZE*16 physical pages are already claimed. XT_DROMORIG carries
+ * +0x20 so flash-mapped segments satisfy the cache's page-congruence rule,
+ * and codecbuf / pluginbuf are derived from it, so without subtracting that
+ * offset here the top of the arena lands 32 bytes past the last mapped entry
+ * -- the defect the boot check in system-xtensa.c reports. Subtracting it
+ * also page-aligns both buffers, which they wanted anyway. */
 #define XT_CODECBUF_ADDR    (XT_DROMORIG + (MEMORYSIZE * 0x100000) - 0x20 \
                              - PLUGIN_BUFFER_SIZE - CODEC_SIZE)
 #define XT_PLUGINBUF_ADDR   (XT_CODECBUF_ADDR + CODEC_SIZE)
@@ -310,14 +314,15 @@
 #define XT_IROM_BASE        0x40000000
 #define XT_IROM_OFF         0x06000000
 
-/* Text halves carved out of the gap below codecbuf. Measured across all codecs
- * the largest .text+.literal+.rodata is 182 KB (aac.codec is 200,232 bytes as a
- * whole image), so the codec half is 256 KB: still ~74 KB of headroom, and
- * apps/plugins/plugin.lds links against THIS_TEXT_LENGTH, so a codec that outgrows
- * it fails at link time rather than at load. The plugin half stays at 512 KB
- * because the largest .rock is 482,560 bytes and shrinking it would put the head of
- * the plugin text region at risk for no gain -- what this shrink actually funds is
- * XT_AUDIOBUF_SIZE. These are the numbers plugin.lds includes rather than repeats. */
+/* Text halves carved out of the gap below codecbuf. Measured across all
+ * codecs the largest .text+.literal+.rodata is 182 KB (aac.codec is 200,232
+ * bytes as a whole image), so the codec half is 256 KB: still ~74 KB of
+ * headroom, and apps/plugins/plugin.lds links against THIS_TEXT_LENGTH, so a
+ * codec that outgrows it fails at link time rather than at load. The plugin
+ * half stays at 512 KB because the largest .rock is 482,560 bytes and
+ * shrinking it would put the head of the plugin text region at risk for no
+ * gain -- what this shrink actually funds is XT_AUDIOBUF_SIZE. These are the
+ * numbers plugin.lds includes rather than repeats. */
 #define XT_CODEC_TEXT_SIZE   0x40000
 #define XT_PLUGIN_TEXT_SIZE  0x80000
 

@@ -36,10 +36,11 @@ static void delay_ms(int ms)
 }
 
 /* CS lives on the PCA9557, not on a GPIO. Toggling it per transfer costs a full
- * I2C transaction (~1.6 ms at 100 kHz) and makes every pixel write depend on the
- * bus having finished. The reference firmware never toggles CS either: LovyanGFX is
- * configured with pin_cs = -1 and the expander just holds CS asserted for the whole
- * session. Do the same - assert once, after the reset, and never touch it again.
+ * I2C transaction (~1.6 ms at 100 kHz) and makes every pixel write depend on
+ * the bus having finished. The reference firmware never toggles CS either:
+ * LovyanGFX is configured with pin_cs = -1 and the expander just holds CS
+ * asserted for the whole session. Do the same - assert once, after the reset,
+ * and never touch it again.
  */
 static void cs_assert(void)
 {
@@ -49,10 +50,11 @@ static void cs_assert(void)
 static void dc(int data)
 {
     /* Do not move the pin while the controller is still clocking: the panel
-     * samples DC on every clock edge, so a change mid-transfer makes it read the
-     * remaining bytes under the wrong register select. Measured here: the pad
-     * does move, and GPIO_IN1 agrees with the output register every time --
-     * which is what ruled DC out as the reason the panel looked dead. */
+     * samples DC on every clock edge, so a change mid-transfer makes it read
+     * the remaining bytes under the wrong register select. Measured here:
+     * the pad does move, and GPIO_IN1 agrees with the output register every
+     * time -- which is what ruled DC out as the reason the panel looked
+     * dead. */
     spi_wait_idle();
     gpio_write_pin(PIN_LCD_DC, data);
 }
@@ -106,8 +108,8 @@ void st7789_init(void)
     cs_assert();
 
     /* The expander's input register mirrors the state of every pin, outputs
-     * included, so this is the only external proof that the CS/RST writes landed.
-     * Expected: bit0 RST=1, bit1 CS=0, bit3 PA=0, bit6 TOUCH_RST=1.
+     * included, so this is the only external proof that the CS/RST writes
+     * landed. Expected: bit0 RST=1, bit1 CS=0, bit3 PA=0, bit6 TOUCH_RST=1.
      */
 
     spi_init();

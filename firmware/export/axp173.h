@@ -32,7 +32,8 @@
 #define AXP_REG_CC_DISCHARGE    0xb4
 #define AXP_REG_CC_CTRL         0xb8
 
-/* CC_CTRL (0xb8), datasheet REG B8H, default 00H. The counters themselves are two
+/* CC_CTRL (0xb8), datasheet REG B8H, default 00H. The counters themselves are
+ * two
    32-bit big-endian values: charge at 0xb0-0xb3, discharge at 0xb4-0xb7.
 
    Bit 7 enables counting. Bit 6 pauses one count and is self-clearing -- the vendor
@@ -56,8 +57,9 @@
 #define AXP_VBUS_PRESENT    (1u << 5)
 #define AXP_ACIN_AVAILABLE  (1u << 4)
 #define AXP_VBUS_AVAILABLE  (1u << 3)
-/* REG 00H bit 2 is the battery current direction, 0 = discharging, 1 = charging. It is
-   not a battery-presence flag -- that lives in REG 01H bit 5 (AXP_BATT_CONNECTED). */
+/* REG 00H bit 2 is the battery current direction, 0 = discharging, 1 =
+ * charging. It is not a battery-presence flag -- that lives in REG 01H bit 5
+ * (AXP_BATT_CONNECTED). */
 #define AXP_BATT_CHARGING_DIR (1u << 2)
 
 /* CHARGESTATUS (0x01). Bit 7 is the chip's own over-temperature flag -- not a
@@ -70,7 +72,8 @@
 #define AXP_BATT_CONNECTED  (1u << 5)
 #define AXP_CHG_CURRENT_LOW (1u << 2)
 
-/* CHARGECTRL (0x33), datasheet default C8H. Three separate fields, and the target
+/* CHARGECTRL (0x33), datasheet default C8H. Three separate fields, and the
+ * target
    voltage is the one that is easy to lose: a whole-register write that omits bits 6:5
    lowers the charge ceiling from 4.2 V to 4.1 V, which stops a "full" charge at roughly
    80-90 % of the cell. The reference firmware avoids that by touching bit 7 and bits 3:0
@@ -127,16 +130,19 @@
 #define AXP_REG_IRQST4      0x47
 #define AXP_REG_IRQST5      0x4D
 
-/* IRQEN3 / IRQST3 -- datasheet REG 42H (default 0x3B) and REG 46H. PEK long press is
+/* IRQEN3 / IRQST3 -- datasheet REG 42H (default 0x3B) and REG 46H. PEK long
+ * press is
    IRQ23 = bit 0 of both, short press is IRQ22 = bit 1. Note that REG 44H bit 0 is
-   reserved: the vendor driver for this board reads PEK status there and is wrong. */
+ * reserved: the vendor driver for this board reads PEK status there and is
+ * wrong. */
 #define AXP_IRQ_PEK_LONG    (1u << 0)
 #define AXP_IRQ_PEK_SHORT   (1u << 1)
 
 /* REG 36H bit 3: the PEK auto-off function itself. The datasheet calls it
    "按键时长大于关机时长时自动关机功能设置", 0 = off, 1 = on, and it resets to 1.
    Clearing it disables the OFFLEVEL hard cut wholesale; it is a different mechanism from
-   the software shutdown in REG 32H bit 7, so axp173_power_off() still works with it off. */
+ * the software shutdown in REG 32H bit 7, so axp173_power_off() still works
+ * with it off. */
 #define AXP_TIMING_AUTOOFF  (1u << 3)
 #define AXP_IRQ_LDO4_LOW    (1u << 3)
 #define AXP_IRQ_DCDC2_LOW   (1u << 4)
@@ -144,11 +150,13 @@
 #define AXP_IRQ_CHG_UNDER   (1u << 6)
 #define AXP_IRQ_OVERTEMP    (1u << 7)
 
-/* TIMING (0x36, default 0x5D): bits 7:6 ONLEVEL the press that powers the chip on,
+/* TIMING (0x36, default 0x5D): bits 7:6 ONLEVEL the press that powers the chip
+ * on,
    bits 5:4 IRQLEVEL the long-press threshold, bit 3 "auto power off when the press
    outlasts OFFLEVEL", bit 2 the PWROK delay, bits 1:0 OFFLEVEL -- the press duration
    beyond which the chip cuts its own outputs (4/6/8/10 s; 3 is the longest, 10 s).
-   OFFLEVEL is a duration the user must outlast, not a countdown that survives release. */
+ * OFFLEVEL is a duration the user must outlast, not a countdown that
+ * survives release. */
 #define AXP_PEK_ON_SHIFT    6
 #define AXP_PEK_LONG_SHIFT  4
 #define AXP_PEK_OFF_SHIFT   0
@@ -175,7 +183,8 @@ int axp173_vbus_voltage(void);
 int axp173_vbus_current(void);
 int axp173_ts_temperature(void);
 
-/* Coulomb counters. The raw pair is deliberately exposed as raw, because it is what a
+/* Coulomb counters. The raw pair is deliberately exposed as raw, because it is
+ * what a
    calibration measurement needs. The conversion below is the reference driver's
    derivation, not a datasheet statement:
 
@@ -197,16 +206,18 @@ void axp173_coulomb_read(uint32_t *charge, uint32_t *discharge);
 bool axp173_coulomb_mAh(int *charge, int *discharge);
 int axp173_coulomb_charge_mAh(void);
 int axp173_coulomb_discharge_mAh(void);
-/* Raw CC_CTRL byte, so "enabled" and "paused" are visible instead of inferred from
-   counters that might be zero for another reason. Negative on a failed read. */
+/* Raw CC_CTRL byte, so "enabled" and "paused" are visible instead of
+ * inferred from counters that might be zero for another reason. Negative on
+ * a failed read. */
 int axp173_coulomb_control(void);
 
-/* What the charger was told to do, decoded from REG 33H. Both return negative on a
-   failed read. */
+/* What the charger was told to do, decoded from REG 33H. Both return
+ * negative on a failed read. */
 int axp173_charge_target_mV(void);
 int axp173_charge_current_setting_mA(void);
 
-/* REG 00H bit 2: the chip's own battery current direction, 1 = charging. This is the
+/* REG 00H bit 2: the chip's own battery current direction, 1 = charging. This
+ * is the
    authoritative signal; axp173_charging() reports the charger's state, which is 0 both
    when idle and when the cell is finished, so choosing a current register from it can
    read the discharge register while current is actually flowing the other way. Falls
@@ -225,7 +236,8 @@ unsigned int axp173_input_status(void);
 /* Shut the chip down. Everything loses power, including the SoC. */
 void axp173_power_off(void);
 
-/* True if the PEK power key has been long-pressed since the last call. Clears the
+/* True if the PEK power key has been long-pressed since the last call. Clears
+ * the
    long-press bit it reports, so the same press is not seen twice. The short-press bit is
    not enabled in IRQEN3 by axp173_init() and therefore never latches. */
 bool axp173_power_key_pressed(void);

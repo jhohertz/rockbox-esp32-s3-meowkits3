@@ -109,9 +109,9 @@ static void pm_cycle_tick(void)
     static uint32_t last;
     uint32_t now = esp_cpu_get_cycle_count();
 
-    /* One tick between samples, so this modular difference is exact -- at the
-     * fastest clock on this chip a tick is 2.4M cycles, three orders of magnitude
-     * below the wrap point. */
+    /* One tick between samples, so this modular difference is exact -- at
+     * the fastest clock on this chip a tick is 2.4M cycles, three orders of
+     * magnitude below the wrap point. */
     cycle_total += (uint32_t)(now - last);
     last = now;
     cycle_samples++;
@@ -123,94 +123,108 @@ enum
     INFO_CORE,
     INFO_CACHE,
     INFO_MMU,
-    /* What a plugin's malloc() actually has to work with. firmware/buflib_malloc.c
-     * routes plugin allocation to core_alloc(), not to the plugin buffer, so the
-     * 524,288-byte pluginbuf says nothing about whether a plugin can allocate -- its
-     * .data and .bss come from there, and its heap comes from here. Two numbers are
-     * printed because they answer different questions: core_available() is everything
-     * still free, core_allocatable() is the largest single block that can be had, and
-     * the difference between them is fragmentation. The second is what decides whether
-     * something like doom can run, since its screens are allocated one at a time at
-     * LCD_WIDTH*LCD_HEIGHT each (76,800 here, four of them at a screen wipe).
+    /* What a plugin's malloc() actually has to work with.
+     * firmware/buflib_malloc.c routes plugin allocation to core_alloc(), not to
+     * the plugin buffer, so the 524,288-byte pluginbuf says nothing about
+     * whether a plugin can allocate -- its .data and .bss come from there, and
+     * its heap comes from here. Two numbers are printed because they answer
+     * different questions: core_available() is everything still free,
+     * core_allocatable() is the largest single block that can be had, and the
+     * difference between them is fragmentation. The second is what decides
+     * whether something like doom can run, since its screens are allocated one
+     * at a time at LCD_WIDTH*LCD_HEIGHT each (76,800 here, four of them at a
+     * screen wipe).
      *
      * Read this before playback starts, not during. audio_reset_buffer()
-     * (apps/playback.c:1083) takes the arena through core_alloc_maximum() as soon as a
-     * track is buffered, so both numbers legitimately read 0 while playing -- the pool
-     * is parked in the audiobuffer, not lost, and that block is shrinkable, which is how
-     * anything else gets space back. It stays parked after the player stops as well,
-     * because audio_stop() does not release it; only the hard-stop path
-     * (apps/playback.c:4005) or the shrink callback giving up does. A reading that is
-     * lower than the boot value is therefore the player holding its buffer, and a
-     * reading that is lower still after a plugin ran is that plugin's own allocations
+     * (apps/playback.c:1083) takes the arena through core_alloc_maximum() as
+     * soon as a track is buffered, so both numbers legitimately read 0 while
+     * playing -- the pool is parked in the audiobuffer, not lost, and that
+     * block is shrinkable, which is how anything else gets space back. It
+     * stays parked after the player stops as well, because audio_stop() does
+     * not release it; only the hard-stop path (apps/playback.c:4005) or the
+     * shrink callback giving up does. A reading that is lower than the boot
+     * value is therefore the player holding its buffer, and a reading that
+     * is lower still after a plugin ran is that plugin's own allocations
      * still outstanding. */
     INFO_ARENA,
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_PANIC,
     INFO_RESET,
-    /* Cumulative transmit-path housekeeping: sessions started, descriptor errors,
-     * recoveries, and slots armed with silence. Together they say whether the ring is
-     * being starved and recovered. Counted always rather than behind a probe, because
-     * the moment worth catching is shorter than any sampling interval. */
+    /* Cumulative transmit-path housekeeping: sessions started, descriptor
+     * errors, recoveries, and slots armed with silence. Together they say
+     * whether the ring is being starved and recovered. Counted always rather
+     * than behind a probe, because the moment worth catching is shorter than
+     * any sampling interval. */
     INFO_TXSTAT,
-    /* The same idea for the capture path, and it exists because the two ways a
-     * recorder can go silent look identical from the UI: the reader can be asking
-     * and getting nothing (no clocks reaching the ADC, so timeouts), or asking and
-     * being refused (a bad configuration, so an error code). The rate is printed
-     * because it is the one number that says whether the receiver is running at
-     * what the caller asked for -- pitch_detector requests 8 kHz, the file recorder
-     * requests whatever Settings says, and playback requests the file's rate.
-     * Reading it is free; the counters are incremented per read. */
+    /* The same idea for the capture path, and it exists because the two ways
+     * a recorder can go silent look identical from the UI: the reader can be
+     * asking and getting nothing (no clocks reaching the ADC, so timeouts),
+     * or asking and being refused (a bad configuration, so an error code).
+     * The rate is printed because it is the one number that says whether the
+     * receiver is running at what the caller asked for -- pitch_detector
+     * requests 8 kHz, the file recorder requests whatever Settings says, and
+     * playback requests the file's rate. Reading it is free; the counters
+     * are incremented per read. */
     INFO_RXSTAT,
-    /* What the codec itself reports. The transmit counters can say the transport is
-     * healthy while nothing audible comes out, because the chip's state is only
-     * knowable by asking it over I2C. Costs 14 polled reads, so it is drawn when the
-     * screen is opened rather than sampled continuously. */
+    /* What the codec itself reports. The transmit counters can say the
+     * transport is healthy while nothing audible comes out, because the
+     * chip's state is only knowable by asking it over I2C. Costs 14 polled
+     * reads, so it is drawn when the screen is opened rather than sampled
+     * continuously. */
     INFO_CODEC,
 #ifdef HAVE_RECORDING
-/* The ADC's own gain, bias and clock state, read back off the chip. The captured
- * level is the only consumer-visible evidence, and it cannot say whether a setting
- * was written wrongly, written and ignored, or applied to an input that is not the
- * mic -- the registers can. Costs six polled reads when the screen opens. */
+/* The ADC's own gain, bias and clock state, read back off the chip. The
+ * captured level is the only consumer-visible evidence, and it cannot say
+ * whether a setting was written wrongly, written and ignored, or applied to
+ * an input that is not the mic -- the registers can. Costs six polled reads
+ * when the screen opens. */
     INFO_ADC,
 #endif
     /* The AXP173 coulomb counters. They are enabled and cleared at boot by
-     * axp173_init(), so a freshly booted board legitimately reads 0/0 -- which is also
-     * what a failed I2C read produces, and what a clear that dropped the enable bit
-     * produces. Hence the control byte on the same row: it is the only thing on screen
-     * that separates "nothing has happened" from "counting is off".
+     * axp173_init(), so a freshly booted board legitimately reads 0/0 -- which
+     * is also what a failed I2C read produces, and what a clear that dropped
+     * the enable bit produces. Hence the control byte on the same row: it is
+     * the only thing on screen that separates "nothing has happened" from
+     * "counting is off".
      *
-     * The mAh figures come from the counter's own arithmetic -- one LSB per 0.5 mA per
-     * ADC sample, so 0.02 mA.s at 25 Hz and 180,000 LSB per mAh -- not from the datasheet,
-     * which says nothing about the counter's resolution. The raw counts are printed beside
-     * them so the scale can be confirmed rather than trusted: read the row, note the
-     * interval, and divide the integrated mA-hours (44 mA is dark idle) by the delta.
-     * The reference driver's variant of this formula multiplies by 65536 and is wrong by
-     * four orders of magnitude, which is exactly what made this row read implausibly.
+     * The mAh figures come from the counter's own arithmetic -- one LSB per 0.5
+     * mA per ADC sample, so 0.02 mA.s at 25 Hz and 180,000 LSB per mAh -- not
+     * from the datasheet, which says nothing about the counter's resolution.
+     * The raw counts are printed beside them so the scale can be confirmed
+     * rather than trusted: read the row, note the interval, and divide the
+     * integrated mA-hours (44 mA is dark idle) by the delta. The reference
+     * driver's variant of this formula multiplies by 65536 and is wrong by four
+     * orders of magnitude, which is exactly what made this row read
+     * implausibly.
      *
-     * Reading it costs one 8-byte burst read over I2C, drawn when the screen opens.
+     * Reading it costs one 8-byte burst read over I2C, drawn when the screen
+     * opens.
      */
     INFO_CC,
-    /* What the charger was actually told to do. REG 33H carries the enable, the target
-     * voltage and the current setting in three separate fields, and a whole-register write
-     * that omits the target silently lowers the charge ceiling from 4.2 V to 4.1 V --
-     * which is how a board that had been charging overnight came to read 83 % and measure
-     * ~4.0 V. "charging" here is REG 01H bit 6, which reads 0 both when idle and when the
-     * cell is finished (this chip has no charge-done bit), and "overtemp" is bit 7 of the
-     * same register, which is what suspends charging on this chip's own temperature. */
+    /* What the charger was actually told to do. REG 33H carries the enable,
+     * the target voltage and the current setting in three separate fields,
+     * and a whole-register write that omits the target silently lowers the
+     * charge ceiling from 4.2 V to 4.1 V -- which is how a board that had
+     * been charging overnight came to read 83 % and measure ~4.0 V.
+     * "charging" here is REG 01H bit 6, which reads 0 both when idle and
+     * when the cell is finished (this chip has no charge-done bit), and
+     * "overtemp" is bit 7 of the same register, which is what suspends
+     * charging on this chip's own temperature. */
     INFO_CHG,
-    /* The TS pin. Whether a thermistor is wired on this board is unverified; the pin's
-     * drive current and mode live in REG 84H alongside the ADC sample rate, and the
-     * chip's charge/discharge temperature thresholds act on this input, so a floating
-     * reading is worth seeing rather than arguing about. Prints the raw ADC code. */
+    /* The TS pin. Whether a thermistor is wired on this board is unverified;
+     * the pin's drive current and mode live in REG 84H alongside the ADC
+     * sample rate, and the chip's charge/discharge temperature thresholds
+     * act on this input, so a floating reading is worth seeing rather than
+     * arguing about. Prints the raw ADC code. */
     INFO_TS,
     /* Whether power management is configured, and what the core actually did.
      * esp_pm_dump_locks() is the obvious tool and is unusable here: it takes a
-     * newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this measures
-     * the effect instead: esp_cpu_get_cycle_count() counts core clocks and stops
-     * while the core is powered down in light sleep
-     * (CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP); esp_timer_get_time() is wall time
-     * and keeps running.
+     * newlib FILE*, and Rockbox shadows stdio.h with its own libc. So this
+     * measures the effect instead: esp_cpu_get_cycle_count() counts core clocks
+     * and stops while the core is powered down in light sleep
+     * (CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP); esp_timer_get_time() is wall
+     * time and keeps running.
      *
      * The first version of this row divided one by the other and printed an average
      * MHz. It read zero on every visit -- not "the core slept forever" but the
@@ -225,14 +239,16 @@ enum
      *                                     sleep does not put it back
      *   samples stuck at zero           -> the tick task is not running
      *
-     * The first read arms the sampling and reports no interval; the next covers the
-     * time since, which is the dark-idle window worth measuring: open the screen,
-     * let it go dark for a few minutes, come back and read it again. */
+     * The first read arms the sampling and reports no interval; the next
+     * covers the time since, which is the dark-idle window worth measuring:
+     * open the screen, let it go dark for a few minutes, come back and read
+     * it again. */
     INFO_PM,
-    /* The crash trail, newest first. A hardware exception goes to IDF's handler,
-     * prints to UART0 and resets -- it never reaches Rockbox's panic(), so there is
-     * no message to show and this ring is the only surviving record. Six rows is
-     * enough to see which subsystem was last; the ring holds forty. */
+    /* The crash trail, newest first. A hardware exception goes to IDF's
+     * handler, prints to UART0 and resets -- it never reaches Rockbox's
+     * panic(), so there is no message to show and this ring is the only
+     * surviving record. Six rows is enough to see which subsystem was last;
+     * the ring holds forty. */
     INFO_TRAIL_BASE,
     INFO_TRAIL_COUNT = 6,
     INFO_COUNT = INFO_TRAIL_BASE + INFO_TRAIL_COUNT
@@ -287,9 +303,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         }
         break;
     case INFO_PANIC: {
-        /* The panic screen is readable for twenty seconds and then the device
-         * resets, so this is the copy you get if you missed it. It is the RTC-slow
-         * record, which survives the reset that clears the SRAM one. */
+        /* The panic screen is readable for twenty seconds and then the
+         * device resets, so this is the copy you get if you missed it. It is
+         * the RTC-slow record, which survives the reset that clears the SRAM
+         * one. */
         char msg[48];
         int n = paniclog_text(msg, sizeof msg);
 
@@ -297,10 +314,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         break;
     }
     case INFO_RESET:
-        /* A reset reason of 1 (power-on) with an rtc count above zero means the
-         * previous boot wrote teardown steps and then lost the chip: a hang, not a
-         * clean shutdown. rtc 0 with a panic message means it died before the USB
-         * teardown ran at all. */
+        /* A reset reason of 1 (power-on) with an rtc count above zero means
+         * the previous boot wrote teardown steps and then lost the chip: a
+         * hang, not a clean shutdown. rtc 0 with a panic message means it
+         * died before the USB teardown ran at all. */
         snprintf(buf, bufsz, "Reset %lu, rtc trail %lu",
                  paniclog_reset_reason(), paniclog_rtc_count());
         break;
@@ -334,9 +351,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         int ctrl;
 
         axp173_coulomb_read(&charge, &discharge);
-        /* The control byte is printed because the counters alone cannot distinguish
-         * "nothing has happened yet" from "counting is switched off": a clear written as
-         * a bare whole-register value drops the enable bit, and both cases read 0. */
+        /* The control byte is printed because the counters alone cannot
+         * distinguish "nothing has happened yet" from "counting is switched
+         * off": a clear written as a bare whole-register value drops the
+         * enable bit, and both cases read 0. */
         ctrl = axp173_coulomb_control();
         snprintf(buf, bufsz, "CC ctrl %02X dis %lu=%dmAh chg %lu=%dmAh",
                  ctrl < 0 ? 0 : ctrl & 0xff,
@@ -363,13 +381,14 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         unsigned int n_samp = 0;
         uint32_t d_cyc = 0, d_us = 0;
 
-        /* The accumulator is named here only as a reader of the file-scope variable:
-         * declaring it in this list would create a local that shadows it, and every
-         * reading would then be zero -- which is exactly the bug this row had. Both
-         * deltas print as 32-bit values; three minutes at this chip's slowest clock is
-         * 1.4e8 cycles and 1.8e8 microseconds, so the range covers any interval worth
-         * measuring here, and the row stays clear of a 64-bit conversion in a printf
-         * other targets build with narrower formats. */
+        /* The accumulator is named here only as a reader of the file-scope
+         * variable: declaring it in this list would create a local that
+         * shadows it, and every reading would then be zero -- which is
+         * exactly the bug this row had. Both deltas print as 32-bit values;
+         * three minutes at this chip's slowest clock is 1.4e8 cycles and
+         * 1.8e8 microseconds, so the range covers any interval worth
+         * measuring here, and the row stays clear of a 64-bit conversion in
+         * a printf other targets build with narrower formats. */
         static uint64_t base_us, base_cycles;
         static unsigned int base_samples;
         static bool sampling;

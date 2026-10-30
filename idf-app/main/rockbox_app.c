@@ -39,17 +39,17 @@ extern void xtensa_build_id_stamp(const char *id);
  * the one file whose job is to stay small. It never returns. */
 extern int main(void);
 
-/* Implemented in firmware/target/xtensa/thread-idf.c. Rockbox's thread 0 must be
- * bound to this task specifically; binding it to "whichever task is current at
- * the first context switch" previously attached thread 0 to the scroll thread's
- * task, so main and scroll shared one gate. */
+/* Implemented in firmware/target/xtensa/thread-idf.c. Rockbox's thread 0
+ * must be bound to this task specifically; binding it to "whichever task is
+ * current at the first context switch" previously attached thread 0 to the
+ * scroll thread's task, so main and scroll shared one gate. */
 extern void rb_thread_set_thread0_task(void *handle);
 
-/* Rockbox's tick seam divides the kernel tick count down to Rockbox's HZ. It has
- * to know the rate the kernel was really configured with, and reading
- * configTICK_RATE_HZ from the Rockbox side does not give that: those objects are
- * built by the Rockbox makefiles against IDF's generated headers, which are not
- * reliably regenerated when sdkconfig changes. Measured: with the kernel at
+/* Rockbox's tick seam divides the kernel tick count down to Rockbox's HZ. It
+ * has to know the rate the kernel was really configured with, and reading
+ * configTICK_RATE_HZ from the Rockbox side does not give that: those objects
+ * are built by the Rockbox makefiles against IDF's generated headers, which are
+ * not reliably regenerated when sdkconfig changes. Measured: with the kernel at
  * 1000 Hz the macro still read 100 on the Rockbox side, the division folded to
  * 1, and current_tick ran ten times fast -- which surfaced as a screen timeout
  * that fired almost immediately and as every Rockbox timeout expiring early
@@ -59,17 +59,18 @@ extern void rb_thread_set_thread0_task(void *handle);
  * disagree with the kernel that actually gets linked. */
 const unsigned int rb_kernel_tick_hz = configTICK_RATE_HZ;
 
-/* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa-syms.S. It is
- * created here rather than left to FreeRTOS because Rockbox's kernel reads
- * stackbegin/stackend as linker symbols and uses them as thread 0's stack
- * bounds -- for stack usage reporting, and to place its first thread. If the
- * task's stack were malloc'd by xTaskCreate, those symbols would describe a
- * region nothing was actually running on. */
+/* Thread 0's stack, defined in firmware/target/xtensa/memory-xtensa-syms.S.
+ * It is created here rather than left to FreeRTOS because Rockbox's kernel
+ * reads stackbegin/stackend as linker symbols and uses them as thread 0's
+ * stack bounds -- for stack usage reporting, and to place its first thread.
+ * If the task's stack were malloc'd by xTaskCreate, those symbols would
+ * describe a region nothing was actually running on. */
 extern unsigned char rockbox_stack[];
 
-/* Rockbox's thread 0 stack, in bytes. memory-xtensa-syms.S defines the array; this
- * side only needs the size to agree, and xTaskCreateStatic fails loudly (it
- * asserts) if the buffer is smaller than the word count asked for. */
+/* Rockbox's thread 0 stack, in bytes. memory-xtensa-syms.S defines the
+ * array; this side only needs the size to agree, and xTaskCreateStatic fails
+ * loudly (it asserts) if the buffer is smaller than the word count asked
+ * for. */
 #define ROCKBOX_STACK_BYTES 0x8000
 #define ROCKBOX_STACK_WORDS (ROCKBOX_STACK_BYTES / sizeof(StackType_t))
 
@@ -91,8 +92,8 @@ static void rockbox_task(void *arg)
 {
     (void)arg;
 
-    /* Name this task as Rockbox's thread 0 while we are certainly running on it,
-     * before any thread exists to switch out. */
+    /* Name this task as Rockbox's thread 0 while we are certainly running on
+     * it, before any thread exists to switch out. */
     rb_thread_set_thread0_task((void *)xTaskGetCurrentTaskHandle());
 
     fill_stack_canary();
@@ -111,19 +112,21 @@ static void rockbox_task(void *arg)
 
 void app_main(void)
 {
-    /* IDF's console is USB-Serial-JTAG and the pads move to the OTG core about 865 ms
-     * after boot -- right where app_main starts. newlib printf buffers, so anything
-     * printed here was flushed after the transport was gone and never reached the host
-     * (measured: the capture ends at the esp_psram line, 865 ms, and none of app_main's
-     * own output arrives). Unbuffered stdout makes the early dumps land.
+    /* IDF's console is USB-Serial-JTAG and the pads move to the OTG core about
+     * 865 ms after boot -- right where app_main starts. newlib printf buffers,
+     * so anything printed here was flushed after the transport was gone and
+     * never reached the host (measured: the capture ends at the esp_psram line,
+     * 865 ms, and none of app_main's own output arrives). Unbuffered stdout
+     * makes the early dumps land.
      */
     setvbuf(stdout, NULL, _IONBF, 0);
-    /* Record which image this boot is, before anything can overwrite it. A flash
-     * cannot be confirmed by watching the board: the post-flash reset pulse goes
-     * over D+/D-, which the running image has already handed to the DWC core, so
-     * the chip never sees it and keeps running whatever was loaded before. The
-     * crash report prints this alongside the build id the panic handler stored, so
-     * "the flashed image" and "the image that crashed" are two separate facts. */
+    /* Record which image this boot is, before anything can overwrite it. A
+     * flash cannot be confirmed by watching the board: the post-flash reset
+     * pulse goes over D+/D-, which the running image has already handed to
+     * the DWC core, so the chip never sees it and keeps running whatever was
+     * loaded before. The crash report prints this alongside the build id the
+     * panic handler stored, so "the flashed image" and "the image that
+     * crashed" are two separate facts. */
     xtensa_build_id_stamp(esp_app_get_description()->version);
     /* Print what the previous boot was doing when it died, before this
      * one has a chance to overwrite the ring. */

@@ -19,9 +19,10 @@ void es7210_set_frequency(unsigned long rate);
 void es7210_set_gain(int db);
 void es7210_start(void);
 void es7210_stop(void);
-/* Read the gain, bias and clock registers back off the chip, for Debug -> View HW
- * info. A write that landed and a write the chip ignored look the same from every
- * consumer of the audio, so this is the only way to tell them apart. */
+/* Read the gain, bias and clock registers back off the chip, for Debug ->
+ * View HW info. A write that landed and a write the chip ignored look the
+ * same from every consumer of the audio, so this is the only way to tell
+ * them apart. */
 void es7210_stat(char *buf, int bufsz);
 
 #endif /* ES7210_H */

@@ -113,25 +113,27 @@ bool backlight_hw_init(void)
 void backlight_hw_on(void)
 {
     /* Wake the panel before light is applied, otherwise the backlight comes up
-     * onto a panel that is still coming out of sleep and the first frame is lost.
+     * onto a panel that is still coming out of sleep and the first frame is
+     * lost.
      */
     lcd_enable(true);
 
 #if (CONFIG_BACKLIGHT_FADING != BACKLIGHT_FADING_SW_SETTING)
-    /* Without software fading, backlight_update_state() calls hw_on() and nothing
-     * else: there is no follow-up backlight_hw_brightness() on that configuration
-     * (backlight.c:527-531), so hw_on alone has to produce the right level. Asking
-     * for MAX_BRIGHTNESS_SETTING instead made every off->on transition flash to
-     * full before the queued BACKLIGHT_BRIGHTNESS_CHANGED landed -- visible as a
-     * flicker while adjusting the setting.
+    /* Without software fading, backlight_update_state() calls hw_on() and
+     * nothing else: there is no follow-up backlight_hw_brightness() on that
+     * configuration (backlight.c:527-531), so hw_on alone has to produce the
+     * right level. Asking for MAX_BRIGHTNESS_SETTING instead made every off->on
+     * transition flash to full before the queued BACKLIGHT_BRIGHTNESS_CHANGED
+     * landed -- visible as a flicker while adjusting the setting.
      *
      * With software fading the core ramps instead: backlight_setup_fade_up()
-     * calls hw_on() to get the lamp lit at whatever the hardware currently holds,
-     * then steps up through backlight_hw_brightness() one BRIGHTNESS_STEP at a
-     * time (backlight-sw-fading.c:49-62). Setting the target level here would
-     * defeat that, which is why backlight-e200v2-fuze.c:40-44 guards the same
-     * line the same way and says so: "if we set the brightness to the settings
-     * value, then fading up is glitchy". */
+     * calls hw_on() to get the lamp lit at whatever the hardware currently
+     * holds, then steps up through backlight_hw_brightness() one
+     * BRIGHTNESS_STEP at a time (backlight-sw-fading.c:49-62). Setting the
+     * target level here would defeat that, which is why
+     * backlight-e200v2-fuze.c:40-44 guards the same line the same way and
+     * says so: "if we set the brightness to the settings value, then fading
+     * up is glitchy". */
     backlight_hw_brightness(backlight_brightness);
 #endif
 }
@@ -149,8 +151,8 @@ void backlight_hw_brightness(int brightness)
     if (brightness > MAX_BRIGHTNESS_SETTING)
         brightness = MAX_BRIGHTNESS_SETTING;
 
-    /* Scale 0..MAX to 0..512 with rounding. The general form keeps it correct if
-     * the target changes MAX_BRIGHTNESS_SETTING. */
+    /* Scale 0..MAX to 0..512 with rounding. The general form keeps it
+     * correct if the target changes MAX_BRIGHTNESS_SETTING. */
     unsigned duty = (unsigned)((brightness * BL_FULL_DUTY + MAX_BRIGHTNESS_SETTING / 2)
                                / MAX_BRIGHTNESS_SETTING);
 

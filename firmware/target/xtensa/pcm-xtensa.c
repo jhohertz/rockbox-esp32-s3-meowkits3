@@ -75,11 +75,11 @@ static volatile bool rx_wanted;
 static volatile bool rx_running;
 static volatile bool rx_thread_idle = true;
 
-/* Receive-path counters, read by the debug screen's RX row. The distinction that
- * matters is between "the reader asked and nothing arrived" and "the reader asked
- * and the port reported an error": from the outside both look like a plugin that
- * never gets audio, and which one it is decides whether the clock is missing or
- * the configuration is. */
+/* Receive-path counters, read by the debug screen's RX row. The distinction
+ * that matters is between "the reader asked and nothing arrived" and "the
+ * reader asked and the port reported an error": from the outside both look
+ * like a plugin that never gets audio, and which one it is decides whether
+ * the clock is missing or the configuration is. */
 static unsigned int stat_sessions;
 static unsigned int stat_reads;
 static unsigned int stat_bytes;
@@ -93,10 +93,11 @@ static const char rx_thread_name[] = "i2srx";
 static unsigned int rx_thread_id;
 
 /* The recorder is driven by callbacks, not by a blocking reader, so a small
- * thread converts one into the other: read a chunk, advance the destination, and
- * when the current buffer is full ask pcm_record for the next one. A non-OK read
- * is reported and retried rather than treated as fatal, because a timeout during
- * teardown is normal and the loop exits on rx_wanted anyway. */
+ * thread converts one into the other: read a chunk, advance the destination,
+ * and when the current buffer is full ask pcm_record for the next one. A
+ * non-OK read is reported and retried rather than treated as fatal, because
+ * a timeout during teardown is normal and the loop exits on rx_wanted
+ * anyway. */
 static void i2s_rx_thread(void)
 {
     while (true)
@@ -116,8 +117,8 @@ static void i2s_rx_thread(void)
             if (err != ESP_OK || got == 0)
             {
                 /* A timeout during teardown is normal; a timeout while the
-                 * recorder still wants data is retried, not treated as the end of
-                 * the capture. */
+                 * recorder still wants data is retried, not treated as the
+                 * end of the capture. */
                 stat_last_err = (int)err;
 
                 if (err == ESP_ERR_TIMEOUT || got == 0)
@@ -136,14 +137,15 @@ static void i2s_rx_thread(void)
             rec_ptr += got;
             rec_left -= got;
 
-            /* pcm_rec_lock() masks the recording completion, not the transfer --
-             * imx233 does it by disabling the DMA channel interrupt, and this
-             * driver's predecessor did it by masking IN_DONE. The DMA kept
-             * filling either way. So keep reading into the caller's buffer and
-             * hold back only the hand-off, which is what the interrupt would have
-             * been. Stopping the read instead (an earlier version here did) parks
-             * the thread while the recorder waits for data that can never arrive,
-             * because pcm_record_data() starts us while it still holds the lock. */
+            /* pcm_rec_lock() masks the recording completion, not the
+             * transfer -- imx233 does it by disabling the DMA channel
+             * interrupt, and this driver's predecessor did it by masking
+             * IN_DONE. The DMA kept filling either way. So keep reading into
+             * the caller's buffer and hold back only the hand-off, which is
+             * what the interrupt would have been. Stopping the read instead
+             * (an earlier version here did) parks the thread while the
+             * recorder waits for data that can never arrive, because
+             * pcm_record_data() starts us while it still holds the lock. */
             if (rec_left == 0 && !rec_locked)
             {
                 void *addr;
@@ -162,15 +164,16 @@ static void i2s_rx_thread(void)
                 rec_left = size;
             }
 
-            /* Yield to the threads that have to run for the hand-off above to
-             * mean anything. i2s_channel_read() returns as soon as a DMA buffer
-             * completes -- about 23 ms for 4096 bytes at 44.1 kHz stereo 16-bit --
-             * and this thread sits at PRIORITY_USER_INTERFACE, the same priority
-             * as the codec and recorder threads that consume what we just handed
-             * over. A loop that blocks only briefly and never sleeps can starve
-             * exactly the consumers it is waiting on. sleep(0) waits for the next
-             * tick (10 ms), which still allows ~400 KB/s against the 176 KB/s the
-             * stream needs, so it costs nothing. */
+            /* Yield to the threads that have to run for the hand-off above
+             * to mean anything. i2s_channel_read() returns as soon as a DMA
+             * buffer completes -- about 23 ms for 4096 bytes at 44.1 kHz
+             * stereo 16-bit -- and this thread sits at
+             * PRIORITY_USER_INTERFACE, the same priority as the codec and
+             * recorder threads that consume what we just handed over. A loop
+             * that blocks only briefly and never sleeps can starve exactly
+             * the consumers it is waiting on. sleep(0) waits for the next
+             * tick (10 ms), which still allows ~400 KB/s against the 176
+             * KB/s the stream needs, so it costs nothing. */
             sleep(0);
         }
 
@@ -190,17 +193,18 @@ static void i2s_rx_thread(void)
  *
  * -- resetting EVERY channel in the block, including the OUT channel the
  * transmitter drives with raw registers. Our transmitter never registers with
- * IDF's GDMA driver, so it holds no reference and IDF has no idea that channel is
- * in use. Measured directly: at boot GDMA_TX_INT_ENA is 0x06 and GDMA_TX_LINK
- * holds the descriptor address 0x0cf700; by the time the first recording session
- * reaches its first line of code -- before pads_take, before chan_enable, before
- * anything that could physically touch the bus -- they read 0x00 and 0. The only
- * thing that ran in between was i2s_new_channel().
+ * IDF's GDMA driver, so it holds no reference and IDF has no idea that channel
+ * is in use. Measured directly: at boot GDMA_TX_INT_ENA is 0x06 and
+ * GDMA_TX_LINK holds the descriptor address 0x0cf700; by the time the first
+ * recording session reaches its first line of code -- before pads_take, before
+ * chan_enable, before anything that could physically touch the bus -- they read
+ * 0x00 and 0. The only thing that ran in between was i2s_new_channel().
  *
- * That is why playback died permanently the first time recording was ARMED rather
- * than during a session, and why it never came back: nothing re-initialises the
- * transmitter afterwards. Creating the channel at boot, ahead of gdma_init(),
- * puts IDF's block reset first so our configuration lands after it and survives.
+ * That is why playback died permanently the first time recording was ARMED
+ * rather than during a session, and why it never came back: nothing
+ * re-initialises the transmitter afterwards. Creating the channel at boot,
+ * ahead of gdma_init(), puts IDF's block reset first so our configuration lands
+ * after it and survives.
  *
  * The channel is also never deleted, for the mirror-image reason:
  * gdma_release_group_handle() drops the group refcount to zero and calls
@@ -231,10 +235,10 @@ bool i2s_rx_chan_create(void)
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
-            /* Left UNUSED on purpose: the transmitter owns these pads whenever
-             * we are not recording, and configuring them here would hand them to
-             * I2S0 for good. i2s_rx_pads_take() moves them for the duration of a
-             * recording instead. */
+            /* Left UNUSED on purpose: the transmitter owns these pads
+             * whenever we are not recording, and configuring them here would
+             * hand them to I2S0 for good. i2s_rx_pads_take() moves them for
+             * the duration of a recording instead. */
             .mclk = I2S_GPIO_UNUSED,
             .bclk = I2S_GPIO_UNUSED,
             .ws   = I2S_GPIO_UNUSED,
@@ -261,11 +265,11 @@ bool i2s_rx_chan_create(void)
 }
 
 /* Program the IDF channel's clock. The channel is never rebuilt -- see
- * i2s_rx_chan_create() -- so a rate change has to be a reconfig, and IDF only
- * accepts that with the channel disabled. The error is returned rather than
- * printed because the caller has to know: a rate the port could not be made to
- * run at shows up downstream as a reader that never receives a frame, which looks
- * exactly like an absent ADC. */
+ * i2s_rx_chan_create() -- so a rate change has to be a reconfig, and IDF
+ * only accepts that with the channel disabled. The error is returned rather
+ * than printed because the caller has to know: a rate the port could not be
+ * made to run at shows up downstream as a reader that never receives a
+ * frame, which looks exactly like an absent ADC. */
 static esp_err_t rx_chan_set_rate(unsigned long rate)
 {
     if (!rx_chan)
@@ -291,7 +295,8 @@ static esp_err_t rx_chan_set_rate(unsigned long rate)
 
 void pcm_rec_dma_init(void)
 {
-    /* Normally already created at boot by sink_init(); this is the fallback for a
+    /* Normally already created at boot by sink_init(); this is the fallback for
+     * a
        boot that skipped it. It does not configure anything about the rate: see the
        note at the end of this function. */
     if (!i2s_rx_chan_create())
@@ -366,9 +371,9 @@ void pcm_rec_dma_start(void *addr, size_t size)
      * immediately before this, which is the first moment the requested capture
      * rate exists as hardware state rather than as a mixer field: a file at
      * 44.1 kHz, a recorder set to 16 kHz, or pitch_detector asking for 8 kHz.
-     * Programming the receiver here -- and the ADC at the same rate, in the same
-     * call -- is what makes the capture rate the caller's rather than a side
-     * effect of whatever playback last did.
+     * Programming the receiver here -- and the ADC at the same rate, in the
+     * same call -- is what makes the capture rate the caller's rather than a
+     * side effect of whatever playback last did.
      */
     unsigned long rate = i2s_rx_default_rate();
 
@@ -377,13 +382,13 @@ void pcm_rec_dma_start(void *addr, size_t size)
     if (e != ESP_OK)
         printf("RX clock %lu Hz failed: %d\n", rate, (int)e);
 
-    /* Brings the ADC up at `rate` and hands the receiver the clock pads with it.
-     * The result is checked: with the return value dropped, an ADC that never
-     * answered on the bus is indistinguishable from one that configured
-     * perfectly, and every symptom downstream reads as a fault in the capture
-     * path rather than an absent device. The pads come with it because the
-     * receiver cannot clock anything out of pads it does not own, and both must
-     * happen before the channel is enabled. */
+    /* Brings the ADC up at `rate` and hands the receiver the clock pads with
+     * it. The result is checked: with the return value dropped, an ADC that
+     * never answered on the bus is indistinguishable from one that
+     * configured perfectly, and every symptom downstream reads as a fault in
+     * the capture path rather than an absent device. The pads come with it
+     * because the receiver cannot clock anything out of pads it does not
+     * own, and both must happen before the channel is enabled. */
     if (!i2s_rx_take_bus(rate))
         printf("ES7210: init FAILED (no answer at 0x41?)\n");
 
@@ -404,12 +409,13 @@ void pcm_rec_dma_stop(void)
 {
     if (!rx_running)
     {
-        /* Still give the clock pads back. The reader clears rx_running itself
-         * when it leaves its loop, so a stop that arrives after it will take this
-         * branch -- and if the pads were left pointing at I2S0, the transmitter
-         * can never clock the codecs again, which kills playback for the rest of
-         * the session. Releasing is just rewriting three OUT_SEL registers, so
-         * doing it unconditionally is free. */
+        /* Still give the clock pads back. The reader clears rx_running
+         * itself when it leaves its loop, so a stop that arrives after it
+         * will take this branch -- and if the pads were left pointing at
+         * I2S0, the transmitter can never clock the codecs again, which
+         * kills playback for the rest of the session. Releasing is just
+         * rewriting three OUT_SEL registers, so doing it unconditionally is
+         * free. */
         i2s_rx_release_bus();
         return;
     }
@@ -422,10 +428,10 @@ void pcm_rec_dma_stop(void)
      * deleting an IDF I2S channel while a task is blocked inside
      * i2s_channel_read() on it is a deadlock.
      *
-     * Bounded, and it reports when the bound expires. An earlier version spun
-     * here with no limit and no output, which turned "the reader is stuck" into an
-     * unexplained freeze of the whole recorder -- the hang looked like a UI
-     * problem rather than a thread that never came back. */
+     * Bounded, and it reports when the bound expires. An earlier version
+     * spun here with no limit and no output, which turned "the reader is
+     * stuck" into an unexplained freeze of the whole recorder -- the hang
+     * looked like a UI problem rather than a thread that never came back. */
     {
         int spins = 0;
 
@@ -455,10 +461,10 @@ const void *pcm_rec_dma_get_peak_buffer(void)
     return rec_ptr;
 }
 
-/* pcm_rec_lock() masks the recording completion, not the transfer -- so the reader
- * keeps pulling data while locked and only defers the hand-off. That is what
- * imx233 does by disabling the DMA channel interrupt, and what this driver's
- * predecessor did by masking GDMA_INT_IN_DONE. */
+/* pcm_rec_lock() masks the recording completion, not the transfer -- so the
+ * reader keeps pulling data while locked and only defers the hand-off. That
+ * is what imx233 does by disabling the DMA channel interrupt, and what this
+ * driver's predecessor did by masking GDMA_INT_IN_DONE. */
 void pcm_rec_lock(void)
 {
     rec_locked++;

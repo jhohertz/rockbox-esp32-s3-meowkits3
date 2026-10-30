@@ -16,8 +16,8 @@
 #define BUTTON_MAIN  (BUTTON_A | BUTTON_B | BUTTON_UP | BUTTON_DOWN | \
                       BUTTON_LEFT | BUTTON_RIGHT)
 
-/* The FT6336 is reported as a 3x3 grid of virtual buttons when the touchscreen is
- * in button mode. These codes are unused by the physical keys.
+/* The FT6336 is reported as a 3x3 grid of virtual buttons when the touchscreen
+ * is in button mode. These codes are unused by the physical keys.
  */
 #define BUTTON_TOPLEFT       0x00000040
 #define BUTTON_TOPMIDDLE     0x00000080
@@ -34,9 +34,9 @@
  * only read by firmware/drivers/button.c under HAVE_SW_POWEROFF, which this
  * target does not define. */
 
-/* Raw key state for the panic path: firmware/panic.c holds the screen until a key
- * is pressed, and that has to work with interrupts masked -- so no tick, no
- * debounce and no I2C touch read. Implemented in button-xtensa.c. */
+/* Raw key state for the panic path: firmware/panic.c holds the screen until
+ * a key is pressed, and that has to work with interrupts masked -- so no
+ * tick, no debounce and no I2C touch read. Implemented in button-xtensa.c. */
 int button_hw_any_pressed(void);
 
 #endif /* _BUTTON_TARGET_H_ */

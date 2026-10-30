@@ -248,7 +248,8 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
         /* Track the top of the data-window image so the heap above it can be
          * cleared below. The text segment is written through its data-window
-         * alias, which sits below buf, so only the data segment bounds the heap. */
+         * alias, which sits below buf, so only the data segment bounds the
+         * heap. */
         if (ph.vaddr < XT_IROM_BASE)
         {
             unsigned char *end = dest + ph.memsz;
@@ -279,15 +280,16 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      *         return b->size & BLOCK_SIZE; }    -- returns without re-initialising
      *
      * The signature is removed only by ogg_malloc_destroy(), which runs on a
-     * clean CODEC_UNLOAD. A codec that crashes never reaches it, so the next load
-     * inherits a pool laid out for a different codec at a different size,
-     * tlsf_malloc returns NULL, and the codec longjmps out of its own allocation
-     * failure. The fault therefore reproduces itself: one crash poisons the
-     * buffer for every load afterwards -- which is exactly what "consistent
-     * crash" looked like, and why it seemed unrelated to anything changing.
+     * clean CODEC_UNLOAD. A codec that crashes never reaches it, so the next
+     * load inherits a pool laid out for a different codec at a different size,
+     * tlsf_malloc returns NULL, and the codec longjmps out of its own
+     * allocation failure. The fault therefore reproduces itself: one crash
+     * poisons the buffer for every load afterwards -- which is exactly what
+     * "consistent crash" looked like, and why it seemed unrelated to anything
+     * changing.
      *
-     * A freshly loaded image must never inherit allocator state from a previous,
-     * possibly crashed, image. */
+     * A freshly loaded image must never inherit allocator state from a
+     * previous, possibly crashed, image. */
     if (data_hi != NULL && data_hi < buf_end)
     {
         memset(data_hi, 0, buf_end - data_hi);
@@ -299,11 +301,11 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      * code. */
     commit_discard_idcache();
 
-    /* The last thing recorded before the caller jumps into freshly placed code.
-     * If the next boot's trail ends here, the fault is executing the image, not
-     * loading it -- which is the distinction the two WAV-resume crashes needed
-     * and could not make, because IDF's panic handler re-entered before printing
-     * anything at all. */
+    /* The last thing recorded before the caller jumps into freshly placed
+     * code. If the next boot's trail ends here, the fault is executing the
+     * image, not loading it -- which is the distinction the two WAV-resume
+     * crashes needed and could not make, because IDF's panic handler
+     * re-entered before printing anything at all. */
     dbg_breadcrumb("placed", (unsigned long)buf, (unsigned long)loaded);
     printf("codec load: %d segment(s) placed, handle=%p\n", loaded,
            (void *)buf);

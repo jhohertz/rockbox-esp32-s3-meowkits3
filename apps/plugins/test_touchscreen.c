@@ -42,6 +42,12 @@
 #elif (CONFIG_KEYPAD == ANDROID_PAD)
 #define TOUCHSCREEN_QUIT   BUTTON_BACK
 #define TOUCHSCREEN_TOGGLE BUTTON_MENU
+#elif CONFIG_KEYPAD == ESP32S3_PAD
+/* Neither key is a touch cell on this board, so both survive the touchscreen
+ * grid the plugin is busy drawing: A and B are the two physical buttons beside
+ * the joystick. */
+#define TOUCHSCREEN_QUIT   BUTTON_B
+#define TOUCHSCREEN_TOGGLE BUTTON_A
 #elif (CONFIG_KEYPAD == SDL_PAD)
 #define TOUCHSCREEN_QUIT   BUTTON_MIDLEFT
 #define TOUCHSCREEN_TOGGLE BUTTON_CENTER
