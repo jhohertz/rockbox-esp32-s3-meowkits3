@@ -820,7 +820,7 @@ point clamp, the metronome `bpm` clamp, the `usb_core.c` serial-index mask, the
 ## 7. Tooling deliberately untouched, and the adoption hygiene that is maintained
 
 Not touched: `utils/rbutilqt/rbutil.ini`, the build-info server entry, the themes-server
-target entry (`meowkits3` returns "No themes available"; `tools/rbthemes.py` pulls
+target entry (`meowkits3` returns "No themes available"; `tools/meowkits3/rbthemes.py` pulls
 through a proxy target instead). Verified `git diff upstream/master -- utils` is empty.
 
 One obstacle to that entry was on our side and is gone: rbutil's RockboxLoader expects
@@ -978,7 +978,7 @@ now comes from it, the four doom allocations, the doom keymap and its sound defa
 the build-rule work. Built in the container from a fresh shallow clone of the tag, tree
 clean, embedded version `260c70d53f-261029`, so a receiver can match an artifact to this
 commit from the device's own About screen. `espverify.txt` reports seven segments with a
-valid checksum and validation hash, and `tools/esp-layout-check` passes: `.ext_ram.bss`
+valid checksum and validation hash, and `tools/meowkits3/esp-layout-check` passes: `.ext_ram.bss`
 ends at `0x3c5b3214`, 55 KB below the plugin-text reservation at `0x3c5c0000`.
 
 | File | Size | SHA-256 (first 16) |
@@ -997,7 +997,7 @@ uid, and a host directory mounted into a container is exactly that, so `rev-pars
 with "detected dubious ownership" and `tools/version.sh` had nothing to embed. Nothing
 failed loudly; the artifacts were simply unattributable. Fixed by adding
 `git config --global --add safe.directory` for the checkout and for IDF in
-`tools/docker/rb-build-artifacts.sh`, and the run was repeated. Worth knowing because the
+`tools/meowkits3/rb-build-artifacts.sh`, and the run was repeated. Worth knowing because the
 same failure mode applies to any container that mounts a host checkout: the symptom is a
 blank version string, not an error. Note also that the container *image* carries its own
 copy of that script, so a stale image silently runs stale provenance logic — mount the
@@ -1083,10 +1083,10 @@ far away from the cause, with `field 'context' has incomplete type` in
 configure with the environment sourced is the whole fix; `make reconf` inherits the
 same requirement.
 
-Container: `tools/docker/Dockerfile` + `tools/docker/rb-build-artifacts.sh`.
+Container: `tools/meowkits3/Dockerfile` + `tools/meowkits3/rb-build-artifacts.sh`.
 
 ```sh
-docker build -f tools/docker/Dockerfile --build-arg RB_REFRESH=$(date +%s) -t rockbox-meowkits3 .
+docker build -f tools/meowkits3/Dockerfile --build-arg RB_REFRESH=$(date +%s) -t rockbox-meowkits3 .
 docker run --rm -v "$PWD/out:/out" rockbox-meowkits3
 ```
 
@@ -1111,7 +1111,7 @@ regenerated — the container had found the host's pack stale by 6,158 B, missin
 prompts for the settings the feature-flag batch added. `make voice` + `make zip` on
 the host closed it; the firmware is unaffected (it was already an AV build), so the
 fix is a card re-extract, not a reflash.
-`tools/espflash.make` now derives paths from `$(ROOTDIR)` rather than
+`tools/meowkits3/espflash.make` now derives paths from `$(ROOTDIR)` rather than
 `dir $(BUILDDIR)`, which is what makes an out-of-tree build (the container builds into
 `/work`) work at all; in-tree `make esplayer` and `make reconf` were both re-verified on
 the host afterwards.

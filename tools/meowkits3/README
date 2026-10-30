@@ -7,7 +7,7 @@ from the host so they can be verified, released or flashed elsewhere.
 No CI configuration lives here on purpose. The interface is:
 
 ```sh
-docker build -f tools/docker/Dockerfile -t rockbox-meowkits3 .
+docker build -f tools/meowkits3/Dockerfile -t rockbox-meowkits3 .
 docker run --rm -v "$PWD/out:/out" rockbox-meowkits3
 ls out/
 ```
@@ -68,7 +68,7 @@ re-run and the tree stays clean:
 docker run --rm -it --entrypoint bash   -v "$PWD:/src/rockbox" -v "$PWD/out:/out" rockbox-meowkits3
 ```
 
-Out-of-tree builds work because `tools/espflash.make` derives its paths from
+Out-of-tree builds work because `tools/meowkits3/espflash.make` derives its paths from
 `$(ROOTDIR)` rather than from the build directory's parent — which used to make
 `make esplayer` look for `<build-dir>/../idf-app/build/rockbox.map` and fail with
 `No rule to make target`.
@@ -127,7 +127,7 @@ Runtime environment for the entrypoint:
 | `rockbox-fonts.zip` | the font payload, built with `make fontzip` |
 | `rockbox-manual.pdf` | target manual for `meowkits3` |
 | `rockbox-info.txt` | build info string |
-| `rockbox.map` | the linker map `tools/esp-layout-check` reads, so the arena reservations can be re-checked without a toolchain |
+| `rockbox.map` | the linker map `tools/meowkits3/esp-layout-check` reads, so the arena reservations can be re-checked without a toolchain |
 | `espverify.txt` | `esptool image_info` output for the app image |
 | `build-manifest.txt` | commit, branch, dirty count, IDF and toolchain versions, UTC build time |
 | `SHA256SUMS` | checksums of everything above |
@@ -168,7 +168,7 @@ Running with `--user $(id -u):$(id -g)` does not work as-is: `BUILD_DIR` is crea
 
 ## Not included
 
-- **Theme packs.** `tools/rbthemes.py` pulls from the volunteer theme server; a
+- **Theme packs.** `tools/meowkits3/rbthemes.py` pulls from the volunteer theme server; a
   reproducible container build should not depend on somebody else's uptime, and
   the result is not a build artifact.
 - Nothing, for the default run: the image carries `espeak-ng` so the voice pack is

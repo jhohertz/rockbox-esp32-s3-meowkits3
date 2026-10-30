@@ -206,7 +206,7 @@ ENV SKIP_MANUAL=${SKIP_MANUAL}
 # The build script travels with the repository, so the container uses the copy
 # from the checked-out branch rather than a file from the build context -- the
 # two cannot drift.
-RUN cp /src/rockbox/tools/docker/rb-build-artifacts.sh /usr/local/bin/rb-build-artifacts.sh \
+RUN cp /src/rockbox/tools/meowkits3/rb-build-artifacts.sh /usr/local/bin/rb-build-artifacts.sh \
  && chmod +x /usr/local/bin/rb-build-artifacts.sh
 
 RUN if [ "${BUILD_AT_IMAGE_BUILD}" = "yes" ]; then \

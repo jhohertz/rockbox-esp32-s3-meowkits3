@@ -1075,7 +1075,7 @@ pending. It is not audio-specific, and any long-running session on this core nee
 
 ## Operational note: this branch does not flash at address 0
 
-`tools/espflash.make` is explicit: IDF's bootloader occupies `0x0`, the partition table sits
+`tools/meowkits3/espflash.make` is explicit: IDF's bootloader occupies `0x0`, the partition table sits
 at `0x8000`, and the app image lives at `0x10000`. Hand-running
 `esptool write_flash 0 rockbox.esp32s3` overwrites the bootloader with an app image whose
 header the mask ROM then misparses, and the board boot-loops with

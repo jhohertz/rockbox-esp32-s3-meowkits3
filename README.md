@@ -244,16 +244,16 @@ after a big card is slower than the ones after it.
 
 ### The container (recommended)
 
-`tools/docker/Dockerfile` builds a bare Ubuntu image with the toolchain installed by
+`tools/meowkits3/Dockerfile` builds a bare Ubuntu image with the toolchain installed by
 Rockbox's own `tools/rockboxdev.sh --target=e`, so it's the same recipe a host uses.
 One run produces every artifact plus checksums into a directory you mount:
 
 ```sh
-docker build -f tools/docker/Dockerfile -t rockbox-meowkits3 .
+docker build -f tools/meowkits3/Dockerfile -t rockbox-meowkits3 .
 docker run --rm -v "$PWD/out:/out" rockbox-meowkits3
 ```
 
-See [`tools/docker/README.md`](tools/docker/README.md) for the layers, the arguments
+See [`tools/meowkits3/README`](tools/meowkits3/README) for the layers, the arguments
 and what it verified.
 
 ### On a host

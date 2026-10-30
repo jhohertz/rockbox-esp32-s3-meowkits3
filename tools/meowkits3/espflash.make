@@ -51,17 +51,17 @@ espverify: $(BUILDDIR)/$(BINARY) esplayer
 
 # The external arena has no link-time guard, because ESP-IDF owns the linker script
 # and the ldfragment we feed it only routes archives to memory regions -- an ASSERT()
-# has nowhere to live. tools/esp-layout-check reads the addresses out of the map and
+# has nowhere to live. tools/meowkits3/esp-layout-check reads the addresses out of the map and
 # compares them against the reservations firmware/export/xtensa.h defines, so an arena that has
 # grown into the plugin/codec text fails the build instead of appearing as a printf on
 # a device after the image shipped. flash and espverify both run it: the point is that
 # you cannot reach a board without having passed it.
 #
 # The ELF and the linker map are copied into $(BUILDDIR) by the image rule in
-# tools/root.make, because that is where every other port leaves them and where the
-# goals that read them look. spelling from $(ROOTDIR) into IDF's own build tree was
-# only needed while the map had no home in the build directory, and it broke on an
-# out-of-tree build.
+# tools/root.make, because that is where every other port leaves them and where
+# the goals that read them look. Naming them under $(ROOTDIR) inside IDF's own
+# build tree was only needed while the map had no home of its own in the build
+# directory, and it broke on an out-of-tree build.
 ESPLELFMAP ?= $(BUILDDIR)/rockbox.map
 
 # The map is a build product with no rule of its own, so depending on it directly
@@ -69,7 +69,7 @@ ESPLELFMAP ?= $(BUILDDIR)/rockbox.map
 # of building first. Depending on the packed image gives the ordering we want: the
 # guard runs after there is something to guard.
 esplayer: $(BUILDDIR)/$(BINARY)
-	$(SILENT)$(ROOTDIR)/tools/esp-layout-check $(ESPLELFMAP) \
+	$(SILENT)$(ROOTDIR)/tools/meowkits3/esp-layout-check $(ESPLELFMAP) \
 		$(ROOTDIR)/firmware/export/config/$(MODELNAME).h \
 		$(FIRMDIR)/export/xtensa.h $(BUILDDIR)/Makefile
 .PHONY: esplayer

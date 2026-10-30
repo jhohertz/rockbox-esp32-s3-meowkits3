@@ -258,7 +258,7 @@ action (`apps/action.h` has neither), so the only route is `%T` regions:
 That belongs with the third-party theme packs rather than our default: a theme
 that ships these regions gets them on our panel with no firmware change at all,
 which is the point of the skin engine's touch actions. When theme packs are
-evaluated, `tools/rbthemes.py` should flag which themes define `%T` regions —
+evaluated, `tools/meowkits3/rbthemes.py` should flag which themes define `%T` regions —
 that is a compatibility signal worth showing at `list` time, since a theme with
 no regions on a touch panel gives the user only the automatic bar zones
 (`skin_parser.c:1261`).
@@ -425,9 +425,9 @@ Keep it everywhere.
   server-side entry upstream.
 - `tools/builds.pm` already has us with `manualok => 1`.
 - Our own scripts should become the install path until upstream: extend
-  `tools/esp-stage2` / `tools/espflash.make` to also flash *and* populate the
+  `tools/esp-stage2` / `tools/meowkits3/espflash.make` to also flash *and* populate the
   card, i.e. a single goal that writes the image and unpacks core + fonts +
-  themes zips. The theme artifact still needs `tools/rbthemes.py`
+  themes zips. The theme artifact still needs `tools/meowkits3/rbthemes.py`
   (`list` / `get` / `fonts` / `check` / `merge`, audit against the union of all
   three zips).
 - Deferred by choice: `HAVE_HOTKEY`. Note that the combo work in S3/S4/S5
@@ -474,7 +474,7 @@ wake path.
    settings reset — **not doing**: `ACTION_SETTINGS_RESET` is not in this tree
    at all. S2 is parked; short PEK stays unused rather than becoming a new
    action.
-7. **Theme pack** — **built and hardware-verified**: `tools/rbthemes.py` plus
+7. **Theme pack** — **built and hardware-verified**: `tools/meowkits3/rbthemes.py` plus
    `rockbox-themes.zip`, audited clean against the union of the core and fonts
    artifacts. The fonts artifact installs alongside it.
 8. **S10** plugin keymaps — **games landed and hardware-verified** (16 branches, the
