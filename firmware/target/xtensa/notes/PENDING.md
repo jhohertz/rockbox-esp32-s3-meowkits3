@@ -868,6 +868,79 @@ platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
 
+### Phase D — the SDK dependency becomes an app_type (2026-10-30)
+
+`app_type="esp-idf"`, `idficc()`/`idf_sdk_setup()` in `tools/configure`, a target
+makefile at `firmware/target/xtensa/espressif_esp32s3/idf.make`, and `idf-app/`
+moved out of the repository root into the SoC directory. `tools/root.make` no
+longer contains any xtensa or IDF logic: the diff is a dispatch entry, two
+hook variables (`DEP_SRCS ?=`, `DEPSCAN_EXTRA ?=`), the `BASE_CFLAGS` split, and
+wording in the two-domain note.
+
+The gate was measured against a worktree at the pre-change commit, not asserted:
+
+| Check | Result |
+|---|---|
+| object set | 1259 objects both sides, `only-old` empty |
+| section sizes | every object's non-string sections byte-identical; the only deltas are strings containing `__FILE__` (the worktree path is shorter) and `rbversion` (different `git describe`) |
+| image | 1,307,856 B, same 7 segments, same lengths, layout guard passes, `espverify` checksum and hash valid |
+| payload | 420 zip entries, `diff` of the two entry lists empty; `flac.codec` 17,440 B and `pong.rock` 10,384 B unchanged, load addresses unchanged |
+| warnings | 17 `-Wundef`, 2 `-Wparentheses`, 1 `-Wmisleading-indentation` — same as before |
+| host builds | checkwps 195,016 B, database 949,568 B, `meowkits3 --type=s` `rockboxui` 7,645,176 B, `ondavx747 --type=s` 7,455,912 B; none of them asks for the SDK |
+
+Three real differences the comparison caught, all of them consequences of
+`APP_TYPE` no longer being empty, and all fixed by `IMAGE_LINK`:
+
+- `apps/bitmaps/bitmaps.make` and `apps/plugins/bitmaps/pluginbitmaps.make` add
+  `-fPIC` under `ifdef APP_TYPE`. On a native image that moves every bitmap struct
+  from `.rodata` into `.data.rel.ro` — 81 objects, and the shipped image linked
+  with them for a while. The old tree's objects are `.rodata`; so are the fixed
+  ones.
+- `apps/plugins/pdbox/pdbox.make` adds `-lm` to the plugin link for hosted targets.
+- `apps/plugins/imageviewer/imageviewer.make` picks the overlay linker-script set
+  only when `APP_TYPE` is empty, and `tools/root.make` built Rockbox's `setjmp`
+  archive the same way. The latter failed at parse time, not link time:
+  `lib/libsetjmp/SOURCES` is preprocessed before `firmware.make` puts
+  `firmware/export` on the path, so it printed `config.h: No such file or
+  directory` and silently yielded an empty file list. The only visible symptom was
+  a missing `lib/libsetjmp.a`.
+
+Where the plan and the execution diverged:
+
+- **No `PLATFORM_ESP_IDF` bit.** The platform bits describe the runtime OS a
+  target runs on (android, hibyos, SDL); this target is native in every sense that
+  those bits gate. `HAVE_SYSTEM_LIBC` also stays a makefile-domain define rather
+  than moving into `config/meowkits3.h`: a config header is seen by the
+  freestanding domain too, and codecs and plugins must not be told they link a C
+  library (`firmware/include/file.h` would reach `<unistd.h>` and the plugin link
+  has no libc at all).
+- **`GCCOPTS` is not rebuilt.** The plan borrowed `simcc()`'s trick of dropping
+  `-nostdlib -ffreestanding`. Those are link-time options as far as Rockbox is
+  concerned here — IDF does the linking — but the codec and plugin links are real
+  freestanding executables, and dropping them makes those links pull the
+  toolchain's `crt0.o` and collide with `lib/rbcodec/codecs/codec_crt0.c`.
+- **`idf.make` is included before the subdir makefiles**, not in the `app_type`
+  dispatch chain. A `SOURCES` file is a C preprocessor program evaluated while the
+  makefiles are read, and `apps/rbcodecconfig.h` reaches the platform headers, so
+  the SDK flags have to exist before `apps.make` runs. `.SECONDEXPANSION:` is
+  declared inside `idf.make` for the rules that need `$(OBJ)`, which is how
+  `sonynwz.make` solves the same problem.
+- **`espflash.make` stays in `tools/meowkits3/`.** `tools/echoplayer/openocd.make`
+  is the precedent for a flashing makefile, and the host scripts (`idf-flags`,
+  `idf-seedcheck`, `esp-layout-check`, the theme and Docker tooling) belong with
+  it. Note that upstream also has a `utils/` tree (`utils/jztool`, `utils/hwstub`);
+  `tools/<target>/` was kept because `tools/` is where upstream puts target host
+  tools too.
+- **`thread_support` needed no change.** `ASSEMBLER_THREADS` is already correct:
+  `firmware/asm/xtensa/thread.c` is the arch context switch, `thread-idf.c` is the
+  target's OS binding, and that split is upstream's shape.
+
+`sdkconfig.defaults` gained `CONFIG_ESPTOOLPY_BEFORE="no_reset"`. The serial port
+is the chip's own USB-CDC, which has no DTR or RTS wired to the boot straps, so
+`--before default_reset` could only ever fail; flashing now expects the board to be
+in download mode (BOOT + RESET) and talks to it there. Verified in the rebuilt
+image's own `flash_args`: `--before no_reset --after hard_reset`.
+
 ### Phase C — simulator (2026-10-30)
 
 `--target=meowkits3 --type=s` builds and runs, and so do `--type=c` and `--type=d`.
