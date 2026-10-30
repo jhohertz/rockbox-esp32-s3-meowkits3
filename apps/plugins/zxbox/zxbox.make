@@ -14,7 +14,7 @@ ZXBOX_OBJ := $(call c2obj, $(ZXBOX_SRC))
 
 OTHER_SRC += $(ZXBOX_SRC)
 
-ifndef IMAGE_LINK
+ifdef IMAGE_LINK
 ifeq ($(findstring YES, $(call preprocess, $(APPSDIR)/plugins/BUILD_OVERLAY)), YES)
     ## lowmem targets
     ROCKS += $(ZXBOX_OBJDIR)/zxbox.ovl
