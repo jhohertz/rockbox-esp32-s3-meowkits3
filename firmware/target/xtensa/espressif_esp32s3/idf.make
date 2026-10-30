@@ -97,9 +97,12 @@ $(XTENSA_IDF_FIRST_OBJ): $(BUILDDIR)/idf.make
 # The objects above are excluded from the default dependency scan and scanned
 # with IDF's include order instead, so make.dep records FreeRTOS's queue.h for
 # them rather than Rockbox's.
+# Both spellings: SRC holds these paths absolute and OTHER_SRC relative to
+# ROOTDIR, depending on which makefile added them.
+DEP_EXCLUDE = $(XTENSA_IDF_FIRST_SRC) \
+              $(patsubst $(ROOTDIR)/%,%,$(XTENSA_IDF_FIRST_SRC))
 DEPSCAN_EXTRA = $(call mkdepfile_order,$(DEPFILE)_,$(XTENSA_IDF_FIRST_SRC), \
                  $(filter -I%,$(IDF_CFLAGS)))
-DEP_SRCS = $(filter-out $(XTENSA_IDF_FIRST_SRC),$(SRC))
 
 # Everything compiled in the firmware domain gets $(IDF_CFLAGS) -- the CFLAGS
 # line above adds it to every object, not only the few that also need IDF's

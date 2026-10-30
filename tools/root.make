@@ -266,17 +266,20 @@ $(RBINFO): $(BUILDDIR)/$(BINARY)
 	$(SILENT)$(TOOLSDIR)/mkinfo.pl $@
 
 # Sources whose dependencies are scanned with the default include order. A
-# target that compiles some files with another project's headers leading sets
-# DEP_SRCS to exclude them and DEPSCAN_EXTRA to scan those separately, so a
-# dependency is recorded against the header the compile actually used. See
-# mkdepfile_order in tools/functions.make.
+# target that compiles some files with another project's headers leading names
+# them in DEP_EXCLUDE -- which is filtered out of both source lists, because
+# firmware sources are in OTHER_SRC, not SRC -- and scans them itself with
+# DEPSCAN_EXTRA and that project's include order, so a dependency is recorded
+# against the header the compile actually used rather than the one this order
+# happens to find. See mkdepfile_order in tools/functions.make.
 DEP_SRCS ?= $(SRC)
+DEP_EXCLUDE ?=
 DEPSCAN_EXTRA ?=
 
 $(DEPFILE) dep:
 	$(call PRINTS,Generating dependencies)
-	$(call mkdepfile,$(DEPFILE)_,$(DEP_SRCS))
-	$(call mkdepfile,$(DEPFILE)_,$(OTHER_SRC:%.lua=))
+	$(call mkdepfile,$(DEPFILE)_,$(filter-out $(DEP_EXCLUDE),$(DEP_SRCS)))
+	$(call mkdepfile,$(DEPFILE)_,$(filter-out $(DEP_EXCLUDE),$(OTHER_SRC:%.lua=)))
 	$(call mkdepfile,$(DEPFILE)_,$(ASMDEFS_SRC))
 	$(DEPSCAN_EXTRA)
 	$(call bmpdepfile,$(DEPFILE)_,$(BMP) $(PBMP))
