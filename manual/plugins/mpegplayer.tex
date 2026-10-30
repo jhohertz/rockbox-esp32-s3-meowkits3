@@ -7,15 +7,21 @@ If your file does not have the \fname{.mpg} extension but is encoded in the
 supported format, you will need to use the \setting{Open With...} context menu
 option and choose \setting{mpegplayer}.
 
-\opt{ESP32S3_PAD}{\note{On this player the plugin needs about 2.6 MB of a
+\opt{ESP32S3_PAD}{\note{On this player the plugin needs about 2.44 MB of a
 4.3 MB memory pool that the theme's fonts, the skin and any album art also draw from.
-With a font-heavy theme it will report \emph{Out of memory in \fname{stream\_init}} before a
-file is opened. Switching to the failsafe theme and turning album art off is enough on a
-fresh boot; the directory cache should also be off, as it claims up to 1 MB of the same
-pool. Expect a low frame rate, roughly 10--15 fps depending on how the file was encoded;
-playback is smooth but slower than real time. Turn on \setting{Display FPS} in the
-plugin's settings to see what your own files achieve, and encode smaller than the panel if
-you want more of it.}}
+That is a floor rather than a preference: the last thing the plugin reserves is its disk
+buffer, and if the pool leaves it less than one 32 KB cache page it cannot build one, and
+faults the first time it probes the file. A fresh boot measured 2,456,452 bytes free in
+that pool, which is only about 13 KB above the floor, so anything the browser or an album
+image has claimed since boot can put a file below it. Turn the directory cache off and the
+same boot measures 2,718,620, which is room for nine cache pages instead of one. A
+font-heavy theme can also report \emph{Out of memory in \fname{stream\_init}} before a file
+is opened.
+
+Frame rate is the second constraint, and the encode decides it: the software IDCT and the
+scaled blit cost about 300 macroblocks per frame at this panel size, so a 25 fps file asks
+for 7,500 macroblocks a second and a 15 fps file for 4,500. Turn on \setting{Display FPS}
+in the plugin's settings to see what your own files achieve.}}
 
 \subsubsection{File formats and encoding}
 The video is decoded by libmpeg2, so the video track must be \emph{MPEG-1 or MPEG-2
@@ -32,33 +38,51 @@ a fixed pool for them before it knows the stream's size. Coded frames above roug
 Encode at or below the panel size:
 
 \begin{verbatim}
-ffmpeg -i input.mp4 \
+ffmpeg -nostdin -i input.mp4 \
   -vf "scale=320:240:force_original_aspect_ratio=decrease,\
 pad=320:240:(ow-iw)/2:(oh-ih)/2" \
-  -r 25 -aspect 4:3 \
-  -c:v mpeg2video -pix_fmt yuv420p -b:v 600k -maxrate 800k -bufsize 1000k \
-  -g 12 -bf 0 \
-  -c:a libmp3lame -ar 44100 -ac 2 -b:a 128k \
-  -muxrate cbr -system_header 2 \
+  -r 15 -aspect 4:3 \
+  -c:v mpeg2video -pix_fmt yuv420p \
+  -b:v 500k -maxrate 650k -bufsize 2000k \
+  -g 8 -bf 0 \
+  -c:a libmp3lame -ar 44100 -ac 1 -b:a 48k \
+  -muxrate 1100k \
   -f mpeg output.mpg
 \end{verbatim}
 
-Each of those settings is load-bearing: \emph{yuv420p} because the decoder's chroma
-handling assumes 4:2:0; \emph{-bf 0} because B-frames add reordering the output path does
-not need; \emph{-g 12} because seeking walks GOP boundaries, so a shorter GOP makes the
-rewind and fast-forward keys responsive; \emph{-ar 44100} because the plugin's audio clock is 44.1 kHz; \emph{-muxrate cbr} so
-the program-stream pack headers carry a constant reference clock the parser can lock
-onto; \emph{-system\_header 2} to repeat the sequence header at the head of the file,
-which the parser probes for in the first few hundred kilobytes; and \emph{-f mpeg}
-because the demuxer expects a Program Stream. Use \emph{MPEG-2} video rather than
-MPEG-1: MPEG-1 video in a program stream carries no presentation timestamps, and the
-plugin needs them to synchronise.
+Measured on a 91-minute 1440$\times$1080 source, that profile produces 379 MB reading
+from the card at 69 kB/s. Raising the audio to \emph{-b:a 64k} costs 11 MB more and is the
+variant to prefer if the dialogue track sounds thin; nothing else about the trade changes.
+
+Each of those settings is load-bearing, and several were chosen by measuring
+rather than by taste.
+
+\emph{yuv420p} because the decoder's chroma handling assumes 4:2:0. \emph{-bf 0} because
+B-frames add reordering the output path does not need. \emph{-g 8} because seeking walks
+GOP boundaries, so a shorter GOP makes the rewind and fast-forward keys responsive.
+\emph{-f mpeg} because the demuxer expects a Program Stream, and \emph{MPEG-2} video rather
+than MPEG-1 because MPEG-1 video in a program stream carries no presentation timestamps and
+the plugin needs them to synchronise.
+
+\emph{-r 15} is the frame-rate budget described above. \emph{-ac 1} matters more than it
+looks: a mono mixdown halves the audio's share of the sustained read, and the plugin's disk
+buffer is measured in time rather than bytes -- at 69 kB/s one 32 KB cache page holds
+0.47 s of programme, where a 900 kbit/s encode holds only 0.29 s. \emph{-ar 44100} keeps
+the stream rate equal to the plugin's audio clock, so the DSP resamples nothing at all;
+\emph{-ar 22050} is decodable but emits MPEG-2 Layer III frames and makes the resampler
+work. \emph{-bufsize} at four times the bitrate: at two times the muxer reported VBV
+underflow five times as often, because a single intra frame at this size needs the room.
+\emph{-muxrate} at twice the combined video and audio rate -- set to the combined rate plus
+100 k, the muxer underflowed 103,473 times across the file, and a short low-motion test
+clip hides that completely. \emph{-nostdin} so that a shell loop feeding ffmpeg a list of
+files keeps its input: without it ffmpeg reads the loop's stdin and swallows the rows.
 
 Check the result on the PC before copying it to the card -- the plugin reports nothing
 useful here because its debug output is compiled out of plugin builds:
 
 \begin{verbatim}
-ffprobe -v error -show_entries   stream=codec_name,codec_type,width,height,pix_fmt   -of default output.mpg
+ffprobe -v error -show_entries   stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,has_b_frames   -of default output.mpg
+ffprobe -v error -select_streams a -show_entries   stream=codec_name,sample_rate,channels,bit_rate   -of csv output.mpg
 ffprobe -v error -show_entries packet=stream_id,pts   -of csv output.mpg | head -20
 \end{verbatim}
 

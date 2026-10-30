@@ -4828,6 +4828,54 @@ Three things that look like hardware limits and are not, and one that is a code 
   uncompressed data. Upstream code, not ours, but it means "DSD works here" is true only for
   the files we have actually tried.
 
+## mpegplayer's memory floor is a page count, and crossing it is a divide by zero
+
+`MAP_OFFSET_TO_PAGE()` in `apps/plugins/mpegplayer/disk_buf.h` is
+`MAP_OFFSET_TO_TAG(o) % disk_buf.pgcount` — a modulo by a runtime value. `disk_buf_init()`
+computes `pgcount = (remainder - DISK_GUARDBUF_SIZE) / DISK_BUF_PAGE_SIZE` and then shrinks
+it in a loop, but `mpeg_malloc_all()` only refuses below `MIN_MEMMARGIN` (4 KiB). Between
+4 KiB and 65,544 + 32,768 bytes it therefore *succeeds* with `pgcount == 0`, the plugin
+starts, and the first `disk_buf_probe()` runs `modui` with a zero divisor: IntegerDivide-
+ByZero, panic, watchdog reset, no message of any kind. Every allocation the plugin itself
+checks (`mpeg_alloc_init`, `pcm_output_init`, `audio_thread_init`, `disk_buf.start`) yields
+a splash; this one does not.
+
+The floor is a grant of ~2,443,244 bytes: 2,097,152 libmpeg2 reservation + 176,400 PCM +
+67,284 audio queue + 4,096 margin + 65,544 disk guard + 32,768 one page. `buflib_alloc_
+maximum()` takes exactly `buflib_allocatable()`, which is the second number the target's
+`INFO_ARENA` debug row prints — so that row *is* the plugin's grant, and reading it before
+launching tells you whether the plugin will start. Measured: cold boot 2,456,452 (13 KB of
+margin, one page), directory cache off 2,718,620 (nine pages). Greylib is compiled out on
+this target (`HAVE_LCD_COLOR`), so it claims nothing.
+
+Two independent levers, which is why the encode recipe in `manual/plugins/mpegplayer.tex`
+reads the way it does. libmpeg2 sizes its buffers from the **coded** frame only, so the
+pool demand is 0.65 MB at 320×240 whatever the bitrate; bitrate then buys *time* (one page
+is 0.87 s at 250 kb/s, 0.29 s at 900 kb/s) while frame rate buys *CPU* (300 macroblocks per
+frame at this panel, so 25 fps costs 7.5k/s and 15 fps 4.5k/s). The chosen profile is
+`-r 15 -b:v 500k -maxrate 650k -bufsize 2000k -g 8 -bf 0 -c:a libmp3lame -ar 44100 -ac 1
+-b:a 48k -muxrate 1100k -f mpeg`.
+
+Three ffmpeg facts, each found by measurement rather than from documentation:
+
+- `-muxrate` must be about twice the combined video and audio rate. At the combined rate
+  plus 100 k the PS muxer reported VBV underflow 103,473 times across a 91-minute file;
+  a 90-second low-motion test clip showed 4, which is how the problem hid.
+- `-bufsize` at 4× the bitrate, not 2×: a single intra frame at 320×240 needs the room, and
+  at 2× the underflow count was five times higher.
+- `ffmpeg` reads stdin unless given `-nostdin`, so inside a shell loop over a table of
+  settings it consumes the loop's input and silently encodes garbage names.
+
+Audio side: 44.1 kHz is worth insisting on because it equals mpegplayer's `CLOCK_RATE`, so
+`audio_thread.c:622` never lowers `DSP_SET_FREQUENCY` and the DSP resamples nothing.
+`-ar 22050` is decodable — libmad's `MAD_FLAG_LSF_EXT` yields `MAD_NSBSAMPLES = 18`, i.e.
+576 samples per frame, which `audio_thread.c:311`'s `32 * MAD_NSBSAMPLES` gets right — but
+it puts MPEG-2 Layer III frames in the stream and makes the resampler work.
+
+To decode a crash address in a plugin, use the build tree's ELF: shipped `.rock` files are
+stripped, but `build-meowkits3/apps/plugins/<name>/<name>.elf` keeps a `.symtab`, and
+xtensa section headers are 40 bytes (`e_shentsize` from the header, not a assumed 32).
+
 ## FreeRTOS stack usage cannot be measured on this port
 
 Two ready-made routes were tried, and both were wrong for measured reasons. Do not
