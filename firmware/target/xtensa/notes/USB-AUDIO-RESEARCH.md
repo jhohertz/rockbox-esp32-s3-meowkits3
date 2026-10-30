@@ -61,7 +61,7 @@ Fixes landed tonight (all committed to the working tree, not pushed):
 | Suspect | How it was excluded |
 |---|---|
 | Host scheduling quantum | played at quantum 1024/512/256/128: no meaningful change |
-| RX FIFO too small for ISO | `RX_FIFOSZ` = 136 words = 544 B vs documented worst case ~448 B, `_Static_assert` at `usb-xtensa.c:99` passes; the real failure mode (`ISOODPR` set, `XFERSIZE` frozen) is absent |
+| RX FIFO too small for ISO | `RX_FIFOSZ` = 136 words = 544 B vs documented worst case ~448 B, `_Static_assert` at `usb-esp32s3.c:99` passes; the real failure mode (`ISOODPR` set, `XFERSIZE` frozen) is absent |
 | Received length arithmetic | `EPTSIZ_XFERSZ` for non-EP0 is 19 bits and the SVD puts `PKTCNT2` at [21:19]: `size - bytes_left` is correct, 192 in, 192 reported |
 | Error-status discards | `dw_ep->status` is set to 0 at the end of every completion and `-2` only if `transferred > sizeleft`: the `status != 0` discard path is unreachable |
 | RX buffer placement / alignment | `CONFIG_CPU == ESP32S3` is in the `USB_STATIC_ALLOC` list, so the ISO buffer is the internal-SRAM `usb_storage_transfer_buffer`, `USB_DEVBSS_ATTR aligned(32)` |
@@ -262,7 +262,7 @@ mutes. Recording writes a WAV, so **no SD card codec or plugin changes are invol
    requesting 96 kHz). Done via usb_audio.c's USB_AUDIO_MAX_PACKET_BYTES, which filters
    tSamFreq and recomputes bSamFreqType and bLength so the descriptor cannot promise a rate
    the endpoint cannot receive. Raising the packet size instead is impossible on this core:
-   512 B needs 176 RX words and the split leaves 136, which is what usb-xtensa.c asserts.
+   512 B needs 176 RX words and the split leaves 136, which is what usb-esp32s3.c asserts.
 5. Decide the UAC1 reality check: FS feedback is +/- 2 % only, so the design has to be
    "deep buffer + dithered feedback", not "tight controller". Revisit `fb_limit` and the
    setpoint with that in mind, and consider dropping the ±8 limit back toward 1.

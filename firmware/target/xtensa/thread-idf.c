@@ -42,7 +42,7 @@
  * on the first create_thread, before anything runs.
  *
  * The stacks deliberately stay in internal DRAM too, for a different reason: a
- * thread switched onto a PSRAM stack faults, which is why memory-xtensa-syms.S
+ * thread switched onto a PSRAM stack faults, which is why memory-esp32s3-syms.S
  * keeps them in .bss. */
 static StaticTask_t tcb_pool[MAXTHREADS];
 

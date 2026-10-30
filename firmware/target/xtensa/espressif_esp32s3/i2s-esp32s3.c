@@ -37,8 +37,8 @@
 #include "string.h"
 
 #include "xtensa.h"
-#include "i2s-xtensa.h"
-#include "gpio-xtensa.h"
+#include "i2s-esp32s3.h"
+#include "gpio-esp32s3.h"
 #include "es8311.h"
 #include "pcm-internal.h"
 #include "pcm_sink.h"
@@ -100,7 +100,7 @@
 #endif
 
 /* MCLK, SLOT_BITS, SLOT_NUM, I2S_BCLK_DIV, the pin map and the descriptor
- * layout all come from i2s-xtensa.h. */
+ * layout all come from i2s-esp32s3.h. */
 
 /* XTAL is the clock source. APLL would be more accurate but needs the clock
  * tree, which Rockbox does not own. */
@@ -474,7 +474,7 @@ void i2s_set_frequency(unsigned long rate)
      * driving its pins is not producing.
      *
      * The receiver itself is not configured here. It is a full ESP-IDF I2S
-     * channel in pcm-xtensa.c, which sets its own clock and slot at session
+     * channel in pcm-esp32s3.c, which sets its own clock and slot at session
      * start.
      */
 #ifdef HAVE_RECORDING
@@ -1426,7 +1426,7 @@ static void sink_init(void)
      * and nothing ever put it back: GDMA_TX_INT_ENA 0x06 -> 0x00 and the
      * descriptor address 0x0cf700 -> 0, with playback dead for the rest of
      * the boot from the moment recording was first armed. See
-     * i2s_rx_chan_create() in pcm-xtensa.c. */
+     * i2s_rx_chan_create() in pcm-esp32s3.c. */
     if (!i2s_rx_chan_create())
         printf("AUDHW: RX channel create failed\n");
 #endif

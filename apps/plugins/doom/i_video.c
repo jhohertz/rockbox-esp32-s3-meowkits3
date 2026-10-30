@@ -672,7 +672,7 @@ void I_ShutdownGraphics(void)
  *
  * Every one of these is handled by getkey()'s held-state machine, because this target's
  * button_read_device() folds the touch region into the state it returns
- * (firmware/target/xtensa/button-xtensa.c:190-203) and button.c keeps that as lastbtn
+ * (firmware/target/xtensa/espressif_esp32s3/meowkits3/button-meowkits3.c:190-203) and button.c keeps that as lastbtn
  * (:414), which is what rb->button_status() reports. A finger held on a cell therefore
  * reads as a key held down, which is what strafe needs and what makes a toggle fire
  * once per press. Do not add a queue-reading path here as well: posting both a queued

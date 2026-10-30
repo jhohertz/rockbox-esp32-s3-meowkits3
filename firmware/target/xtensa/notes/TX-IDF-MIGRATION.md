@@ -5,7 +5,7 @@
 > port's own records — plans, logs and research threads. The reviewer-facing
 > documents are ../README.md and ../TESTING.md, and the user-facing ones are the
 > repository README and the manual chapter for this target.
-Goal: replace the hand-rolled GDMA transmit path in `i2s-xtensa.c` with IDF's
+Goal: replace the hand-rolled GDMA transmit path in `i2s-esp32s3.c` with IDF's
 `esp_driver_i2s`, keeping the `builtin_pcm_sink` contract and the existing
 threading model. Rockbox stays in control; IDF is used where it does the work.
 
@@ -13,11 +13,11 @@ This document is the spine of a multi-stage change. **Every stage records its
 result here before the next one starts**, because the previous attempt was
 abandoned with no record of what actually went wrong.
 
-**Status: not started, for transmit.** `i2s-xtensa.c` still hand-rolls the TX GDMA layer
+**Status: not started, for transmit.** `i2s-esp32s3.c` still hand-rolls the TX GDMA layer
 it describes below; the I2S side of TX goes through IDF's HAL (`i2s_hal_init`,
 `i2s_hal_set_tx_clock`, `i2s_hal_std_set_tx_slot`, `i2s_hal_std_enable_tx_channel`) but not
 through `esp_driver_i2s`. The receiver is a different case and already uses
-`esp_driver_i2s`, so this plan is about the transmit half only. `i2s-xtensa.c` points at
+`esp_driver_i2s`, so this plan is about the transmit half only. `i2s-esp32s3.c` points at
 this file from its own header comment, so the two stay together.
 
 ---
@@ -142,7 +142,7 @@ mode.
 ## Landmines already known — do not re-learn them
 
 - **`i2s_new_channel()` resets the whole GDMA block.** RX hit this; the fix is
-  ordering (`pcm-xtensa.c:231`). Creating a TX channel while RX is live is the
+  ordering (`pcm-esp32s3.c:231`). Creating a TX channel while RX is live is the
   same hazard.
 - **TX is the I2S bus master**, driving MCLK/BCLK/WS to *both* codecs, and
   `i2s_rx_pads_take()` / `i2s_rx_pads_release()` swap those pads on mode change.
@@ -179,7 +179,7 @@ Stage 1 was originally "create the IDF channel alongside and route nothing".
 
 So the block reset the RX comment describes is real, but it is attributed to the
 wrong call: it lands at `init_std_mode`, not `new_channel`. `i2s_rx_chan_create()`
-calls both (pcm-xtensa.c:266 and :294), which is why the measurement looked like
+calls both (pcm-esp32s3.c:266 and :294), which is why the measurement looked like
 `new_channel` was the culprit.
 
 Why that kills the coexistence plan: our hand-rolled transmitter owns **GDMA OUT
@@ -228,7 +228,7 @@ most dangerous interaction in this file.** The GDMA block reset only threatens u
 because the transmitter is invisible to IDF's GDMA bookkeeping — IDF resets the
 block and has no idea channel 0 is live. Once both directions are IDF's, IDF
 knows about both and the ordering hazard that killed playback the first time
-recording was armed (`pcm-xtensa.c:228-254`) stops existing.
+recording was armed (`pcm-esp32s3.c:228-254`) stops existing.
 
 ---
 
@@ -469,7 +469,7 @@ even with 17ms of margin. Worth a look when something else is not on fire.
 
 ## The scaffolding is deleted; the one variant that was never tested
 
-`TX_USE_IDF_DRIVER` and its ~1000 lines are gone from `i2s-xtensa.c`. What remains
+`TX_USE_IDF_DRIVER` and its ~1000 lines are gone from `i2s-esp32s3.c`. What remains
 is the locked-in design, and it is worth stating in one line so nobody re-reads the
 history as an unfinished migration:
 

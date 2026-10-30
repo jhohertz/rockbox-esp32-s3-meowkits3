@@ -197,7 +197,7 @@ still uses IDF's *HAL* (`i2s_hal_std_set_tx_slot`) and RX uses full IDF
 `esp_driver_i2s`. Full evidence and twelve builds of refuted hypotheses:
 `firmware/target/xtensa/notes/TX-IDF-MIGRATION.md`.
 
-There is no A/B switch in `i2s-xtensa.c`: the Stage-1b scaffolding was deleted
+There is no A/B switch in `espressif_esp32s3/i2s-esp32s3.c`: the Stage-1b scaffolding was deleted
 rather than left defined-off, so the dead branch cannot drift or be mistaken for an
 option. That file also records one variant that was **never** tried, which is the
 only honest route back to IDF's writer -- ride `i2s_channel_write()` without touching
@@ -264,7 +264,7 @@ Two mechanical notes for files that include IDF headers:
   `idf.py reconfigure` in `idf-app/` before `configure` will see its include path;
   re-running `cmake` in `build-meowkits3` updates the wrong `compile_commands.json`
   and `idf.make` silently keeps the old flag set.
-- `firmware/target/xtensa/gpio-xtensa.h` declares `gpio_set_direction(int, int)` as
+- `firmware/target/xtensa/espressif_esp32s3/gpio-esp32s3.h` declares `gpio_set_direction(int, int)` as
   a static inline, which collides with IDF's `driver/gpio.h` declaration that
   `driver/ledc.h` pulls in. The two cannot share a translation unit.
 
@@ -312,7 +312,7 @@ Two mechanical notes for files that include IDF headers:
   use `CORE_LIBS`).
 
   **That archive no longer exists.** The windowed overflow/underflow vectors in
-  `firmware/target/xtensa/vectors.S` made the windowed ABI workable, `-mabi=call0`
+  `firmware/target/xtensa/vectors.S` (bare-metal branch) made the windowed ABI workable, `-mabi=call0`
   was dropped, and libgcc is linked normally again — see "The windowed ABI, and
   why call0 was the wrong call" below. Do not reintroduce a support archive; the
   paragraph above is history, not design.
@@ -350,7 +350,7 @@ ABI looked unwritable. It is writable. The esp32s3 core config has **no REGB
 option**, so `spills`/`refill`/`mtsr`/`mfsr`/`save1..5` are unavailable — but the
 window *exception* handlers still work, and that is all a context switch needs.
 
-`firmware/target/xtensa/vectors.S` now carries `_WindowOverflow4/8/12` and
+`firmware/target/xtensa/vectors.S` on the bare-metal branch carries `_WindowOverflow4/8/12` and
 `_WindowUnderflow4/8/12`, byte-for-byte the same as ESP-IDF's
 `xtensa_vectors.S` and libgcc's: the overflow handler saves a0-a3 into the
 ancestor's base-save area at `a5-16..a5-4` (or `a9-16..a9-4` for CALLINC 8) and
@@ -476,7 +476,7 @@ return value works the same way - the callee's a2 is the caller's a(N+2), so a
 copy a6 to a2 before its `ret.n`, otherwise the caller gets whatever a2 held before
 the call (in Rockbox's case, the ROM function address).
 
-`firmware/target/xtensa/rom_cache.S` is the trampoline, and `rom_cache.h` wraps the
+`firmware/target/xtensa/rom_cache.S` on the bare-metal branch is the trampoline, and `rom_cache.h` wraps the
 addresses. Verified to assemble and link.
 
 **Checked against the ROM binary itself** (`esp-rom-elfs`, `esp32s3_rev0_rom.elf`).
@@ -577,16 +577,16 @@ Mapping the board against what Rockbox already has:
 | ST7789 display | `HAVE_LCD_BITMAP`, `HAVE_LCD_ENABLE`, `HAVE_LCD_SLEEP`, `HAVE_LCD_SHUTDOWN` | done |
 | PCA9557 expander | (target-internal) | done |
 | ES8311 + amp | `audiohw`, `HAVE_SPEAKER` | done. The amp is no longer permanently on: it goes off, with the codec muted behind it, when the transmit sink stops carrying real audio -- see the amplifier note under "Power management" |
-| SD card | `STORAGE_SD` via IDF's `sdmmc_host` driver (`target/xtensa/sd-idf.c`) | done. The bare-metal path through `sdmmc_host.c` was dropped: under IDF that controller accepts every command, clears the start bit, and never completes |
+| SD card | `STORAGE_SD` via IDF's `sdmmc_host` driver (`target/xtensa/espressif_esp32s3/sd-esp32s3.c`) | done. The bare-metal path through `sdmmc_host.c` was dropped: under IDF that controller accepts every command, clears the start bit, and never completes |
 | Buttons | `CONFIG_KEYPAD` | done |
 | Backlight PWM | `HAVE_BACKLIGHT_BRIGHTNESS`, `CONFIG_BACKLIGHT_FADING` | done, with software fade-in/fade-out — see the fading note below |
 | PCF8563 RTC | `CONFIG_RTC` | done |
 | AXP173 PMU | `CONFIG_CHARGING`, battery, PEK power key | done |
 | FT6336 touch | `HAVE_TOUCHSCREEN`, `drivers/ft6x06.c` | done: polled from `tick_task_thread`, because the INT pin is not connected — see the poll note below |
-| ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-xtensa.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
+| ES7210 mic | `HAVE_RECORDING`, `target/xtensa/es7210.c`, `target/xtensa/pcm-esp32s3.c` | done: I2S0 RX in slave mode, GDMA IN channel 0 |
 | PSRAM bring-up | required by the audiobuffer, framebuffer, codecbuf, pluginbuf | done by IDF's own driver: `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_SPEED_80M=y`, CLK GPIO 30, CS GPIO 26. The hand-rolled bring-up on the bare-metal tag never got an answer from the chip; it was never a hardware problem. `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` is what lets `.ext_ram.bss` be claimed at all |
 | USB-OTG | `usbstack` | **Operational.** CDC console, mass storage and the DAC class all work, driven by Rockbox's own stack over the DWC core. The core answers only when *both* clock gates are on (`usb_clk_en` PERIP_CLK_EN0 bit 23 for the wrap/PHY, `usb_device_clk_en` PERIP_CLK_EN1 bit 10 for the DWC) and *both* reset bits are cleared — with one gate, every register reads 0 without faulting. Measured: id `0x4f54400a` rev 10, **7 device endpoints, 4 dedicated IN FIFOs (GHWCFG4, not the 6 `USB_NUM_ENDPOINTS` suggests), 200 words of FIFO RAM**, FS PHY selectable via `GUSBCFG.fsintf`. FIFO split is NPTX 16 / PTX 16 x 4 / RX 120 words, and `ahb_burst_len` is INCR16 — INCR4 made the DAC crackle under a storage flood. `SOC_DPORT_USB_BASE` is referenced by IDF's esp32s3 `usb_reg.h` but never defined there — that file is legacy |
-| Virtual LED (status-bar disk icon) | `CONFIG_LED` defaults to `LED_VIRTUAL` | done: `sd-idf.c` brackets both sector calls with `led(true)`/`led(false)`, the same shape `sd-as3525.c` and `sdmmc-imx233.c` use. Without a caller the icon is reserved space that cannot light |
+| Virtual LED (status-bar disk icon) | `CONFIG_LED` defaults to `LED_VIRTUAL` | done: `espressif_esp32s3/sd-esp32s3.c` brackets both sector calls with `led(true)`/`led(false)`, the same shape `sd-as3525.c` and `sdmmc-imx233.c` use. Without a caller the icon is reserved space that cannot light |
 | WS2812B LED (GPIO 38), IMU, temp sensor | nothing in Rockbox | not applicable. Rockbox's only LED abstraction is `led(bool)` with `CONFIG_LED == LED_REAL`, and that branch is Archos-register-specific. `HAVE_GENERAL_PURPOSE_LED` is *not* a core flag here — it exists only in the hosted hiby sim files |
 | IR TX 7 / RX 5 at 38 kHz | no generic IR layer | open as a feature, not a flag: `HAVE_IR_REMOTE` appears nowhere in the tree and every Rockbox remote is a per-target driver. A decoder would feed `button_queue_post()` (`firmware/export/button.h:66-68`), which is public |
 | CPU frequency (DFS) | `HAVE_ADJUSTABLE_CPU_FREQ`, `set_cpu_frequency()` | done: 80 / 160 / 240 MHz ladder through `esp_pm_configure({max == min})`, worth 9 mA at dark idle |
@@ -661,7 +661,7 @@ MISC `0x20`, DMA_CONF `0x30`, W0 `0x98`.
   reset. Assert it once in `st7789_init()` and leave it.
 - **MOSI is `FSPID_OUT` (103), not `FSPIQ_OUT` (102).** `spid_out` is MOSI and
   `spiq_out` is MISO in `components/esp_hal_gpspi/esp32s3/spi_periph.c`; the
-  signal comments in `gpio-xtensa.h` had them swapped.
+  signal comments in `gpio-esp32s3.h` had them swapped.
 - The buffer is little-endian: byte 0 of the transfer sits in bits [7:0] of `SPI_W0`
   (`spi_ll_write_buffer` does `memcpy(&word, &buf[x/8], 4); hw->data_buf[x/32] = word`).
 
@@ -1467,7 +1467,7 @@ asynchronous layer is a *better* match for this peripheral than the byte-at-a-ti
 `i2c_start`/`i2c_outb`/`i2c_inb` API, which cannot be implemented at all: a single
 command cannot be executed on its own.
 
-`firmware/target/xtensa/i2c-xtensa.c` therefore implements `__i2c_async_submit()`,
+`firmware/target/xtensa/espressif_esp32s3/i2c-esp32s3.c` therefore implements `__i2c_async_submit()`,
 and the synchronous entry points are thin wrappers over `i2c_async_queue()` plus a
 semaphore. There is then exactly one path to the hardware and one in-flight
 transaction, which is what makes it safe for the touchscreen to poll the bus while
@@ -1739,7 +1739,7 @@ obvious from the datasheet tables:
   curve says ~80 %, which is well inside the disagreement between any two li-ion curves.
 - **The gauge is coulometer-backed now, with voltage as the anchor.** `CONFIG_BATTERY_MEASURE`
   is `(VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)`, so `powermgmt.c` calls the
-  target's `_battery_level()` (`power-xtensa.c`) instead of mapping voltage through the table.
+  target's `_battery_level()` (`power-meowkits3.c`) instead of mapping voltage through the table.
   The counters are cleared by `axp173_init()` at boot, so they cannot know the cell's state:
   the first reading anchors to the voltage-derived percent and every later reading moves from
   that anchor by `100 × Δ(dis − chg) / get_battery_capacity()`. Voltage stays on for three
@@ -1792,7 +1792,7 @@ obvious from the datasheet tables:
   REG 0x31 bit3 is *not* a PEK enable - it is the sleep-mode PWRON short-press
   wakeup flag, and it self-clears after being written.
   This matters: a hardware PEK shutdown kills the board without Rockbox getting a
-  chance to flush the audiobuffer, save settings or close the card. `button-xtensa.c`
+  chance to flush the audiobuffer, save settings or close the card. `button-meowkits3.c`
   polls `axp173_power_key_pressed()` every `HZ/10` ticks - the read costs about 1.6 ms
   of I2C and this runs at HZ in the tick thread, and IRQLEVEL is 1 s so 100 ms of
   granularity is invisible - and on a latch calls `sys_poweroff()`, which queues
@@ -1802,7 +1802,7 @@ obvious from the datasheet tables:
   `axp173_init()` sets ONLEVEL and IRQLEVEL to 1 s each, leaves bit 3 set, and keeps
   OFFLEVEL at its maximum 10 s as the safety net; it also clears every status register so
   a press before the application started does not shut the player down on the first poll.
-  `button-xtensa.c` stops polling the PMU permanently once it has requested a shutdown:
+  `button-meowkits3.c` stops polling the PMU permanently once it has requested a shutdown:
   this is a single polled I2C master with no arbitration, and `power_off()` has to write
   the shutdown bit while the main thread halts, so a 100 ms reader running concurrently is
   enough to corrupt that write.
@@ -1823,7 +1823,7 @@ obvious from the datasheet tables:
   correct - the host owns the card. The PMU is made to agree, so the key does nothing at all
   during a session.** `handle_usb_events()` (apps/gui/usb_screen.c) loops until
   `SYS_USB_DISCONNECTED` and ignores every other event, so a `SYS_POWEROFF` posted while the
-  USB screen is up is never dispatched. `button-xtensa.c` therefore disables the PEK auto-off
+  USB screen is up is never dispatched. `button-meowkits3.c` therefore disables the PEK auto-off
   (REG 36H bit 3), clears the latched press and never calls `sys_poweroff()`. Bit 3 goes
   first: clearing the latch is what starts the OFFLEVEL countdown, so with the auto-off
   already disabled there is nothing to arm. REG 32H bit 7 is a separate mechanism, so the
@@ -1876,7 +1876,7 @@ is a new driver using the generic API. Bits that matter:
 **Speaker amplifier.** The NS4150B is enabled by PCA9557 IO3, high-active with a
 10K pull-down. Nothing in the target drove it, so the DAC produced a signal that
 never reached the speaker. `HAVE_SPEAKER` plus `audiohw_enable_speaker()` in
-`audiohw-xtensa.c` fixes it.
+`audiohw-meowkits3.c` fixes it.
 
 **The amp is a branch, not the output stage.** An earlier version of this file
 (and the pin list that inspired it) described the path as
@@ -1922,7 +1922,7 @@ Two things about that setting that are easy to get wrong:
   target defines `HAVE_SPEAKER` (`sim.h:86` explicitly `#undef`s it), so the simulator
   cannot exercise that line - the seam was verified by preprocessing through the real
   config chain instead: `DEFAULT_SPEAKER_MODE` expands to 1 for `MEOWKIT_ESP32S3`.
-- **The target's idle policy must not override the user.** `audiohw-xtensa.c` drops the amp
+- **The target's idle policy must not override the user.** `audiohw-meowkits3.c` drops the amp
   and mutes the codec 250 ms after the transmit sink stops carrying audio, which is a real
   idle saving - but it used to re-enable the amp on every playback start regardless of
   `speaker_mode`, so "Off" was display-only. It now tracks the requested state separately
@@ -2308,7 +2308,7 @@ Two constraints shape the wiring:
   IDF's `gpio_cfg` (it would claim MCLK/BCLK/WS for I2S0 permanently at init, and the
   transmitter needs them whenever we are not recording); only DIN goes over. The
   hand-rolled GDMA IN ring this file used to describe is gone - IDF owns that channel
-  now, and `pcm-xtensa.c` only converts a blocking `i2s_channel_read()` into the
+  now, and `pcm-esp32s3.c` only converts a blocking `i2s_channel_read()` into the
   `pcm_rec_dma_*` contract.
 
 `rx_stop_mode` is two bits, not one: 0 = stop only when `rx_start` is cleared, 1 = also
@@ -2383,7 +2383,7 @@ input that is not the mic. The registers can.
 
 Rockbox never plays and records at once (`audiohw_set_input_source()` stops the sink
 before a capture starts), so "which port owns the three clock pads" is a flag, not a
-negotiation. `i2s-xtensa.c` holds that flag:
+negotiation. `espressif_esp32s3/i2s-esp32s3.c` holds that flag:
 
 | State | Meaning |
 |---|---|
@@ -2506,11 +2506,11 @@ called one directly would fail at link, which is better than a silent no-op.
 
 The bare-metal startup is gone from this branch: `crt0.S`, `vectors.S`,
 `irom-map.c`, `mmu-xtensa.c`, `psram-xtensa.c`, `rom_cache.c`, `irq-xtensa.c`,
-`timer-xtensa.c`, `app.lds`, `tools/esp-elf2image`, `tools/esp-stage2`. All of it
+`timer-esp32s3.c`, `app.lds`, `tools/esp-elf2image`, `tools/esp-stage2`. All of it
 is on the tag `baremetal-pre-idf`, and everything in §10–§11 above describes
 that branch, not this one.
 
-`timer-xtensa.c` is the instructive deletion. It armed the core timer and
+`timer-esp32s3.c` is the instructive deletion. It armed the core timer and
 installed its own interrupt slot — which is precisely what a guest of FreeRTOS
 may not do, since IDF owns VECBASE and the interrupt allocator. So the Rockbox
 tick currently has **no implementation on this branch**: `tick_start()` is
@@ -2572,7 +2572,7 @@ answer. The same reasoning excludes two more classes: objects that can be the
 destination of a storage or audio DMA (`disk_cache.o`, `dir.o` — they are read
 buffers handed to the SD driver, which does no cache maintenance on caller
 buffers on this part), and objects holding GDMA descriptors and the ping-pong
-pairs (`pcm-xtensa.o`, `i2s-xtensa.o`).
+pairs (`pcm-esp32s3.o`, `i2s-esp32s3.o`).
 
 What actually has to move is much less than it looks. Measured per object across
 the archives that are *linked into the firmware*: `unicode` 74 KB, `language`
@@ -3366,7 +3366,7 @@ Current blocker, and it is ordinary Rockbox code rather than ABI machinery:
 `dc_init_filerefs()` (apps/playlist.c:203) writes through NULL because
 `core_get_data(playlist->dcfrefs_handle)` returned NULL for a handle that
 passed the non-NULL test two lines earlier. That is buflib/arena territory —
-the arena is the `audiobuffer` region that `memory-xtensa-syms.S` places, and
+the arena is the `audiobuffer` region that `memory-esp32s3-syms.S` places, and
 the same file already records that `codecbuf` and `plugin.lds`'s
 `CODEC_ORIGIN` no longer agree now that IDF owns the linker script. Suspect the
 arena setup, not the scheduler.
@@ -3496,7 +3496,7 @@ It needs a `CPU_XTENSA` branch, and the `CODEC_ORIGIN` it computes has to equal 
 `codecbuf` symbol: `apps/codecs.c` rejects a codec whose header `load_addr` is not
 exactly `codecbuf`. There is no Rockbox linker script on this branch -- IDF owns it --
 so `codecbuf` is not placed by `app.lds` but defined as an absolute symbol in
-`firmware/target/xtensa/memory-xtensa-syms.S`, alongside `audiobuffer`, `audiobufend`,
+`firmware/target/xtensa/espressif_esp32s3/memory-esp32s3-syms.S`, alongside `audiobuffer`, `audiobufend`,
 `pluginbuf`, `loadaddress` and the stack bounds. The only way to make the two scripts
 agree is to pin the address, so `plugin.lds` derives the same number from `MEMORYSIZE`,
 `PLUGIN_BUFFER_SIZE` and `CODEC_SIZE` rather than importing it.
@@ -4050,7 +4050,7 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
   it. A function-local `static` that shares a name with a file-scope `static` therefore
   compiles without warning and silently reads a fresh zero-initialized object instead of the
   one another function maintains. This produced a debug counter that reported zero forever
-  and looked like a hardware result (`firmware/target/xtensa/debug-xtensa.c`, the PM row).
+  and looked like a hardware result (`firmware/target/xtensa/espressif_esp32s3/debug-esp32s3.c`, the PM row).
   Code that reads a file-scope value must not re-declare it in the reader.
 - On ESP32-S3, **any access to the USB wrap block or its pads must happen while that block is
   clocked**. `usb_dw_target_disable_clocks()` clears the wrap gate at the end of the detach; a
@@ -4465,7 +4465,7 @@ a 512-bit transfer, `clk_gate=0x00000007`, `SPI_ADDR` reads back.
 Two build consequences for any Rockbox file that includes an IDF driver header:
 
 - it needs `CFLAGS := $(IDF_FIRST_CFLAGS)` in `firmware/firmware.make` (the
-  per-file rule `sd-idf.o` already had), and
+  per-file rule `sd-esp32s3.o` already had), and
 - the component must be in `idf-app/main/CMakeLists.txt` `PRIV_REQUIRES`, or
   `tools/meowkits3/idf-flags` never harvests its include directory.
 
@@ -4561,7 +4561,7 @@ survives `panic_restart()`, which a register dump does not.
 This section records how the two cache windows behave, which is durable, and then
 what was built on top of it: images are written through the data window and
 executed through the instruction-window alias of the same physical page. See the
-header comment of `firmware/target/xtensa/lc-xtensa.c` and `XT_IROM_OFF`.
+header comment of `firmware/target/xtensa/espressif_esp32s3/lc-esp32s3.c` and `XT_IROM_OFF`.
 
 **The load path works.** With `codecbuf` pinned to the address
 `plugin.lds` computes (see `XT_CODECBUF_ADDR` in `memory-xtensa.h`), a codec from
@@ -4743,7 +4743,7 @@ Two mechanics worth knowing before touching any plugin's input path on this targ
 
 - **Touch cells are held state, not only events.** `button_read_device()` ORs the
   region button into the value it returns
-  (`firmware/target/xtensa/button-xtensa.c:190-203`), and `button.c:414` keeps that as
+  (`firmware/target/xtensa/espressif_esp32s3/meowkits3/button-meowkits3.c:190-203`), and `button.c:414` keeps that as
   `lastbtn`, which `rb->button_status()` reports. A finger held on a cell therefore
   reads as a key held down — which is what a continuous action needs, and what makes a
   toggle fire once per press. The panel is polled at 20 Hz (every fifth tick, throttled
@@ -4946,7 +4946,7 @@ matching them against function definitions in the tree — 15 collisions:
 | **`usb_enable`** | `0x4000297c` | **fatal.** It is Rockbox's target hook (`usb.h`), called by `usb_init()` with a bool. The ROM's `usb_enable` is part of the USB download/console path. First boot with `HAVE_USBSTACK` died with `LoadProhibited`, `EXCVADDR 0x0c`, and `usb_init()` disassembled to `l32r a8, (4000297c <usb_enable>) ; callx8 a8` |
 
 Fixed with `-Wl,--wrap=usb_enable` in `idf-app/CMakeLists.txt`; the real
-implementation is `__wrap_usb_enable` in `firmware/target/xtensa/usb-xtensa.c`.
+implementation is `__wrap_usb_enable` in `firmware/target/xtensa/espressif_esp32s3/usb-esp32s3.c`.
 Any new target hook whose name appears in the ROM list needs the same treatment —
 check with `nm rockbox.elf | awk '$2=="A"'` against the names you are adding.
 
@@ -5086,7 +5086,7 @@ worth doing:
 
 The amplifier detail is easy to miss and was worth more than light sleep: PCA9557 IO3
 enables the NS4150B, which used to be switched on once at startup and never off. It now
-idles disabled through a `tick_add_task()` policy in `audiohw-xtensa.c`, keyed on
+idles disabled through a `tick_add_task()` policy in `audiohw-meowkits3.c`, keyed on
 `i2s_tx_playing()` rather than `audio_status()` -- a USB-DAC stream is the host driving
 the mixer and Rockbox's audio state does not report it, so `audio_status()` would mute a
 stream the user can hear. The amp gates the speaker only; headphones are driven by the

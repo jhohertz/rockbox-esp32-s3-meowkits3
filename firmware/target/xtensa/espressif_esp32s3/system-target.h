@@ -31,7 +31,7 @@ extern long cpu_frequency;   /* set by system_init */
 
 /* Hold ESP_PM_NO_LIGHT_SLEEP while a peripheral whose interrupt cannot wake
  * the core is armed. Only the USB device needs it today: see
- * xt_light_sleep_block() in system-xtensa.c for why, and
+ * xt_light_sleep_block() in system-esp32s3.c for why, and
  * idf-app/sdkconfig.defaults for why sleeping is safe on this port at all --
  * the peripheral domain is deliberately left powered, which is what keeps
  * hand-written drivers intact across a sleep. Codecs and plugins never call

@@ -1,8 +1,8 @@
 #include "config.h"
 #include "system.h"
 #include "pca9557.h"
-#include "spi-xtensa.h"
-#include "gpio-xtensa.h"
+#include "spi-esp32s3.h"
+#include "gpio-esp32s3.h"
 #include "st7789.h"
 
 /* Command values and the init list are taken from the reference firmware's

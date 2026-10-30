@@ -226,7 +226,7 @@ struct gdma_desc {
 void i2s_init(void);
 
 #ifdef HAVE_RECORDING
-bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-xtensa.c */
+bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-esp32s3.c */
 #endif
 void i2s_set_frequency(unsigned long rate);
 /* Cumulative transmit-path counters, for the debug screen. Reading them changes
@@ -240,7 +240,7 @@ void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
  * host-driven stream. */
 bool i2s_tx_playing(void);
 #ifdef HAVE_RECORDING
-/* The receiver is a full ESP-IDF I2S channel, owned by pcm-xtensa.c, so there
+/* The receiver is a full ESP-IDF I2S channel, owned by pcm-esp32s3.c, so there
  * is no rx init/start/stop declared here. What this file owns is the bus: which
  * port drives the three clock pads, and what the ADC has been told about the
  * rate.
@@ -279,7 +279,7 @@ bool i2s_rx_take_bus(unsigned long rate);
 void i2s_rx_release_bus(void);
 
 /* Cumulative receive-path counters plus the state the reader is in, for the
- * debug screen. Implemented in pcm-xtensa.c, declared here because that is
+ * debug screen. Implemented in pcm-esp32s3.c, declared here because that is
  * where the capture path's users look. Reading them changes nothing. */
 struct pcm_rx_stats
 {

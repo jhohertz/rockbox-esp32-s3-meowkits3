@@ -28,12 +28,12 @@
 #include "backlight.h"          /* lcd_awake() is prototyped there */
 #include "backlight-target.h"
 #include "pca9557.h"
-#include "spi-xtensa.h"
-#include "gpio-xtensa.h"
+#include "spi-esp32s3.h"
+#include "gpio-esp32s3.h"
 #include "esp_heap_caps.h"
 #include "st7789.h"
-#include "spi-xtensa.h"
-#include "gpio-xtensa.h"
+#include "spi-esp32s3.h"
+#include "gpio-esp32s3.h"
 
 /* lcd_on and lcd_active() belong to drivers/lcd-memframe.c, which owns the
  * active flag. The functions are prototyped in lcd.h; the variable itself has
@@ -334,4 +334,4 @@ void lcd_shutdown(void)
 
 /* The backlight is not written here. GPIO 42 is routed to LEDC channel 7
  * through the GPIO matrix, so a plain GPIO write has no effect on the pin;
- * backlight-xtensa.c owns the PWM. */
+ * backlight-meowkits3.c owns the PWM. */

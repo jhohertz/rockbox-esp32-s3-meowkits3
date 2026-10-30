@@ -462,7 +462,7 @@ void usb_dw_target_enable_irq(void)
          * failure measured on the board. */
         /* Level 2, not the allocator's default level 1. The audio GDMA
          * interrupt is allocated at ESP_INTR_FLAG_LEVEL1 (gdma_init() in
-         * i2s-xtensa.c) and runs the mixer pass at that level, so with USB also
+         * i2s-esp32s3.c) and runs the mixer pass at that level, so with USB also
          * at level 1 the two are serialised by IDF's dispatcher and a packet
          * completion cannot preempt a pass. Measured on the board with the log
          * path enabled: ~530 accepted 196-byte packets per second against ~1000

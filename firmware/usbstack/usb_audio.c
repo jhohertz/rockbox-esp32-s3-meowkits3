@@ -318,7 +318,7 @@ static int usb_as_playback_intf_alt; /* playback streaming interface alternate s
  * mass-storage enumeration on the same control endpoint, and it was measured in seconds.
  *
  * HW_FREQ_DEFAULT is the same choice the target already makes for its own output path
- * (audiohw-xtensa.c:28), so the two cannot disagree at startup. */
+ * (audiohw-meowkits3.c:28), so the two cannot disagree at startup. */
 static int as_playback_freq_idx = HW_FREQ_DEFAULT;
 
 /* size of each buffer: must be smaller than 1023 (max isochronous packet size).

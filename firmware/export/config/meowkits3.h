@@ -41,7 +41,7 @@
  * because IDF is what actually sets the clock. It cannot be derived from
  * sdkconfig.h here: this header is pulled in by every domain and by the
  * SOURCES preprocessor, and IDF's CONFIG_* names must not reach either (see
- * the PPCFLAGS note in tools/root.make). system-xtensa.c asserts the match
+ * the PPCFLAGS note in tools/root.make). system-esp32s3.c asserts the match
  * instead, in a firmware-domain TU where sdkconfig.h is reachable.
  */
 #define CPU_FREQ 240000000
@@ -55,7 +55,7 @@
  * writing CPUPERIOD_SEL and the LDO slave count browns out the chip instead of
  * failing visibly. That objection still holds -- which is exactly why
  * set_cpu_frequency() is implemented as esp_pm_configure() rather than as
- * register writes (see system-xtensa.c). Rockbox picks the frequency, IDF
+ * register writes (see system-esp32s3.c). Rockbox picks the frequency, IDF
  * applies it, and the bias handling stays IDF's.
  *
  * What this define turns on is real: HAVE_SCHEDULER_BOOSTCTRL is set for every
@@ -242,7 +242,7 @@
  * pulls in Rockbox's generic SDHOST protocol layer (drivers/sdmmc_host.c)
  * and expects the target to supply a set of controller ops. On this target
  * the controller is driven by ESP-IDF's own SD driver, so
- * target/xtensa/sd-idf.c implements the sd_* device entry points directly
+ * target/xtensa/sd-esp32s3.c implements the sd_* device entry points directly
  * and the generic layer is not built. */
 
 #define BOOTDIR "/.rockbox"
@@ -437,7 +437,7 @@
  * the coulometer at boot (the counters are cleared by axp173_init() and
  * cannot know the cell's state), it is the fallback whenever a coulomb read
  * fails, and the shutoff and disksafe thresholds are compared against
- * voltage either way. See power-xtensa.c. */
+ * voltage either way. See power-meowkits3.c. */
 #define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)
 #define HAVE_AXP173
 
@@ -796,7 +796,7 @@
  * firmware/target/hosted/hiby/usb-dac-hiby.c all use.
  *
  * Cost is zero: the second span comes out of the same borrowed storage transfer
- * buffer (usb-xtensa.c's usb_audio_target_rx_buffer()), which is 2 * max(read,
+ * buffer (usb-esp32s3.c's usb_audio_target_rx_buffer()), which is 2 * max(read,
  * write) = 1024 bytes and carries 2 * 320 = 640. Both halves are 32-byte
  * aligned because REAL_BUF_SIZE is.
  *
@@ -895,7 +895,7 @@
 #define HAVE_ES8311
 
 /* The ES7210 ADC sits on the same I2S bus as the codec, on the receiver half
- * of a second I2S port. See firmware/target/xtensa/pcm-xtensa.c. */
+ * of a second I2S port. See firmware/target/xtensa/espressif_esp32s3/pcm-esp32s3.c. */
 /* NOTE for future bisects: HAVE_RECORDING cannot be toggled to isolate a
  * regression. struct codec_api in lib/rbcodec/codecs/codecs.h has members
  * inside #ifdef HAVE_RECORDING, so switching it off moves the offset of

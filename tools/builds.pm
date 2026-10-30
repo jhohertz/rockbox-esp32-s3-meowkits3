@@ -205,8 +205,9 @@ $releasenotes="/wiki/ReleaseNotes400";
         # status: 0=retired, 1=unusable, 2=unstable, 3=stable. It builds, boots to
         # the root menu, plays audio, records and runs plugins over USB, so 1
         # ("unusable") was false. Still not 3: nothing here has been soaked for hours
-        # unattended, and the battery gauge reports voltage rather than a calibrated
-        # percentage, which is the kind of thing a "stable" label implies.
+        # unattended, and the run-to-shutdown capacity figure is still taken from the
+        # cell's datasheet rather than measured, even though the percentage itself now
+        # comes from the PMU's coulometer rather than from a voltage curve.
         status => 2,
         ram => 8,
         # There is no hosted Xtensa target, so a simulator build for this model

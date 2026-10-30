@@ -30,13 +30,13 @@
 #define BUTTON_BOTTOMRIGHT   0x00004000
 
 /* No power button among the GPIO keys: the PMU owns power, and its PEK key is
- * handled in button-xtensa.c by polling the PMU IRQ line. POWEROFF_BUTTON is
+ * handled in button-meowkits3.c by polling the PMU IRQ line. POWEROFF_BUTTON is
  * only read by firmware/drivers/button.c under HAVE_SW_POWEROFF, which this
  * target does not define. */
 
 /* Raw key state for the panic path: firmware/panic.c holds the screen until
  * a key is pressed, and that has to work with interrupts masked -- so no
- * tick, no debounce and no I2C touch read. Implemented in button-xtensa.c. */
+ * tick, no debounce and no I2C touch read. Implemented in button-meowkits3.c. */
 int button_hw_any_pressed(void);
 
 #endif /* _BUTTON_TARGET_H_ */

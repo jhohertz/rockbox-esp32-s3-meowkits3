@@ -80,8 +80,8 @@ FIRMLIB = $(BUILDDIR)/firmware/libfirmware.a
 # make.dep records the headers this compile actually used), and the rebuild trigger
 # when the harvested IDF flags change.
 ifeq (xtensa,$(CPU))
-XTENSA_IDF_FIRST_SRC := $(FIRMDIR)/target/xtensa/sd-idf.c \
-                       $(FIRMDIR)/target/xtensa/spi-xtensa.c \
+XTENSA_IDF_FIRST_SRC := $(FIRMDIR)/target/xtensa/espressif_esp32s3/sd-esp32s3.c \
+                       $(FIRMDIR)/target/xtensa/espressif_esp32s3/spi-esp32s3.c \
                        $(FIRMDIR)/target/xtensa/paniclog.c
 XTENSA_IDF_FIRST_OBJ := $(call c2obj,$(XTENSA_IDF_FIRST_SRC))
 

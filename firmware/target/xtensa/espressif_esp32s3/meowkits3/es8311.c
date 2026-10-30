@@ -14,7 +14,7 @@
 #include "system.h"
 #include "i2c.h"
 #include "es8311.h"
-#include "i2s-xtensa.h"
+#include "i2s-esp32s3.h"
 
 #define REG_RESET    0x00
 #define REG_CLK01    0x01

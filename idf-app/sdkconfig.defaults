@@ -10,13 +10,13 @@ CONFIG_IDF_TARGET="esp32s3"
 # 240 MHz, matching the stock MeowKit firmware (arduino-esp32) and CPU_FREQ in
 # firmware/export/config/meowkits3.h. IDF's own default for this target is 160,
 # so it has to be stated rather than assumed: Rockbox's udelay() counts core
-# cycles against CPU_FREQ, and system-xtensa.c asserts the two agree, so
+# cycles against CPU_FREQ, and system-esp32s3.c asserts the two agree, so
 # leaving this unset is a compile error rather than a silent 1.5x timing skew.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # ---- power management: enabled, but only as the door to esp_pm_configure() ----
 # Rockbox's set_cpu_frequency() is implemented as esp_pm_configure() (see
-# firmware/target/xtensa/system-xtensa.c), and that function returns
+# firmware/target/xtensa/espressif_esp32s3/system-esp32s3.c), and that function returns
 # ESP_ERR_NOT_SUPPORTED unless PM_ENABLE is set. It is the only supported way to ask
 # IDF for a core frequency, because IDF owns dbias and the clock tree.
 #
@@ -93,7 +93,7 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 # Claim .ext_ram.bss. Rockbox's audiobuffer, framebuffer and codec/plugin load
 # buffers are linker symbols its core expects a linker script to place, and this
 # path has no Rockbox linker script -- they are declared in that section by
-# firmware/target/xtensa/memory-xtensa-syms.S instead. Without this option IDF
+# firmware/target/xtensa/espressif_esp32s3/memory-esp32s3-syms.S instead. Without this option IDF
 # does not claim the section, the buffers fall back to the 337 KB internal DRAM,
 # and the link fails with dram0_0_seg overflowed by several megabytes.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
@@ -131,7 +131,7 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_PANIC=y
 # FreeRTOS tick rate. Rockbox's HZ is 100 and is not a per-target knob, so the
-# only requirement here is that this be an exact multiple of it: timer-xtensa.c
+# only requirement here is that this be an exact multiple of it: timer-esp32s3.c
 # divides xTaskGetTickCount() by kernel_hz/HZ to make current_tick, and
 # tick_start() panics if the division is not exact.
 #
