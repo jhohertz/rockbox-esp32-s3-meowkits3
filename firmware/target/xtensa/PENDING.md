@@ -2,7 +2,9 @@
 
 The single status list. `MEMORY.md` is evidence, `TX-IDF-MIGRATION.md` /
 `USB-SPRINT.md` / `USB-AUDIO-RESEARCH.md` are investigation records, `DOC-GAPS.md` and
-`UX-PLAN.md` are the documentation and input logs. None of them is a to-do list.
+`UX-PLAN.md` are the documentation and input logs, and `MERGE-PLAN.md` is the shape plan
+for getting this port upstream (where the port should conform to other ports, and what
+to change first). None of them is a to-do list.
 Every entry here was checked against the code before being written.
 
 Board access: **hold BOOT, tap RESET** for download mode, then
