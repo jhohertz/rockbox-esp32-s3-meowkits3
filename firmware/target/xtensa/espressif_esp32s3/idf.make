@@ -50,10 +50,41 @@ ROCKBOX_LIB_HDRS := -I$(FIRMDIR)/include -I$(FIRMDIR)/libc/include
 LIBC_HDR_AFTER := -idirafter $(FIRMDIR)/include -idirafter $(FIRMDIR)/libc/include
 LIBC_HDR_FIRST := -I$(FIRMDIR)/libc/include
 
-# The firmware domain compiles against the SDK's headers, so it takes the SDK's
-# include path and the platform's own libc.
+# The SDK's include path is split in two. Almost every Rockbox file reaches the
+# platform C library -- rbendian.h includes <endian.h>, which the toolchain's
+# own
+# sysroot does not provide: IDF's newlib/platform_include is the only endian.h
+# in
+# sight -- so that one directory belongs to the whole firmware domain. The other
+# ~90 component directories belong only to the files that name an IDF header,
+# and
+# giving them to everything else means a reviewer cannot tell which object can
+# see
+# the vendor's API.
+# Two directories, not ninety: the libc shim, and the sdkconfig.h it includes.
+IDF_LIBC_INC := $(filter %/platform_include,$(IDF_CFLAGS)) \
+                $(filter %/build/config,$(IDF_CFLAGS))
+# Everything the SDK compiles with that is not an include path, minus the
+# defines
+# that describe the SDK rather than the C library. ESP_PLATFORM is the one that
+# matters: system-target.h includes <xtensa/corebits.h> if it is set, which is
+# how
+# a vendor header reached every file in the build.
+IDF_LIBC_FLAGS := $(filter-out -DESP_PLATFORM *-DIDF_VER* *-DSOC_MMU_PAGE_SIZE* \
+                               *-DSOC_XTAL_FREQ_MHZ*, $(filter-out -I%,$(IDF_CFLAGS)))
+
+# The firmware domain compiles against the platform's libc: its own header
+# replacements go after the system directories, and the SDK's libc shim
+# directory
+# is on the path.
+# The firmware domain compiles against the platform's libc: its own header
+# replacements go after the system directories, and the SDK's libc shim
+# directory
+# is on the path. IDF's non-include flags stay global in this variant --
+# including
+# its -Og -- so the only change is who can see the vendor's headers.
 CFLAGS = $(filter-out $(ROCKBOX_LIB_HDRS),$(BASE_CFLAGS)) $(LIBC_HDR_AFTER) \
-         $(IDF_CFLAGS) -DHAVE_SYSTEM_LIBC \
+         $(IDF_LIBC_INC) $(IDF_LIBC_FLAGS) -DHAVE_SYSTEM_LIBC \
          -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
 # The SDK's CONFIG_ defines must not reach a SOURCES file, because that would
 # let the SDK's configuration decide which Rockbox files get compiled; only its
@@ -62,53 +93,76 @@ CFLAGS = $(filter-out $(ROCKBOX_LIB_HDRS),$(BASE_CFLAGS)) $(LIBC_HDR_AFTER) \
 # an unresolved include as a bare name, and addtargetdir.pl then turns
 # `esp_err.h' into a prerequisite with no rule -- a hard make error rather than
 # a missing dependency.
-PPCFLAGS += $(LIBC_HDR_AFTER) $(filter -I%,$(IDF_CFLAGS)) -DHAVE_SYSTEM_LIBC
+PPCFLAGS += $(LIBC_HDR_AFTER) $(IDF_LIBC_INC) -DHAVE_SYSTEM_LIBC
 
-# IDF's headers define a handful of names that Rockbox's own headers also define
-# without a guard, so the target's own objects see redefinitions. -Wundef is
-# useful everywhere else, so it is disabled for exactly the directory that
-# reaches IDF rather than for the whole build.
-$(BUILDDIR)/firmware/target/xtensa/%.o: CFLAGS += -Wno-undef
-
-# Target files that reach an IDF driver whose headers pull FreeRTOS have to be
-# compiled with IDF's include path leading, so FreeRTOS's queue.h is found
-# rather than Rockbox's. Add to this list when a target file starts including
-# anything that pulls FreeRTOS.h.
+# Every file that names an IDF header. This is the whole vendor surface: fifteen
+# objects out of the 1259 the build produces. Add to this list when a target
+# file
+# starts including anything from the SDK.
 #
-# It is one list because three things have to agree about it: the compile
-# flags, the dependency scan (which has to record the headers this compile
-# actually used), and the rebuild trigger when the harvested IDF flags change.
-XTENSA_IDF_FIRST_SRC := $(FIRMDIR)/target/xtensa/espressif_esp32s3/sd-esp32s3.c \
-                       $(FIRMDIR)/target/xtensa/espressif_esp32s3/spi-esp32s3.c \
-                       $(FIRMDIR)/target/xtensa/paniclog.c
-XTENSA_IDF_FIRST_OBJ := $(call c2obj,$(XTENSA_IDF_FIRST_SRC))
+# They are compiled with IDF's include path *leading*. Two of the headers
+# collide
+# by name with Rockbox's own: FreeRTOS.h includes <queue.h> to get its queue
+# API,
+# and the firmware domain otherwise puts firmware/kernel/include ahead of it, so
+# Rockbox's queue.h -- which shares the guard name QUEUE_H -- wins and every
+# FreeRTOS type declared after it comes out unknown. That failure is reported
+# inside IDF's idf_additions.h and reads like a broken toolchain. None of these
+# files uses Rockbox's queue API.
+#
+# It is one list because four things have to agree about it: the compile flags,
+# the -Wno-undef scope, the dependency scan (which has to record the headers the
+# compile actually used), and the rebuild trigger when the harvested flags
+# change.
+IDF_SRC := $(FIRMDIR)/target/xtensa/cache-xtensa.c \
+           $(FIRMDIR)/target/xtensa/paniclog.c \
+           $(FIRMDIR)/target/xtensa/thread-idf.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/debug-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/i2s-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/pcm-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/sd-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/spi-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/system-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/timer-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/usb-esp32s3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/meowkits3/backlight-meowkits3.c \
+           $(FIRMDIR)/target/xtensa/espressif_esp32s3/meowkits3/lcd-meowkits3.c
+IDF_OBJ := $(call c2obj,$(IDF_SRC))
 
-IDF_FIRST_CFLAGS = $(IDF_CFLAGS) \
+# The full SDK flag set -- every component directory, ESP_PLATFORM, and IDF's
+# dialect and codegen flags. Only $(IDF_OBJ) sees this.
+IDF_API_FLAGS = $(IDF_CFLAGS)
+
+IDF_FIRST_CFLAGS = $(IDF_API_FLAGS) \
                    $(filter-out $(ROCKBOX_LIB_HDRS),$(BASE_CFLAGS)) \
                    $(LIBC_HDR_AFTER) -DHAVE_SYSTEM_LIBC \
                    -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
 
-$(XTENSA_IDF_FIRST_OBJ): CFLAGS = $(IDF_FIRST_CFLAGS)
+$(IDF_OBJ): CFLAGS = $(IDF_FIRST_CFLAGS)
+# IDF's headers define a handful of names that Rockbox's own headers also define
+# without a guard, so the objects that include them see redefinitions. -Wundef
+# is
+# useful everywhere else, so it is disabled for exactly that object list.
+$(IDF_OBJ): CFLAGS += -Wno-undef
 # Compiled against IDF's flags, so rebuilt when the harvest changes: without
 # this a sdkconfig change recompiles IDF and leaves Rockbox's view of it frozen,
 # which surfaces as a header found but a CONFIG_ define missing.
-$(XTENSA_IDF_FIRST_OBJ): $(BUILDDIR)/idf.make
+$(IDF_OBJ): $(BUILDDIR)/idf.make
 
 # The objects above are excluded from the default dependency scan and scanned
 # with IDF's include order instead, so make.dep records FreeRTOS's queue.h for
 # them rather than Rockbox's.
-# Both spellings: SRC holds these paths absolute and OTHER_SRC relative to
-# ROOTDIR, depending on which makefile added them.
-DEP_EXCLUDE = $(XTENSA_IDF_FIRST_SRC) \
-              $(patsubst $(ROOTDIR)/%,%,$(XTENSA_IDF_FIRST_SRC))
-DEPSCAN_EXTRA = $(call mkdepfile_order,$(DEPFILE)_,$(XTENSA_IDF_FIRST_SRC), \
+# SRC and OTHER_SRC hold firmware sources in both forms -- ROOTDIR-relative and
+# absolute -- depending on which makefile added them, so exclude both spellings.
+DEP_EXCLUDE = $(IDF_SRC) $(patsubst $(ROOTDIR)/%,%,$(IDF_SRC))
+DEPSCAN_EXTRA = $(call mkdepfile_order,$(DEPFILE)_,$(IDF_SRC), \
                  $(filter -I%,$(IDF_CFLAGS)))
 
-# Everything compiled in the firmware domain gets $(IDF_CFLAGS) -- the CFLAGS
-# line above adds it to every object, not only the few that also need IDF's
-# include path leading. A sdkconfig or component-set change therefore invalidates
-# all of them. Without this the harvest refreshes only the handful bound to
-# idf.make elsewhere and leaves the rest compiled against an obsolete sdkconfig.
+# Everything compiled in the firmware domain gets the SDK's libc-shim directory
+# and the flags that come with it, so a sdkconfig or component-set change
+# invalidates all of them, not only the fifteen that name an IDF header. Without
+# this the harvest refreshes the handful bound to idf.make elsewhere and leaves
+# the rest compiled against an obsolete sdkconfig.
 # Pattern rules rather than an object list, because SRC and OTHER_SRC are not
 # complete yet: a pattern rule's prerequisites are expanded when it is applied.
 $(BUILDDIR)/firmware/%.o $(BUILDDIR)/apps/%.o $(BUILDDIR)/lib/%.o: $(BUILDDIR)/idf.make
@@ -225,7 +279,8 @@ $(BUILDDIR)/idf.make: $(IDFDIR)/build/compile_commands.json
 # time, with "fatal error: sdkconfig.h: No such file or directory" -- and
 # because a failed preprocess silently yields an empty file list, it does so in
 # a way that looks like a missing source rather than a missing header.
-# `idf-clean` is the goal that resets IDF state, and it rebuilds what it removes.
+# `idf-clean` is the goal that resets IDF state, and it rebuilds what it
+# removes.
 clean::
 	$(SILENT)rm -f $(IDFDIR)/rockbox_libs.cmake
 
