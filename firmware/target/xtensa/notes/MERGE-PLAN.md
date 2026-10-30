@@ -450,9 +450,11 @@ Phases A → B → C → D → E. A, B and C are independent of the SDK decision
   the `baremetal-pre-idf` tag. `esp-layout-check` also gained repo-relative defaults so
   it can be run from a build directory.
 
-**Gate:** xtensa build clean, image hash unchanged for code (byte-compare segments),
-`make espverify` passes, payload rebuilt. No board behaviour change expected; flash once
-to confirm boot.
+**Gate:** passed 2026-10-30. Build clean; image hash unchanged across the tooling move
+and the comment reflow (`704284c94a463a7a…0c9a4a50`, 1,307,856 B) — that byte-compare is
+what proves no code changed; `make espverify` and `make esplayer` pass; payload rebuilt
+at 9,888,811 B; flashed at `0x0` and boot confirmed by the host seeing
+`1234:4002 Rockbox media player` with `ttyACM0` on its CDC interface.
 
 ### Phase B — target tree restructure (~1 day)
 

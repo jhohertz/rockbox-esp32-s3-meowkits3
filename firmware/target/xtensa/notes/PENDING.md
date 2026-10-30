@@ -885,6 +885,14 @@ Numbers, all measured on this tree:
 "Wrote 1373376 bytes (670970 compressed) … Hash of data verified", `--after
 no_reset` so the chip stayed in the ROM bootloader for the RESET press.
 
+**Boot confirmed.** After RESET the host sees
+`1234:4002 Brain Actuated Technologies Rockbox media player`, and `ttyACM0` is
+bound to that device's interface `3-1.1:1.0` — so Rockbox is running, its
+composite descriptor (mass storage + CDC + HID) enumerated, and the console is
+the CDC port. The console printing nothing when read is normal: it emits on
+events, not as a prompt, and the boot trace had already gone by the time the
+port was opened.
+
 One environment fact that cost a failed attempt: the **system `esptool` cannot
 write to an ESP32-S3 at all**. `/usr/lib/python3/dist-packages/esptool` is 4.7.0
 but has no `targets/stub_flasher/stub_flasher_32s3.json`, so chip detection
