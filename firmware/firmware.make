@@ -41,7 +41,7 @@ INCLUDES += -I$(FIRMDIR) -I$(FIRMDIR)/export -I$(FIRMDIR)/drivers
 #                   IDF's headers resolve against the real libc
 #   LIBC_HDR_FIRST  freestanding domain -- searched first, exactly as on every
 #                   other target in the tree
-ifeq (xtensa,$(CPU))
+ifdef XTENSA_IDF
 INCLUDES += -I$(FIRMDIR)/kernel/include
 LIBC_HDR_AFTER := -idirafter $(FIRMDIR)/include
 LIBC_HDR_FIRST := -I$(FIRMDIR)/include
@@ -49,7 +49,7 @@ else
 INCLUDES += -I$(FIRMDIR)/include -I$(FIRMDIR)/kernel/include
 endif
 ifndef APP_TYPE
-ifeq (xtensa,$(CPU))
+ifdef XTENSA_IDF
 LIBC_HDR_AFTER += -idirafter $(FIRMDIR)/libc/include
 LIBC_HDR_FIRST += -I$(FIRMDIR)/libc/include
 else
@@ -79,7 +79,7 @@ FIRMLIB = $(BUILDDIR)/firmware/libfirmware.a
 # dependency scan (tools/root.make scans these sources with IDF's include order so
 # make.dep records the headers this compile actually used), and the rebuild trigger
 # when the harvested IDF flags change.
-ifeq (xtensa,$(CPU))
+ifdef XTENSA_IDF
 XTENSA_IDF_FIRST_SRC := $(FIRMDIR)/target/xtensa/espressif_esp32s3/sd-esp32s3.c \
                        $(FIRMDIR)/target/xtensa/espressif_esp32s3/spi-esp32s3.c \
                        $(FIRMDIR)/target/xtensa/paniclog.c

@@ -288,6 +288,22 @@ it warns once and writes `autoconf.h` with no architecture, which shows up much 
 as a compile error; and the build directory's name is how the target is inferred, so
 keep it `build-meowkits3`.
 
+### The simulator, if you have no board
+
+The port builds Rockbox's SDL simulator, which is a host executable and never touches
+ESP-IDF. It needs SDL2 and a host compiler, nothing else:
+
+```sh
+mkdir -p build-sim-meowkits3 && cd build-sim-meowkits3
+../tools/configure --target=meowkits3 --type=s
+make -j$(nproc)
+./rockboxui --root /path/to/simdisk     # unzip rockbox.zip into that directory
+```
+
+`--type=c` and `--type=d` build the WPS checker and the database tool the same way.
+On a machine without a display, `SDL_VIDEODRIVER=dummy` gets you initialisation and
+log output but no window.
+
 ---
 
 ## 8. Using it

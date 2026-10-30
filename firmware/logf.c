@@ -260,6 +260,18 @@ void _logf(const char *fmt, ...)
 }
 #endif
 
+#ifdef __PCTOOL__
+void logf_panic_dump(int *y)
+{
+    /* A pctool build (checkwps, database) has no logf buffer: the storage above
+     * is deliberately hidden behind #ifndef __PCTOOL__, as is the extern
+     * declaration in logf.h. The stub is what keeps firmware/panic.c's
+     * ROCKBOX_HAS_LOGF call site compiling, which is why a target that enables
+     * logf could not build those tools before -- it reached this function with
+     * no buffer, no index and no MAX_LOGF_SIZE behind it. */
+    (void)y;
+}
+#else
 void logf_panic_dump(int *y)
 {
     int i;
@@ -313,6 +325,7 @@ void logf_panic_dump(int *y)
     lcd_puts(1, (*y)++, "end of logf data");
     lcd_update();
 }
+#endif /* __PCTOOL__ */
 #endif
 
 #ifdef ROCKBOX_HAS_LOGDISKF

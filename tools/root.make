@@ -65,7 +65,23 @@ FREESTAND_CFLAGS = $(BASE_CFLAGS) $(LIBC_HDR_FIRST)
 # instead of being duplicated here: they follow sdkconfig and shift whenever a
 # component is enabled or disabled, and a hand-kept list fails as a code bug
 # (header found, CONFIG_ define missing).
+#
+# Whether that is true is not a question about the CPU. The simulator shares this
+# arch -- tools/configure gives it t_cpu="xtensa" -- but it is a host executable
+# that links no SDK, so every block below has to be off for it. Keying on
+# $(CPU) alone handed the host compiler IDF's response-file flags
+# (-mlongcalls, -mdisable-hardware-atomics) and IDF's endian.h, which is exactly
+# how the simulator used to fail. The discriminator is the artifact, the same one
+# tools/meowkits3/espflash.make already uses: a build whose output is
+# rockbox.<chip> is an image for an ESP part.
+XTENSA_IDF :=
 ifeq (xtensa,$(CPU))
+ifneq (,$(findstring esp32,$(BINARY)))
+XTENSA_IDF := 1
+endif
+endif
+
+ifdef XTENSA_IDF
 -include $(BUILDDIR)/idf.make
 #
 # Ordering is the whole problem here, and it cuts both ways:
@@ -323,12 +339,10 @@ ifeq (echor1,$(MODELNAME))
 endif
 
 # ESP32 targets have no bootloader stage to write, so flashing is one esptool
-# call on the packed image. The simulator shares the arch but produces a host
-# executable, so the gate is on the artifact rather than on the CPU.
-ifeq (xtensa,$(CPU))
-  ifneq (,$(findstring esp32,$(BINARY)))
-    include $(ROOTDIR)/tools/meowkits3/espflash.make
-  endif
+# call on the packed image. XTENSA_IDF already carries the artifact test, so the
+# simulator -- same arch, host executable -- gets no flash goal.
+ifdef XTENSA_IDF
+  include $(ROOTDIR)/tools/meowkits3/espflash.make
 endif
 
 # One or more subdir makefiles requested --gc-sections?
@@ -421,7 +435,7 @@ $(LINKROM): $(ROMLDS)
 	$(call PRINTS,PP $(@F))
 	$(call preprocess2file,$<,$@,)
 
-ifneq (xtensa,$(CPU))
+ifndef XTENSA_IDF
 # Note: make sure -Wl,--gc-sections comes before -T in the linker options.
 # Having the latter first caused crashes on (at least) mini2g.
 $(BUILDDIR)/rockbox.elf : $$(OBJ) $(FIRMLIB) $(VOICESPEEXLIB) $(CORE_LIBS) $$(LINKRAM)
@@ -445,9 +459,9 @@ $(BUILDDIR)/rockbox.bin : $(BUILDDIR)/rockbox.elf
 
 $(BUILDDIR)/rombox.bin : $(BUILDDIR)/rombox.elf
 	$(call PRINTS,OC $(@F))$(call objcopy,$<,$@)
-endif # !xtensa
+endif # !XTENSA_IDF
 
-ifeq (xtensa,$(CPU))
+ifdef XTENSA_IDF
 #### ESP-IDF-backed link ####
 #
 # Rockbox compiles and archives; ESP-IDF links. IDF owns the linker script, the

@@ -210,10 +210,14 @@ $releasenotes="/wiki/ReleaseNotes400";
         # comes from the PMU's coulometer rather than from a voltage curve.
         status => 2,
         ram => 8,
-        # There is no hosted Xtensa target, so a simulator build for this model
-        # cannot exist. builds.pm defaults sim to 0 for non-stable targets anyway;
-        # the explicit 1 was a claim the build farm would have tried to honour.
-        sim => 0,
+        # The simulator builds. It is a host executable, so it never sees the
+        # ESP-IDF flags or headers -- tools/root.make keys the whole SDK layer on
+        # whether the build's output is an ESP image (XTENSA_IDF), not on the CPU
+        # name, which is what makes --type=s possible at all. Verified on
+        # 2026-10-30: uisimulator/buttonmap/meowkits3.c is compiled into the
+        # buttonmap table, the touch conversion and skin touch support are in the
+        # binary, and it runs headless under SDL's dummy video driver.
+        sim => 1,
         # The manual builds from manual/platform/meowkits3.tex, so it is not the
         # placeholder status 2 would otherwise imply.
         manualok => 1,
