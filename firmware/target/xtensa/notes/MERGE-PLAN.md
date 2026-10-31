@@ -913,21 +913,52 @@ An earlier claim in this section, that our sim built *zero* overlays, was an
 artifact of the measuring command (`**` is not recursive in bash) and not a
 regression; the corrected measurement is above.
 
-**Gate 2 — native cross-target builds: blocked.** No `arm-none-eabi-gcc` or
-`mips-elf-gcc` on this machine, so the series-1 claim of inertness for native
-ARM/MIPS targets is unproven. `tools/rockboxdev.sh` can install them; until it does,
-series 1 cannot honestly say "builds clean on other arches".
+**Gate 2 — native cross-target builds: done (2026-10-30).** `tools/rockboxdev.sh
+--target=a` with `RBDEV_PREFIX=$HOME/rbdev` installs `arm-elf-eabi-gcc 9.5.0`, which is
+what `arm7tdmicc()` wants. `--target=sansae200v2` (PortalPlayer, a long-lived in-tree
+native target) then built clean:
+
+| | our branch | upstream `fe5c0874af` |
+|---|---|---|
+| `rockbox.bin` | 1,054,748 B | 1,054,584 B |
+| `.rock` / `.ovl` / `.codec` | 168 / 9 / 44 | 168 / 9 / 44 |
+
+It also **found a bug the simulator could not**: `skin_engine.c` and `skin_render.c`
+carried `printf()` calls left over from the statusbar-skin blanking hunt. `printf` is
+provided by the hosted libc a sim links against and by nothing in a native image, so
+every ARM and MIPS build failed at link with `undefined reference to printf` while all
+simulator builds passed. Removed in `cc827a0eb0`; the fixes those printfs were
+witnesses for (`IS_VALID_OFFSET`, the `wps_loaded` gate) stay.
+
+Lesson recorded: a hosted-only verification set proves nothing about native targets.
+The build list in §6 must include at least one ARM and one MIPS target, and this
+machine now has the ARM toolchain to do it.
+
+**Gate 3 — the 80-column rule: done for prose (2026-10-30).** `559dd370ab` reflowed
+the long-form comments this branch added, as paragraphs rather than per-line breaks.
+Tables, arrow diagrams, hex listings and lines carrying code before the comment opener
+are deliberately skipped; what remains over 80 columns is register tables and keymap
+rows, which upstream also exceeds and which alignment makes unreadable if wrapped.
+
+**Gate 4 — identity scan: ours is unique, upstream has a collision.** `target_id`
+values in `tools/configure` contain exactly one duplicate, and it is not ours: id 116
+is assigned twice in upstream's own table. Our `target_id=126` appears once, and
+`MODEL_NUMBER 134` is unique (the eight duplicated `MODEL_NUMBER`s in
+`firmware/export/config/*.h` are pre-existing upstream pairs such as
+`sdlapp`/`android`/`sonynwze450` sharing 100). Worth mentioning to upstream rather
+than fixing silently, since `target_id` is what rbutil and the build farm key on.
 
 Remaining gates:
 
-- Drop the loader instrumentation (the `LOGF_ENABLE` block, `xt_cycles()` and the
-  `lc wb/srv/ln/sync` line in `lc-esp32s3.c`) as its own commit. It is diagnostic.
-- Resolve or accept the parked fault in `PENDING.md` §1: a reviewer will ask what
-  does not work, and "one rare crash after a long chain, unreproduced" is a
-  reasonable answer only if it is written down.
+- ~~Drop the loader instrumentation~~ done: `0ebe93265a` removed the `LOGF_ENABLE`
+  block, `xt_cycles()`, the `lc wb/srv/ln/sync` line and the
+  `cache_addr_through_icache()` helper that existed only to feed it.
 - Re-run the §6 checklist against the current `upstream/master` tip, not against
   `fe5c0874af`.
-- Rebuild the four cross-target sim builds and one ARM and one MIPS native build, so
-  the hooks in series 1 are demonstrated inert.
+- MIPS native build still outstanding (`tools/rockboxdev.sh --target=m`); the ARM
+  half of this gate is done.
+- Resolve or accept the parked fault in `PENDING.md` §1: a reviewer will ask what
+  does not work, and "one rare crash after a long chain, unreproduced" is a
+  reasonable answer only if it is written down. It is written down.
 - `status => 2` in `builds.pm` stays until the battery capacity run is done — that
   run and a new release tag are the remaining hardware tasks.
