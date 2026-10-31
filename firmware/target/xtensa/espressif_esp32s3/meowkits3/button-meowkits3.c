@@ -351,6 +351,22 @@ int button_read_device(int *data)
                pekC died inside the I2C transaction that clears the latch. */
             bool pending = !gpio_read_pin(PIN_PMU_IRQ);
 
+            /* The pin only says the chip thinks something is enabled and
+               pending; a press it did not report leaves no trace at all, which
+               is a hole in this witness rather than evidence of no press. Once
+               a second, ignore the pin and ask the chip directly. */
+            static unsigned pek_silent_polls;
+
+            if (!pending && ++pek_silent_polls >= 10)
+            {
+                pek_silent_polls = 0;
+                pending = axp173_power_key_pressed();
+            }
+            else if (pending)
+            {
+                pek_silent_polls = 0;
+            }
+
             if (pending)
                 dbg_breadcrumb_retained("pekR",
                                         (unsigned long)axp173_input_status(),
