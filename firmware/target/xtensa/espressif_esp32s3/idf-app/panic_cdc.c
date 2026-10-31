@@ -208,8 +208,9 @@ void esp_panic_handler(panic_info_t *info)
      * which no amount of frame walking would have named. */
     paniclog_crash_id(esp_app_get_description()->version);
 
-    /* Short form in the text record, bounded by its 96-character field, so the
-     * fault is identifiable from the debug page as well as the serial report. */
+    /* Short form in the text record, bounded by its 96-character field, so
+     * the fault is identifiable from the debug page as well as the serial
+     * report. */
     snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
              RB_PANIC_TAG, reason, pc, excv, cause);
     panic_console_write(line);

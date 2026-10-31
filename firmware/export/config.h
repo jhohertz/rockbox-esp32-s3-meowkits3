@@ -162,11 +162,12 @@
 #define HIBY_R3PROII_PAD   79
 #define HIDIZS_AP80MAX_PAD 80
 #define PSP_PAD            81
-/* 82, not 81: upstream assigned 81 to PSP_PAD in the same list this target had already
- * claimed, and a merge that keeps both lines leaves two names with one value. The effect
- * was silent and severe -- apps/SOURCES tests PSP_PAD before ESP32S3_PAD, so the MeowKit
- * build picked up keymap-psp.c and failed on buttons it has never heard of. PAD values are
- * identity, not order, so the later target moves. */
+/* 82, not 81: upstream assigned 81 to PSP_PAD in the same list this target
+ * had already claimed, and a merge that keeps both lines leaves two names
+ * with one value. The effect was silent and severe -- apps/SOURCES tests
+ * PSP_PAD before ESP32S3_PAD, so the MeowKit build picked up keymap-psp.c
+ * and failed on buttons it has never heard of. PAD values are identity, not
+ * order, so the later target moves. */
 #define ESP32S3_PAD        82
 
 /* CONFIG_REMOTE_KEYPAD */
@@ -1300,9 +1301,9 @@ Lyre prototype 1 */
 #define IRAM_LCDFRAMEBUFFER
 #endif
 
-/* Statics a target wants outside its main data region. A target that has a second
- * memory region defines this as a section attribute and places that section in its
- * linker script; everywhere else it expands to nothing. */
+/* Statics a target wants outside its main data region. A target that has a
+ * second memory region defines this as a section attribute and places that
+ * section in its linker script; everywhere else it expands to nothing. */
 #ifndef PSRAM_BSS_ATTR
 #define PSRAM_BSS_ATTR
 #endif

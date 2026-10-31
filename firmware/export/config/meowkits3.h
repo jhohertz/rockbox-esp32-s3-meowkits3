@@ -725,63 +725,65 @@
  */
 #define NR_BUFFERS               48  /* 48 slots: ~48 ms at 48 kHz, one packet per slot */
 
-/* This gate is also the feedback controller's setpoint. usb_audio.c forms the
- * command as
+/* This gate is also the feedback controller's setpoint. usb_audio.c forms
+ * the command as
  *
- *     samples_fb = 48 - (queue - MINIMUM_BUFFERS_QUEUED)/4, clamped to +/-1 sample
+ * samples_fb = 48 - (queue - MINIMUM_BUFFERS_QUEUED)/4, clamped to +/-1
+ * sample
  *
  * so a gate above the queue's natural equilibrium leaves the controller
- * permanently pressed toward its +1 clamp, modulating the host's send rate by
- * up to 1% -- which is audible as warble on sustained material, invisible in
- * digital silence, and independent of volume. Measured on this board with a
- * gate of 24: the queue sits at 22.5-23.5, Samples used per Frame floats
+ * permanently pressed toward its +1 clamp, modulating the host's send rate
+ * by up to 1% -- which is audible as warble on sustained material, invisible
+ * in digital silence, and independent of volume. Measured on this board with
+ * a gate of 24: the queue sits at 22.5-23.5, Samples used per Frame floats
  * between 48.5 and 48.9 rather than settling, and a burst-marker capture
- * through the speaker shows 0.17 ms of peak-to-peak time-base swing over 200 ms
- * windows, about +/-0.35%, which is the hunting itself.
+ * through the speaker shows 0.17 ms of peak-to-peak time-base swing over 200
+ * ms windows, about +/-0.35%, which is the hunting itself.
  *
- * The device also plays slightly fast: a 1 kHz tone measured 1000.33 Hz against
- * the host's own capture clock, i.e. the DAC consumes 48,016 frames/s rather
- * than 48,000 (+333 ppm). So the command that actually holds the queue is
- * 48.016, not 48.000 -- a steady demand of 0.016 samples per frame, comfortably
- * inside the clamp and 0.6 cents, which is not a pitch problem. It does mean
- * the nominal in samples_base is wrong by that much, and any residual drift
- * here should be read against 48.016 rather than 48.
+ * The device also plays slightly fast: a 1 kHz tone measured 1000.33 Hz
+ * against the host's own capture clock, i.e. the DAC consumes 48,016
+ * frames/s rather than 48,000 (+333 ppm). So the command that actually holds
+ * the queue is 48.016, not 48.000 -- a steady demand of 0.016 samples per
+ * frame, comfortably inside the clamp and 0.6 cents, which is not a pitch
+ * problem. It does mean the nominal in samples_base is wrong by that much,
+ * and any residual drift here should be read against 48.016 rather than 48.
  *
- * 22 was meant to put the setpoint at the measured equilibrium, but the queue
- * never gets there: with this gate it averages 18-19 (Buffers filled), so the
- * error term is about -3.5 slots and the command sits near 48.875 -- just
- * inside the clamp, held there to make up for the ~2% of frames that never
- * arrive. Demand 48.875 against consumption 48.016 is a +1.79% surplus, which
- * is the loss. The gate is simply unreachable while the clamp is one sample,
- * which is why the controller reads as permanently pressed rather than hunting.
+ * 22 was meant to put the setpoint at the measured equilibrium, but the
+ * queue never gets there: with this gate it averages 18-19 (Buffers filled),
+ * so the error term is about -3.5 slots and the command sits near 48.875 --
+ * just inside the clamp, held there to make up for the ~2% of frames that
+ * never arrive. Demand 48.875 against consumption 48.016 is a +1.79%
+ * surplus, which is the loss. The gate is simply unreachable while the clamp
+ * is one sample, which is why the controller reads as permanently pressed
+ * rather than hunting.
  *
  * 22 is where the gate belongs. The queue cannot reach the setpoint because
  * roughly 2% of frames never arrive, and the controller's law is
  *
- *     samples_fb = samples_base - (queue - gate)/4, clamped to +/-1 sample
+ * samples_fb = samples_base - (queue - gate)/4, clamped to +/-1 sample
  *
- * so in steady state the deficit is set by the loss, not by the gate: queue =
- * gate - 4L, with L about 0.875 frames a frame here. Two readings from one
+ * so in steady state the deficit is set by the loss, not by the gate: queue
+ * = gate - 4L, with L about 0.875 frames a frame here. Two readings from one
  * build family confirm it -- gate 22 gave Buffers filled 18-19, gate 19 gave
  * 15-16, both a deficit of ~3.5 slots and both the same command near 48.875.
- * Buffers filled is therefore an output of the loss, not a target: dropping the
- * gate moved the whole queue down, changed nothing else, and cost 3 ms of
- * cushion and re-prebuffer length.
+ * Buffers filled is therefore an output of the loss, not a target: dropping
+ * the gate moved the whole queue down, changed nothing else, and cost 3 ms
+ * of cushion and re-prebuffer length.
  *
- * The clamp also sets the ceiling. With the limit at one sample the controller
- * can compensate at most a 4-slot deficit, so 22 is the highest gate that stays
- * off the clamp. 24 presses it -- and the queue sitting at 22.5-23.5 under a
- * gate of 24, with Samples used per Frame floating between 48.5 and 48.9 rather
- * than settling, is exactly that saturation: the host's rate pinned at +/-1
- * whatever the queue does, audible as warble on sustained material. A deeper
- * cushion needs the gate and usb_audio_target_fb_limit_samples() raised
- * together.
+ * The clamp also sets the ceiling. With the limit at one sample the
+ * controller can compensate at most a 4-slot deficit, so 22 is the highest
+ * gate that stays off the clamp. 24 presses it -- and the queue sitting at
+ * 22.5-23.5 under a gate of 24, with Samples used per Frame floating between
+ * 48.5 and 48.9 rather than settling, is exactly that saturation: the host's
+ * rate pinned at +/-1 whatever the queue does, audible as warble on
+ * sustained material. A deeper cushion needs the gate and
+ * usb_audio_target_fb_limit_samples() raised together.
  *
- * The deficit is a usable measurement: L = (gate - Buffers filled)/4 frames per
- * frame, so on any build a single debug-page glance gives the loss rate -- here
- * 0.875, i.e. ~875 frames/s, which agrees with the ~950/s derived independently
- * from the host's hw_ptr against the measured DAC consumption.
- */
+ * The deficit is a usable measurement: L = (gate - Buffers filled)/4 frames
+ * per frame, so on any build a single debug-page glance gives the loss rate
+ * -- here 0.875, i.e. ~875 frames/s, which agrees with the ~950/s derived
+ * independently from the host's hw_ptr against the measured DAC consumption.
+ * / */
 #define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
 
 /* Re-arm the isochronous OUT endpoint before copying the completed packet,
@@ -895,7 +897,8 @@
 #define HAVE_ES8311
 
 /* The ES7210 ADC sits on the same I2S bus as the codec, on the receiver half
- * of a second I2S port. See firmware/target/xtensa/espressif_esp32s3/pcm-esp32s3.c. */
+ * of a second I2S port. See
+ * firmware/target/xtensa/espressif_esp32s3/pcm-esp32s3.c. */
 /* NOTE for future bisects: HAVE_RECORDING cannot be toggled to isolate a
  * regression. struct codec_api in lib/rbcodec/codecs/codecs.h has members
  * inside #ifdef HAVE_RECORDING, so switching it off moves the offset of

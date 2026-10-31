@@ -291,16 +291,17 @@
 #define BTN_PAUSE       BUTTON_MENU
 #elif CONFIG_KEYPAD == ESP32S3_PAD
 /* MeowKit: the 4-way stick gives the four directions, A is fire, B is pause.
- * Same shape as ECHO_R1. The 3x3 touch grid is real on this board (BUTTON_TOPLEFT
- * .. BUTTON_BOTTOMRIGHT arrive and plugins use them), but the stick covers xworld
- * completely, so BTN_HAVE_DIAGONAL is deliberately left undefined: diagonal keys
- * would land on touch cells a player is not looking at while playing.
+ * Same shape as ECHO_R1. The 3x3 touch grid is real on this board
+ * (BUTTON_TOPLEFT .. BUTTON_BOTTOMRIGHT arrive and plugins use them), but
+ * the stick covers xworld completely, so BTN_HAVE_DIAGONAL is deliberately
+ * left undefined: diagonal keys would land on touch cells a player is not
+ * looking at while playing.
  *
- * The touch block further down must not overwrite these two: this pad has physical
- * fire and pause keys, which is exactly what that block's exclusion list means. Before
- * it was added, gcc said so out loud -- "BTN_FIRE redefined", our BUTTON_A at line 303
- * replaced by BUTTON_BOTTOMLEFT -- and every BTN_* plugin silently took the touch cells
- * instead of A and B. */
+ * The touch block further down must not overwrite these two: this pad has
+ * physical fire and pause keys, which is exactly what that block's exclusion
+ * list means. Before it was added, gcc said so out loud -- "BTN_FIRE
+ * redefined", our BUTTON_A at line 303 replaced by BUTTON_BOTTOMLEFT -- and
+ * every BTN_* plugin silently took the touch cells instead of A and B. */
 #define BTN_UP          BUTTON_UP
 #define BTN_DOWN        BUTTON_DOWN
 #define BTN_LEFT        BUTTON_LEFT

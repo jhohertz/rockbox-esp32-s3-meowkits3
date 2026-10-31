@@ -22,18 +22,19 @@
  * is defined only for esp32p4 in this IDF, and that is the capability the
  * platform itself keys on: IDF's SD and SPI drivers guard their descriptor
  * maintenance with it, so on this part they do none for buffers in internal
- * memory. Everything this target puts in front of a DMA -- GDMA descriptors and
- * ping-pong buffers, the SDHOST descriptor ring, USB endpoint buffers -- lives
- * in that region, so these range calls have never had anything to do.
+ * memory. Everything this target puts in front of a DMA -- GDMA descriptors
+ * and ping-pong buffers, the SDHOST descriptor ring, USB endpoint buffers --
+ * lives in that region, so these range calls have never had anything to do.
  *
- * They were not free. cache_hal_writeback_addr() and cache_hal_invalidate_addr()
- * end up in the ROM's cache routines, and the audio path calls them from the
- * GDMA interrupt handler on every descriptor. Cache code running inside an
- * interrupt can interleave with a cache operation in task context, which is how
- * loading a codec while the capture interrupt was still firing produced a
- * repeated "Cache error" at 0x4004e5b7 inside the ROM cache module, and how
- * capture itself picked up a stutter at 44.1 kHz. Doing nothing is both cheaper
- * and safer, and it is what the hardware actually needs. */
+ * They were not free. cache_hal_writeback_addr() and
+ * cache_hal_invalidate_addr() end up in the ROM's cache routines, and the
+ * audio path calls them from the GDMA interrupt handler on every descriptor.
+ * Cache code running inside an interrupt can interleave with a cache
+ * operation in task context, which is how loading a codec while the capture
+ * interrupt was still firing produced a repeated "Cache error" at 0x4004e5b7
+ * inside the ROM cache module, and how capture itself picked up a stutter at
+ * 44.1 kHz. Doing nothing is both cheaper and safer, and it is what the
+ * hardware actually needs. */
 static bool internal_memory(unsigned int addr, unsigned int size)
 {
     unsigned int end = addr + size - 1;

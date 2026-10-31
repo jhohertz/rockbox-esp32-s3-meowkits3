@@ -52,16 +52,18 @@ static byte *wipe_scr_start;
 static byte *wipe_scr_end;
 static byte *wipe_scr;
 
-/* The column-major transform needs a scratch area of width*height shorts, for the
- * duration of the call and no longer. As a PU_STATIC zone allocation it was the fifth
- * full-panel buffer live at once -- two base screens, the wipe's start and end screens,
- * and this -- which is what failed on a 320x240 panel: 76,800 requested against a
- * largest contiguous run of 68,384. A buffer that exists for one call has no business
- * competing with game data for contiguous memory, so it lives in .bss, which comes from
- * the plugin buffer rather than the arena. Sized from the panel rather than SCREENWIDTH
- * because that is runtime state -- rockdoom swaps it with SCREENHEIGHT when the screen
- * is rotated -- and (LCD_WIDTH/2)*LCD_HEIGHT covers both orientations. A wipe runs one
- * at a time, so a single buffer is sufficient. */
+/* The column-major transform needs a scratch area of width*height shorts,
+ * for the duration of the call and no longer. As a PU_STATIC zone allocation
+ * it was the fifth full-panel buffer live at once -- two base screens, the
+ * wipe's start and end screens, and this -- which is what failed on a
+ * 320x240 panel: 76,800 requested against a largest contiguous run of
+ * 68,384. A buffer that exists for one call has no business competing with
+ * game data for contiguous memory, so it lives in .bss, which comes from the
+ * plugin buffer rather than the arena. Sized from the panel rather than
+ * SCREENWIDTH because that is runtime state -- rockdoom swaps it with
+ * SCREENHEIGHT when the screen is rotated -- and (LCD_WIDTH/2)*LCD_HEIGHT
+ * covers both orientations. A wipe runs one at a time, so a single buffer is
+ * sufficient. */
 static short xform_tmp[(LCD_WIDTH/2)*LCD_HEIGHT];
 
 static void wipe_shittyColMajorXform(short *array, int width, int height)

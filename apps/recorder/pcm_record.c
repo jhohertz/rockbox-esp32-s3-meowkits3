@@ -1412,12 +1412,13 @@ static void on_init_recording(void)
     /* someone is abusing core_alloc_maximum(). Fix this evil guy instead of
      * trying to handle OOM without hope */
         panicf("%s(): OOM\n", __func__);
-    /* core_alloc_maximum() grants what is left, not what the ring was compiled
-       for. Every index wraps at PCM_BUF_SIZE, so a short grant means the capture
-       path writes past the allocation -- and a maximum allocation ends exactly
-       where buflib's handle table begins, growing down from the top of the
-       arena. Failing here names both numbers; failing to check corrupts an
-       unrelated allocation and dies several frames later as a wild pointer. */
+    /* core_alloc_maximum() grants what is left, not what the ring was
+       compiled for. Every index wraps at PCM_BUF_SIZE, so a short grant
+       means the capture path writes past the allocation -- and a maximum
+       allocation ends exactly where buflib's handle table begins, growing
+       down from the top of the arena. Failing here names both numbers;
+       failing to check corrupts an unrelated allocation and dies several
+       frames later as a wild pointer. */
     if (rec_buffer_size < PCM_BUF_SIZE)
         panicf("%s(): ring needs %d, arena granted %d\n", __func__,
                (int)PCM_BUF_SIZE, (int)rec_buffer_size);

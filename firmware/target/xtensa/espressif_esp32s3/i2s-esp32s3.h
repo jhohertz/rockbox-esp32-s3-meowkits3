@@ -229,8 +229,9 @@ void i2s_init(void);
 bool i2s_rx_chan_create(void);   /* must run before i2s_init() -- see pcm-esp32s3.c */
 #endif
 void i2s_set_frequency(unsigned long rate);
-/* Cumulative transmit-path counters, for the debug screen. Reading them changes
- * nothing; they are incremented in the handler and at the start of a session. */
+/* Cumulative transmit-path counters, for the debug screen. Reading them
+ * changes nothing; they are incremented in the handler and at the start of a
+ * session. */
 void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
                   unsigned int *recover, unsigned int *silence);
 

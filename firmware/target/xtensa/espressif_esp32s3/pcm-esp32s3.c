@@ -184,27 +184,28 @@ static void i2s_rx_thread(void)
 
 /* Create the IDF receive channel.
  *
- * This MUST run before the transmitter's hand-built GDMA setup, and that ordering
- * is not stylistic. i2s_new_channel() acquires IDF's GDMA group for the first
- * time, and gdma_acquire_group_handle() does:
+ * This MUST run before the transmitter's hand-built GDMA setup, and that
+ * ordering is not stylistic. i2s_new_channel() acquires IDF's GDMA group for
+ * the first time, and gdma_acquire_group_handle() does:
  *
- *     gdma_ll_enable_bus_clock(group_id, true);
- *     gdma_ll_reset_register(group_id);
+ * gdma_ll_enable_bus_clock(group_id, true);
+ * gdma_ll_reset_register(group_id);
  *
  * -- resetting EVERY channel in the block, including the OUT channel the
- * transmitter drives with raw registers. Our transmitter never registers with
- * IDF's GDMA driver, so it holds no reference and IDF has no idea that channel
- * is in use. Measured directly: at boot GDMA_TX_INT_ENA is 0x06 and
+ * transmitter drives with raw registers. Our transmitter never registers
+ * with IDF's GDMA driver, so it holds no reference and IDF has no idea that
+ * channel is in use. Measured directly: at boot GDMA_TX_INT_ENA is 0x06 and
  * GDMA_TX_LINK holds the descriptor address 0x0cf700; by the time the first
- * recording session reaches its first line of code -- before pads_take, before
- * chan_enable, before anything that could physically touch the bus -- they read
- * 0x00 and 0. The only thing that ran in between was i2s_new_channel().
+ * recording session reaches its first line of code -- before pads_take,
+ * before chan_enable, before anything that could physically touch the bus --
+ * they read 0x00 and 0. The only thing that ran in between was
+ * i2s_new_channel().
  *
  * That is why playback died permanently the first time recording was ARMED
  * rather than during a session, and why it never came back: nothing
  * re-initialises the transmitter afterwards. Creating the channel at boot,
- * ahead of gdma_init(), puts IDF's block reset first so our configuration lands
- * after it and survives.
+ * ahead of gdma_init(), puts IDF's block reset first so our configuration
+ * lands after it and survives.
  *
  * The channel is also never deleted, for the mirror-image reason:
  * gdma_release_group_handle() drops the group refcount to zero and calls
@@ -295,10 +296,9 @@ static esp_err_t rx_chan_set_rate(unsigned long rate)
 
 void pcm_rec_dma_init(void)
 {
-    /* Normally already created at boot by sink_init(); this is the fallback for
-     * a
-       boot that skipped it. It does not configure anything about the rate: see the
-       note at the end of this function. */
+    /* Normally already created at boot by sink_init(); this is the fallback
+     * for a boot that skipped it. It does not configure anything about the
+     * rate: see the note at the end of this function. */
     if (!i2s_rx_chan_create())
         return;
 
@@ -310,12 +310,13 @@ void pcm_rec_dma_init(void)
                                      sizeof(rx_thread_stack), 0, rx_thread_name
                                      IF_PRIO(, PRIORITY_USER_INTERFACE));
     }
-    /* Nothing here touches the channel's clock or the ADC. pcm_init_recording()
-       runs before pcm_apply_settings() puts the requested capture rate on the
-       sink, so the rate is not yet known at this point -- reading it here is what
-       left the receiver clocked at whatever playback last asked for while the ADC
-       was configured for something else. pcm_rec_dma_start() does both, in that
-       order, once the rate exists. */
+    /* Nothing here touches the channel's clock or the ADC.
+       pcm_init_recording() runs before pcm_apply_settings() puts the
+       requested capture rate on the sink, so the rate is not yet known at
+       this point -- reading it here is what left the receiver clocked at
+       whatever playback last asked for while the ADC was configured for
+       something else. pcm_rec_dma_start() does both, in that order, once the
+       rate exists. */
 }
 
 void pcm_rec_dma_close(void)

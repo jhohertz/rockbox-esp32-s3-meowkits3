@@ -507,11 +507,12 @@
 #define ROCKBLOX_RESTART       BUTTON_USER
 
 #elif CONFIG_KEYPAD == ESP32S3_PAD
-/* MeowKit ESP32-S3: stick moves the piece (Up is unused here; the game has no
- * up action), A rotates clockwise, held B ends the game. Counter-clockwise is a
- * touch cell rather than B, because B held is the quit case and the game also
- * has a "B | BUTTON_REPEAT" case - two switch labels with one value. DROP is the
- * touch centre, restart bottom-middle, counter-clockwise mid-left. */
+/* MeowKit ESP32-S3: stick moves the piece (Up is unused here; the game has
+ * no up action), A rotates clockwise, held B ends the game.
+ * Counter-clockwise is a touch cell rather than B, because B held is the
+ * quit case and the game also has a "B | BUTTON_REPEAT" case - two switch
+ * labels with one value. DROP is the touch centre, restart bottom-middle,
+ * counter-clockwise mid-left. */
 
 #define ROCKBLOX_LEFT        BUTTON_LEFT
 #define ROCKBLOX_RIGHT       BUTTON_RIGHT

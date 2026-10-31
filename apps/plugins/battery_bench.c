@@ -433,10 +433,11 @@ static void flush_buffer(void)
     for (i = 0; i < buf_idx; i++)
     {
 #if CONFIG_BATTERY_MEASURE & CURRENT_MEASURE
-        /* Close the interval that started at the previous sample using that sample's
-         * own reading and direction, then take this sample over. Attributing it to
-         * the sample that begins the interval is what keeps the charge-to-battery
-         * transition on the row where it occurred. */
+        /* Close the interval that started at the previous sample using that
+         * sample's own reading and direction, then take this sample over.
+         * Attributing it to the sample that begins the interval is what
+         * keeps the charge-to-battery transition on the row where it
+         * occurred. */
         if (last_secs >= 0 && bat[i].secs > (unsigned int)last_secs)
         {
             unsigned int units =
@@ -448,12 +449,13 @@ static void flush_buffer(void)
                 dis_ms += units;
         }
 #if CONFIG_CHARGING >= CHARGING_MONITOR
-        /* Say out loud where the cell took over. The direction column marks every row,
-         * but finding the unplugging in a two-hour run means scanning a column of D's
-         * for the first one; the totals here are what has accumulated up to the
-         * previous row, so the discharge figure that matters for a capacity run starts
-         * on a labelled line. The '#' prefix keeps it out of any parser that expects
-         * the row format. */
+        /* Say out loud where the cell took over. The direction column marks
+         * every row, but finding the unplugging in a two-hour run means
+         * scanning a column of D's for the first one; the totals here are
+         * what has accumulated up to the previous row, so the discharge
+         * figure that matters for a capacity run starts on a labelled line.
+         * The '#' prefix keeps it out of any parser that expects the row
+         * format. */
         if (last_secs >= 0
             && ((bat[i].flags & BIT_CHARGING) != 0) != last_charging)
             rb->fdprintf(fd,
@@ -498,11 +500,12 @@ static void flush_buffer(void)
 #if CONFIG_CHARGING
                 , (bat[i].flags & BIT_CHARGER) ? 'A' : '-'
 #if CONFIG_CHARGING >= CHARGING_MONITOR
-                /* 'D' rather than '-': this chip reports the battery current direction,
-                 * not a charging state, so a clear bit means current is flowing *out*.
-                 * A bare '-' was the same glyph the charger column uses for "nothing
-                 * attached", which made the discharge half of a run invisible in a log
-                 * read by eye. The preceding column separates idle from unplugged. */
+                /* 'D' rather than '-': this chip reports the battery current
+                 * direction, not a charging state, so a clear bit means
+                 * current is flowing *out*. A bare '-' was the same glyph
+                 * the charger column uses for "nothing attached", which made
+                 * the discharge half of a run invisible in a log read by
+                 * eye. The preceding column separates idle from unplugged. */
                 , (bat[i].flags & BIT_CHARGING) ? 'C' : 'D'
 #endif
 #endif
@@ -531,8 +534,9 @@ static void thread(void)
 
     in_usb_mode = false;
     buf_idx = 0;
-    /* The totals are per run. Lines from an earlier run are already on the file and
-     * appended to, so carrying a total over would read as one long run. */
+    /* The totals are per run. Lines from an earlier run are already on the
+     * file and appended to, so carrying a total over would read as one long
+     * run. */
     last_secs = -1;
     last_current = 0;
     last_charging = false;

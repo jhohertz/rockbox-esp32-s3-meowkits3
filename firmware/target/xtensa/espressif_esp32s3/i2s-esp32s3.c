@@ -201,35 +201,34 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
 #define XT_TX_SLOT (MIX_FRAME_SAMPLES * 4 * XT_MIX_MULT(HW_SAMPR_MAX))
 
 /* The ring's *buffer* lives in PSRAM; the descriptors above stay in internal
- * DRAM. That split is what the hardware actually allows, and it is easy to get
- * backwards:
+ * DRAM. That split is what the hardware actually allows, and it is easy to
+ * get backwards:
  *
- *  - esp32s3 declares SOC_PSRAM_DMA_CAPABLE and SOC_AHB_GDMA_SUPPORT_PSRAM, so
- *    GDMA can read a PSRAM buffer.
- *  - GDMA's 20-bit window (base 0x3FC00000) applies to the *descriptor address
- *    register* GDMA_TX_LINK, and to the first descriptor's address. Inside a
- *    descriptor the buffer pointer is a full 32-bit word the engine reads from
- *    memory, so PSRAM addresses are legal there.
- *  - ESP-IDF's own restriction list for this chip says transaction descriptors
- *    cannot be in PSRAM -- which is desc[], kept internal.
+ * - esp32s3 declares SOC_PSRAM_DMA_CAPABLE and SOC_AHB_GDMA_SUPPORT_PSRAM,
+ * so GDMA can read a PSRAM buffer. - GDMA's 20-bit window (base 0x3FC00000)
+ * applies to the *descriptor address register* GDMA_TX_LINK, and to the
+ * first descriptor's address. Inside a descriptor the buffer pointer is a
+ * full 32-bit word the engine reads from memory, so PSRAM addresses are
+ * legal there. - ESP-IDF's own restriction list for this chip says
+ * transaction descriptors cannot be in PSRAM -- which is desc[], kept
+ * internal.
  *
  * Two things have to be true for a PSRAM target, and are:
  *
- *  - out_ext_mem_bk_size in conf1 is never programmed, so it holds its reset
- *    value 0 = 16-byte blocks. The PSRAM controller refuses bursts larger than
- *    64 bytes (GDMA_LL_MAX_BURST_SIZE_PSRAM), so 16 is inside the limit. If
- *    data burst is ever enabled here, this becomes a bug.
- *  - the buffer is write-back cached through the Ext_RAM window like every other
- *    address in it, so the commit_dcache_range() calls in write_desc() and
- *    fill() are what make the engine see the mixer's frames. They were defensive
- *    in DRAM; in PSRAM they are load-bearing.
+ * - out_ext_mem_bk_size in conf1 is never programmed, so it holds its reset
+ * value 0 = 16-byte blocks. The PSRAM controller refuses bursts larger than
+ * 64 bytes (GDMA_LL_MAX_BURST_SIZE_PSRAM), so 16 is inside the limit. If
+ * data burst is ever enabled here, this becomes a bug. - the buffer is
+ * write-back cached through the Ext_RAM window like every other address in
+ * it, so the commit_dcache_range() calls in write_desc() and fill() are what
+ * make the engine see the mixer's frames. They were defensive in DRAM; in
+ * PSRAM they are load-bearing.
  *
- * The cost is documented rather than guessed: "the bandwidth that DMA accesses
- * external RAM is very limited, especially when the core is trying to access
- * the external RAM at the same time", and this target reads PSRAM constantly
- * (codec images, dircache, tagcache). 4096 bytes leaves internal DRAM, which is
- * the point -- that region had 1,020 bytes free.
- */
+ * The cost is documented rather than guessed: "the bandwidth that DMA
+ * accesses external RAM is very limited, especially when the core is trying
+ * to access the external RAM at the same time", and this target reads PSRAM
+ * constantly (codec images, dircache, tagcache). 4096 bytes leaves internal
+ * DRAM, which is the point -- that region had 1,020 bytes free. / */
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT]
     PSRAM_BSS_ATTR __attribute__((aligned(4)));
 
@@ -373,9 +372,9 @@ static void tx_flush(void)
     i2s_ll_tx_stop(tx_hal.dev);
 
     /* I2S side: reset the transmitter and its FIFO. Both bits are
-     * self-clearing.
-       tx_reset also clears the idle and hung latches, so a stale tx_hung cannot be
-       reported against a session that has not run yet. */
+     * self-clearing. tx_reset also clears the idle and hung latches, so a
+     * stale tx_hung cannot be reported against a session that has not run
+     * yet. */
     wr(I2S_TX_CONF, rd(I2S_TX_CONF) | TX_CONF_RESET | TX_CONF_FIFO_RESET);
     wr(I2S_TX_CONF, rd(I2S_TX_CONF) & ~(TX_CONF_RESET | TX_CONF_FIFO_RESET));
 
@@ -448,10 +447,9 @@ static void i2s_program_clock(unsigned long rate)
 
 #ifdef HAVE_RECORDING
     /* Recorded here rather than in the codec section so it is set even when
-     * only
-       the port is being programmed. This is the transmitter's rate and therefore
-       the default a capture session starts from -- it is not the capture rate, and
-       i2s_rx_take_bus() is what decides that. */
+     * only the port is being programmed. This is the transmitter's rate and
+     * therefore the default a capture session starts from -- it is not the
+     * capture rate, and i2s_rx_take_bus() is what decides that. */
     tx_rate = rate;
 #endif
 }
@@ -483,11 +481,10 @@ void i2s_set_frequency(unsigned long rate)
 #endif
 
     /* The clock has just moved under whatever the FIFO still holds, and the
-     * port
-       is now halted by that flush. Restart it on silence rather than leaving it
-       dark: the codec's clock registers above were just rewritten against a rate
-       that is not on the bus yet, and the chip needs a silent window to re-acquire
-       it before any audio arrives. */
+     * port is now halted by that flush. Restart it on silence rather than
+     * leaving it dark: the codec's clock registers above were just rewritten
+     * against a rate that is not on the bus yet, and the chip needs a silent
+     * window to re-acquire it before any audio arrives. */
     idle_tx();
 }
 
@@ -498,19 +495,19 @@ static void i2s_stat_tick(void);  /* prints the session line in tick context */
 static void arm(int i, unsigned long len)
 {
     desc[i].buffer = (uint32_t)(unsigned long)dma_buf[i];
-    /* The descriptor link, and the record of what was tried, because two variants were
-     * conflated for a long time:
+    /* The descriptor link, and the record of what was tried, because two
+     * variants were conflated for a long time:
      *
-     * - next = &desc[i] (SELF-linked) is genuinely bad: the engine follows one
-     * slot forever, giving one out_dscr_err per frame (err tracked irq exactly,
-     * +1) and a noticeable lag on pause while it replayed the last buffer.
-     * Measured.
+     * - next = &desc[i] (SELF-linked) is genuinely bad: the engine follows
+     * one slot forever, giving one out_dscr_err per frame (err tracked irq
+     * exactly, +1) and a noticeable lag on pause while it replayed the last
+     * buffer. Measured.
      *
      * - next = 0 terminates the list, the encoding of imx233's `dma.next =
      * NULL`, so the engine stops and the driver restarts deliberately. It
      * cannot be combined with gdma_init()'s auto-writeback -- see the note
-     * there -- and it is NOT what this line does. An earlier revision of this
-     * comment claimed it was.
+     * there -- and it is NOT what this line does. An earlier revision of
+     * this comment claimed it was.
      *
      * - next = &desc[(i+1) % XT_TX_RING], which is what this line sets: a
      * forward ring, the same chain gdma_init() builds, kept live so the
@@ -883,10 +880,10 @@ void i2s_rx_release_bus(void)
 
 static void start_tx(void)
 {
-    /* Start from an empty path. Without this the first descriptor of a session
-     * is
-       appended to whatever survived the previous one, and a leftover odd number of
-       bytes shifts every sample by half a stereo frame. */
+    /* Start from an empty path. Without this the first descriptor of a
+     * session is appended to whatever survived the previous one, and a
+     * leftover odd number of bytes shifts every sample by half a stereo
+     * frame. */
     tx_flush();
     stat_sessions++;
 
@@ -935,9 +932,8 @@ static void start_tx(void)
     wr(GDMA_TX_LINK, rd(GDMA_TX_LINK) | (1u << 21));    /* link.start -- once */
 
     /* One line per session, printed from tick context: err/recover/silence
-     * since
-       boot are the only way to tell a starvation-recovery from a misalignment after
-       the fact. */
+     * since boot are the only way to tell a starvation-recovery from a
+     * misalignment after the fact. */
     stat_log_pending = true;
 }
 
@@ -1015,30 +1011,31 @@ static void stop_tx(void)
      * going dark. */
     wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) & ~GDMA_INT_DSCR_ERR);
 
-    /* Flush rather than merely halt: the bytes left in the I2S FIFO and in the
-       channel are the ones that misalign the next session. Clearing the latched
-       bits belongs to the flush, and is safe here because nothing from the previous
-       session can refill -- `playing` is already false. */
+    /* Flush rather than merely halt: the bytes left in the I2S FIFO and in
+       the channel are the ones that misalign the next session. Clearing the
+       latched bits belongs to the flush, and is safe here because nothing
+       from the previous session can refill -- `playing` is already false. */
     tx_flush();
     idle_tx();
 }
 
-/* Nothing is started or stopped for the receiver in this file any more: it is an
- * ESP-IDF I2S channel, enabled and disabled by pcm_rec_dma_start() /
+/* Nothing is started or stopped for the receiver in this file any more: it
+ * is an ESP-IDF I2S channel, enabled and disabled by pcm_rec_dma_start() /
  * pcm_rec_dma_stop(). Two hand-rolled attempts lived here and both are worth
  * remembering for what they taught:
  *
- *   i2s_tx_clock_run() borrowed the transmitter's clock domain for recording. It
- *   asserted tx_start, which runs the DAC's port against an empty FIFO, and still
- *   produced no usable clock -- an I2S transmitter with no GDMA feeding it hangs
- *   and stops clocking, which is what the tx_hung interrupt exists to report.
+ * i2s_tx_clock_run() borrowed the transmitter's clock domain for recording.
+ * It asserted tx_start, which runs the DAC's port against an empty FIFO, and
+ * still produced no usable clock -- an I2S transmitter with no GDMA feeding
+ * it hangs and stops clocking, which is what the tx_hung interrupt exists to
+ * report.
  *
  * i2s_rx_start() set rx_start directly and never pulsed rx_update, so the
  * receiver's configuration (master role, clock source, slot width) stayed in
  * the APB domain and was never latched into the sampling domain. Measured:
- * rx_conf read 00009404 with slave=0 and rx_update clear, and GDMA never took a
- * descriptor. That is the same double-buffered-configuration trap as LEDC's
- * conf0.low_speed_update and I2C's CONF_UPGATE.
+ * rx_conf read 00009404 with slave=0 and rx_update clear, and GDMA never
+ * took a descriptor. That is the same double-buffered-configuration trap as
+ * LEDC's conf0.low_speed_update and I2C's CONF_UPGATE.
  *
  * What the capture path still needs from here is only the shared clock pads. */
 
@@ -1116,17 +1113,19 @@ void ICODE_ATTR gdma_irq(void)
 
         /* Owner error or a bad descriptor word.
 
-           This handler used to reset cur to 0 as well as re-pointing the link.
-           That is what turned a single transient into a permanent fault: cur is
-           the driver's idea of which slot is free, and forcing it to 0 while the
-           engine was somewhere else in the ring meant every later arm() targeted
-           a slot the engine had already passed. Measured directly -- write_desc
-           armed slot 0 on both of its calls and slot 1 was never armed.
+           This handler used to reset cur to 0 as well as re-pointing the
+           link. That is what turned a single transient into a permanent
+           fault: cur is the driver's idea of which slot is free, and forcing
+           it to 0 while the engine was somewhere else in the ring meant
+           every later arm() targeted a slot the engine had already passed.
+           Measured directly -- write_desc armed slot 0 on both of its calls
+           and slot 1 was never armed.
 
-           With every slot owned from init onward this should not fire at all, so
-           leave the ring alone and only restart the walk -- which is what this
-           comment has always said, and what the code did not do: it wrote
-           link.stop, guaranteeing the deadlock described above. Now it starts. */
+           With every slot owned from init onward this should not fire at
+           all, so leave the ring alone and only restart the walk -- which is
+           what this comment has always said, and what the code did not do:
+           it wrote link.stop, guaranteeing the deadlock described above. Now
+           it starts. */
         /* The storm guard. One DSCR_ERR is a transient and restarting is
          * right. Two in a row with no DONE between means the engine is
          * sitting on a slot the CPU owns, so restarting onto it just errors
@@ -1337,13 +1336,13 @@ static void sink_unlock(void)
 static void sink_play(const void *addr, size_t size)
 {
     /* Nothing here may print. usb_audio.c calls mixer_channel_play_data()
-     * inside
-       disable_irq_save() (usb_audio.c:1380-1396), and a USB-DAC session is exactly
-       a first frame. printf() takes the newlib stdout lock and needs the console to
-       drain; with interrupts off on this core it never can. Every Rockbox thread is
-       pinned to the same core (thread-idf.c), so the whole player stops -- no tick
-       task, no buttons, no backlight, no USB -- and the task watchdog never fires
-       because it is itself an interrupt. That is the USB-DAC lock-up. */
+     * inside disable_irq_save() (usb_audio.c:1380-1396), and a USB-DAC
+     * session is exactly a first frame. printf() takes the newlib stdout
+     * lock and needs the console to drain; with interrupts off on this core
+     * it never can. Every Rockbox thread is pinned to the same core
+     * (thread-idf.c), so the whole player stops -- no tick task, no buttons,
+     * no backlight, no USB -- and the task watchdog never fires because it
+     * is itself an interrupt. That is the USB-DAC lock-up. */
 
     if (!playing)
     {

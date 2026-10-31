@@ -333,8 +333,9 @@
  * png's 12,512 B against the decoders' 256 KB. Measured from the built zip. */
 #define XT_IMGDEC_TEXT_SIZE  0x40000
 
-/* Data-window addresses of those halves, i.e. the addresses they are *written*
- * through. Execution uses the linked address, which is this plus XT_IROM_OFF. */
+/* Data-window addresses of those halves, i.e. the addresses they are
+ * *written* through. Execution uses the linked address, which is this plus
+ * XT_IROM_OFF. */
 #define XT_CODEC_TEXT_ADDR   (XT_CODECBUF_ADDR - XT_CODEC_TEXT_SIZE)
 #define XT_PLUGIN_TEXT_ADDR  (XT_CODEC_TEXT_ADDR - XT_PLUGIN_TEXT_SIZE)
 

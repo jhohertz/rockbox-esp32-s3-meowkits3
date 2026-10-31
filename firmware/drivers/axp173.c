@@ -115,14 +115,15 @@ void axp173_init(void)
     axp173_write_reg(AXP_REG_OUTPUTCTRL,
                      AXP_OUT_DCDC1 | AXP_OUT_LDO2 | AXP_OUT_LDO3 | AXP_OUT_LDO4);
 
-    /* REG 33H has three fields and the middle one is easy to lose. Bits 6:5 are the
-     * charge target voltage (00: 4.10 V, 01: 4.15 V, 10: 4.20 V, 11: 4.36 V) and reset to
-     * 10; writing `0x80 | 4` looked like "enable, 450 mA" but drove those two bits to 00,
-     * i.e. a 4.10 V ceiling. That is what made an overnight charge end at ~4.0 V under
-     * load and the gauge read 83 % -- the chip was never asked to fill the cell. The
-     * reference firmware sidesteps it by setting bit 7 and bits 3:0 through two separate
-     * read-modify-writes; naming the target explicitly is shorter and shows intent.
-     */
+    /* REG 33H has three fields and the middle one is easy to lose. Bits 6:5
+     * are the charge target voltage (00: 4.10 V, 01: 4.15 V, 10: 4.20 V, 11:
+     * 4.36 V) and reset to 10; writing `0x80 | 4` looked like "enable, 450
+     * mA" but drove those two bits to 00, i.e. a 4.10 V ceiling. That is
+     * what made an overnight charge end at ~4.0 V under load and the gauge
+     * read 83 % -- the chip was never asked to fill the cell. The reference
+     * firmware sidesteps it by setting bit 7 and bits 3:0 through two
+     * separate read-modify-writes; naming the target explicitly is shorter
+     * and shows intent. / */
     axp173_write_reg(AXP_REG_CHARGECTRL,
                      AXP_CHG_ENABLE | AXP_CHG_TARGET_4V20 | AXP_CHG_CURRENT_450MA);
 
@@ -533,11 +534,11 @@ bool axp173_power_key_cancel(void)
     if (!bits)
         return false;
 
-    /* Write-1-to-clear, so this writes back only the bits that were set. Only
-     * the long
-       press can latch today -- axp173_init() enables just AXP_IRQ_PEK_LONG in IRQEN3 --
-       but both PEK bits are cleared so that a widened IRQ mask elsewhere cannot leave a
-       press pending that nothing acts on. */
+    /* Write-1-to-clear, so this writes back only the bits that were set.
+     * Only the long press can latch today -- axp173_init() enables just
+     * AXP_IRQ_PEK_LONG in IRQEN3 -- but both PEK bits are cleared so that a
+     * widened IRQ mask elsewhere cannot leave a press pending that nothing
+     * acts on. */
     axp173_write_reg(AXP_REG_IRQST3, (unsigned char)bits);
     return true;
 }

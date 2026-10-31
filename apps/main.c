@@ -170,31 +170,32 @@ int main(int argc, char *argv[])
 #else
 int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
 #ifdef HAVE_TARGET_TICK_THREAD
-/* The xtensa level-1 ISR is a leaf: it only advances current_tick. The registered tick
- * tasks are ordinary C -- button polling does I2C, which ends in a semaphore wait -- and a
- * semaphore wait switches threads, which an exception frame on a core with no REGB option
- * cannot do. So they run here, in thread context, on exactly one thread: run_tick_tasks()
- * (kernel/tick.c) walks tick_funcs[] with no reentrancy guard, and this stack is a single
- * fixed buffer, so a second instance would alias the first thread's frames and run every
- * task twice per tick -- timeout_tick with it, which halves every timeout in Rockbox.
- */
+/* The xtensa level-1 ISR is a leaf: it only advances current_tick. The
+ * registered tick tasks are ordinary C -- button polling does I2C, which
+ * ends in a semaphore wait -- and a semaphore wait switches threads, which
+ * an exception frame on a core with no REGB option cannot do. So they run
+ * here, in thread context, on exactly one thread: run_tick_tasks()
+ * (kernel/tick.c) walks tick_funcs[] with no reentrancy guard, and this
+ * stack is a single fixed buffer, so a second instance would alias the first
+ * thread's frames and run every task twice per tick -- timeout_tick with it,
+ * which halves every timeout in Rockbox. / */
 static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 
 static void tick_task_thread(void)
 {
     while (true)
     {
-        /* sleep() takes TICKS, not milliseconds -- sleep(0) waits for the next tick, which
-         * is what a tick-task loop wants: run_tick_tasks() then runs at HZ, the rate every
-         * tick consumer in Rockbox assumes.
+        /* sleep() takes TICKS, not milliseconds -- sleep(0) waits for the
+         * next tick, which is what a tick-task loop wants: run_tick_tasks()
+         * then runs at HZ, the rate every tick consumer in Rockbox assumes.
          *
-         * This used to say sleep(HZ/2), which with HZ=100 is sleep(50) -- half a second.
-         * Button polling lives in these tasks (button_init() registers button_tick via
-         * tick_add_task), so the stick was sampled twice a second and an ordinary 40-80 ms
-         * press usually fell entirely between two samples. That is the whole of the "have to
-         * press several times" complaint, and it is why removing the console spam from the
-         * button path did not fix it.
-         */
+         * This used to say sleep(HZ/2), which with HZ=100 is sleep(50) --
+         * half a second. Button polling lives in these tasks (button_init()
+         * registers button_tick via tick_add_task), so the stick was sampled
+         * twice a second and an ordinary 40-80 ms press usually fell
+         * entirely between two samples. That is the whole of the "have to
+         * press several times" complaint, and it is why removing the console
+         * spam from the button path did not fix it. / */
         sleep(0);
         run_tick_tasks();
     }
@@ -551,11 +552,11 @@ static void init(void)
     CHART("ticking");
 
 #ifdef HAVE_TARGET_TICK_THREAD
-    /* Started here rather than earlier: enable_irq() above is what makes current_tick
-     * advance, so sleep(0) in the loop has something to wait for. Every tick task is
-     * registered below this point -- button_init(), usb_init(), powermgmt_init() and the
-     * first timeout_add() -- so nothing is missed.
-     */
+    /* Started here rather than earlier: enable_irq() above is what makes
+     * current_tick advance, so sleep(0) in the loop has something to wait
+     * for. Every tick task is registered below this point -- button_init(),
+     * usb_init(), powermgmt_init() and the first timeout_add() -- so nothing
+     * is missed. / */
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));

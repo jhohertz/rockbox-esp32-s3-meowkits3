@@ -890,11 +890,12 @@ static inline void getkey()
       }
 #endif
 #if CONFIG_KEYPAD == ESP32S3_PAD
-      /* The three cells the table above puts on the grid that this target needs and no
-       * other keypad defines. Strafe uses Doom's dedicated keys rather than the
-       * key_strafe modifier: the modifier path would need a held-key gesture, and
-       * HAS_BUTTON_HOLD is not implemented for xtensa, so button_hold() has nothing to
-       * report. These keys are also rebindable in Doom's own Controls menu. */
+      /* The three cells the table above puts on the grid that this target
+       * needs and no other keypad defines. Strafe uses Doom's dedicated keys
+       * rather than the key_strafe modifier: the modifier path would need a
+       * held-key gesture, and HAS_BUTTON_HOLD is not implemented for xtensa,
+       * so button_hold() has nothing to report. These keys are also
+       * rebindable in Doom's own Controls menu. */
       if(released & DOOMBUTTON_STRAFELEFT)
       {
          event.data1 = key_strafeleft;
@@ -986,9 +987,9 @@ static inline void getkey()
          event.data1 = key_straferight;
          D_PostEvent(&event);
       }
-      /* autorun is a latch (m_menu.c:1534-1539 toggles it when the menu is not up), so
-       * it acts on the press edge only; the matching keyup below keeps gamekeydown
-       * consistent without re-toggling. */
+      /* autorun is a latch (m_menu.c:1534-1539 toggles it when the menu is
+       * not up), so it acts on the press edge only; the matching keyup below
+       * keeps gamekeydown consistent without re-toggling. */
       if(pressed & DOOMBUTTON_AUTORUN)
       {
          event.data1 = key_autorun;
@@ -1278,14 +1279,15 @@ void I_InitGraphics(void)
 #else
    // Don't know if this will fit in other IRAMs
 
-   /* V_Init() allocates the screens individually precisely so that this function can
-    * replace d_screens[0] -- v_video.c:387 says so -- but the release never made it
-    * into the code, so the plugin held a third full-size screen while asking for one.
-    * Z_Malloc can only coalesce blocks adjacent to free space, so holding an extra
-    * static block in the middle of the zone costs more than its own size: measured as
-    * 416,704 usable bytes and no run above 18,624 for this 76,800-byte allocation.
-    * Freeing first gives Z_Free a block whose neighbours it can merge with. The
-    * replacement is the same size, so net memory is unchanged. */
+   /* V_Init() allocates the screens individually precisely so that this
+    * function can replace d_screens[0] -- v_video.c:387 says so -- but the
+    * release never made it into the code, so the plugin held a third
+    * full-size screen while asking for one. Z_Malloc can only coalesce
+    * blocks adjacent to free space, so holding an extra static block in the
+    * middle of the zone costs more than its own size: measured as 416,704
+    * usable bytes and no run above 18,624 for this 76,800-byte allocation.
+    * Freeing first gives Z_Free a block whose neighbours it can merge with.
+    * The replacement is the same size, so net memory is unchanged. */
    if (d_screens[0])
       V_FreeScreen(0);
 

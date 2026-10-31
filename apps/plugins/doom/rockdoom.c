@@ -655,14 +655,16 @@ int doom_menu()
 
 extern int systemvol;
 
-/* Everything plugin_start() turns on has to be turned off again, and it used to be done
- * inline after D_DoomMain() returned. I_Error() now leaves through exit(), which
- * longjmps past that tail, so the restoration lives here instead: plugin_crt0.c runs the
- * registered handler whichever way the plugin stops, before plugin__start() returns and
- * before apps/plugin.c checks for leaked handles. Leaving a WAD handle open there gets
- * answered with a "Plugin error / #leak-file-handles" yes/no prompt on any target with
- * HAVE_PLUGIN_CHECK_OPEN_CLOSE, and skipping the three restores below leaves the CPU
- * boosted, talking disabled and the backlight refusing to time out. */
+/* Everything plugin_start() turns on has to be turned off again, and it used
+ * to be done inline after D_DoomMain() returned. I_Error() now leaves
+ * through exit(), which longjmps past that tail, so the restoration lives
+ * here instead: plugin_crt0.c runs the registered handler whichever way the
+ * plugin stops, before plugin__start() returns and before apps/plugin.c
+ * checks for leaked handles. Leaving a WAD handle open there gets answered
+ * with a "Plugin error / #leak-file-handles" yes/no prompt on any target
+ * with HAVE_PLUGIN_CHECK_OPEN_CLOSE, and skipping the three restores below
+ * leaves the CPU boosted, talking disabled and the backlight refusing to
+ * time out. */
 static void doom_cleanup(void)
 {
    backlight_use_settings();
@@ -671,9 +673,9 @@ static void doom_cleanup(void)
 
    I_Quit(); // Make SURE everything was closed out right
 
-   /* Slots 1..fpoint-1 hold descriptors; fpoint is the next free one. The loop that was
-    * in the tail closed filearray[fpoint] as well, i.e. a stale descriptor, which the
-    * core reports as a double close. */
+   /* Slots 1..fpoint-1 hold descriptors; fpoint is the next free one. The
+    * loop that was in the tail closed filearray[fpoint] as well, i.e. a
+    * stale descriptor, which the core reports as a double close. */
    while (fpoint > 1)
    {
       fpoint--;
@@ -684,11 +686,11 @@ static void doom_cleanup(void)
 #endif
    }
 
-   /* Nothing to release here beyond the descriptors: z_zone.h:103-106 maps malloc,
-    * calloc and free onto doom's own zone, so every allocation the plugin makes --
-    * screens, wipe buffers, lump cache, grey table, sounds -- lives inside the single
-    * block plugin_get_audio_buffer() handed over, and apps/plugin.c:1053 frees that
-    * block when the plugin returns. */
+   /* Nothing to release here beyond the descriptors: z_zone.h:103-106 maps
+    * malloc, calloc and free onto doom's own zone, so every allocation the
+    * plugin makes -- screens, wipe buffers, lump cache, grey table, sounds
+    * -- lives inside the single block plugin_get_audio_buffer() handed over,
+    * and apps/plugin.c:1053 frees that block when the plugin returns. */
 
 #ifdef HAVE_ADJUSTABLE_CPU_FREQ
    rb->cpu_boost(false);
@@ -769,9 +771,10 @@ enum plugin_status plugin_start(const void* parameter)
 
    backlight_ignore_timeout();
 
-   /* Registered here rather than at the top of plugin_start(): the paths that leave the
-    * menu early (quit, missing base WAD) have not started anything, and must not run the
-    * sound and graphics shutdowns or rewrite config.cfg. */
+   /* Registered here rather than at the top of plugin_start(): the paths
+    * that leave the menu early (quit, missing base WAD) have not started
+    * anything, and must not run the sound and graphics shutdowns or rewrite
+    * config.cfg. */
    rb_atexit(doom_cleanup);
 
 #ifdef RB_PROFILE
@@ -788,8 +791,9 @@ enum plugin_status plugin_start(const void* parameter)
    rb->profstop();
 #endif
 
-   /* The restoration is doom_cleanup()'s job now, so it happens on the exit() path too.
-   * plugin_crt0.c runs it after plugin_start() returns or longjmps back, which is still
-   * inside plugin__start(), so the plugin's data and code are valid here. */
+   /* The restoration is doom_cleanup()'s job now, so it happens on the
+    * exit() path too. plugin_crt0.c runs it after plugin_start() returns or
+    * longjmps back, which is still inside plugin__start(), so the plugin's
+    * data and code are valid here. */
    return PLUGIN_OK;
 }

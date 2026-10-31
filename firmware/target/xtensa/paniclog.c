@@ -1,30 +1,28 @@
-/*
- * paniclog.c -- get Rockbox's panic text somewhere readable after the fact.
+/* paniclog.c -- get Rockbox's panic text somewhere readable after the fact.
  *
  * panicf() formats the message into panic_buf, draws it on the LCD, and then
  * calls abort(). IDF prints "abort() was called at PC ..." followed by a
  * backtrace, but never the message -- so the only copy of something like
- * "abandon ship! dircache" is on the glass. That is no use to anyone who is not
- * standing in front of the device, and it made this session's thread bug take
- * far longer than it should have: the panel was correctly reporting the fault
- * while the console reported only that *a* fault happened.
+ * "abandon ship! dircache" is on the glass. That is no use to anyone who is
+ * not standing in front of the device, and it made this session's thread bug
+ * take far longer than it should have: the panel was correctly reporting the
+ * fault while the console reported only that *a* fault happened.
  *
  * Two routes out, because the two ways this goes wrong need different ones:
  *
- *   - esp_rom_printf() immediately. The panic path masks interrupts before
- *     formatting, and IDF's printf takes a lock that may already be held, so
- *     printf here deadlocks or aborts inside the abort handler. The ROM routine
- *     takes no lock and works with interrupts masked.
+ * - esp_rom_printf() immediately. The panic path masks interrupts before
+ * formatting, and IDF's printf takes a lock that may already be held, so
+ * printf here deadlocks or aborts inside the abort handler. The ROM routine
+ * takes no lock and works with interrupts masked.
  *
- *   - a .noinit record, dumped by the next boot. The console is USB-Serial-JTAG,
- *     which resets with the chip, so text emitted in the last milliseconds
- *     before a reboot can be lost before the host reads it. Internal SRAM
- *     survives the reset that a panic causes, so the record does.
+ * - a .noinit record, dumped by the next boot. The console is
+ * USB-Serial-JTAG, which resets with the chip, so text emitted in the last
+ * milliseconds before a reboot can be lost before the host reads it.
+ * Internal SRAM survives the reset that a panic causes, so the record does.
  *
  * The record is one deep and prints once. Panics are rare enough that a ring
  * would be speculative, and printing the same panic on every subsequent boot
- * would be worse than not printing it at all.
- */
+ * would be worse than not printing it at all. / */
 
 #include <stdint.h>
 #include <string.h>
@@ -333,9 +331,9 @@ struct frame_rtc
     uint32_t depc;
     uint32_t cache_vaddr; /* the access the cache refused */
     uint32_t cache_size;  /* and how wide it was */
-    /* Window state, read from the registers because the frame does not carry it:
-       windowbase, windowstart, and a5 (the pointer the spill and underflow
-       handlers walk). */
+    /* Window state, read from the registers because the frame does not carry
+       it: windowbase, windowstart, and a5 (the pointer the spill and
+       underflow handlers walk). */
     uint32_t windowbase;
     uint32_t windowstart;
     uint32_t a5;
@@ -583,8 +581,9 @@ int paniclog_frame_words(char *buf, int bufsize, int line)
 
 /* Store ps, epc1..epc4, depc and the cache-error detail. regs[] is the fixed
  * order documented in espressif_esp32s3/idf-app/panic_cdc.c: ps, epc1, epc2,
- * epc3, epc4, depc, cache_vaddr, cache_size. Words that could not be read legally are zero and
- * the line says so, rather than presenting a zero as if it were a real value. */
+ * epc3, epc4, depc, cache_vaddr, cache_size. Words that could not be read
+ * legally are zero and the line says so, rather than presenting a zero as if
+ * it were a real value. */
 void paniclog_frame_regs(const unsigned long *regs, int count)
 {
     volatile struct frame_rtc *fr =
@@ -838,15 +837,14 @@ void paniclog_dump(void)
 
 /* Proven on hardware the first time it was used: a crash during WAV resume
  * ended the trail at "placed", and the next boot printed it. Two things that
- * result settled, both of which the register dump could not give us at the time
- * because IDF's panic entry had not yet been taken over and the handler re-entered
- * before printing anything:
+ * result settled, both of which the register dump could not give us at the
+ * time because IDF's panic entry had not yet been taken over and the handler
+ * re-entered before printing anything:
  *
- *   - .noinit internal SRAM does survive panic_restart() (RTC_SW_CPU_RST), so a
- *     write-while-healthy trail is a usable crash record on this target;
- *   - the fault is at or after codec image placement, not inside the loader --
- *     both segments were placed and the load returned.
- */
+ * - .noinit internal SRAM does survive panic_restart() (RTC_SW_CPU_RST), so
+ * a write-while-healthy trail is a usable crash record on this target; - the
+ * fault is at or after codec image placement, not inside the loader -- both
+ * segments were placed and the load returned. / */
 
 /* What the trail found, first try after widening it to cover backlight, volume
  * and transport stop: a crash reproduced by rapid file cycling and by

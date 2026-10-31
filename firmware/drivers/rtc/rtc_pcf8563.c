@@ -17,8 +17,7 @@
  * KIND, either express or implied.
  *
  ****************************************************************************/
-/*
- * PCF8563 real-time clock, driven through the synchronous I2C API that every
+/* PCF8563 real-time clock, driven through the synchronous I2C API that every
  * target provides.
  *
  * The existing RTC_E8564 driver covers the same register layout, but it is
@@ -27,13 +26,12 @@
  *
  * Two things worth knowing about this chip:
  *
- *   - CTRL1 bit 7 halts the oscillator. A PCF8563 that has been unpowered comes
- *     back stopped if the previous firmware stopped it, so rtc_init() clears the
- *     bit rather than assuming the default.
- *   - Bit 7 of the seconds register is the voltage-low flag. When it is set the
- *     chip says its timekeeping is not guaranteed, which is the only signal we
- *     get that the RTC lost power.
- */
+ * - CTRL1 bit 7 halts the oscillator. A PCF8563 that has been unpowered
+ * comes back stopped if the previous firmware stopped it, so rtc_init()
+ * clears the bit rather than assuming the default. - Bit 7 of the seconds
+ * register is the voltage-low flag. When it is set the chip says its
+ * timekeeping is not guaranteed, which is the only signal we get that the
+ * RTC lost power. / */
 
 #include "config.h"
 #include "i2c.h"

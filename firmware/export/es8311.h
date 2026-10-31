@@ -48,8 +48,9 @@ AUDIOHW_SETTING(MIC_GAIN, "dB", 0, 3, 0, 37, 30)
 #endif
 
 void es8311_init(void);
-/* Format the codec's readback state (clock dividers, power, DAC, and the write
- * success counts) into buf for the debug screen. Returns the snprintf length. */
+/* Format the codec's readback state (clock dividers, power, DAC, and the
+ * write success counts) into buf for the debug screen. Returns the snprintf
+ * length. */
 int es8311_stat(char *buf, size_t bufsz);
 void es8311_postinit(void);
 void es8311_close(void);

@@ -324,7 +324,8 @@ void lcd_awake(void)
 void lcd_shutdown(void)
 {
     /* The backlight thread locks itself on SYS_POWEROFF so it cannot go out
-     * before the rails drop, so the PWM still has to be killed explicitly here. */
+     * before the rails drop, so the PWM still has to be killed explicitly
+     * here. */
     backlight_hw_off();
     st7789_display_off();
     st7789_sleep();

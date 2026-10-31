@@ -98,13 +98,13 @@
 # define NO_UNCACHED_ADDR       /* TODO: maybe implement this */
 # define POST_DMA_FLUSH
 #elif defined(CPU_XTENSA)
-/* ESP32-S3. The DWC2 AHB sees the same addresses the CPU does, and this SoC has no
- * non-cacheable alias for internal SRAM, so coherence has to be explicit. The driver
- * already does both halves: COMMIT_DCACHE_RANGE() before an IN transfer (see
- * usb_dw_epstart) and DISCARD_DCACHE_RANGE() after an OUT one under POST_DMA_FLUSH.
- * POST_DMA_FLUSH is required rather than optional here -- the core speculates, so a
- * line can be fetched before the DMA has written it. Same shape as STM32H743, for the
- * same reason. */
+/* ESP32-S3. The DWC2 AHB sees the same addresses the CPU does, and this SoC
+ * has no non-cacheable alias for internal SRAM, so coherence has to be
+ * explicit. The driver already does both halves: COMMIT_DCACHE_RANGE()
+ * before an IN transfer (see usb_dw_epstart) and DISCARD_DCACHE_RANGE()
+ * after an OUT one under POST_DMA_FLUSH. POST_DMA_FLUSH is required rather
+ * than optional here -- the core speculates, so a line can be fetched before
+ * the DMA has written it. Same shape as STM32H743, for the same reason. */
 # define USB_DW_PHYSADDR(x)     x
 # define NO_UNCACHED_ADDR
 # define POST_DMA_FLUSH
@@ -237,16 +237,15 @@ static void usb_dw_set_address(uint8_t address)
     DWC_DCFG = (DWC_DCFG & ~(0x7f0)) | DAD(address);
 }
 
-/*
- * Both waits below are unbounded on every other target. On ESP32-S3 a hang here
- * is the likeliest failure of a first attach: the core only answers once both
- * clock gates are enabled and both reset bits are cleared, and the pad handover
- * that makes the core usable also takes GPIO19/20 away from USB-Serial-JTAG -- so
- * the console and esptool are both gone at exactly the moment a spin loop would
- * matter. An unbounded spin then means a silent board and a power cycle with no
- * diagnosis left behind. Bounding them turns that into a panic, which the LCD
- * shows and which the breadcrumb trail records for the next boot.
- */
+/* Both waits below are unbounded on every other target. On ESP32-S3 a hang
+ * here is the likeliest failure of a first attach: the core only answers
+ * once both clock gates are enabled and both reset bits are cleared, and the
+ * pad handover that makes the core usable also takes GPIO19/20 away from
+ * USB-Serial-JTAG -- so the console and esptool are both gone at exactly the
+ * moment a spin loop would matter. An unbounded spin then means a silent
+ * board and a power cycle with no diagnosis left behind. Bounding them turns
+ * that into a panic, which the LCD shows and which the breadcrumb trail
+ * records for the next boot. / */
 #if defined(CPU_XTENSA)
 #define XT_USB_SPIN_LIMIT 2000000u
 
@@ -440,20 +439,19 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
 #endif
     DWC_GRSTCTL = TXFNUM(fnum) | fflsh;
 #if defined(CPU_XTENSA)
-    /*
-     * The flush request bit is self-clearing, and this wait was unconditional: on a
-     * core that cannot complete a flush -- PHY clock stopped, or an endpoint holding
-     * FIFO data for a host that has gone away -- it spins forever in the caller's
-     * context, which starves the idle task and ends in a task-watchdog reset rather
-     * than anything the driver could report. Measured on the esp32s3 unplug crash:
-     * reset reason 6 (task watchdog) with no panic record, i.e. a silent spin.
+    /* The flush request bit is self-clearing, and this wait was
+     * unconditional: on a core that cannot complete a flush -- PHY clock
+     * stopped, or an endpoint holding FIFO data for a host that has gone
+     * away -- it spins forever in the caller's context, which starves the
+     * idle task and ends in a task-watchdog reset rather than anything the
+     * driver could report. Measured on the esp32s3 unplug crash: reset
+     * reason 6 (task watchdog) with no panic record, i.e. a silent spin.
      *
-     * Bounded, and on timeout it records and returns rather than panicking: a failed
-     * flush on a device that is being torn down or has lost its host is not worth
-     * killing the player for, and panicf() here would only be visible on a console
-     * nobody is reading. The note goes to RTC slow memory so the next boot can say
-     * whether this is what was hanging.
-     */
+     * Bounded, and on timeout it records and returns rather than panicking:
+     * a failed flush on a device that is being torn down or has lost its
+     * host is not worth killing the player for, and panicf() here would only
+     * be visible on a console nobody is reading. The note goes to RTC slow
+     * memory so the next boot can say whether this is what was hanging. / */
     {
         uint32_t n = XT_USB_SPIN_LIMIT;
 
@@ -835,37 +833,36 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPDMA(epnum, epdir) = USB_DW_PHYSADDR((uint32_t)buf);
 #endif
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
-    /* Endpoint 0 is the control endpoint: it has to answer whatever the host asks next, and
-     * a stall latched by an earlier refused request would otherwise hold back every later
-     * reply. Measured on ESP32-S3: EP0 IN armed with EPENA and STALL both set, after which
-     * Linux reports "cannot get freq at ep 0x2" for the rest of the session and the CDC
-     * console goes quiet. Clearing it on the way to arming is what a gadget function does
-     * when a new request arrives. Other endpoints keep their stall -- there it is a real
-     * signal to the host.
-     */
+    /* Endpoint 0 is the control endpoint: it has to answer whatever the host
+     * asks next, and a stall latched by an earlier refused request would
+     * otherwise hold back every later reply. Measured on ESP32-S3: EP0 IN
+     * armed with EPENA and STALL both set, after which Linux reports "cannot
+     * get freq at ep 0x2" for the rest of the session and the CDC console
+     * goes quiet. Clearing it on the way to arming is what a gadget function
+     * does when a new request arrives. Other endpoints keep their stall --
+     * there it is a real signal to the host. / */
     if (epnum == 0 && epdir == USB_DW_EPDIR_IN && (DWC_EPCTL(0, USB_DW_EPDIR_IN) & STALL))
         DWC_EPCTL(0, USB_DW_EPDIR_IN) &= ~STALL;
 
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /*
-         * Handle frame scheduling for isochronous endpoints.
+        /* Handle frame scheduling for isochronous endpoints.
          *
          * TODO: this needs to take into account the endpoint's bInterval,
-         * and currently will not work for USB 2.0 endpoints that require
-         * one packet per microframe. For slower USB 2.0 endpoints data is
-         * only transferred on *even* frames; SETD1PIDOF is not used.
-         * This also breaks for USB 1.0 endpoints with bInterval > 1 for
-         * the same reason.
+         * and currently will not work for USB 2.0 endpoints that require one
+         * packet per microframe. For slower USB 2.0 endpoints data is only
+         * transferred on *even* frames; SETD1PIDOF is not used. This also
+         * breaks for USB 1.0 endpoints with bInterval > 1 for the same
+         * reason.
          *
-         * Measured on ESP32-S3: leaving SETD0PIDEF/SETD1PIDOF alone and letting
-         * the core keep its own toggle is not a fix but a ten-fold regression --
-         * Frames dropped went from ~10/s to ~100/s -- so each isochronous OUT
-         * transfer does need an explicit expectation, and the core carries none
-         * across transfers. TinyUSB can omit the per-arm write because it
-         * programs the PID once at edpt_open (dcd_dwc2.c:325-327) and leaves it
-         * alone afterwards; here every arm is a new transfer.
-         */
+         * Measured on ESP32-S3: leaving SETD0PIDEF/SETD1PIDOF alone and
+         * letting the core keep its own toggle is not a fix but a ten-fold
+         * regression -- Frames dropped went from ~10/s to ~100/s -- so each
+         * isochronous OUT transfer does need an explicit expectation, and
+         * the core carries none across transfers. TinyUSB can omit the
+         * per-arm write because it programs the PID once at edpt_open
+         * (dcd_dwc2.c:325-327) and leaves it alone afterwards; here every
+         * arm is a new transfer. / */
         if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
         else
@@ -937,8 +934,9 @@ static void usb_dw_abort_endpoint(int epnum, enum usb_dw_epdir epdir)
     }
 }
 
-/* Target-side cache maintenance for DMA-written receive buffers. Empty by default:
- * architectures without a D-cache (or whose DMA bypasses it) need nothing. */
+/* Target-side cache maintenance for DMA-written receive buffers. Empty by
+ * default: architectures without a D-cache (or whose DMA bypasses it) need
+ * nothing. */
 __attribute__((weak)) void usb_dw_target_dma_discard(void *buf, unsigned int len)
 {
     (void)buf;
@@ -1515,17 +1513,16 @@ static void usb_dw_init(void)
 static void usb_dw_exit(void)
 {
 #if defined(CPU_XTENSA)
-    /*
-     * Abort every armed endpoint before asking the core to disconnect.
+    /* Abort every armed endpoint before asking the core to disconnect.
      *
-     * usb_drv_cancel_all_transfers() exists in this driver, but nothing on the generic
-     * teardown path calls it -- only three ARM drivers invoke it from their own code. On
-     * esp32s3 that is fatal: the CDC OUT endpoint re-arms itself indefinitely, so at
-     * extraction at least one endpoint is always active, the soft disconnect never
-     * completes, and the core then stops answering register reads.
+     * usb_drv_cancel_all_transfers() exists in this driver, but nothing on
+     * the generic teardown path calls it -- only three ARM drivers invoke it
+     * from their own code. On esp32s3 that is fatal: the CDC OUT endpoint
+     * re-arms itself indefinitely, so at extraction at least one endpoint is
+     * always active, the soft disconnect never completes, and the core then
+     * stops answering register reads.
      *
-     * Guarded so no other target's teardown changes.
-     */
+     * Guarded so no other target's teardown changes. / */
     for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
         for (int dir = 0; dir < USB_DW_NUM_DIRS; dir++)
             if (usb_endpoints & (1 << (ep + USB_DW_DIR_OFF(dir))))
@@ -1540,22 +1537,23 @@ static void usb_dw_exit(void)
     udelay(10);
 
 #if defined(CPU_XTENSA)
-    /*
-     * The PHY clock is deliberately left running on esp32s3. Measured, gating it is
-     * where the extraction dies: the soft disconnect completes and the delay after it
-     * returns, and the very next core register access after PCGCCTL=1 stalls the bus,
-     * so the watchdog resets the board before the teardown finishes. It is not a fair
-     * test of whether the write or the read wedges: either way the core is unreachable
-     * once the PHY clock is gone.
+    /* The PHY clock is deliberately left running on esp32s3. Measured,
+     * gating it is where the extraction dies: the soft disconnect completes
+     * and the delay after it returns, and the very next core register access
+     * after PCGCCTL=1 stalls the bus, so the watchdog resets the board
+     * before the teardown finishes. It is not a fair test of whether the
+     * write or the read wedges: either way the core is unreachable once the
+     * PHY clock is gone.
      *
-     * DWC2 must not have its PHY clock gated while an endpoint is still active, and on this
-     * board one always is: the CDC OUT endpoint re-arms itself and re-delivers its stale
-     * byte indefinitely, which is a separate bug in this driver's OUT handling. So gating
-     * here is a bus hang waiting for an extraction.
+     * DWC2 must not have its PHY clock gated while an endpoint is still
+     * active, and on this board one always is: the CDC OUT endpoint re-arms
+     * itself and re-delivers its stale byte indefinitely, which is a
+     * separate bug in this driver's OUT handling. So gating here is a bus
+     * hang waiting for an extraction.
      *
-     * Leaving it clocked costs a little power while USB mode is down. The pad release that
-     * follows reads core registers, so the core has to stay reachable.
-     */
+     * Leaving it clocked costs a little power while USB mode is down. The
+     * pad release that follows reads core registers, so the core has to stay
+     * reachable. / */
 #else
     DWC_PCGCCTL = 1; /* Stop Phy clock */
 #endif
@@ -1764,9 +1762,9 @@ int usb_drv_send(int endpoint, void *ptr, int length)
     return dw_ep->status;
 }
 
-/* The DSTS frame field sits at a different bit position on different DWC2 cores. A target
- * whose core packs it elsewhere returns the frame number from here; a negative return
- * keeps the generic reading. */
+/* The DSTS frame field sits at a different bit position on different DWC2
+ * cores. A target whose core packs it elsewhere returns the frame number
+ * from here; a negative return keeps the generic reading. */
 __attribute__((weak)) int usb_dw_target_frame_number(uint32_t dsts)
 {
     (void)dsts;

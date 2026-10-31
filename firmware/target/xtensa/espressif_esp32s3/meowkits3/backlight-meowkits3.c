@@ -63,8 +63,9 @@ static void set_duty(unsigned duty)
     if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, BL_FULL_DUTY - duty) != ESP_OK)
         printf("BL ledc_set_duty failed\n");
     /* This call is the latch. The duty and hpoint registers sit in the APB
-     * domain and the channel only samples them into its own clock domain when
-     * conf0.low_speed_update is pulsed, which is what ledc_update_duty() does. */
+     * domain and the channel only samples them into its own clock domain
+     * when conf0.low_speed_update is pulsed, which is what
+     * ledc_update_duty() does. */
     if (ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7) != ESP_OK)
         printf("BL ledc_update_duty failed\n");
 }

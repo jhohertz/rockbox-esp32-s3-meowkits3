@@ -59,12 +59,13 @@ extern void rb_thread_set_thread0_task(void *handle);
  * disagree with the kernel that actually gets linked. */
 const unsigned int rb_kernel_tick_hz = configTICK_RATE_HZ;
 
-/* Thread 0's stack, defined in firmware/target/xtensa/espressif_esp32s3/memory-esp32s3-syms.S.
- * It is created here rather than left to FreeRTOS because Rockbox's kernel
- * reads stackbegin/stackend as linker symbols and uses them as thread 0's
- * stack bounds -- for stack usage reporting, and to place its first thread.
- * If the task's stack were malloc'd by xTaskCreate, those symbols would
- * describe a region nothing was actually running on. */
+/* Thread 0's stack, defined in
+ * firmware/target/xtensa/espressif_esp32s3/memory-esp32s3-syms.S. It is
+ * created here rather than left to FreeRTOS because Rockbox's kernel reads
+ * stackbegin/stackend as linker symbols and uses them as thread 0's stack
+ * bounds -- for stack usage reporting, and to place its first thread. If the
+ * task's stack were malloc'd by xTaskCreate, those symbols would describe a
+ * region nothing was actually running on. */
 extern unsigned char rockbox_stack[];
 
 /* Rockbox's thread 0 stack, in bytes. memory-esp32s3-syms.S defines the
