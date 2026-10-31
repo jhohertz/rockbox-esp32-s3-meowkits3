@@ -11,6 +11,7 @@
 
 #include "system.h"
 #include "paniclog.h"
+#include "debug.h"        /* dbg_breadcrumb_retained() */
 #include "button.h"
 #include "tick.h"     /* current_tick and HZ: the report below is timed in ticks */
 #include "gpio-esp32s3.h"
@@ -334,6 +335,12 @@ int button_read_device(int *data)
 #ifdef HAVE_USBSTACK
         if (usb_host_session())
         {
+            /* Stamped rather than silent: a power key that does nothing while
+               enumerated is deliberate, but "nothing happened" and "the
+               shutdown path crashed" look identical from outside, and this
+               ring is the only witness that survives the chip. */
+            dbg_breadcrumb_retained("pekR", (unsigned long)axp173_input_status(),
+                                    current_tick);
             if (auto_off)
             {
                 axp173_auto_off_enable(false);
@@ -348,16 +355,17 @@ int button_read_device(int *data)
             auto_off = true;
         }
 #endif
-        /* One GPIO read instead of one I2C transaction, on the 99 passes in 100
-         * that
-           have nothing latched. See the note above for why the pin may gate the read and
-           why it may not be the only witness. */
+        /* One GPIO read instead of one I2C transaction, on the 99 passes in
+           100 that have nothing latched. See the note above for why the pin
+           may gate the read and why it may not be the only witness. */
         if (gpio_read_pin(PIN_PMU_IRQ) && ++pek_pin_skips < 20)
             return b;
         pek_pin_skips = 0;
 
         if (axp173_power_key_pressed())
         {
+            dbg_breadcrumb_retained("pekL", current_tick,
+                                    (unsigned long)axp173_input_status());
             shutdown_requested = true;
             shutdown_request_tick = current_tick;
             sys_poweroff();

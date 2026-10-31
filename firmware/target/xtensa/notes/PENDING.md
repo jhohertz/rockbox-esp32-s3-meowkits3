@@ -20,26 +20,42 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Rare crash on m4a/opus after a long chain — parked, awaiting a reproducible
-  case.** One fault in a long session: `IllegalInstruction pc=4037cd8c`, which
-  resolves to `panic_abort + 16` — the deliberate break at the end of IDF's abort
-  path, so the reported cause is the *second* exception and the first one's
-  identity is lost. `EPC2 = switch_thread + 82` lands on the instruction after
-  `waiti 0` in the idle loop, which is a stale witness rather than a culprit.
-  Two facts worth keeping: those loads spent `segs 23M–25M` cycles (~100 ms) in
-  the file read, and their `sync` does not scale with the invalidated line count,
-  so what varies is how much of the range was dirty, not how large it is. Parked
-  by agreement rather than left open in silence — the trail ring is the cheap
-  next witness if it recurs (System → Debug → View HW info), and after that a
-  codecbuf-free report, since the chain hypothesis is memory pressure.
+- **Shutdown panics every time, and it is the same fault that was parked as
+  "rare".** Reproduced on command: long-press the power key and the white
+  `*PANIC*` screen flashes for well under a second, then the unit reboots into
+  the menu by itself. The retained record over CDC reads:
 
-- **Scratch instrumentation is still in the loader and must go before submission.**
-  `lc-esp32s3.c` carries `#define LOGF_ENABLE`, an `xt_cycles()` helper reading
-  `rsr.ccount`, and a `logf("lc wb %d srv %d ln %u segs %u hdr %u sync %u\n")`
-  line. It earned its keep — it is what proved the write-back cost, that the ROM
-  accepts the external range, and that the execution window really is
-  instruction-cache served — but it is a per-load log line in shipped code.
-  Drop it as its own commit when the crash is settled.
+  ```
+  rb panic: *rb-panic* IllegalInstruction pc=4037cd8c excv=00000000 cause=0
+  rb reset 3 rtc 26 trail 7470
+  rb ps 00060024 sp 3fcd0e60 epc1 4037cd8c epc2 4205e0d2 ...
+  rb win wb 0000000b ws 00000ac0 a5 00035171
+  ```
+
+  `pc` is `panic_abort + 16` again — the deliberate break, so the cause reported
+  is the second exception. `ps = 0x00060024` has INTLEVEL 4, which is the debug
+  level, so this went through `_DoubleExceptionVector`. `epc2 = 0x4205e0d2` is
+  `switch_thread + 0x52`, the instruction right after `waiti 0`: the core was
+  parked in `core_sleep()`, an interrupt woke it, and the handler chain
+  double-faulted. `a5 = 0x35171` is not a valid base-save pointer, which is what
+  a window underflow walks — so the fault is in interrupt-level window bookkeeping,
+  not in whatever the idle loop was about to run. Reset reason 3 is `ESP_RST_SW`,
+  i.e. the reboot `panic()` asked for.
+
+  Why it looked rare: the earlier single sighting was a power-down too. Nothing
+  about the codec chain was load-bearing.
+
+  **Next measurement, flashed but not yet run.** The RTC-slow teardown ring only
+  covered the USB teardown, and the SRAM trail dies with the rails, so nothing
+  named the step. It now also stamps the power-key decision (`pekR` refused
+  while enumerated, `pekL` accepted), `audiohw_close` (`awCl`), `lcd_shutdown`
+  (`lcdS`) and `power_off` (`pwOf` with REG32 and the retry count), and
+  `paniclog_crash_report_logf()` prints the last four retained slots over CDC —
+  ~100 bytes, inside the 512-byte ring that reboot-looped the board when this
+  report carried forty trail entries. Reproduce with a reader attached and the
+  ring says which step was in flight.
+
+
 
 - **Narrowing the SDK include path — done, not pending.** Applied as `58a5344523` `IDF_CFLAGS`
   is 64 `-I` directories plus 33 defines and codegen flags, and today the whole

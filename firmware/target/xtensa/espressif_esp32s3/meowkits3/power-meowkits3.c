@@ -22,6 +22,7 @@
 #define LOGF_ENABLE
 
 #include "config.h"
+#include "debug.h"        /* dbg_breadcrumb_retained() */
 
 #include "system.h"
 #include "kernel.h"
@@ -123,6 +124,8 @@ void power_off(void)
         sleep(HZ / 100);
     }
 
+    dbg_breadcrumb_retained("pwOf", (unsigned long)axp173_read_reg(AXP_REG_SHUTDOWN),
+                            (unsigned long)(tries + 1));
     logf("power_off: REG32=%d after %d attempt(s), halting",
          axp173_read_reg(AXP_REG_SHUTDOWN), tries + 1);
 

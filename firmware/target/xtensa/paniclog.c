@@ -943,6 +943,28 @@ void paniclog_crash_report_logf(void)
      * fault turned out to be a stale codec image calling the API one field
      * early. */
 
+    /* The retained RTC-slow ring, newest first, four slots. This is the only
+       witness that survives a power cut, and it is what names the step a
+       shutdown died in -- the SRAM trail is gone once the rails drop, and the
+       panic screen itself is readable for less than a second on this panel.
+       Four slots plus the head line is about 100 bytes, which keeps the whole
+       report inside the 512-byte CDC ring described above. */
+    if (rtc_store->magic == XT_RTC_SLOW_MAGIC)
+    {
+        uint32_t n = rtc_store->next;
+        int k;
+
+        logf("rb rtc trail %lu", (unsigned long)n);
+        for (k = 0; k < 4 && k < (int)n; k++)
+        {
+            uint32_t i = (n - 1 - k) % XT_RTC_SLOTS;
+
+            rtc_slot_line(line, sizeof line, &rtc_store->slot[i]);
+            line[strcspn(line, "\n")] = '\0';
+            logf("rb %s", line);
+        }
+    }
+
     /* Which image is reporting, and which one crashed. They differ whenever
      * a flash happened without the chip restarting -- the reset pulse cannot
      * reach a board whose pads the running image gave to the DWC core -- and

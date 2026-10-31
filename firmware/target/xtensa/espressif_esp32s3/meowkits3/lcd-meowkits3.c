@@ -21,6 +21,7 @@
  */
 
 #include "config.h"
+#include "debug.h"        /* dbg_breadcrumb_retained() */
 #include <string.h>
 #include "system.h"
 #include "lcd.h"
@@ -323,6 +324,7 @@ void lcd_awake(void)
 
 void lcd_shutdown(void)
 {
+    dbg_breadcrumb_retained("lcdS", 0, 0);
     /* The backlight thread locks itself on SYS_POWEROFF so it cannot go out
      * before the rails drop, so the PWM still has to be killed explicitly
      * here. */
