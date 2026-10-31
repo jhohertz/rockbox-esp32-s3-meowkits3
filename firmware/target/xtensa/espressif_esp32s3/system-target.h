@@ -12,20 +12,13 @@
 #include <stdbool.h>
 #include "cache-xtensa.h"   /* per-range maintenance, declared not inlined */
 /*
- * Whole-cache maintenance comes from xtensa HAL asm objects on the firmware
- * side and does not exist on the freestanding side, where codecs reach the
- * cache through codec_api instead. Declaring the three entry points rather than
- * including <xtensa/hal.h> matters more than it looks: system-target.h is
- * reached from system.h, so an IDF include here puts the vendor's headers in
- * front of every Rockbox file in the build -- measured at 919 objects, which is
- * what made -Wno-undef a global flag. The prototypes below are the same three
- * extern declarations hal.h itself carries. Per-range maintenance, which needs
- * IDF's cache HAL, is in cache-xtensa.h and is included by the three drivers
- * that actually call it.
+ * Cache maintenance is declared in cache-xtensa.h and implemented in
+ * cache-xtensa.c, which is the only object on this path that includes the
+ * platform's cache headers. system-target.h is reached from system.h, so a
+ * vendor include here would put IDF's headers in front of every Rockbox file in
+ * the build -- measured at 919 objects, which is what made -Wno-undef a global
+ * flag. Declarations cost nothing; includes do not.
  */
-void xthal_dcache_all_writeback(void);
-void xthal_dcache_all_writeback_inv(void);
-void xthal_icache_all_invalidate(void);
 
 extern long cpu_frequency;   /* set by system_init */
 
@@ -201,48 +194,12 @@ static inline void mdelay(unsigned ms)
     while (ms--) udelay(1000);
 }
 
-/*
- * Whole-cache maintenance. Under ESP-IDF this belongs to the xtensa HAL: the
- * esp32s3 core config has no cache instructions of its own (probeD, flushD,
- * lockD, rdtag, wttag, rinvalidate and binvalidate are all invalid opcodes on
- * this dynconfig), and libxt_hal.a carries the sequences that work. The bare-
- * metal route - calling the mask ROM's Cache_* entry points by absolute
- * address - is on the tagged branch.
- *
- * Internal SRAM (0x3FC88000-0x3FD00000, which is exactly
- * SOC_DMA_LOW/SOC_DMA_HIGH) is served by the L1 D-cache, so anything a DMA
- * touches there needs maintenance. That case is per-range, not whole-cache, and
- * lives in cache-xtensa.h.
- */
-static inline void commit_dcache(void)
-{
-    xthal_dcache_all_writeback();
-}
-
-static inline void commit_discard_dcache(void)
-{
-    xthal_dcache_all_writeback_inv();
-}
-
-/* The instruction cache is a separate structure from the data cache and the two
- * are not coherent with each other. Code written through the data window lands
- * in the D-cache and is written back to memory, but the I-cache keeps whatever
- * previously occupied those lines -- on this target, whichever codec last used
- * the same load address -- so the core fetches stale bytes and reports
- * IllegalInstruction on a perfectly valid instruction.
- *
- * Measured rather than inferred: after loading vorbis, the word at the faulting
- * PC read 02 78 b9 aa where the linked image says 29 08 81 5f, while both
- * neighbouring words matched exactly. A single stale line, not corruption. The
- * panic handler's own memory dump showed the same stale bytes because it reads
- * the 0x42... range through the instruction side too.
- *
- * The name has always promised both halves; only the data-cache half was ever
- * implemented. */
-static inline void commit_discard_idcache(void)
-{
-    commit_discard_dcache();
-    xthal_icache_all_invalidate();
-}
+/* commit_dcache(), commit_discard_dcache() and commit_discard_idcache() are
+ * declared in cache-xtensa.h. They used to be inline here, calling the
+ * toolchain's xthal_* cache entry points -- which on esp32s3 are empty stubs
+ * (`entry a1, 16; retw.n`, verified by disassembly), so the contract was
+ * satisfied in the source and not in the binary. The measurement that
+ * recorded a stale instruction word at a codec's faulting pc was describing
+ * exactly that: nothing ever invalidated or wrote back anything. */
 
 #endif /* SYSTEM_TARGET_H */

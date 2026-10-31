@@ -14,6 +14,8 @@
 
 #if defined(CPU_XTENSA) && !defined(__SIMULATOR__)
 #include "hal/cache_hal.h"
+#include "hal/cache_ll.h"
+#include "esp32s3/rom/cache.h"   /* Cache_WriteBack_All, not wrapped by the LL */
 
 void commit_dcache_range(const void *base, unsigned int size)
 {
@@ -34,6 +36,30 @@ void commit_discard_dcache_range(const void *base, unsigned int size)
 unsigned int cache_dcache_line_size(void)
 {
     return 32;  /* esp32s3 D-cache line, per cache_hal_get_cache_line_size */
+}
+
+void commit_dcache(void)
+{
+    Cache_WriteBack_All();
+}
+
+void commit_discard_dcache(void)
+{
+    Cache_WriteBack_All();
+    cache_ll_invalidate_all(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_DATA,
+                            CACHE_LL_ID_ALL);
+}
+
+void commit_discard_idcache(void)
+{
+    /* Write back first, then invalidate: invalidating a D-cache line that is
+     * still dirty discards the write, and an instruction fetch after this
+     * must not find a line belonging to whatever occupied these pages before
+     * the image was placed. See cache-xtensa.h for why neither half can be a
+     * range operation on this part. */
+    Cache_WriteBack_All();
+    cache_ll_invalidate_all(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL,
+                            CACHE_LL_ID_ALL);
 }
 
 #endif /* CPU_XTENSA && !__SIMULATOR__ */
