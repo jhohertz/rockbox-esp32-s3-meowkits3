@@ -325,6 +325,13 @@
  * numbers plugin.lds includes rather than repeats. */
 #define XT_CODEC_TEXT_SIZE   0x40000
 #define XT_PLUGIN_TEXT_SIZE  0x80000
+/* Imageviewer decoders are loaded *while* imageviewer is running, so they
+ * cannot share the plugin text half the way a plugin and a codec never overlap.
+ * The top of that half is theirs, and a plugin's own text is therefore capped
+ * at XT_PLUGIN_TEXT_SIZE - XT_IMGDEC_TEXT_SIZE: the largest .rock text here is
+ * doom's 169,588 B (0x29674) against that 256 KB, and the largest decoder is
+ * png's 12,512 B against the decoders' 256 KB. Measured from the built zip. */
+#define XT_IMGDEC_TEXT_SIZE  0x40000
 
 /* Data-window addresses of those halves, i.e. the addresses they are *written*
  * through. Execution uses the linked address, which is this plus XT_IROM_OFF. */

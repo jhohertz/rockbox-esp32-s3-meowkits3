@@ -83,4 +83,61 @@ if [ "$arena_top" -gt "$window_end" ]; then
     echo "esp-layout-check: FAIL -- arena top $(printf '0x%08x' $arena_top) is past the mapped window end $(printf '0x%08x' $window_end); the tail has no MMU entry." >&2
     rc=1
 fi
+# Imageviewer loads its decoders while imageviewer itself is executing, so a
+# decoder's text must sit above every plugin's text and below the codec's. Both
+# bounds come from the built artifacts rather than from the headers, so a change
+# to either linker script that reintroduces the overlap fails here. Before this
+# was checked every decoder was linked at the plugin text origin, and opening a
+# JPEG overwrote the code that had just called lc_open(): jpeg and png hung the
+# board (their text is larger than imageviewer's own 6,652 B), bmp rendered
+# garbage (smaller, so it clobbered only part of it).
+BUILD=$(dirname "$MAP")
+iromoff=$(getdef XT_IROM_OFF "$MEMHDR")
+imgdecsize=$(getdef XT_IMGDEC_TEXT_SIZE "$MEMHDR")
+[ -n "$iromoff" ] || die "could not read XT_IROM_OFF from $MEMHDR"
+[ -n "$imgdecsize" ] || die "could not read XT_IMGDEC_TEXT_SIZE from $MEMHDR"
+
+ovl="$BUILD/apps/plugins/imageviewer/jpeg/jpeg.ovl"
+[ -f "$ovl" ] || die "no jpeg.ovl in $BUILD -- build plugins first"
+
+# Print the executable segment as "<base> <end>", converted to the data-window
+# address that names the same physical pages. readelf -lW columns are Type,
+# Offset, VirtAddr, PhysAddr, FileSiz, MemSiz, Flg, Align; ld rounds each
+# segment down to its file alignment, so what the artifact says is the real
+# placement rather than the region origin written in the script.
+textseg() {
+    readelf -lW "$1" | awk -v off="$iromoff" '
+        /^ *LOAD/ {
+            v = strtonum($3);
+            if (v >= 0x40000000) {
+                b = v - strtonum(off);
+                print b, b + strtonum($5);
+                exit
+            }
+        }'
+}
+
+set -- $(textseg "$ovl")
+dec="$1"; dec_end="$2"
+[ -n "$dec" ] || die "no executable segment in $ovl"
+
+plugin_top=$plugin_text
+for r in $(find "$BUILD/apps/plugins" -name '*.rock' 2>/dev/null); do
+    set -- $(textseg "$r")
+    if [ -n "$2" ] && [ "$2" -gt "$plugin_top" ]; then
+        plugin_top="$2"
+    fi
+done
+
+echo "esp-layout-check: decoder text $(printf '0x%08x' $dec)..$(printf '0x%08x' $dec_end), slice $(printf '0x%08x' $imgdecsize)"
+echo "esp-layout-check: highest plugin text end $(printf '0x%08x' $plugin_top), codec text $(printf '0x%08x' $codec_text)"
+
+if [ "$dec" -lt "$plugin_top" ]; then
+    echo "esp-layout-check: FAIL -- decoder text at $(printf '0x%08x' $dec) is below the highest plugin text end $(printf '0x%08x' $plugin_top): imageviewer would be overwritten by its own decoder." >&2
+    rc=1
+fi
+if [ "$dec_end" -gt "$codec_text" ]; then
+    echo "esp-layout-check: FAIL -- decoder slice reaches $(printf '0x%08x' $dec_end), past codec text at $(printf '0x%08x' $codec_text): a codec loaded while a plugin runs would be clobbered." >&2
+    rc=1
+fi
 exit $rc

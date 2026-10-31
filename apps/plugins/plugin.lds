@@ -229,13 +229,30 @@ OUTPUT_FORMAT(elf32-xtensa-le)
 #endif
 
 #ifdef CPU_XTENSA
-/* Overlays and the imgvdecoder blob are plugins as far as this script is
- * concerned, so they share the plugin text half. */
 #ifdef CODEC
 #define THIS_TEXT_LENGTH XT_CODEC_TEXT_SIZE
 #define THIS_TEXT_ORIGIN CODEC_TEXT_ORIGIN
-#else
-#define THIS_TEXT_LENGTH XT_PLUGIN_TEXT_SIZE
+#elif defined IMGVDECODER_OFFSET
+/* An imageviewer decoder is loaded while its host plugin is resident, so it
+ * must not share the plugin text half: apps/plugins/imageviewer/image_decoder.c
+ * calls lc_open() from inside imageviewer, and the decoder's .text landed on
+ * the very code that was executing. The measured symptom was a JPEG or PNG
+ * opening hanging the board (their text is larger than imageviewer's own, so
+ * they overwrote all of it) and a BMP rendering garbage (smaller, so it
+ * overwrote only part).
+ *
+ * On every upstream target this cannot happen, because there PLUGIN_TEXT and
+ * PLUGIN_RAM are the same region and the single IMGVDECODER_OFFSET shift moves
+ * both halves out of the host's way at once. Here they are different cache
+ * windows, so the shift needs applying twice: above for the data half, here for
+ * the text half. Decoders get the top slice, XT_IMGDEC_TEXT_SIZE, plugins the
+ * rest; codec text sits above that slice, so a codec loaded while a plugin runs
+ * still cannot be clobbered. */
+#define THIS_TEXT_LENGTH XT_IMGDEC_TEXT_SIZE
+#define THIS_TEXT_ORIGIN (PLUGIN_TEXT_ORIGIN \
+    + XT_PLUGIN_TEXT_SIZE - XT_IMGDEC_TEXT_SIZE)
+#else /* a plugin: everything below the decoders' slice */
+#define THIS_TEXT_LENGTH (XT_PLUGIN_TEXT_SIZE - XT_IMGDEC_TEXT_SIZE)
 #define THIS_TEXT_ORIGIN PLUGIN_TEXT_ORIGIN
 #endif
 #endif
