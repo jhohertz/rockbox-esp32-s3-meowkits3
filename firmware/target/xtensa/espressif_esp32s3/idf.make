@@ -61,31 +61,34 @@ LIBC_HDR_FIRST := -I$(FIRMDIR)/libc/include
 # giving them to everything else means a reviewer cannot tell which object can
 # see
 # the vendor's API.
-# Two directories, not ninety: the libc shim, and the sdkconfig.h it includes.
+# Two directories, not sixty-four: the platform libc's own headers, and the
+# sdkconfig.h they include. `rbendian.h` reaches <endian.h> unconditionally and
+# the toolchain sysroot does not provide one, so that shim belongs to the whole
+# firmware domain. The component directories belong only to the files that name
+# an IDF header, below; handing them to everything else means a reviewer cannot
+# tell which object can see the vendor's API.
 IDF_LIBC_INC := $(filter %/platform_include,$(IDF_CFLAGS)) \
                 $(filter %/build/config,$(IDF_CFLAGS))
-# Everything the SDK compiles with that is not an include path, minus the
-# defines
-# that describe the SDK rather than the C library. ESP_PLATFORM is the one that
-# matters: system-target.h includes <xtensa/corebits.h> if it is set, which is
-# how
-# a vendor header reached every file in the build.
-IDF_LIBC_FLAGS := $(filter-out -DESP_PLATFORM *-DIDF_VER* *-DSOC_MMU_PAGE_SIZE* \
-                               *-DSOC_XTAL_FREQ_MHZ*, $(filter-out -I%,$(IDF_CFLAGS)))
 
-# The firmware domain compiles against the platform's libc: its own header
-# replacements go after the system directories, and the SDK's libc shim
-# directory
-# is on the path.
-# The firmware domain compiles against the platform's libc: its own header
-# replacements go after the system directories, and the SDK's libc shim
-# directory
-# is on the path. IDF's non-include flags stay global in this variant --
-# including
-# its -Og -- so the only change is who can see the vendor's headers.
+# Rockbox's codegen and warning policy stays in charge of Rockbox's code:
+# BASE_CFLAGS carries -Os and the tree's warnings, and the SDK's -Og, -std and
+# configuration defines do not override them. Two of the SDK's feature-test
+# macros are load-bearing for the platform C library and are named here rather
+# than inherited: firmware/include/string-extra.h calls mempcpy(), which newlib
+# only declares with _GNU_SOURCE, and its pthread wrappers need
+# _POSIX_READER_WRITER_LOCKS.
+#
+# The last define is the libc shim's own switch -- components/newlib/
+# platform_include/{stdio,ctype}.h guard their extra declarations with
+# `#if CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY`, and it is absent from this
+# project's sdkconfig.h because the build uses newlib, not pico libc. Naming it
+# at 0 states what the value already is; leaving it undefined would ask every
+# file in the domain to read a macro nobody set, which is 228 -Wundef warnings
+# attributed to two vendor headers.
 CFLAGS = $(filter-out $(ROCKBOX_LIB_HDRS),$(BASE_CFLAGS)) $(LIBC_HDR_AFTER) \
-         $(IDF_LIBC_INC) $(IDF_LIBC_FLAGS) -DHAVE_SYSTEM_LIBC \
-         -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
+         $(IDF_LIBC_INC) -D_GNU_SOURCE -D_POSIX_READER_WRITER_LOCKS \
+         -DHAVE_SYSTEM_LIBC -DCONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0
+
 # The SDK's CONFIG_ defines must not reach a SOURCES file, because that would
 # let the SDK's configuration decide which Rockbox files get compiled; only its
 # search paths and Rockbox's fallback headers go to the preprocessor. The
