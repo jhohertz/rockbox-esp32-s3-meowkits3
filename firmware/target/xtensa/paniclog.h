@@ -53,7 +53,7 @@ void paniclog_frame(const unsigned long *words, int count,
 void paniclog_frame_info(unsigned long *exception, unsigned long *pseudo,
                          unsigned long *count);
 /* Four retained frame words per line, line 0 first. 0 when nothing is
-/* stored. */
+ * stored. */
 int paniclog_frame_words(char *buf, int bufsize, int line);
 
 /* Store ps, epc1..epc4, depc and the cache-error detail alongside the frame.
@@ -71,7 +71,7 @@ void paniclog_frame_window(uint32_t windowbase, uint32_t windowstart,
 int paniclog_frame_window_text(char *buf, int bufsize);
 
 /* The address and width the cache refused; 0 when the latch reported
-/* nothing. */
+ * nothing. */
 int paniclog_frame_cache(char *buf, int bufsize);
 
 /* Which reset produced this boot, and the build the dead boot was running.

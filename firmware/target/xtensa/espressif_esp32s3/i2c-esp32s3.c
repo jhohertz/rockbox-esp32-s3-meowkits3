@@ -131,7 +131,7 @@ static void begin_list(void)
 }
 
 /* Writing a command clears its DONE bit, which is what the controller looks
-/* for. */
+ * for. */
 static bool add_cmd(unsigned opcode, unsigned nbytes,
                     unsigned ack_check, unsigned ack_expected, unsigned ack_value)
 {

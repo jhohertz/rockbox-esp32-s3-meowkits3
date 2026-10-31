@@ -750,7 +750,7 @@ void paniclog_crash_id(const char *build)
 }
 
 /* One line with the build id of the crash, as stored by the handler. Returns
-/* 0 when absent. */
+ * 0 when absent. */
 int paniclog_crash_build(char *buf, int bufsize)
 {
     volatile struct crash_rtc *cr = (volatile struct crash_rtc *)XT_BT_RTC_BASE;

@@ -87,7 +87,7 @@
 #define SIG_I2C0_SDA     90
 
 /* SDHOST slot 0. The two slots share the signal block; slot 0 uses the _1
-/* set. */
+ * set. */
 #define SIG_SDHOST_CLK   172   /* SDHOST_CCLK_OUT_1 */
 #define SIG_SDHOST_CMD   178   /* SDHOST_CCMD_IN_1 / SDHOST_CCMD_OUT_1 */
 #define SIG_SDHOST_D0    180   /* SDHOST_CDATA_IN_10 / SDHOST_CDATA_OUT_10 */

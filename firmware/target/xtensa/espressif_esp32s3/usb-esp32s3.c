@@ -717,7 +717,7 @@ static unsigned char xt_audio_rx_buf[XT_AUDIO_RX_SPAN]
     USB_DEVBSS_ATTR __attribute__((aligned(32)));
 
 /* Remembered so the cache-maintenance hook knows which buffer is the audio
-/* one. */
+ * one. */
 static void *xt_audio_rx_addr;
 
 unsigned char *usb_audio_target_rx_buffer(size_t size)

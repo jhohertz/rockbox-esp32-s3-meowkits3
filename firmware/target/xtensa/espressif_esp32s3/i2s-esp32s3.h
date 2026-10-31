@@ -216,7 +216,7 @@ struct gdma_desc {
 } __attribute__((aligned(32)));
 
 /* dw0: size[11:0] is the buffer capacity, length[23:12] is what the DMA
-/* moves. */
+ * moves. */
 #define DESC_SUC_EOF (1u << 30)
 #define DESC_OWNER   (1u << 31)
 

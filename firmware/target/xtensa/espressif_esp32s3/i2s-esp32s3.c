@@ -344,7 +344,7 @@ static bool rx_owns_bus;
 
 
 /* i2s_ll_tx_set_mclk's mapping from (integer, num/den) to the four
-/* registers. */
+ * registers. */
 
 /* Flush the whole transmit data path: the GDMA channel and the I2S FIFO.
  *

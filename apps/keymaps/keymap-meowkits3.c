@@ -163,7 +163,7 @@ static const struct button_mapping button_context_recscreen[]  = {
     { ACTION_STD_CANCEL,      BUTTON_B|BUTTON_REL,          BUTTON_B },
 
     /* Same gestures from the touch grid: right cell records, left cell
-    /* leaves. */
+     * leaves. */
     { ACTION_REC_PAUSE,       BUTTON_MIDRIGHT|BUTTON_REL,   BUTTON_MIDRIGHT },
     { ACTION_STD_CANCEL,      BUTTON_MIDLEFT,               BUTTON_NONE },
 
