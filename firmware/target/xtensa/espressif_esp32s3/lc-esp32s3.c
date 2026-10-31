@@ -87,8 +87,13 @@
 #define XT_PT_LOAD      1
 /* Enough of the ELF header to reach e_phoff (offset 28) and e_phnum (offset
  * 44, two bytes), without committing to the whole structure. */
-#define XT_EHDR_READ_SIZE 46
+#define XT_EHDR_READ_SIZE 52   /* whole ELF32 header: shnum and shstrndx are
+                                * at 48 and 50, so reading less cannot find the
+                                * section table */
 #define XT_PHDR_SIZE      32
+#define XT_SHDR_SIZE      40   /* ELF32 section header */
+#define XT_SHDR_MAX       64
+#define XT_SHSTR_MAX      512  /* the section-name table is small */
 
 struct xt_phdr
 {
@@ -151,13 +156,75 @@ static unsigned char *write_target(unsigned int vaddr)
     return (unsigned char *)vaddr;
 }
 
+/* Find the address of the image's own header struct, through the section
+ * table.
+ *
+ * lc_get_header() returns the handle unchanged and every caller reads fields
+ * out of it: apps/codecs.c reads load_addr, and imageviewer's image_decoder.c
+ * reads magic, target_id, plugin_api_version, load_addr and api. The handle is
+ * therefore the header, not the buffer and not the segment that contains the
+ * header.
+ *
+ * For a rock or a codec the data segment begins at the header, so returning the
+ * segment base happens to work -- which is why this was never noticed. The
+ * imageviewer decoder linker script links its first PT_LOAD from file offset 0
+ * so that the ELF headers are placed too, and the header struct then sits ahead
+ * of them: handing the segment base to the caller gives it 0x7f 'E' 'L' 'F'.
+ * Only the section table says where the struct is. */
+static int find_header_addr(int fd, unsigned int shoff, unsigned int shnum,
+                            unsigned int shstrndx, unsigned int *out)
+{
+    unsigned char sh[XT_SHDR_SIZE];
+    unsigned char names[XT_SHSTR_MAX];
+    unsigned int str_off, str_size, got, i;
+
+    if (shoff == 0 || shnum == 0 || shnum > XT_SHDR_MAX
+        || shstrndx >= shnum)
+        return 0;
+
+    if (lseek(fd, shoff + shstrndx * XT_SHDR_SIZE, SEEK_SET) < 0
+        || read(fd, sh, sizeof sh) != (ssize_t)sizeof sh)
+        return 0;
+
+    str_off = get_le32(sh + 16);          /* sh_offset */
+    str_size = get_le32(sh + 20);         /* sh_size */
+    if (str_size > XT_SHSTR_MAX)
+        str_size = XT_SHSTR_MAX;
+    if (lseek(fd, (off_t)str_off, SEEK_SET) < 0)
+        return 0;
+
+    got = (unsigned int)read(fd, names, str_size);
+    if (got == 0)
+        return 0;
+    names[got - 1] = '\0';                /* the table is NUL-terminated */
+
+    for (i = 0; i < shnum; i++)
+    {
+        unsigned int name;
+
+        if (lseek(fd, shoff + i * XT_SHDR_SIZE, SEEK_SET) < 0
+            || read(fd, sh, sizeof sh) != (ssize_t)sizeof sh)
+            return 0;
+
+        name = get_le32(sh + 0);           /* sh_name, an offset into names */
+        if (name < got && strcmp((char *)names + name, ".header") == 0)
+        {
+            *out = get_le32(sh + 12);      /* sh_addr */
+            return *out != 0;
+        }
+    }
+
+    return 0;
+}
+
 void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 {
     unsigned char ident[XT_ELF_NIDENT];
     unsigned char ehdr[XT_EHDR_READ_SIZE];
     struct xt_phdr ph;
-    unsigned int phoff, phnum;
-    unsigned char *data_hi = NULL;   /* top of the data-window image */
+    unsigned int phoff, phnum, shoff, shnum, shstrndx, hdr_addr;
+    unsigned char *header;
+    unsigned char *data_lo = NULL, *data_hi = NULL;   /* data-window extent */
     unsigned char *buf_end = buf + buf_size;
     int fd, i, loaded = 0;
 
@@ -193,6 +260,10 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         printf("load fail: Bogus program header table\n");
         goto err;
     }
+
+    shoff = get_le32(ehdr + 32);
+    shnum = (unsigned int)ehdr[48] | ((unsigned int)ehdr[49] << 8);
+    shstrndx = (unsigned int)ehdr[50] | ((unsigned int)ehdr[51] << 8);
 
     for (i = 0; i < (int)phnum; i++)
     {
@@ -256,15 +327,43 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
 
             if (data_hi == NULL || end > data_hi)
                 data_hi = end;
+            if (data_lo == NULL || dest < data_lo)
+                data_lo = dest;
         }
         loaded++;
     }
 
-    close(fd);
-
-    if (loaded == 0)
+    if (loaded == 0 || data_lo == NULL)
     {
         printf("load fail: No loadable segments\n");
+        goto err;
+    }
+
+    if (!find_header_addr(fd, shoff, shnum, shstrndx, &hdr_addr))
+    {
+        printf("load fail: no .header section "
+               "(shoff=%08x shnum=%u strtab=%u)\n",
+               shoff, shnum, shstrndx);
+        goto err;
+    }
+
+    close(fd);
+
+    header = write_target(hdr_addr);
+
+    /* Everything the caller will touch has to be inside the memory it named:
+     * the image, and the header it reads through the handle. A codec gets
+     * codecbuf and a plugin gets pluginbuf, so for them this is the trivial
+     * case. An imageviewer decoder is linked at a pinned address above the
+     * buffer the plugin was handed, which is the case that makes the check
+     * mean something: the decoder's working area and its header must both fall
+     * inside the range the caller believes it owns. */
+    if (header < data_lo || header >= data_hi
+        || data_lo < buf || data_hi > buf_end)
+    {
+        printf("load fail: image %p..%p header %p outside %p..%p\n",
+               (void *)data_lo, (void *)data_hi, (void *)header,
+               (void *)buf, (void *)buf_end);
         return NULL;
     }
 
@@ -307,13 +406,9 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      * crashes needed and could not make, because IDF's panic handler
      * re-entered before printing anything at all. */
     dbg_breadcrumb("placed", (unsigned long)buf, (unsigned long)loaded);
-    printf("codec load: %d segment(s) placed, handle=%p\n", loaded,
-           (void *)buf);
+    printf("load: %d segment(s) placed, header=%p\n", loaded, (void *)header);
 
-    /* lc_get_header() returns the handle unchanged and apps/codecs.c reads
-     * hdr->load_addr from it, so the handle is the image header -- which is at
-     * the base of the data-window segment, the buffer we were handed. */
-    return buf;
+    return header;
 
 err:
     close(fd);
