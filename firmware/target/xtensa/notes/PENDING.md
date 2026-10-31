@@ -20,8 +20,28 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Narrowing the SDK include path — measured, decision pending.** Built in a
-  throwaway worktree (`/tmp/rb-narrow`), not applied to the branch. `IDF_CFLAGS`
+- **Rare crash on m4a/opus after a long chain — parked, awaiting a reproducible
+  case.** One fault in a long session: `IllegalInstruction pc=4037cd8c`, which
+  resolves to `panic_abort + 16` — the deliberate break at the end of IDF's abort
+  path, so the reported cause is the *second* exception and the first one's
+  identity is lost. `EPC2 = switch_thread + 82` lands on the instruction after
+  `waiti 0` in the idle loop, which is a stale witness rather than a culprit.
+  Two facts worth keeping: those loads spent `segs 23M–25M` cycles (~100 ms) in
+  the file read, and their `sync` does not scale with the invalidated line count,
+  so what varies is how much of the range was dirty, not how large it is. Parked
+  by agreement rather than left open in silence — the trail ring is the cheap
+  next witness if it recurs (System → Debug → View HW info), and after that a
+  codecbuf-free report, since the chain hypothesis is memory pressure.
+
+- **Scratch instrumentation is still in the loader and must go before submission.**
+  `lc-esp32s3.c` carries `#define LOGF_ENABLE`, an `xt_cycles()` helper reading
+  `rsr.ccount`, and a `logf("lc wb %d srv %d ln %u segs %u hdr %u sync %u\n")`
+  line. It earned its keep — it is what proved the write-back cost, that the ROM
+  accepts the external range, and that the execution window really is
+  instruction-cache served — but it is a per-load log line in shipped code.
+  Drop it as its own commit when the crash is settled.
+
+- **Narrowing the SDK include path — done, not pending.** Applied as `58a5344523` `IDF_CFLAGS`
   is 64 `-I` directories plus 33 defines and codegen flags, and today the whole
   firmware domain gets it — 766 objects reach the newlib shim through
   `rbendian.h`'s `<endian.h>`, but only **13** reach an IDF component header, and
@@ -308,8 +328,6 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     `DIRCACHE_MIN`/`DIRCACHE_LIMIT` pair is exercised rather than the runtime off switch.
   - ~~The dircache change needs a flash~~ -- done: `90224de484` is in the flashed image, and
     the run above used it.
-
-## 2. Verified on hardware — closed
 
 ## 2. Verified on hardware — closed
 
@@ -995,7 +1013,9 @@ Six commits, each independently reviewable, on top of `07a3f0bdbb`:
 | `9fe12233af` | Decoder overlays get their own text slice (`XT_IMGDEC_TEXT_SIZE`), plugin text capped so `ld` rejects an oversized plugin, and `esp-layout-check` reads the built artifacts and fails the build on overlap | Guard verified discriminating: swapping `imageviewer.rock` in as the decoder makes it exit 1, restoring makes it exit 0. Measured placements: decoder text `0x3c600000..0x3c601eb2`, slice `0x40000`, highest plugin text `0x3c5e9674`, codec text `0x3c640000`. |
 | `668c225b50` | Rockbox's own `-Os` restored; libc feature macros and `CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0` named in the target makefile | Image 1,307,056 → 1,256,368 B (−3.9%), warning profile unchanged. |
 | `f4fb980c0b` | Coulomb anchors become `int`, matching the counters they anchor | The guard asks whether a signed counter went backwards; unsigned cannot express it. |
-| `d0e28cbb31` | Seven comment continuations that opened with `/*` instead of ` *` repaired | Full clean rebuild now reports zero `-Wcomment`. |
+| `d0e28cbb31` | Seven comment continuations that opened with `/*` instead of ` *` repaired | Claimed zero `-Wcomment` on a clean rebuild; that claim was wrong — the detector only matched continuations at column 0. Corrected by `4386878ef7`. |
+| `c6f778af4f` | Image cache maintenance confined to the code pages: write back only the text segment, invalidate only its instruction lines; range ops stop calling cache code for uncached internal SRAM | Bisect: the codec-switching soak clean on `07a3f0bdbb` faulted on whole-cache maintenance. Plugin load `sync` 38k–73k cycles (was 2.5M–6.7M); `wb 1 srv 1` from the ROM's own answers. Recording stutter and the recording→playback abort gone. |
+| `4386878ef7` | The three indented comment continuations the first detector missed | Clean rebuild now genuinely reports zero `-Wcomment`. |
 
 Post-series measurements, from a `make clean` build with `CCACHE_DISABLE=1`:
 image `1,256,768 B`, `espverify` valid, `esp-layout-check` exit 0, warning classes
@@ -1009,10 +1029,11 @@ the `IMAGE_LINK` polarity fix in `0d1f930a53` had shown that a warm directory hi
 a link failure. The fresh directory is deleted after the check; `build-sim-meowkits3`
 remains the standing one.
 
-Hardware status at the time of writing: JPEG renders with the cache fix, and an
-oversized JPEG fails cleanly rather than faulting. **The regression sweep this change
-demands has not been run yet** — codecs, plugins, mpegplayer, MSC copy, recording —
-because the hook that was vacuous is now real on every image load.
+Hardware status after `c6f778af4f` (flashed `1,257,232 B`, md5 `4b23cc20…`):
+JPEG and PNG render, codecs play and switch, recording improved, and the
+recording→playback abort is gone. The sweep this change demanded has been run —
+codecs, imageviewer, recording, doom, video. The one remaining fault is the
+parked item above.
 
 ### Phase D — the SDK dependency becomes an app_type (2026-10-30)
 
