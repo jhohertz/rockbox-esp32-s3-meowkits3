@@ -892,6 +892,34 @@ listed in §5.
 
 ### Gates before cutting the branch
 
+**Gate 1 — the generic build seams are inert: done (2026-10-30).** Three other-target
+simulator builds in freshly created directories, against a worktree at `origin/master`
+configured identically:
+
+| Target | Our tree | Upstream `fe5c0874af` |
+|---|---|---|
+| `ondavx747 --type=s` | 0 errors, 0 warnings, 172 `.rock`, 6 `.ovl`, 40 `.codec` | 0 errors, 172 `.rock`, 6 `.ovl`, 40 `.codec` |
+| `sansam200v4 --type=s` | 0 errors, 0 warnings, builds clean | — |
+| `sdlapp` | 0 errors, builds clean | — |
+
+The overlay and codec counts matching is the point: `IMAGE_LINK` replaced upstream's
+`ifndef APP_TYPE` gates, and if it were wrong for hosted builds the decoder overlays
+would silently disappear from them. Individual overlay bytes differ by 168–232
+(ours larger) with identical symbol counts, which is the plugin keymap work in
+`apps/plugins/lib/keymaps.h` — guarded by `HAVE_TOUCHSCREEN`/`CONFIG_KEYPAD` — not a
+link-shape change. Per-file attribution still gets checked when series 1 is cut.
+
+An earlier claim in this section, that our sim built *zero* overlays, was an
+artifact of the measuring command (`**` is not recursive in bash) and not a
+regression; the corrected measurement is above.
+
+**Gate 2 — native cross-target builds: blocked.** No `arm-none-eabi-gcc` or
+`mips-elf-gcc` on this machine, so the series-1 claim of inertness for native
+ARM/MIPS targets is unproven. `tools/rockboxdev.sh` can install them; until it does,
+series 1 cannot honestly say "builds clean on other arches".
+
+Remaining gates:
+
 - Drop the loader instrumentation (the `LOGF_ENABLE` block, `xt_cycles()` and the
   `lc wb/srv/ln/sync` line in `lc-esp32s3.c`) as its own commit. It is diagnostic.
 - Resolve or accept the parked fault in `PENDING.md` §1: a reviewer will ask what
