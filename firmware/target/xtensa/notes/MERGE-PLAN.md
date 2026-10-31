@@ -971,10 +971,10 @@ an isolated worktree so the port tree was never touched:
 
 | commit | seam |
 |---|---|
-| `222ee6740f` | `BASE_CFLAGS` / `FREESTAND_CFLAGS` — the firmware and freestanding compilation domains |
-| `c05c99c284` | `IMAGE_LINK` — "does this target link its own images", separated from `APP_TYPE` |
-| `05944763f9` | order-aware dependency scanning: `dep_sed`, `mkdepfile_order`, `DEP_SRCS`/`DEP_EXCLUDE`/`DEPSCAN_EXTRA` |
-| `99b42484e8` | `make_archive` — archives rebuilt from scratch, directory created; 50 recipes |
+| `f3dd2e2ccf` | `BASE_CFLAGS` / `FREESTAND_CFLAGS` — the firmware and freestanding compilation domains |
+| `4bf565b568` | `IMAGE_LINK` — "does this target link its own images", separated from `APP_TYPE` |
+| `cb841c8fe7` | order-aware dependency scanning: `dep_sed`, `mkdepfile_order`, `DEP_SRCS`/`DEP_EXCLUDE`/`DEPSCAN_EXTRA` |
+| `14fbee725a` | `make_archive` — archives rebuilt from scratch, directory created; 50 recipes |
 
 The whole diff is 4 files plus 50 two-line archive recipes, and it contains no
 `xtensa`, `esp`, `idf`, `meowkit`, `-mno-longcalls` or window-address token anywhere.
@@ -986,18 +986,20 @@ port branch, where precedent says they belong (upstream `root.make` has
 target were built twice — once from the submission branch, once from upstream at
 the same commit — in fresh directories:
 
-| target | arch | size sub / up | `.text` md5 equal | artifacts |
+| target | arch | size sub / up | `.text` identical | artifacts |
 |---|---|---|---|---|
 | `sansae200v2` | ARM7TDMI (PortalPlayer) | 1,054,584 / 1,054,584 | yes | 168 rock, 9 ovl, 44 codec, identical |
 | `erosqnative` | MIPS | 1,162,472 / 1,162,472 | yes | 167 / 9 / 41, identical |
 | `iriverh100` | m68k ColdFire | 952,670 / 952,670 | yes | 116 / 4 / 44, identical |
 | `ondavx747 --type=s` | hosted | — | — | 172 rock, 6 ovl, both |
 
-`.rodata` differs in exactly one thing on each target: the version string, which
-is the branch tip's git hash (`7488398bcc-261031` vs `fe5c0874af-261031`). The
-packed images therefore cannot be byte-identical across builds, and "identical
-`.text`, identical artifact sets, version string the only `.rodata` difference" is
-the claim being made.
+`.rodata` differs in exactly one thing on each target: the version string, which is
+the branch tip's git hash. Packed images therefore cannot be byte-identical across
+builds, and the ARM comparison had to be made with a *clean* worktree: a dirty tree
+appends `M` to the version string, `.rodata` grows four bytes, and every
+literal-pool pointer in `.text` shifts by four -- which looks like a code change in
+`cmp` and is not. With the tree clean, `objcopy --dump-section .text` on both builds
+yields files that compare identical.
 
 **What the native builds caught that the simulators could not.** Two things, both
 real bugs on the port branch:
