@@ -335,18 +335,31 @@ int button_read_device(int *data)
 #ifdef HAVE_USBSTACK
         if (usb_host_session())
         {
-            /* Stamped rather than silent: a power key that does nothing while
-               enumerated is deliberate, but "nothing happened" and "the
-               shutdown path crashed" look identical from outside, and this
-               ring is the only witness that survives the chip. */
-            dbg_breadcrumb_retained("pekR", (unsigned long)axp173_input_status(),
-                                    current_tick);
             if (auto_off)
             {
                 axp173_auto_off_enable(false);
                 auto_off = false;
             }
+            /* Stamped only when the PMU actually says something is latched.
+               The first version stamped every poll of a session -- one entry
+               every 100 ms -- which recorded the passage of time instead of
+               the event, and made the ring's last write read like a key press
+               when it was only the heartbeat. The IRQ pin is open-drain and
+               asserts low for any enabled pending event, and PEK is the only
+               one enabled here, so a low pin is the cheap witness. The two
+               stamps bracket the cancel: a ring that ends on pekR with no
+               pekC died inside the I2C transaction that clears the latch. */
+            bool pending = !gpio_read_pin(PIN_PMU_IRQ);
+
+            if (pending)
+                dbg_breadcrumb_retained("pekR",
+                                        (unsigned long)axp173_input_status(),
+                                        current_tick);
             axp173_power_key_cancel();
+            if (pending)
+                dbg_breadcrumb_retained("pekC",
+                                        (unsigned long)axp173_input_status(),
+                                        current_tick);
             return b;
         }
         if (!auto_off)
