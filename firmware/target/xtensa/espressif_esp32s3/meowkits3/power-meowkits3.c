@@ -193,7 +193,9 @@ int _battery_current(void)
 static int cc_percent = -1;
 static int cc_anchor_percent;
 static int cc_anchor_net;
-static uint32_t cc_anchor_dis, cc_anchor_chg;
+/* Signed, like the counters they hold: the guard below asks whether a counter
+ * went backwards, which an unsigned comparison cannot express. */
+static int cc_anchor_dis, cc_anchor_chg;
 static long cc_last_update;
 
 /* Voltage to percent over this target's own tables. The core's equivalent is
