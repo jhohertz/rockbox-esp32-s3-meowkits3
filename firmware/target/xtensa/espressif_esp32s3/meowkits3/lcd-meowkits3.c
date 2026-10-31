@@ -182,7 +182,7 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
 #endif
 
     /* Both dimensions must be even, as the caller is required to pass even
-    /* ones. */
+     * ones. */
     width &= ~1;
 
     /* Bound against the framebuffer: unlike the drawing functions this writes

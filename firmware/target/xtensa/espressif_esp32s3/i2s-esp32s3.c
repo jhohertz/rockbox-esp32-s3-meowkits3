@@ -437,7 +437,7 @@ static void i2s_program_clock(unsigned long rate)
     };
 
     /* Master role: this side generates BCLK and WS and feeds MCLK to both
-    /* codecs. */
+     * codecs. */
     i2s_hal_std_set_tx_slot(&tx_hal, false, &slot);
     i2s_hal_std_enable_tx_channel(&tx_hal);
 
@@ -1151,7 +1151,7 @@ void ICODE_ATTR gdma_irq(void)
         if (!playing)
         {
             /* Stopped: nothing to restart. Clear the pending error and stay
-            /* down. */
+             * down. */
             dscr_streak = 0;
         }
         else if (++dscr_streak >= 2)

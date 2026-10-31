@@ -822,7 +822,7 @@ int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
                               const void **start, size_t *size)
 {
     /* The common case: this slot has data, let the generic hand-off deal
-    /* with it. */
+     * with it. */
     if (slot_sizes[play_idx] > 0)
         return 0;
 
