@@ -662,13 +662,15 @@ xtensacc () {
 idfcc () {
  app_type="esp-idf"
  # APP_TYPE says who supplies the runtime environment, not how code that is
- # loaded at run time is produced. This target still links its codecs and
- # plugins itself, as relocatable images placed by apps/plugins/plugin.lds --
- # what the native targets do -- so IMAGE_LINK below keeps that on.
+ # loaded at run time is produced. This target links its codecs and plugins
+ # itself, as relocatable images placed by apps/plugins/plugin.lds -- what the
+ # native targets do -- but image_link is set further down, not here, because
+ # the build type has not been parsed yet: a simulator build of this target
+ # overrides app_type to a hosted one and must take the hosted image path.
  #
- # The SDK is checked, and its compile flags harvested, further down, once the
- # build type is known: a simulator or host-tool build of this target is a host
- # build that links no SDK, and it must not be made to install one.
+ # The SDK is checked, and its compile flags harvested, at the same point: a
+ # simulator or host-tool build of this target is a host build that links no
+ # SDK, and it must not be made to install one.
 }
 
 idf_sdk_setup () {
@@ -5159,13 +5161,19 @@ fi
 
 if [ "$app_type" = "esp-idf" ]; then
     idf_sdk_setup
+    # Still an SDK firmware build at this point -- a simulator or host-tool build
+    # of the target has had app_type replaced by now. Its codecs and plugins are
+    # images of its own, so it declares image_link rather than making the generic
+    # rule below recognise its app_type.
+    image_link="yes"
 fi
 
 # How codecs and plugins are produced is a separate question from APP_TYPE, which
-# says who supplies the runtime environment: a native build links its own images,
-# and so does an SDK-backed target that still loads them as images rather than
-# dlopening them; a hosted one builds shared objects instead.
-if [ -z "$app_type" ] || [ "$app_type" = "esp-idf" ]; then
+# says who supplies the runtime environment. A native build links its own codec
+# and plugin images; a hosted one builds shared objects instead. A target whose
+# firmware runs on someone else's runtime but still loads images sets image_link
+# itself, next to wherever it sets app_type.
+if [ -z "$app_type" ]; then
     image_link="yes"
 fi
 
