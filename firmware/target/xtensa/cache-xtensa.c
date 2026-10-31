@@ -82,11 +82,6 @@ bool cache_writeback_range(unsigned int addr, unsigned int size)
     return Cache_WriteBack_Addr(addr, size) == 0;
 }
 
-bool cache_addr_through_icache(unsigned int addr)
-{
-    return Cache_Address_Through_ICache(addr) != 0;
-}
-
 unsigned int cache_invalidate_icache_range(unsigned int addr, unsigned int size)
 {
     unsigned int line = cache_hal_get_cache_line_size(CACHE_LL_LEVEL_EXT_MEM,

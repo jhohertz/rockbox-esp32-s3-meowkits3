@@ -73,17 +73,18 @@ unsigned int cache_dcache_line_size(void);
  *
  * The ROM exposes range forms, and these are the ones to use for an image:
  * write back the bytes that were copied, and drop only the instruction lines
- * for the pages that just became code. cache_addr_through_icache() answers
- * whether an address is served by the instruction cache at all, so the layout
- * is measured rather than assumed -- the ROM returns 0 for anything outside
- * the I-cache window.
+ * for the pages that just became code. The 0x42000000 window really is served
+ * by the instruction cache -- Cache_Address_Through_ICache() was measured
+ * returning 1 there and 0 outside it -- so the invalidation is doing
+ * something. A layout that ever stopped being served is still covered:
+ * cache_invalidate_icache_range() reports 0 lines, and the caller treats
+ * that as the cue to fall back to the whole-cache form.
  *
  * cache_invalidate_icache_range() returns the number of lines it dropped, or 0
  * if it cannot answer (no reported line size), which is the caller's cue to
  * fall back to the whole-cache form rather than to skip the maintenance.
  */
 bool cache_writeback_range(unsigned int addr, unsigned int size);
-bool cache_addr_through_icache(unsigned int addr);
 unsigned int cache_invalidate_icache_range(unsigned int addr, unsigned int size);
 
 /*
