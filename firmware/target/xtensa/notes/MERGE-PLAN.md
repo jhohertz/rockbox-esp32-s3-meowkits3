@@ -955,10 +955,65 @@ Remaining gates:
   `cache_addr_through_icache()` helper that existed only to feed it.
 - Re-run the §6 checklist against the current `upstream/master` tip, not against
   `fe5c0874af`.
-- MIPS native build still outstanding (`tools/rockboxdev.sh --target=m`); the ARM
-  half of this gate is done.
+- ~~MIPS native build still outstanding~~ done: `--target=i` installs
+  `mipsel-elf-gcc` and `--target=m` installs `m68k-elf-gcc`, both 9.5.0. Three
+  native arches now build from the submission branch — see §10.
 - Resolve or accept the parked fault in `PENDING.md` §1: a reviewer will ask what
   does not work, and "one rare crash after a long chain, unreproduced" is a
   reasonable answer only if it is written down. It is written down.
 - `status => 2` in `builds.pm` stays until the battery capacity run is done — that
   run and a new release tag are the remaining hardware tasks.
+
+## 10. Series 1 cut — done (2026-10-30)
+
+Branch `submit/build-seams`, four commits on `origin/master` (`fe5c0874af`), built in
+an isolated worktree so the port tree was never touched:
+
+| commit | seam |
+|---|---|
+| `222ee6740f` | `BASE_CFLAGS` / `FREESTAND_CFLAGS` — the firmware and freestanding compilation domains |
+| `c05c99c284` | `IMAGE_LINK` — "does this target link its own images", separated from `APP_TYPE` |
+| `05944763f9` | order-aware dependency scanning: `dep_sed`, `mkdepfile_order`, `DEP_SRCS`/`DEP_EXCLUDE`/`DEPSCAN_EXTRA` |
+| `99b42484e8` | `make_archive` — archives rebuilt from scratch, directory created; 50 recipes |
+
+The whole diff is 4 files plus 50 two-line archive recipes, and it contains no
+`xtensa`, `esp`, `idf`, `meowkit`, `-mno-longcalls` or window-address token anywhere.
+The SDK makefile include and the target's own `arch_xtensa` blocks stay in the
+port branch, where precedent says they belong (upstream `root.make` has
+`ifeq (echor1,$(MODELNAME)) include $(ROOTDIR)/tools/echoplayer/openocd.make`).
+
+**Inertness, measured rather than asserted.** Three native targets and one hosted
+target were built twice — once from the submission branch, once from upstream at
+the same commit — in fresh directories:
+
+| target | arch | size sub / up | `.text` md5 equal | artifacts |
+|---|---|---|---|---|
+| `sansae200v2` | ARM7TDMI (PortalPlayer) | 1,054,584 / 1,054,584 | yes | 168 rock, 9 ovl, 44 codec, identical |
+| `erosqnative` | MIPS | 1,162,472 / 1,162,472 | yes | 167 / 9 / 41, identical |
+| `iriverh100` | m68k ColdFire | 952,670 / 952,670 | yes | 116 / 4 / 44, identical |
+| `ondavx747 --type=s` | hosted | — | — | 172 rock, 6 ovl, both |
+
+`.rodata` differs in exactly one thing on each target: the version string, which
+is the branch tip's git hash (`7488398bcc-261031` vs `fe5c0874af-261031`). The
+packed images therefore cannot be byte-identical across builds, and "identical
+`.text`, identical artifact sets, version string the only `.rodata` difference" is
+the claim being made.
+
+**What the native builds caught that the simulators could not.** Two things, both
+real bugs on the port branch:
+
+1. `printf()` calls left in `skin_engine.c` and `skin_render.c` from the skin-blanking
+   hunt. Hosted builds link a libc that has `printf`; native images do not. Every
+   ARM and MIPS build failed at link. Fixed in `cc827a0eb0`.
+2. `image_link` was set inside `idfcc()`, before configure parses the build type, so
+   a `--type=s` build of this target kept it and went looking for plugin images —
+   `plugin.lds` then hit its own `#error Unknown CPU architecture`, because a
+   simulator build does not define `CPU_XTENSA`. That file's comment asserts sims
+   never use it, and setting the flag too early broke that assumption. Moved to the
+   point where the SDK is validated, after the build type is known. Fixed in
+   `55a642e7ac`.
+
+Bug 2 had survived every previous check because the simulator directory had only
+ever been rebuilt incrementally. `tools/configure` in a fresh directory is now part
+of the gate for all four simulator builds.
+
