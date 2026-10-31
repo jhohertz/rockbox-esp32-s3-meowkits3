@@ -75,6 +75,19 @@
 #include <string.h>
 #include "xtensa.h"      /* XT_* layout constants, via config.h */
 
+/* Scratch timing breakdown, dropped before submission. logf() reaches the CDC
+ * console; printf() goes to UART0, which nothing on this board can read. */
+#define LOGF_ENABLE
+#include "logf.h"
+
+static unsigned xt_cycles(void)
+{
+    unsigned c;
+
+    __asm__ __volatile__ ("rsr.ccount %0" : "=r"(c));
+    return c;
+}
+
 /* ELF32, little endian, as emitted by the xtensa toolchain. Parsed by hand
  * rather than through <elf.h> so that this does not depend on a hosted header
  * that a -nostdlib build may or may not provide. */
@@ -223,8 +236,14 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     unsigned char ehdr[XT_EHDR_READ_SIZE];
     struct xt_phdr ph;
     unsigned int phoff, phnum, shoff, shnum, shstrndx, hdr_addr;
+    unsigned t_open, t_segs, t_hdr, t_sync;
     unsigned char *header;
     unsigned char *data_lo = NULL, *data_hi = NULL;   /* data-window extent */
+    unsigned char *code_lo = NULL, *code_hi = NULL;   /* text, written through
+                                                       * its data-window alias */
+    unsigned int exec_lo = 0, exec_hi = 0;            /* instruction window */
+    int wb_ok, icache_served;
+    unsigned int lines;
     unsigned char *buf_end = buf + buf_size;
     int fd, i, loaded = 0;
 
@@ -234,6 +253,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
         printf("load fail: could not open %s\n", filename);
         return NULL;
     }
+    t_open = xt_cycles();
 
     if (read(fd, ident, sizeof ident) != (ssize_t)sizeof ident
         || ident[0] != 0x7f || ident[1] != 'E' || ident[2] != 'L'
@@ -330,8 +350,25 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
             if (data_lo == NULL || dest < data_lo)
                 data_lo = dest;
         }
+        else
+        {
+            /* A text segment is written through its data-window alias but
+             * executed through the instruction window, so both ranges matter:
+             * the alias is what holds the dirty lines, the instruction address
+             * is what holds the stale fetches. */
+            if (exec_lo == 0 || ph.vaddr < exec_lo)
+                exec_lo = ph.vaddr;
+            if (ph.vaddr + ph.memsz > exec_hi)
+                exec_hi = ph.vaddr + ph.memsz;
+            if (code_lo == NULL || dest < code_lo)
+                code_lo = dest;
+            if (code_hi == NULL || dest + ph.memsz > code_hi)
+                code_hi = dest + ph.memsz;
+        }
+
         loaded++;
     }
+    t_segs = xt_cycles();
 
     if (loaded == 0 || data_lo == NULL)
     {
@@ -348,6 +385,7 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     }
 
     close(fd);
+    t_hdr = xt_cycles();
 
     header = write_target(hdr_addr);
 
@@ -396,9 +434,42 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
                (void *)buf_end, (unsigned)(buf_end - data_hi));
     }
 
-    /* The instruction cache may hold lines for pages that only just became
-     * code. */
-    commit_discard_idcache();
+    /* Make the placed image visible. Only the text needs write-back, and that
+     * is the whole difference between a load that costs 0.2 ms and one that
+     * costs 28 ms.
+     *
+     * The data segment needs none. It is written by the CPU and read by the
+     * CPU, which sees its own dirty lines through the same D-cache, and no DMA
+     * engine ever touches codecbuf or the plugin buffer. Writing it back walks
+     * every dirty line of a range that can be megabytes wide: measured at
+     * 2.5M-6.7M cycles per codec load, and the crash this target has been
+     * chasing fired inside exactly that window. Code is different in kind --
+     * the instruction fetch path does not look at the D-cache, so bytes the
+     * copy left in a dirty line are simply not visible to the fetch -- which
+     * is why the write-back is not optional for the text segment, and why the
+     * bisect showed image loads faulting without it.
+     *
+     * If the ROM declines either range, fall back to the whole-cache form
+     * rather than loading code with no maintenance at all. */
+    wb_ok = code_hi > code_lo
+            && cache_writeback_range((unsigned int)code_lo,
+                                     (unsigned int)(code_hi - code_lo));
+    icache_served = exec_hi > exec_lo
+                    && cache_addr_through_icache(exec_lo);
+    lines = cache_invalidate_icache_range(exec_lo, exec_hi - exec_lo);
+
+    if (!wb_ok || lines == 0)
+        commit_discard_idcache();
+
+    t_sync = xt_cycles();
+
+    /* ccount runs at the CPU clock, so the timings are comparable across files
+     * rather than absolute. wb/srv/ln are the hardware's own answers: whether
+     * the write-back range was accepted, whether the exec address is served by
+     * the instruction cache at all, and how many lines were dropped. */
+    logf("lc wb %d srv %d ln %u segs %u hdr %u sync %u\n",
+         wb_ok, icache_served, lines,
+         t_segs - t_open, t_hdr - t_segs, t_sync - t_hdr);
 
     /* The last thing recorded before the caller jumps into freshly placed
      * code. If the next boot's trail ends here, the fault is executing the

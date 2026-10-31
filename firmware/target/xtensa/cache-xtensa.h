@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /*
  * Cache maintenance for DMA-facing buffers.
@@ -34,12 +35,13 @@
  *
  * So cache-xtensa.c goes to the HAL entry points directly:
  * cache_hal_writeback_addr() and cache_hal_invalidate_addr() do the same
- * register work, take no lock, and are safe from an interrupt. They apply the
+ * register work, take no lock, and are safe from an interrupt. They carry the
  * same address restriction, which is a fact about the part rather than about
- * the API: the D-cache only covers internal SRAM, so a DMA buffer has to live
- * there. That is the rule the audio and SD paths already follow (see AGENTS.md
- * on descriptor and buffer placement); passing a PSRAM address here is a no-op,
- * not an error.
+ * the API: the resolver only accepts IRAM0 and DRAM0, so these are meaningful
+ * only for buffers in internal SRAM -- which is where the audio and SD paths
+ * put their descriptors and buffers anyway, for the separate reason that GDMA
+ * takes a descriptor address from a 20-bit window based there (see AGENTS.md).
+ * A PSRAM address is a no-op rather than an error.
  *
  * The bare-metal route (calling the mask ROM's Cache_* entry points by absolute
  * address) is on the tagged branch baremetal-pre-idf.
@@ -56,6 +58,33 @@ void commit_discard_dcache_range(const void *base, unsigned int size);
 /* esp32s3 D-cache line. Used for buffer alignment, so it needs no cache
  * operation and no platform header to answer it. */
 unsigned int cache_dcache_line_size(void);
+/*
+ * Narrow maintenance for a freshly placed image.
+ *
+ * The whole-cache operations above are correct but blunt: a full write-back
+ * walks every dirty line of the external cache, and the audiobuffer, the
+ * framebuffer, codecbuf and pluginbuf are megabytes of PSRAM that are dirty
+ * during normal playback, so an image load pays for all of it (measured: about
+ * 29 ms per codec load at 240 MHz, most of which is unrelated to the image).
+ * Worse, doing it while audio and SD traffic are live coincided with aborts
+ * reached from thread switching -- measured by bisect, the same codec-switching
+ * soak that was clean on the build without cache maintenance faulted on the
+ * build with the whole-cache version.
+ *
+ * The ROM exposes range forms, and these are the ones to use for an image:
+ * write back the bytes that were copied, and drop only the instruction lines
+ * for the pages that just became code. cache_addr_through_icache() answers
+ * whether an address is served by the instruction cache at all, so the layout
+ * is measured rather than assumed -- the ROM returns 0 for anything outside
+ * the I-cache window.
+ *
+ * cache_invalidate_icache_range() returns the number of lines it dropped, or 0
+ * if it cannot answer (no reported line size), which is the caller's cue to
+ * fall back to the whole-cache form rather than to skip the maintenance.
+ */
+bool cache_writeback_range(unsigned int addr, unsigned int size);
+bool cache_addr_through_icache(unsigned int addr);
+unsigned int cache_invalidate_icache_range(unsigned int addr, unsigned int size);
 
 /*
  * Whole-cache maintenance: the contract every arch implements under these
@@ -87,6 +116,16 @@ unsigned int cache_dcache_line_size(void);
  * whole instruction cache costs a refetch of whatever runs afterwards, which
  * is far cheaper than the fault it prevents. This build is single-core, so no
  * cross-core coordination is required.
+ *
+ * Neither of these discards the data cache. Whole-cache invalidation of the
+ * external D-cache would drop lines backing memory that is live while an image
+ * loads -- the audiobuffer, the framebuffer, codecbuf and pluginbuf are all in
+ * PSRAM -- and after a full write-back there is nothing that discarding gains.
+ * Worth noting what the platform itself does: in this IDF the callers of
+ * cache_hal_disable() and cache_hal_suspend() for CACHE_LL_LEVEL_EXT_MEM are
+ * cpu_start, the bootloader, the app image loader and the TEE panic path --
+ * all before the application is running. Nothing at runtime throws away the
+ * external data cache, and this target does not either.
  */
 void commit_dcache(void);
 void commit_discard_dcache(void);
