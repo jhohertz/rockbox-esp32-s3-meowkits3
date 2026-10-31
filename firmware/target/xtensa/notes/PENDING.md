@@ -311,6 +311,79 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 2. Verified on hardware — closed
 
+## 2. Verified on hardware — closed
+
+- **Plugin, codec and decoder images were executed without cache maintenance, and
+  `commit_discard_idcache()` was the reason.** Fixed 2026-10-30 by implementing
+  `commit_dcache()`, `commit_discard_dcache()` and `commit_discard_idcache()` as
+  out-of-line functions in `firmware/target/xtensa/cache-xtensa.c`, backed by the
+  ROM's whole-cache operations (`Cache_WriteBack_All`, `Cache_Invalidate_ICache_All`,
+  `Cache_Invalidate_DCache_All`). The emitted code was checked, not assumed:
+  `commit_discard_idcache` now disassembles to writeback-all, invalidate-I, invalidate-D
+  via `callx8` to `0x400016f8`, `0x400016d4` and `0x400016e0`.
+
+  What it was before: three `static inline` functions in `system-target.h` calling
+  `xthal_dcache_all_writeback()`, `xthal_dcache_all_writeback_inv()` and
+  `xthal_icache_all_invalidate()`. Those entry points exist in the esp32s3 toolchain,
+  they link, and they do nothing — each is `entry a1, 16; retw.n` and nothing else,
+  confirmed by disassembling a linked image. The core config has no cache instructions,
+  so the Tensilica HAL layer has nothing to emit and the stubs are silently empty. The
+  contract was satisfied in the source and not in the binary, which is why nothing in a
+  build or in the simulator could have found it.
+
+  The symptom was imageviewer's JPEG and PNG decoders faulting deterministically at a
+  pc *one byte into* an instruction inside `jpeg.ovl`'s text, with `EXCVADDR` a garbage
+  register plus `0x28`, non-zero spill temporaries and registers belonging to
+  imageviewer's window while the pc sat in the decoder. Everything that could be checked
+  on the host checked out: the segment bytes in memory matched the file, the api pointer
+  the caller wrote was `rockbox_api` (size 1740), the api entry the decoder was calling
+  was `memset`, the vtable entry was aligned, `LCOUNT` was 0 so no hardware loop was
+  live, and the stack had used 752 bytes of 32 KiB, so nothing had run off the end.
+  The decisive clue was that *changing the decoder's source moved the fault pc*: with
+  six logf lines added, the crash moved from `0x4260032b`/LoadProhibited to
+  `0x42600342`/StoreProhibited. Execution was not doing what the file said — the fetch
+  side was serving bytes the write side had never pushed out. The old comment in
+  `system-target.h` had already recorded exactly that phenomenon on a vorbis load
+  ("the word at the faulting PC read 02 78 b9 aa where the linked image says 29 08 81 5f,
+  while both neighbouring words matched exactly") and attributed its cure to the
+  `xthal_*` calls, which cannot have done anything. That attribution was wrong and is
+  corrected.
+
+  Why whole-cache rather than range: `cache_hal_writeback_addr()` and
+  `cache_hal_invalidate_addr()` resolve the address through
+  `cache_ll_vaddr_to_cache_level_id()`, which on esp32s3 accepts only IRAM0 and DRAM0.
+  Plugin, codec and decoder images all live in the PSRAM window, so a range operation on
+  them is rejected before it touches a register — `esp_cache_msync()` returns
+  `ESP_ERR_INVALID_ARG` with a message about a null pointer. The LL layer also ignores
+  the level and type it is handed and calls the same ROM routines, so the ROM whole-cache
+  operations are the only reachable maintenance for external memory. The DMA paths keep
+  using the per-range functions, which is correct because their buffers are in internal
+  SRAM.
+
+  Verified on hardware: JPEG renders, and the oversized test file fails without faulting
+  (a buffer limit, not a crash — see below). Because these names are also called from
+  `firmware/usbstack/usb_storage.c` and from `rolo.c`/`lc-rock.c`, and because
+  `kernel/thread.c:1217` is `#if NUM_CORES > 1` and not compiled here, the codec, plugin
+  and USB-MSC paths need a re-run before the fix is called settled.
+
+- **Two loader bugs surfaced on the way there, both fixed.**
+  `lc_open()` returned the caller's buffer as the image handle; `firmware/lc-rock.c`
+  returns `hdr.load_addr`, and the handle has to be the address of the image's own
+  `.header` struct. For a rock or codec the segment base happens to *be* the header,
+  which is why every plugin and codec test passed; an imageviewer decoder links its
+  first segment from file offset 0, so the ELF headers sit ahead of `.header` and the
+  caller was handed `0x7f 'E' 'L' 'F'`. The address now comes from the section table
+  (xtensa `shentsize` is 40), which is the only source that knows where the struct
+  lives. Separately, `IMGVDECODER_OFFSET` was applied to `PLUGIN_RAM` but not to
+  `PLUGIN_TEXT`: on every upstream target those are the same region, while our two
+  aliasing cache windows keep them apart, so every decoder was linked on top of
+  imageviewer's own text. `apps/plugins/plugin.lds` now reserves a
+  `XT_IMGDEC_TEXT_SIZE` slice at the top of the plugin text half, the plugin text is
+  capped so `ld` rejects an oversized plugin, and `tools/meowkits3/esp-layout-check`
+  reads the built artifacts and fails the build if a decoder would land under a
+  plugin's text end or past the codec text — the failure mode is silent corruption,
+  so it is guarded from the artifacts rather than from the headers.
+
 - **Recording at 88.2 kHz and 96 kHz works** — the `SPEED_MODE` bit-1 fix
   (`dfff14a08b`) now has signal through it. Verified 2026-10-29 on `960b37067f` by reading
   the WAVs off the card rather than by listening: `Recordings/R_MIC_260510-131716.wav` is
@@ -752,6 +825,13 @@ Each of these was checked on the board, not inferred.
 
 ## 4. Deferred — permanent unless the hardware changes
 
+- **Very large JPEGs fail to decode rather than displaying.** With the arena as sized,
+  imageviewer needs the compressed file *and* the decoded output in its working buffer
+  (`buf + filesize` is where the decoded images start, see `jpeg.c`), so a multi-megabyte
+  photo can leave `buf_images_size <= 0` and the decoder returns `PLUGIN_OUTOFMEM`. This
+  is a memory-topology limit, not a fault: it now fails cleanly and reports on screen.
+  A streaming decode or a larger plugin buffer would both change it; neither is planned.
+
 | Item | Reason |
 |---|---|
 | `HAVE_RTC_ALARM` wake-from-off | Driver functions exist and compile-verified in `rtc_pcf8563.c`, but Rockbox reads the alarm only at boot, there is no runtime `SYS_ALARM` handler, the PCF8563 `/INT` is unwired, and the AXP173 removes the SoC's supply at power-off. `clock`/`alarmclock` cover it while on. |
@@ -903,6 +983,36 @@ with `target_id=126`, `MODEL_NUMBER 133` (unique then — upstream later assigne
 platform/keymap wiring, simulator buttonmap and UI bitmap.
 
 ## 8. Artifacts and build
+
+### Cache, loader and overlay fixes (2026-10-30)
+
+Six commits, each independently reviewable, on top of `07a3f0bdbb`:
+
+| Commit | What | Evidence recorded in the message |
+|---|---|---|
+| `d3c0344b2c` | `commit_dcache()`, `commit_discard_dcache()`, `commit_discard_idcache()` implemented out-of-line on the ROM whole-cache operations | The `xthal_*` entry points disassemble to `entry a1, 16; retw.n` in a linked image — empty stubs. The new `commit_discard_idcache` disassembles to three `callx8` to `0x400016f8`, `0x400016d4`, `0x400016e0`. |
+| `6a3ea0a6a9` | `lc_open()` returns the `.header` section address, found through the section table; `XT_EHDR_READ_SIZE` grows 46 → 52 to reach `e_shnum`/`e_shstrndx`; the placed extent is checked against the caller's buffer | Across 163 built artifacts, and again across all 207 ELF images in the zip, `.header`'s `sh_addr` equals the `load_addr` the image declares and lies inside its segment. Zero mismatches. |
+| `9fe12233af` | Decoder overlays get their own text slice (`XT_IMGDEC_TEXT_SIZE`), plugin text capped so `ld` rejects an oversized plugin, and `esp-layout-check` reads the built artifacts and fails the build on overlap | Guard verified discriminating: swapping `imageviewer.rock` in as the decoder makes it exit 1, restoring makes it exit 0. Measured placements: decoder text `0x3c600000..0x3c601eb2`, slice `0x40000`, highest plugin text `0x3c5e9674`, codec text `0x3c640000`. |
+| `668c225b50` | Rockbox's own `-Os` restored; libc feature macros and `CONFIG_LIBC_PICOLIBC_NEWLIB_COMPATIBILITY=0` named in the target makefile | Image 1,307,056 → 1,256,368 B (−3.9%), warning profile unchanged. |
+| `f4fb980c0b` | Coulomb anchors become `int`, matching the counters they anchor | The guard asks whether a signed counter went backwards; unsigned cannot express it. |
+| `d0e28cbb31` | Seven comment continuations that opened with `/*` instead of ` *` repaired | Full clean rebuild now reports zero `-Wcomment`. |
+
+Post-series measurements, from a `make clean` build with `CCACHE_DISABLE=1`:
+image `1,256,768 B`, `espverify` valid, `esp-layout-check` exit 0, warning classes
+`-Wchar-subscripts` 35, `-Wundef` 17, `-Wparentheses` 2, `-Wmisleading-indentation` 1,
+`-Wcomment` 0, `-Wsign-compare` 0, errors 0. `make zip` 7,611,422 B.
+
+The simulator was re-checked in a **newly created** build directory rather than an
+already-built one (`--target=meowkits3 --type=s`, `make -j8`, zero errors,
+`rockboxui` 7,645,520 B) — the Phase C claim had been made in a warm directory and
+the `IMAGE_LINK` polarity fix in `0d1f930a53` had shown that a warm directory hides
+a link failure. The fresh directory is deleted after the check; `build-sim-meowkits3`
+remains the standing one.
+
+Hardware status at the time of writing: JPEG renders with the cache fix, and an
+oversized JPEG fails cleanly rather than faulting. **The regression sweep this change
+demands has not been run yet** — codecs, plugins, mpegplayer, MSC copy, recording —
+because the hook that was vacuous is now real on every image load.
 
 ### Phase D — the SDK dependency becomes an app_type (2026-10-30)
 

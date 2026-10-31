@@ -3883,6 +3883,34 @@ the registers from inside the firmware into the boot-log ring (`boot_trace_hex`)
 
 ## 10. Gotchas
 
+### The xthal cache entry points are empty on esp32s3
+
+`xthal_dcache_all_writeback`, `xthal_dcache_all_writeback_inv` and
+`xthal_icache_all_invalidate` exist in the toolchain, they link, and they are
+`entry a1, 16; retw.n` — nothing else. The core config has no cache
+instructions, so the Tensilica HAL has nothing to emit and the stubs are silent.
+A target that implements `commit_dcache()` / `commit_discard_dcache()` /
+`commit_discard_idcache()` in terms of them satisfies Rockbox's contract in the
+source and not in the binary, and the failure is the core executing instructions
+that were never written back: a fault at a pc *one byte into* an instruction in
+freshly loaded plugin or codec code, while a data-window read of those same
+bytes matches the file.
+
+The reachable operations are the ROM's whole-cache ones (`Cache_WriteBack_All`
+0x400016f8, `Cache_Invalidate_ICache_All` 0x400016d4, `Cache_Invalidate_DCache_All`
+0x400016e0), declared in `esp_rom/esp32s3/include/esp32s3/rom/cache.h` and reached
+through `cache_ll_invalidate_all()` — which is what IDF itself does, because its
+LL layer ignores the level and type it is handed. Range operations cannot serve
+external memory: `cache_ll_vaddr_to_cache_level_id()` accepts only IRAM0 and
+DRAM0, so `cache_hal_*_addr()` and `esp_cache_msync()` reject any PSRAM address.
+Images placed in the external arena therefore need whole-cache maintenance, and
+DMA buffers in internal SRAM keep using the per-range functions.
+
+Rule this leaves behind: for any arch hook whose body is a call into the vendor or
+toolchain layer, check the callee — `nm` for the address and disassemble it. A
+declaration that compiles proves nothing about what the binary does.
+
+
 > Bare-metal branch material. These describe the `baremetal-pre-idf` tree, where
 > Rockbox owned the vectors, the cache and the timer. On `esp32-s3-idf`, ESP-IDF
 > owns all three; the ISA and pad-level findings still apply, the interrupt and
