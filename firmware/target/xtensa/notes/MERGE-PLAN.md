@@ -849,3 +849,57 @@ Still open:
 3. Where the working docs live once the submission branch is cut — stay on
    `esp32-s3-idf` only, or move to a separate docs branch so the submission mirrors
    upstream exactly.
+
+---
+
+## 9. Phase E — submission shape (measured 2026-10-30)
+
+Counted, not remembered. `origin/master..HEAD` is **694 commits**, and classifying
+each by the files it touches:
+
+| Bucket | Commits | What it means for review |
+|---|---|---|
+| Generic core (`firmware/`, `apps/`, `lib/`, excluding target/keymap/plugin trees) | 125 | Most are diagnostic commits from the crash hunts. The submission must be a squashed series, not this history. |
+| Arch (`firmware/target/xtensa/` outside the board dir) | 330 | Mostly bring-up history; the artifact is 19 files / ~10,013 lines, of which ~7,000 lines are `notes/` prose. |
+| Board (`espressif_esp32s3/`, `apps/keymaps/`, `config/`) | 46 | 42 files / ~11,853 lines, essentially all new. |
+| Plugins (`apps/plugins/`) | 30 | 62 files / +1,212 −65: keymap additions plus `plugin.lds`/`plugins.make` seams. |
+| Tooling (`tools/`) | 20 | 13 files / +2,182 −12, of which `tools/meowkits3/` is 1,487 lines. |
+| Docs (`manual/`, `docs/`, `README`, `notes/`) | 109 | Not part of a code review; ship separately. |
+
+The file surface that has to be justified line by line is small enough to enumerate:
+`tools/root.make` (+79), `tools/functions.make` (+41), `tools/configure` (+204),
+`tools/rockboxdev.sh` (+261), `tools/builds.pm` (+22), 40 codec `*.make` files at two
+lines each (the `IMAGE_LINK` gate), `apps/plugins/plugins.make` (+46),
+`apps/plugins/plugin.lds` (+117), and the handful of `apps/` and `firmware/` files
+listed in §5.
+
+### Series to cut
+
+1. **Build seams** — `IMAGE_LINK` (the 40-file gate plus the three overlay makefiles),
+   `DEP_EXCLUDE`/`DEPSCAN_EXTRA` in `root.make` and `functions.make`, the `BASE_CFLAGS`
+   seam. One commit per hook, each provably a no-op for existing targets.
+2. **Generic core fixes** — the `logf.c` `__PCTOOL__` stub, the `audio_path.c`
+   speaker-only guard, `test_touchscreen` keymap handling, and whatever §5 still lists
+   as standing on its own. Each must build for targets that never enable it.
+3. **Xtensa architecture support** — arch directory, `configure` arch entry,
+   `config.h` dispatch, `elf-target.h`, `rom.lds`, `setjmp`, thread layer, and the
+   cache/paniclog objects. This is the commit a reviewer reads first.
+4. **MeowKit board** — `config/meowkits3.h`, the board directory, keymap, manual,
+   `builds.pm`, uisimulator bitmaps.
+5. **Tooling** — `tools/meowkits3/*`, `rockboxdev.sh`, the container.
+6. **Docs** — separate, and the working `notes/` stay out of the submission entirely
+   (question 3 above).
+
+### Gates before cutting the branch
+
+- Drop the loader instrumentation (the `LOGF_ENABLE` block, `xt_cycles()` and the
+  `lc wb/srv/ln/sync` line in `lc-esp32s3.c`) as its own commit. It is diagnostic.
+- Resolve or accept the parked fault in `PENDING.md` §1: a reviewer will ask what
+  does not work, and "one rare crash after a long chain, unreproduced" is a
+  reasonable answer only if it is written down.
+- Re-run the §6 checklist against the current `upstream/master` tip, not against
+  `fe5c0874af`.
+- Rebuild the four cross-target sim builds and one ARM and one MIPS native build, so
+  the hooks in series 1 are demonstrated inert.
+- `status => 2` in `builds.pm` stays until the battery capacity run is done — that
+  run and a new release tag are the remaining hardware tasks.
