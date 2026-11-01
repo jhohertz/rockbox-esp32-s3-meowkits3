@@ -1084,53 +1084,69 @@ pluginlib branches, `test_touchscreen`'s keypad case) and the SDK-conformance se
 Neither is cut yet; the arch/DWC grouping is described below before any work starts on
 it.
 
-## 12. Series 3 cut — arch identifiers and dispatch (2026-10-31, local only)
+## 12. Series 3 — arch identifiers and dispatch (2026-10-31, local only)
 
-Branch `submit/arch-dispatch`, one commit (`7a799aea3f`) on `upstream/master`. Not
-pushed: the submission order is still an open question, and these branches exist to
-make the port's shape auditable, not to open pull requests.
+Branch `submit/arch-dispatch`, one commit (`76e22c54bb`) on `upstream/master`, nine
+files. Not pushed.
 
-Ten files: arch ids in the `tools/configure` autoconf template, `ARCH == ARCH_XTENSA`
-→ `CPU_XTENSA`, the stack alignment, `EM_XTENSA` in `elf.h` and `elf-target.h`, the
-`memset16` counted-store path, and the `HAVE_SYSTEM_LIBC` guards in `firmware/SOURCES`,
-`firmware/asm/SOURCES` and `file.h`.
+Ten files were considered; `file.h` was cut from the series after measurement (see
+below), leaving: arch ids in the `tools/configure` autoconf template,
+`ARCH == ARCH_XTENSA` → `CPU_XTENSA`, the stack alignment, `EM_XTENSA` in `elf.h`
+and `elf-target.h`, the `memset16` counted-store path, and the `HAVE_SYSTEM_LIBC`
+guards in `firmware/SOURCES` and `firmware/asm/SOURCES`.
 
-**Four things were excluded because they are not separable, and the reasons are the
-finding:**
+**Four things are not separable, and the reasons are the finding:**
 
-- `__XTENSA__` detection and `xtensacc()` — they set compiler flags for an SDK build and
-  are only meaningful together with the SDK dependency. Shipping detection without the
-  compiler setup would let a configure select an arch with no toolchain function.
-- `asm/thread.c` / `.h` dispatch — `#include "xtensa/thread.c"`, and that implementation
-  is written against ESP-IDF. A dispatch line pointing at a file that cannot be submitted
-  is worse than no dispatch line.
-- `lib/libsetjmp` — `_JBLEN` is fine but `xtensa/setjmp.S` needs the core configuration
-  the toolchain supplies.
-- `firmware/rom.lds` — this target never reads it (the SDK owns the link), so the xtensa
-  blocks there are unexercised. They stay in the port, marked as such, rather than being
-  submitted as linker changes nobody has run.
+- `__XTENSA__` detection and `xtensacc()` set compiler flags for an SDK build and are
+  meaningful only together with the SDK dependency; detection without a compiler
+  function would let configure select an arch that cannot be built.
+- `asm/thread.c`/`.h` dispatch `#include`s an implementation written against ESP-IDF.
+  A dispatch line pointing at a file that cannot be submitted is worse than no line.
+- `lib/libsetjmp`: `_JBLEN` is fine, `xtensa/setjmp.S` needs the toolchain's core config.
+- `firmware/rom.lds` is never read by this target (the SDK owns the link), so its
+  xtensa blocks are unexercised. Dead but plausible linker edits do not get submitted.
 
-**Inertness, and the metric that makes it meaningful.** Three targets built from the
-commit and from upstream in fresh directories: ARM `.text` byte-identical, hosted
-`.text` byte-identical, MIPS differs in 6 raw bytes. Those 6 are two spill slots
-swapping allocation order inside `surround_process` — same 168-byte frame, same
-instruction count, same loads — a register-allocation artifact. Comparing raw `.text`
-stops being meaningful the moment anything shifts addresses, because a 4-byte shift
-makes thousands of branch targets differ while changing no behaviour: a bisect that
-reverted only `memset16.c` showed 3,083 raw bytes differing with **zero** functions
-semantically changed. The gate is therefore per-function instruction sequences with
-branch targets and literals normalised out, and that comparison is empty on all three
-targets.
+### What "inert" means, corrected mid-course
 
-`file.h` also changed shape because of this. The original moved `config.h` above
-`<fcntl.h>` to make `HAVE_SYSTEM_LIBC` visible at the conditional; that is correct but
-it perturbs native codegen for no benefit to them. The conditional include now sits
-*after* `config.h`, which works because the SEEK constants are used by callers, not by
-this header. Port rebuilt: `67a5548a…`, codecs and plugins still link.
+An earlier version of this section, and the port commit message on
+`e94037d7ec`, attributed a MIPS codegen difference to moving `config.h` above
+`<fcntl.h>` in `file.h`. **That attribution was wrong**, and it was written before it
+was tested. The measurements that replaced it:
 
-One process note, because it nearly cost something: the bisect above left upstream's
-`memset16.c` staged, and a commit without a pathspec swept it into the port branch --
-removing the xtensa counted-store path that exists because the zero-overhead loop state
-is not preserved across the level-1 tick. Caught immediately, restored from the prior
-commit, and the amend restricted to `file.h`. Bisects should restore the file they
-reverted before any commit, and commits should name their paths.
+- Builds are reproducible: upstream built twice gives byte-identical `.text`.
+- `memset16.o` is byte-identical in every build — that change is genuinely inert.
+- A control build that added *two blank comment lines* to `config.h` and changed
+  nothing else produced a **3,077-byte** raw `.text` difference with **zero** functions
+  semantically changed. Address shifts are what any edit to a universally included
+  header causes; they are not behaviour.
+- With `file.h` reverted, `surround.o` still differed by 12 bytes, so the earlier
+  claim that `file.h` caused it was false. The 12 bytes are two spill slots assigned
+  in the opposite order inside the same 168-byte frame — stores *and* their loads move,
+  so the pairing is consistent — plus the debug line table. It appears when a header
+  adds preprocessor conditionals rather than blank lines, and no function's instruction
+  sequence changes.
+- `file.h` is nevertheless out of the series: every shape of its fix that was tried
+  changed existing targets' object bytes, and it is only needed by targets that link a
+  system C library. It lives in the port (`e94037d7ec`), which is the honest place.
+
+Gate that survives all of this: **compare per-function instruction sequences with
+branch targets and literals normalised out.** Raw `.text` equality is only meaningful
+when nothing shifts, and the 3,077-byte control proves how quickly it becomes noise.
+On that gate, series 3 changes nothing on ARM, MIPS or the hosted simulator.
+
+### Branch policy, while the submission order is unknown
+
+The user has said plainly that submission is not being prepared until it is known what
+upstream wants. Only `submit/build-seams` (series 1) and `submit/core-fixes` (series 2)
+were pushed, and both happened before that instruction landed; nothing else should be
+pushed, and `submit/core-fixes` is a candidate for unpushing if the remote branch set
+reads as a plan it does not have. Further series are recorded as *inventories* here
+rather than as branches, because a branch with no submission order attached to it is
+clutter that a later reader has to reconcile.
+
+Remaining groups, not cut: **C** shared hardware support (`axp173.c/.h`,
+`rtc_pcf8563.c`, `es8311.h` + `audiohw.h` dispatch), **B** DesignWare (split into
+"helps every DWC port" — bounded AHB-idle spin, weak `usb_dw_target_dma_discard()` —
+versus this SoC's memory map), and **D** plugin/UI surface (mechanical keymap branches,
+plugin behaviour fixes, simulator). Their contents and separability are catalogued
+above; cutting them is a submission decision, not an alignment one.
