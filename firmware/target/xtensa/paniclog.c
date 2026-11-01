@@ -387,8 +387,11 @@ void dbg_breadcrumb_retained(const char *tag, unsigned long a, unsigned long b)
 }
 
 /* Copy an rtc slot out before formatting it, so the dump never reads the
- * volatile bank directly. */
-static int rtc_slot_line(char *buf, int bufsize, const struct rtc_slot *slot)
+ * volatile bank directly. Declared volatile here because the caller holds a
+ * pointer into the RTC-slow store: taking it as a plain pointer would silently
+ * discard the qualifier, which is what -Wdiscarded-qualifiers was reporting. */
+static int rtc_slot_line(char *buf, int bufsize,
+                         volatile const struct rtc_slot *slot)
 {
     char tag[5];
     uint32_t code = slot->tag;
@@ -811,11 +814,19 @@ int paniclog_frame_fault_text(char *buf, int bufsize)
  * register slots and the cache latch above are what survive as the permanent
  * record.
  *
- * 0x50001600 is past the frame record (which ends at 0x500014bc) and inside the
- * 8 KB RTC-slow bank, which runs to 0x50002000. Word stores only, as everywhere
- * else in this bank.
+ * 0x50001600 is past the frame record and inside the 8 KB RTC-slow bank, which
+ * runs to 0x50002000. Word stores only, as everywhere else in this bank.
+ *
+ * Neither region is reserved by anything in the link -- IDF owns the linker
+ * script here and these are absolute addresses -- so the only thing standing
+ * between a growing record and a silent overlap of the next one is the check
+ * below. It is compile-time on purpose: the failure mode is one record writing
+ * through another, which shows up as a crash report that prints the wrong build
+ * id, and that is indistinguishable from a stale image.
  * --------------------------------------------------------------------------- */
 #define XT_BT_RTC_BASE   0x50001600u
+typedef char rb_frame_rtc_fits[
+    (sizeof(struct frame_rtc) <= (XT_BT_RTC_BASE - XT_FRAME_RTC_BASE)) ? 1 : -1];
 #define XT_BT_RTC_MAGIC  0x43544252u   /* "RBTC" */
 #define XT_BT_ID_WORDS   8             /* 32 characters of build id, including NUL */
 
