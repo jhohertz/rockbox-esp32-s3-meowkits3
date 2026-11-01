@@ -1083,3 +1083,54 @@ the `usb-designware.c` CPU list, the `audiohw.h` codec-header include, the keyma
 pluginlib branches, `test_touchscreen`'s keypad case) and the SDK-conformance series.
 Neither is cut yet; the arch/DWC grouping is described below before any work starts on
 it.
+
+## 12. Series 3 cut — arch identifiers and dispatch (2026-10-31, local only)
+
+Branch `submit/arch-dispatch`, one commit (`7a799aea3f`) on `upstream/master`. Not
+pushed: the submission order is still an open question, and these branches exist to
+make the port's shape auditable, not to open pull requests.
+
+Ten files: arch ids in the `tools/configure` autoconf template, `ARCH == ARCH_XTENSA`
+→ `CPU_XTENSA`, the stack alignment, `EM_XTENSA` in `elf.h` and `elf-target.h`, the
+`memset16` counted-store path, and the `HAVE_SYSTEM_LIBC` guards in `firmware/SOURCES`,
+`firmware/asm/SOURCES` and `file.h`.
+
+**Four things were excluded because they are not separable, and the reasons are the
+finding:**
+
+- `__XTENSA__` detection and `xtensacc()` — they set compiler flags for an SDK build and
+  are only meaningful together with the SDK dependency. Shipping detection without the
+  compiler setup would let a configure select an arch with no toolchain function.
+- `asm/thread.c` / `.h` dispatch — `#include "xtensa/thread.c"`, and that implementation
+  is written against ESP-IDF. A dispatch line pointing at a file that cannot be submitted
+  is worse than no dispatch line.
+- `lib/libsetjmp` — `_JBLEN` is fine but `xtensa/setjmp.S` needs the core configuration
+  the toolchain supplies.
+- `firmware/rom.lds` — this target never reads it (the SDK owns the link), so the xtensa
+  blocks there are unexercised. They stay in the port, marked as such, rather than being
+  submitted as linker changes nobody has run.
+
+**Inertness, and the metric that makes it meaningful.** Three targets built from the
+commit and from upstream in fresh directories: ARM `.text` byte-identical, hosted
+`.text` byte-identical, MIPS differs in 6 raw bytes. Those 6 are two spill slots
+swapping allocation order inside `surround_process` — same 168-byte frame, same
+instruction count, same loads — a register-allocation artifact. Comparing raw `.text`
+stops being meaningful the moment anything shifts addresses, because a 4-byte shift
+makes thousands of branch targets differ while changing no behaviour: a bisect that
+reverted only `memset16.c` showed 3,083 raw bytes differing with **zero** functions
+semantically changed. The gate is therefore per-function instruction sequences with
+branch targets and literals normalised out, and that comparison is empty on all three
+targets.
+
+`file.h` also changed shape because of this. The original moved `config.h` above
+`<fcntl.h>` to make `HAVE_SYSTEM_LIBC` visible at the conditional; that is correct but
+it perturbs native codegen for no benefit to them. The conditional include now sits
+*after* `config.h`, which works because the SEEK constants are used by callers, not by
+this header. Port rebuilt: `67a5548a…`, codecs and plugins still link.
+
+One process note, because it nearly cost something: the bisect above left upstream's
+`memset16.c` staged, and a commit without a pathspec swept it into the port branch --
+removing the xtensa counted-store path that exists because the zero-overhead loop state
+is not preserved across the level-1 tick. Caught immediately, restored from the prior
+commit, and the amend restricted to `file.h`. Bisects should restore the file they
+reverted before any commit, and commits should name their paths.
