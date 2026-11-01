@@ -5013,7 +5013,14 @@ it in a loop, but `mpeg_malloc_all()` only refuses below `MIN_MEMMARGIN` (4 KiB)
 starts, and the first `disk_buf_probe()` runs `modui` with a zero divisor: IntegerDivide-
 ByZero, panic, watchdog reset, no message of any kind. Every allocation the plugin itself
 checks (`mpeg_alloc_init`, `pcm_output_init`, `audio_thread_init`, `disk_buf.start`) yields
-a splash; this one does not.
+a splash; this one does not. **Now guarded** — `disk_buf_init()` returns false when the
+shrink loop leaves `pgcount < 1`, which turns the divide-by-zero into the splash path.
+
+That splash text is itself a trap worth knowing: `stream_mgr.c:1128` reports
+"Cannot create buffering thread!" for a failure of `disk_buf_init()`, which is an
+*allocation* floor and involves no thread at all. A player that shows that message has a
+plugin buffer too small, not a scheduler problem — which is the same arithmetic as the
+paragraph below, arriving from the other side of `MIN_MEMMARGIN`.
 
 The floor is a grant of ~2,443,244 bytes: 2,097,152 libmpeg2 reservation + 176,400 PCM +
 67,284 audio queue + 4,096 margin + 65,544 disk guard + 32,768 one page. `buflib_alloc_

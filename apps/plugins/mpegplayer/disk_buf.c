@@ -949,6 +949,31 @@ bool disk_buf_init(void)
         disk_buf.pgcount--;
     }
 
+    /* pgcount is a divisor, not just a size. MAP_OFFSET_TO_PAGE() in disk_buf.h
+     * reduces a byte offset to a cache tag with `% disk_buf.pgcount`, so a zero
+     * count makes the first disk_buf_probe() divide by zero: IntegerDivideByZero,
+     * a panic, a watchdog reset, and no message of any kind. Every other
+     * allocation in this plugin is checked and reports itself -- mpeg_alloc_init,
+     * pcm_output_init, audio_thread_init, disk_buf.start above -- so this was the
+     * one path that could fail silently. mpeg_malloc_all() refuses only below
+     * MIN_MEMMARGIN (4 KiB), while the floor here is DISK_GUARDBUF_SIZE (65,544)
+     * plus one page (32,768) = 98,312 bytes, and the shrink loop above can drive
+     * the count to zero on its own, so the check belongs after it rather than in
+     * the allocator.
+     *
+     * Returning false reaches stream_mgr.c, which splashes "Cannot create
+     * buffering thread!" -- no thread is involved in this failure, and the grant
+     * size is the only thing a user could act on, so the DEBUGF names both
+     * numbers before the generic message is drawn. */
+    if (disk_buf.pgcount < 1)
+    {
+        DEBUGF("disk_buf_init: grant too small: %ld bytes, needs %d "
+               "(guard %d + page %d)\n",
+               (long)disk_buf.size, DISK_GUARDBUF_SIZE + DISK_BUF_PAGE_SIZE,
+               DISK_GUARDBUF_SIZE, DISK_BUF_PAGE_SIZE);
+        return false;
+    }
+
     disk_buf.cache = (typeof (disk_buf.cache))disk_buf.start;
     disk_buf.start += sizeof (*disk_buf.cache)*disk_buf.pgcount;
     disk_buf.size = disk_buf.pgcount*DISK_BUF_PAGE_SIZE;
