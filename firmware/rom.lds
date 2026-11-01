@@ -11,9 +11,6 @@ STARTUP(target/arm/pp/crt0-pp.o)
 #elif defined(CPU_ARM)
 OUTPUT_FORMAT(elf32-littlearm)
 STARTUP(target/arm/crt0.o)
-#elif defined(CPU_XTENSA)
-OUTPUT_FORMAT(elf32-xtensa-le)
-STARTUP(target/xtensa/crt0.o)
 #else
 #error "Unknown CPU"
 #endif
@@ -47,24 +44,6 @@ STARTUP(target/xtensa/crt0.o)
 #define FLASHSIZE 256K - ROM_START
 #endif
 
-#ifdef CPU_XTENSA
-/* ESP32-S3. Rockbox's bootloader image is not flashed on this target: the chip is
- * entered through ESP-IDF's second-stage bootloader. The makefile still builds
- * rombox.elf, so the map here has to be the real one rather than the default
- * fallback above, otherwise the artifact is garbage even though nothing uses it.
- *
- * DRAMSIZE is the data-bus view of internal SRAM and is unrelated to MEMORYSIZE,
- * which is the PSRAM size. The audiobuffer lives in PSRAM, which is why app.lds is
- * the script that actually matters. */
-#undef DRAMORIG
-#undef IRAMSIZE
-#define DRAMORIG 0x3FC99000
-#define IRAMORIG 0x40378000
-#define IRAMSIZE 0x9000
-#define FLASHORIG 0x3C000020
-#define FLASHSIZE 0x2000000 - 0x20
-#endif
-
 #ifdef CODECSIZE
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGINSIZE - CODECSIZE
 /* Where the codec buffer ends, and the plugin buffer starts */
@@ -73,13 +52,6 @@ STARTUP(target/xtensa/crt0.o)
 #define DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGINSIZE
 /* Where the audio buffer ends, and the plugin buffer starts */
 #define ENDADDR ENDAUDIOADDR
-#endif
-
-#ifdef CPU_XTENSA
-/* DRAMSIZE above is derived from MEMORYSIZE, which on this target is the PSRAM
- * size. The static data region is internal SRAM, so it is unrelated. */
-#undef DRAMSIZE
-#define DRAMSIZE 0x57000
 #endif
 
 /* End of the audio buffer, where the codec/plugin buffer starts */

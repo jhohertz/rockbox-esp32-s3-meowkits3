@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build-time guard for the xtensa external arena.
 #
-# Rockbox pins codecbuf/pluginbuf as absolute symbols (memory-xtensa-syms.S) rather
+# Rockbox pins codecbuf/pluginbuf as absolute symbols (memory-esp32s3-syms.S) rather
 # than reserving the range in a section, because ESP-IDF owns the linker script and
 # the ldfragment we feed it (idf-app/main/rockbox_memory.lf) only routes archives to
 # memory regions -- there is no section layout there, so an ASSERT() cannot live in
@@ -56,7 +56,7 @@ arena_top=$((pluginbuf_addr + pluginbuf))
 window_end=$((0x3C000000 + window_mb))
 
 # Both symbols, because neither alone is the section bound: rb_ext_ram_end is a label
-# in memory-xtensa-syms.S marking the end of what *that file* puts in PSRAM, while
+# in memory-esp32s3-syms.S marking the end of what *that file* puts in PSRAM, while
 # IDF places its own .ext_ram.bss content around and after it. On one build the two
 # differed by 117,372 bytes, and the section end was the one that mattered.
 # The map prints an address column plus the symbol; assignment forms append
@@ -64,7 +64,7 @@ window_end=$((0x3C000000 + window_mb))
 sym() { awk -v n="$1" '$1 ~ /^0x[0-9a-f]+$/ && index($2, n) == 1 {print $1; exit}' "$MAP"; }
 ours=$(sym rb_ext_ram_end)
 sect=$(sym _ext_ram_bss_end)
-[ -n "$ours" ] || die "rb_ext_ram_end not in $MAP -- memory-xtensa-syms.S did not link"
+[ -n "$ours" ] || die "rb_ext_ram_end not found in $MAP -- pass the linker map (rockbox.map), not the image; if this IS the map, memory-esp32s3-syms.S did not link"
 [ -n "$sect" ] || die "_ext_ram_bss_end not in $MAP -- IDF did not emit the section end"
 end=$(( ours > sect ? ours : sect ))
 
