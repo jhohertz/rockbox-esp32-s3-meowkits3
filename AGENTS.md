@@ -4919,6 +4919,20 @@ So after any rebase, before believing the build:
    `target_id` in `tools/configure`). Give *our* entry the next free number — upstream's
    numbers are the ones other targets already depend on — and say why in a comment, because
    the next merge will reintroduce the collision otherwise.
+   Two things that scan has to be resistant to, both learned from a miss:
+   - **Whitespace.** `#define MODEL_NUMBER    126` and `#define MODEL_NUMBER 125` are
+     different fields to `awk` and different lines to a naive `grep 'MODEL_NUMBER 125'`.
+     Normalize with `sed -E 's/.*MODEL_NUMBER[[:space:]]+([0-9]+).*/\1/'` before sorting,
+     or the duplicate does not appear.
+   - **The drift can be an absent commit, not a bad hunk.** A collision can be produced by
+     taking one upstream commit and not the one beside it: our branch has
+     `hidizsap80max` at 125 while `hibyr1native` still sits at its old 125, because upstream
+     moved that target to 126 in `3b226dd23e` ("hibyr1: complete the native R1 port") and we
+     never took it. `git diff upstream/master...HEAD` — three dots, merge-base to us — shows
+     *nothing* for that file, because we did not change it; the file is simply stale against
+     the upstream tip. So the scan must compare value sets against `upstream/master` itself
+     (`git grep … upstream/master -- 'firmware/export/config/*.h'`) and diff `HEAD
+     upstream/master` two-dot, or the collision survives every gate.
 2. Build the port **and** a second target from the same tree. The SDL simulator is the cheap
    one (`tools/configure --target=sdlapp`); it is what backs the "core carries only weak
    seams" claim, and a bad seam shows up there and nowhere else.
