@@ -50,6 +50,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   card's contents can be verified from the host, and AGENTS treats them as the
   reference test for cache coherence.
 
+- **mpegplayer's buffering thread can fail to be created after a long chain of
+  plugin and codec switches, until a reboot.** Observed on the repaired card with
+  the restored PM configuration; everything else in that session was clean.
+  `apps/plugins/mpegplayer/disk_buf.c:966` passes `disk_buf_stack`, a static array
+  in the plugin's own bss, to `rb->create_thread`, so the failure is one of two
+  claims: the kernel's fixed thread table has no free slot, meaning an earlier
+  plugin run left a thread claimed rather than exiting it, or the plugin buffer
+  itself has not been reclaimed. Distinguish them by the return value -- no slot
+  is `-1`, a missing stack is a NULL pointer from the arena path -- and by the
+  arena row on `View HW info` before and after N plugin runs. Not urgent: it is
+  recoverable by reboot and does not corrupt anything, but a thread slot that
+  survives a plugin unload is a slow leak in a table that cannot grow.
+
 - **Power-key shutdown during a USB host session is refused, and the refusal is
   correct but incomplete.** `usb_host_session()` gates it because in MSC mode the
   host owns the card. What is missing is the way to *end* the session cleanly and
