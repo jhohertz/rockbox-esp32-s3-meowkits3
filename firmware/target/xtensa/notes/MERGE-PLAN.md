@@ -1032,6 +1032,7 @@ files, no target token in any added line.
 | `ed04ddbb43` | `audio_path.c` guarded by `INPUT_SRC_CAPS != 0`; weak `DEFAULT_SPEAKER_MODE` |
 | `b015a5f1bd` | `usb_host_session()`, `USBMODE_DEFAULT`, `USB_SERIAL_DEFAULT_ON`, `I2C_ASYNC_SUBMIT_UNMASKED`, `hex[]` index mask in `usb_core.c` |
 | `305143732a` | `sdmmc_host.c` `HAVE_HOTSWAP` guard, `ft6x06` point clamp, `logf_panic_dump()` pctool stub, `pcm_record.c` short-grant panic, `rolo.c` `ICODE_ATTR` |
+| `5d9a5baa63` | `mpegplayer` refuses a disk buffer with zero pages — the `pgcount` divide-by-zero |
 
 **This series is not byte-identical, and the plan has to say so.** Unlike series 1,
 two of these commits add code that is compiled for every target, so `.text` grows and
@@ -1067,7 +1068,18 @@ Also closed while cutting it, both found by the re-scan rather than by inspectio
 - **Stray `/ */` comment terminators removed** (`3a4bfef6ab`), 24 places in files this
   port owns; upstream's own ` * */` lines and legitimate trailing slashes were left.
 
-**Still open in Phase E:** the `disk_buf.c` `pgcount == 0` divide-by-zero guard was
-planned for this series and is not in the tree -- `git diff` on that file is empty. The
-DWC weak hook (`usb_dw_target_dma_discard`) belongs to the arch/DWC series rather than
-this one, as does the `audiohw.h` codec-header include and every keymap branch.
+Verified on both shapes: `make rocks` builds `mpegplayer.rock` for the port and for
+`sansae200v2` on the ARM toolchain, so the guard is generic rather than arch-specific.
+
+The message that failure produces is worth knowing separately: `stream_mgr.c:1128` says
+"Cannot create buffering thread!" for any `disk_buf_init()` failure, and that is an
+allocation floor with no thread involved. It is the message a low arena grant shows, and
+it reads as a scheduler fault. The text is left alone here -- changing a user-facing
+string is a different question from not dividing by zero -- but it is why the port's own
+`PENDING.md` entry for the mpegplayer defect names the arena, not the thread.
+
+**Still open in Phase E:** the arch/DWC series (`usb_dw_target_dma_discard` weak hook and
+the `usb-designware.c` CPU list, the `audiohw.h` codec-header include, the keymap and
+pluginlib branches, `test_touchscreen`'s keypad case) and the SDK-conformance series.
+Neither is cut yet; the arch/DWC grouping is described below before any work starts on
+it.
