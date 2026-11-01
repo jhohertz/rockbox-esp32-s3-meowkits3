@@ -38,6 +38,7 @@
 #include <stdio.h>
 
 #include "system.h"
+#include "debug.h"        /* dbg_breadcrumb_retained() -- frequency-switch stamp */
 #include "paniclog.h"
 #include "xtensa.h"         /* XT_LOADADDRESS_ADDR -- needs config.h first */
 #include "button-target.h"   /* button_hw_any_pressed() -- the panic hold */
@@ -186,6 +187,31 @@ void system_init(void)
  * moves. CPUFREQ_MAX is what CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ boots at, asserted
  * above.
  */
+/*
+ * One hazard this seam carries, recorded here because nothing in the code
+ * enforces it: a frequency change is not a purely clock-tree event on this
+ * target.
+ *
+ * esp_pm_configure() with a different max/min enters pm_impl_update_freq(),
+ * which calls esp_clk_utils_mspi_speed_mode_sync_before_cpu_freq_switching()
+ * and then mspi_timing_change_speed_mode_cache_safe(). That freezes the
+ * external memory cache while SPI0/SPI1 are retimed, and it stalls the other
+ * core only under `#if SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE` -- a symbol esp32s3
+ * does not define. So while the freeze is in effect, anything still fetching
+ * from the flash/PSRAM XIP window can be doing so against a frozen cache,
+ * which IDF's own comment describes as an access that "will fail and will keep
+ * retrying". Rockbox's entire .text lives in that window (SPIRAM_FETCH_
+ * INSTRUCTIONS), and IDF's tick, timer and idle tasks on the second core live
+ * in it too.
+ * Observed once, twice: IllegalInstruction panics whose captured bytes at the
+ * faulting address matched the linked image exactly, at two different
+ * addresses. That is a fetch that did not return the image's bytes, and the MSPI
+ * freeze is the only window on this build that could do it. Those captures
+ * predate a repaired SD card, so they may have been downstream of the same
+ * metadata damage that produced the FAT panics; this stays here as the thing to
+ * suspect first if such a panic returns on a healthy card, and the candidate
+ * fix is IDF stalling the secondary core on parts that execute from PSRAM.
+ */
 void set_cpu_frequency(long frequency)
 {
     int mhz = (int)(frequency / 1000000L);
@@ -194,6 +220,14 @@ void set_cpu_frequency(long frequency)
         .min_freq_mhz = mhz,
         .light_sleep_enable = true,
     };
+
+    /* Stamp every request in the retained RTC ring. After a crash the last few
+     * breadcrumbs say whether a frequency switch was the thing that ran just
+     * before it, and the ring is the only witness that survives both a reset
+     * and a power cut. */
+    dbg_breadcrumb_retained("clk", (unsigned long)mhz,
+                            (unsigned long)cpu_frequency);
+
 
     /* On failure leave cpu_frequency alone: udelay() counts cycles against
      * it, so a value that matches the hardware is worth more than a value

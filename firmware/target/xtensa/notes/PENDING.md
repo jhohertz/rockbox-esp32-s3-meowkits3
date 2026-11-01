@@ -20,41 +20,54 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
-- **Shutdown panics every time, and it is the same fault that was parked as
-  "rare".** Reproduced on command: long-press the power key and the white
-  `*PANIC*` screen flashes for well under a second, then the unit reboots into
-  the menu by itself. The retained record over CDC reads:
+- **Fetch-class panic, unresolved, and now without a repro.** Two captures on
+  the pre-repair card reported `IllegalInstruction` whose captured bytes at the
+  faulting address matched the linked image exactly, at two different addresses
+  (`switch_thread+0x52`, just past `waiti 0`, and `vbus_sample+0xc`). A legal
+  instruction that faults is a fetch that did not return the image's bytes, and
+  an address that moves is a window rather than a bug in one function. The only
+  window on this build is the MSPI speed-mode switch: `esp_pm_configure()` with a
+  changed max/min reaches `pm_impl_update_freq()`, which calls
+  `mspi_timing_change_speed_mode_cache_safe()` and freezes the external cache
+  while retiming SPI0/SPI1 -- and it stalls the secondary core only under
+  `SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE`, which esp32s3 does not define, while
+  everything executable here (Rockbox's whole `.text`, and IDF's tick, timer and
+  idle tasks on the other core) fetches from that same XIP window. Both captures
+  predate the card repair, so they may have been downstream of the same metadata
+  damage. Neither the light-sleep experiment nor the frequency-pinning experiment
+  reproduced it after the repair. The `clk` breadcrumb stamp is permanent, so a
+  future occurrence says whether a frequency switch was the last thing that ran;
+  the candidate fix is IDF stalling the secondary core on parts that execute from
+  PSRAM, not deleting the 80/160/240 ladder.
 
-  ```
-  rb panic: *rb-panic* IllegalInstruction pc=4037cd8c excv=00000000 cause=0
-  rb reset 3 rtc 26 trail 7470
-  rb ps 00060024 sp 3fcd0e60 epc1 4037cd8c epc2 4205e0d2 ...
-  rb win wb 0000000b ws 00000ac0 a5 00035171
-  ```
+- **MSC is absent from the USB composition on this build.** With the cable in,
+  the device exposes three interfaces -- CDC (`02`), audio (`0a`) and HID (`03`)
+  -- and no mass storage (`08`), so the host cannot see the card at all and
+  `lsblk` shows no disk. `usb.c:249` enables `USB_DRIVER_MASS_STORAGE` on every
+  insertion under `USB_ENABLE_STORAGE`, so this is either the card failing to
+  mount (it was damaged at the time) or a composition regression. Re-check with
+  a healthy card before assuming the former; MSC writes are the only way the
+  card's contents can be verified from the host, and AGENTS treats them as the
+  reference test for cache coherence.
 
-  `pc` is `panic_abort + 16` again — the deliberate break, so the cause reported
-  is the second exception. `ps = 0x00060024` has INTLEVEL 4, which is the debug
-  level, so this went through `_DoubleExceptionVector`. `epc2 = 0x4205e0d2` is
-  `switch_thread + 0x52`, the instruction right after `waiti 0`: the core was
-  parked in `core_sleep()`, an interrupt woke it, and the handler chain
-  double-faulted. `a5 = 0x35171` is not a valid base-save pointer, which is what
-  a window underflow walks — so the fault is in interrupt-level window bookkeeping,
-  not in whatever the idle loop was about to run. Reset reason 3 is `ESP_RST_SW`,
-  i.e. the reboot `panic()` asked for.
+- **Power-key shutdown during a USB host session is refused, and the refusal is
+  correct but incomplete.** `usb_host_session()` gates it because in MSC mode the
+  host owns the card. What is missing is the way to *end* the session cleanly and
+  then shut down, which the core already knows how to do on cable removal: the
+  USB thread's `USB_EXTRACTED` case runs `usb_stack_enable(false)`
+  (`usb_core_exit()` -> soft disconnect -> pads back), sets `usb_state`, sends
+  `SYS_EVENT_USB_EXTRACTED`, and `usb_set_host_present(false)` reaches
+  `usb_release_exclusive_storage()` -> `usb_slave_mode(false)` -> `disk_mount_all()`
+  -> `queue_broadcast(SYS_USB_DISCONNECTED)`, which is what lets
+  `handle_usb_events()` return. Two hazards to handle deliberately: `usb_slave_mode(false)`
+  calls `panicf("mount: %d")` when `disk_mount_all()` returns <= 0, so a polite
+  shutdown would panic on a quirk; and releasing MSC while the host still has the
+  drive mounted needs the LUN eject and class notify first, as the reference
+  firmware's `usb_msc_disable()` does. The seam should be a core entry point in
+  that exact order, gated so no existing port changes behaviour.
 
-  Why it looked rare: the earlier single sighting was a power-down too. Nothing
-  about the codec chain was load-bearing.
-
-  **Next measurement, flashed but not yet run.** The RTC-slow teardown ring only
-  covered the USB teardown, and the SRAM trail dies with the rails, so nothing
-  named the step. It now also stamps the power-key decision (`pekR` refused
-  while enumerated, `pekL` accepted), `audiohw_close` (`awCl`), `lcd_shutdown`
-  (`lcdS`) and `power_off` (`pwOf` with REG32 and the retry count), and
-  `paniclog_crash_report_logf()` prints the last four retained slots over CDC —
-  ~100 bytes, inside the 512-byte ring that reboot-looped the board when this
-  report carried forty trail entries. Reproduce with a reader attached and the
-  ring says which step was in flight.
-
+- **Battery: charge leg and a discharge run to shutdown.** Capacity measurement
+  still gates the next release tag.
 
 
 - **Narrowing the SDK include path — done, not pending.** Applied as `58a5344523` `IDF_CFLAGS`
@@ -346,6 +359,120 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     the run above used it.
 
 ## 2. Verified on hardware — closed
+
+- **The recurring shutdown and menu-navigation panics were damaged FAT metadata
+  on the card, not code.** What the panic screen actually said was
+  `Updating size on empty dir entry 147` -- `firmware/common/fat.c:1943`, which
+  fires when `cache_direntry()` returns a slot whose first name byte is `0x00`
+  or `0xe5` for a file being written. The same entry number on every boot, and
+  three consecutive boots in the console capture. It explains both symptoms
+  exactly: `clean_shutdown()` runs `system_flush()`, which writes settings and
+  bookmarks and therefore updates a directory entry, so a shutdown hit the damaged
+  slot every time; and navigating menus shortly after boot reads that directory
+  while waiting past the boot burst does not, which is why "race to the menu
+  crashes, wait a moment and it is fine" looked like a timing bug. Running the
+  card through a filesystem check cleared it, and the payload was re-extracted
+  from a fresh zip as a precaution.
+
+  The damage has a source: the MSC writes performed *before* the cache-coherence
+  fix in `45a8669533` corrupted FAT and directory data, and that damage is on the
+  card rather than in the image, so reflashing never removes it. A board that
+  panics identically on every boot, in a way that survives a reflash, should have
+  its card checked before its code. `reset 5` in these reports is
+  `ESP_RST_INT_WDT`, not a panic restart: Rockbox's panic path holds with
+  interrupts masked to keep the message on the glass, and the interrupt watchdog
+  then resets the chip. Read the panic text, not the reset reason.
+
+  The recorder changes that made this legible are kept: the abort-aware panic line
+  (IDF's `info->reason` *is* the assert text for an abort, so printing
+  `pc=`/`excv=`/`cause=` on that path spends the record's 96 characters on the
+  handler's own break and truncates the message), `hnd-ps`/`frm-sp` labelling
+  (the old `ps` row read the handler's PS at exception level 4, so it read the
+  same value on every crash and looked like fault data), six raw `XtExcFrame`
+  word rows, and a capture of the two words resident at the faulting address,
+  which is what distinguishes a bad instruction from a failed fetch.
+
+- **The shutdown crash and the debug-menu crash were stale cache reads, not a
+  scheduler bug. Fixed by `45a8669533`.** `cache-xtensa.c` had made
+  `commit_dcache_range()` and `discard_dcache_range()` no-ops for internal DRAM on
+  the claim that "internal SRAM is not cached on esp32s3", inferred from
+  `SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE` — a symbol that exists only for esp32p4 in
+  this IDF and describes that part's L1 strictness, not whether this part caches
+  its internal SRAM. ESP-IDF contradicts the inference in its own code:
+  `components/hal/esp32s3/include/hal/cache_ll.h` maps both IRAM0 and DRAM0 to a
+  cache level, and `esp_driver_sdmmc/src/sdmmc_transaction.c` plus
+  `esp_driver_i2s/i2s_common.c` msync internal DMA buffers unconditionally.
+
+  Two consumers were hollowed out by that: `usb_dw_target_dma_discard()`, which is
+  the override of a weak hook whose entire purpose is making DWC-written endpoint
+  buffers visible (and `usb-designware.c` calls `discard_dcache_range()` for every
+  CPU but the ARM940T), and the GDMA descriptor ring, whose owner bit the transmit
+  path polls after the engine retires a slot. Reading a stale line there is not a
+  slowdown — the driver acts on bytes that were never transferred. The corruption
+  then surfaced far from its cause: garbage MSC payload -> FAT and directory
+  structures parsed from bad bytes -> a write through a bogus pointer -> a
+  smashed thread stack -> a window-refill double exception in `switch_thread` /
+  `block_thread_` with a garbage `a5` base-save pointer, on the *next* context
+  switch. That is why the symptom read as a scheduling bug, why it appeared on
+  shutdown (teardown flushes the card) and in the debug menu (walks the directory
+  cache), and never in the audio path that was actually mis-bookkeeping.
+
+  What the no-op had genuinely been protecting against was real but was a race,
+  not wasted work: cache code in the GDMA handler interleaving with a whole-cache
+  operation in task context, reported as `Cache error` at `0x4004e5b7` in the ROM
+  cache module. The remedy is the platform's own — every cache call here now runs
+  inside `esp_os_enter_critical_safe()` on a static critical-section lock, exactly
+  the shape `components/esp_mm/esp_cache_msync.c` uses, so range and whole-cache
+  paths are mutually exclusive instead of one being silent. Two contract
+  alignments came out of the same reading: `discard_dcache_range()` honours the
+  tree-wide rule (`cpucache-arm.h`, `mmu-mips.c`) that a discard does not write
+  back except for partial edge lines, by widening to whole lines and writing them
+  back before invalidating — a 12-byte GDMA descriptor cannot discard a
+  neighbour's dirty line that way; and `commit_discard_dcache()` discards as well
+  as commits, as every other port does, which `usb_storage.c:496` depends on.
+
+  Measured on hardware after the change, in one session: boot, repeated codec
+  switching, doom, mpegplayer, MSC file write with a host-side SHA256 match,
+  eject, reconnect, `Debug -> View HW info`, and a power-key shutdown that powers
+  off instead of panicking. The last two both faulted before it.
+
+- **The retained crash record is readable on-device, and `pc` in it is never the
+  cause.** IDF's panic path breaks in `panic_abort` (`0x4004cd8c` on this build),
+  so `pc` and `epc1` both name that break and neither is a cause. The usable
+  fields are `epc2` — the address a doubled fault came from, because the ISA moves
+  the original EPC1 down to EPC2 — and `depc`, the address that doubled. Those are
+  nowhere in the frame the handler sees, which is why `panic_cdc.c` reads them from
+  the CSRs at level 4 and stores them in RTC slow. `View HW info` now shows ps/sp,
+  epc1/epc2, epc3/epc4, depc, the window state and the cache-error latch as
+  separate rows: `paniclog_frame_regs_text()` is a single ~90-character line, right
+  for the console and wrong for a 320-pixel row, where clipping removes the tail —
+  and the tail is where `epc2` sits.
+
+- **Reading a console on this board resets it, and the crash replay happens
+  once.** The kernel's `cdc-acm` driver asserts DTR/RTS on `open()` even through a
+  plain `os.open`, so opening the USB-Serial-JTAG node gives
+  `rst:0x15 (USB_UART_CHIP_RESET)` — a USJ reader destroys the state it is
+  watching while the app owns that node. It is only safe as a loader-time or
+  boot-time channel. `paniclog_crash_report_logf()` replays the record over CDC
+  about 3 s after boot, once, and does not buffer: if the cable is out at that
+  moment the report is gone until the next boot, and unplugging can drop the rails
+  that hold RTC slow and the `.noinit` ring, i.e. destroy the evidence. So: attach
+  a CDC-only reader resolved by USB id (`1234:4002`, since the kernel renumbers
+  `ttyACMn` on every re-enumeration), leave the cable alone, and tap RESET.
+  `esptool` at 460800 on the USJ link fails with `Invalid head of packet`; 115200
+  handshakes. A looping app also breaks it — the console bytes land as noise, and
+  `303a:1001` is present both in the loader and while the app runs, so the USB id
+  alone does not say which state the chip is in.
+
+- **Instrumentation that occupies the thread it is measuring, or divides by
+  zero, reports a port bug that is its own.** Two probe faults during this
+  investigation, both misread as port crashes before being decoded. A tick task
+  that blocked on an SD read starved `button_read_device()`'s PMU cable poll, so
+  `usb_enable()` never ran and the device simply never enumerated. And a zero
+  divisor on xtensa is not a quiet result: GCC emits `break 1, 15`, which arrives
+  as `EXCCAUSE_SYSCALL` with the pc inside the probing function's own literal
+  pool, i.e. a panic whose reported location looks like corrupted code. Decode the
+  faulting *instruction* before concluding anything about the port.
 
 - **Plugin, codec and decoder images were executed without cache maintenance, and
   `commit_discard_idcache()` was the reason.** Fixed 2026-10-30 by implementing

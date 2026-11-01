@@ -74,6 +74,21 @@ int paniclog_frame_window_text(char *buf, int bufsize);
  * nothing. */
 int paniclog_frame_cache(char *buf, int bufsize);
 
+/* The register line, in pieces, for a screen that cannot hold all seven
+ * fields. Truncating the single line loses epc2 -- the slot that carries the
+ * real faulting address when the fault doubled, and therefore the only field
+ * that names a function in the faulting image. Returns 0 when nothing was
+ * stored, or when part is past the end. */
+int paniclog_frame_regs_part(char *buf, int bufsize, int part);
+
+/* The bytes resident at the faulting address, plus EXCCAUSE, captured at panic
+ * time. An IllegalInstruction whose address holds a legal opcode in the image is
+ * a failed fetch, and these two words are the difference between that and a
+ * genuinely illegal instruction. Returns 0 when nothing was recorded. */
+void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1,
+                          uint32_t cause);
+int paniclog_frame_fault_text(char *buf, int bufsize);
+
 /* Which reset produced this boot, and the build the dead boot was running.
  * Both are recorded by the IDF-side entry point, which has the values and
  * cannot call into Rockbox yet. */

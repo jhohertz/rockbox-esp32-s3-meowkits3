@@ -244,6 +244,39 @@ enum
      * open the screen, let it go dark for a few minutes, come back and read
      * it again. */
     INFO_PM,
+    /* The retained crash record, in pieces. A hardware exception goes to IDF's
+     * handler, which breaks in panic_abort and resets: the pc it reports is
+     * that break, so pc and epc1 are both useless as a cause. epc2 holds the
+     * address the fault doubled from, and depc the address that doubled --
+     * those two are what can be run through addr2line. They are rows here
+     * rather than one console line because a 320-pixel row clips the tail,
+     * and the tail is where epc2 sits. */
+    INFO_REGS_PS,
+    INFO_REGS_EPC12,
+    INFO_REGS_EPC34,
+    INFO_REGS_DEPC,
+    INFO_REGS_WIN,
+    INFO_REGS_CACHE,
+    /* The bytes the core was actually handed at the faulting address. A fault
+     * whose address decodes to a legal opcode in the image is a failed fetch,
+     * and these two words are the proof; compare them against the image's bytes
+     * at that address. */
+    INFO_REGS_FAULT,
+    /* The exception frame, raw. IDF hands the handler an XtExcFrame whose word
+     * order is exit, pc, ps, a0, a1(sp), a2..a15, sar, exccause, excvaddr,
+     * lbeg, lend -- so these six rows carry the fault's own pc and PS, the
+     * return-address chain (a0, window-encoded: decode with
+     * (v & 0x3fffffff) | 0x40000000), and the cause plus refused address. The
+     * CSR rows above cannot show any of that: on an abort they are all zero, and
+     * the only pc in them is panic_abort's break. Printed raw rather than
+     * interpreted, because the handler cannot tell whether it was given an
+     * XtExcFrame or an XtDbFrame -- the host decode is where that is settled. */
+    INFO_REGS_FRM0,
+    INFO_REGS_FRM1,
+    INFO_REGS_FRM2,
+    INFO_REGS_FRM3,
+    INFO_REGS_FRM4,
+    INFO_REGS_FRM5,
     /* The crash trail, newest first. A hardware exception goes to IDF's
      * handler, prints to UART0 and resets -- it never reaches Rockbox's
      * panic(), so there is no message to show and this ring is the only
@@ -320,6 +353,52 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
          * died before the USB teardown ran at all. */
         snprintf(buf, bufsz, "Reset %lu, rtc trail %lu",
                  paniclog_reset_reason(), paniclog_rtc_count());
+        break;
+    case INFO_REGS_PS:
+        if (paniclog_frame_regs_part(buf, bufsz, 0) == 0)
+            snprintf(buf, bufsz, "%s", "regs: none retained");
+        break;
+    case INFO_REGS_EPC12:
+        if (paniclog_frame_regs_part(buf, bufsz, 1) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_EPC34:
+        if (paniclog_frame_regs_part(buf, bufsz, 2) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_DEPC:
+        if (paniclog_frame_regs_part(buf, bufsz, 3) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_WIN:
+        /* The window state at fault. A fault whose PC equals the interrupted
+         * stack pointer is what a window spill or underflow produces when the
+         * ancestor chain is wrong, and a5 is the register the handler indexes
+         * the base save area through -- a value there outside the thread's
+         * stack is the signature this target has hit repeatedly. */
+        if (paniclog_frame_window_text(buf, bufsz) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_CACHE:
+        /* Only present when the cache-error latch reported something; a zero
+         * vaddr means no refused access, not an access at address 0. */
+        if (paniclog_frame_cache(buf, bufsz) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_FAULT:
+        if (paniclog_frame_fault_text(buf, bufsz) == 0)
+            snprintf(buf, bufsz, "%s", "");
+        break;
+    case INFO_REGS_FRM0:
+    case INFO_REGS_FRM1:
+    case INFO_REGS_FRM2:
+    case INFO_REGS_FRM3:
+    case INFO_REGS_FRM4:
+    case INFO_REGS_FRM5:
+        /* Absent rows are meaningful: no frame record means the crash predates
+         * this recorder, or the boot was clean rather than a reboot. */
+        if (paniclog_frame_words(buf, bufsz, item - INFO_REGS_FRM0) == 0)
+            snprintf(buf, bufsz, "%s", "");
         break;
     case INFO_TXSTAT: {
         unsigned int sessions, err, recover, silence;

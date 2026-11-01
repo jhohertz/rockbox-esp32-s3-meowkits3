@@ -60,6 +60,8 @@ extern void paniclog_frame(const unsigned long *words, int count,
 extern void paniclog_frame_regs(const unsigned long *regs, int count);
 extern void paniclog_frame_window(uint32_t windowbase,
                                          uint32_t windowstart, uint32_t a5);
+extern void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1,
+                                 uint32_t cause);
 extern void paniclog_crash_id(const char *build);
 extern int button_hw_any_pressed(void);
 extern void esp_panic_handler_feed_wdts(void);
@@ -194,6 +196,38 @@ void esp_panic_handler(panic_info_t *info)
                                     f != NULL ? (uint32_t)f->a5 : 0);
     }
 
+    /* The bytes resident at the faulting address.
+     *
+     * On a doubled fault the frame IDF hands us belongs to the debug context,
+     * so epc1 is this handler's own break and epc2 -- where the ISA shifted the
+     * original EPC1 -- is the address that actually faulted. A plain exception
+     * leaves epc2 zero, so epc1 is the one to read there.
+     *
+     * This is the measurement that separates two very different bugs with the
+     * same report: an IllegalInstruction at an address whose bytes in the linked
+     * image are a perfectly legal opcode can only mean the core was handed
+     * something else, i.e. a fetch problem (cache line, remapped page, a page
+     * nobody mapped). Reading the words is guarded by esp_ptr_executable because
+     * a fault inside this handler would promote to a double exception and
+     * destroy the state being recorded -- which is the whole reason this recorder
+     * exists. */
+    {
+        unsigned long fault = regs[2] != 0 ? regs[2] : regs[1];
+        unsigned long w0 = 0, w1 = 0, excc = 0;
+
+        if (fault != 0 && esp_ptr_executable((const void *)fault))
+        {
+            const volatile uint32_t *p =
+                (const volatile uint32_t *)(fault & ~3UL);
+
+            w0 = p[0];
+            w1 = p[1];
+        }
+        __asm__ __volatile__ ("rsr.exccause %0" : "=r"(excc));
+        paniclog_frame_fault((uint32_t)fault, (uint32_t)w0, (uint32_t)w1,
+                             (uint32_t)excc);
+    }
+
     /* Which image faulted, as opposed to which image will later report it: a
      * flash cannot confirm itself, because the reset pulse never reaches a chip
      * whose pads the previous image already handed to the DWC core.
@@ -210,9 +244,38 @@ void esp_panic_handler(panic_info_t *info)
 
     /* Short form in the text record, bounded by its 96-character field, so
      * the fault is identifiable from the debug page as well as the serial
-     * report. */
-    snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
-             RB_PANIC_TAG, reason, pc, excv, cause);
+     * report.
+     *
+     * For an abort the reason string *is* the answer: panic.c:357-358 sets
+     * info->reason to g_panic_abort_details, which panic_abort() filled with
+     * the assert text ("assert failed: <expr> <file>:<line>"), the
+     * ESP_ERROR_CHECK line, or the FreeRTOS assert. The frame's pc on that
+     * path is panic_abort's own break, and epc2/3/4/depc are all zero -- there
+     * is no nested exception -- so printing them spends the whole 96-character
+     * budget on nothing and truncates the file and line that name the bug.
+     * Watchdog panics are the same shape (the reason carries the task name).
+     * Only real faults have a pc and a refused address worth recording. */
+    if (info->exception == PANIC_EXCEPTION_ABORT ||
+        info->exception == PANIC_EXCEPTION_IWDT ||
+        info->exception == PANIC_EXCEPTION_TWDT)
+    {
+        snprintf(line, sizeof line, "%s %s%s%s", RB_PANIC_TAG,
+                 info->exception == PANIC_EXCEPTION_ABORT ? "ABORT" : "WDT",
+                 reason, info->description ? " " : "");
+        if (info->description != NULL)
+        {
+            int used = strlen(line);
+            int room = (int)sizeof line - used - 1;
+
+            if (room > 0)
+                strncat(line, info->description, (size_t)room);
+        }
+    }
+    else
+    {
+        snprintf(line, sizeof line, "%s %s pc=%08lx excv=%08lx cause=%lu",
+                 RB_PANIC_TAG, reason, pc, excv, cause);
+    }
     panic_console_write(line);
 
     /* Two seconds, feeding the RTC watchdog IDF armed for ten. */

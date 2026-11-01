@@ -304,9 +304,9 @@ struct panic_rtc
  * sleep_modes.c) are placed at the start of the bank, and RTC fast is what this
  * build uses as heap, so 0x50001400 is unclaimed. Word stores only, as above. */
 #define XT_FRAME_RTC_BASE   0x50001400u
-#define XT_FRAME_RTC_MAGIC  0x47473252u   /* "R2GR": bumped from "FRAG", whose struct had no
-                             * register slots. Anything under the old magic is stale and reads
-                             * as nothing rather than as shifted words. */
+#define XT_FRAME_RTC_MAGIC  0x47463252u   /* "R2FG": bumped from "R2GR", whose struct had no
+                             * fault-bytes slots. Stale records under the old magic read as
+                             * nothing rather than as shifted words. */
 #define XT_FRAME_WORDS      32
 
 struct frame_rtc
@@ -339,7 +339,23 @@ struct frame_rtc
     uint32_t a5;
     uint32_t win_magic;
     uint32_t regs_magic;
+    /* The bytes actually resident at the faulting address, read at panic time.
+     * This is what separates a bad *instruction* from a bad *fetch*: an
+     * IllegalInstruction whose address decodes to a legal opcode in the image
+     * can only mean the core did not get those bytes. A captured word that
+     * matches the image says the fetch was fine and the exception came from
+     * somewhere else; a word that differs is the corruption itself, and its
+     * value names the mechanism -- 0x0bad0bad is the Ext_RAM "no mapping"
+     * sentinel, an ASCII-ish or heap-looking value is a remapped page, and all
+     * zeros is a cache that returned nothing. */
+    uint32_t fault_magic;
+    uint32_t fault_addr;
+    uint32_t fault_w0;
+    uint32_t fault_w1;
+    uint32_t exccause;
 };
+
+#define XT_FAULT_RTC_MAGIC 0x46525446u   /* "FRTR" */
 
 #define XT_REGS_RTC_MAGIC 0x47524732u   /* "2GR" */
 
@@ -658,7 +674,7 @@ int paniclog_frame_regs_text(char *buf, int bufsize)
         return 0;
 
     return snprintf(buf, bufsize,
-                    "ps %08lx sp %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
+                    "hnd-ps %08lx frm-sp %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
                     (unsigned long)fr->ps,
                     /* Word 4 of the frame is XtExcFrame.a1, the stack pointer
                      * of
@@ -688,6 +704,95 @@ int paniclog_frame_cache(char *buf, int bufsize)
     return snprintf(buf, bufsize, "cache vaddr %08lx size %lu",
                     (unsigned long)fr->cache_vaddr,
                     (unsigned long)fr->cache_size);
+}
+
+/* The register line in pieces, for the debug screen.
+ *
+ * paniclog_frame_regs_text() is one 90-character line, which is right for the
+ * console and wrong for a 320-pixel row: the tail is clipped, and the tail is
+ * where epc2 sits. epc2 is the slot that holds the real faulting address once a
+ * fault has doubled -- the frame the panic handler sees carries its own break,
+ * so pc and epc1 both point at IDF's panic_abort and tell you nothing. Grouping
+ * it so epc2 lands in the middle of a row, rather than at the end of one, is
+ * the entire point of this function.
+ *
+ * Returns 0 when nothing was stored, or when part is past the end. */
+int paniclog_frame_regs_part(char *buf, int bufsize, int part)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC || fr->regs_magic != XT_REGS_RTC_MAGIC)
+        return 0;
+
+    switch (part)
+    {
+        case 0:
+            /* hnd- is the handler's own state, read from CSRs at level 4: it
+             * always reads INTLEVEL 4 because the panic path *is* the exception,
+             * so it says nothing about the fault and must not be read as the
+             * interrupted PS. frm- is the interrupted context, taken from the
+             * frame IDF built at fault time. */
+            return snprintf(buf, bufsize, "hnd-ps %08lx frm-sp %08lx",
+                            (unsigned long)fr->ps,
+                            (unsigned long)fr->word[4]);
+        case 1:
+            return snprintf(buf, bufsize, "epc1 %08lx epc2 %08lx",
+                            (unsigned long)fr->epc1, (unsigned long)fr->epc2);
+        case 2:
+            return snprintf(buf, bufsize, "epc3 %08lx epc4 %08lx",
+                            (unsigned long)fr->epc3, (unsigned long)fr->epc4);
+        case 3:
+            return snprintf(buf, bufsize, "depc %08lx", (unsigned long)fr->depc);
+        default:
+            return 0;
+    }
+}
+
+/* Keep the bytes resident at the faulting address.
+ *
+ * Called from the panic handler, which runs after IDF re-armed the flash cache,
+ * so an ordinary load works here. The point is to answer a question no register
+ * can: when the exception says IllegalInstruction at an address that decodes to
+ * a legal opcode in the linked image, the core did not fetch those bytes. Either
+ * the cache returned something else, or the page behind that virtual address is
+ * not the page the image was linked against. The captured words decide it -- and
+ * their value names the mechanism, because the sentinel for an unmapped Ext_RAM
+ * page, a remapped page of another image's data, and an empty cache line look
+ * different. */
+void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1, uint32_t cause)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (fr->magic != XT_FRAME_RTC_MAGIC)
+        return;   /* no frame was retained, so there is nothing to pair with */
+
+    fr->fault_addr = addr;
+    fr->fault_w0   = w0;
+    fr->fault_w1   = w1;
+    fr->exccause   = cause;
+    fr->fault_magic = XT_FAULT_RTC_MAGIC;
+}
+
+int paniclog_frame_fault_text(char *buf, int bufsize)
+{
+    volatile struct frame_rtc *fr =
+        (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
+
+    if (buf == NULL || bufsize <= 0)
+        return 0;
+    if (fr->magic != XT_FRAME_RTC_MAGIC ||
+        fr->fault_magic != XT_FAULT_RTC_MAGIC)
+        return 0;
+
+    return snprintf(buf, bufsize, "fault @%08lx: %08lx %08lx cause %lu",
+                    (unsigned long)fr->fault_addr,
+                    (unsigned long)fr->fault_w0,
+                    (unsigned long)fr->fault_w1,
+                    (unsigned long)fr->exccause);
 }
 
 /* ---------------------------------------------------------------------------
@@ -923,6 +1028,14 @@ void paniclog_crash_report_logf(void)
      * window spill or underflow produces when the ancestor chain is wrong,
      * and these are the three registers that say so. */
     len = paniclog_frame_window_text(line, sizeof line);
+    if (len > 0)
+        logf("rb %s", line);
+
+    /* What the fetch actually returned at the faulting address. This is the
+     * line that separates "the code is illegal" from "the code was not there":
+     * compare the two words against the image's bytes at that address, which
+     * the host can read straight out of the ELF. */
+    len = paniclog_frame_fault_text(line, sizeof line);
     if (len > 0)
         logf("rb %s", line);
 

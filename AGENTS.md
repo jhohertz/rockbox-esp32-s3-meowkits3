@@ -925,6 +925,64 @@ verifies the expander answers before relying on it (5 retries), then asserts res
 waits 20 ms, releases, waits 120 ms (ST7789 needs ~120 ms after release), then
 selects the LCD.
 
+### Internal SRAM is cache-backed, and Rockbox's cache hooks are the contract
+
+**esp32s3 caches its internal SRAM.** `components/hal/esp32s3/include/hal/cache_ll.h`
+maps both IRAM0 and DRAM0 to a cache level, and `esp_cache_msync()` maintains whatever
+that resolver accepts. Do not read `SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE` — defined only
+for esp32p4 in this IDF — as "internal memory is not cached"; it is a statement about
+that part's L1 strictness, which is why IDF guards only its *descriptor* maintenance
+with it. That misreading turned `commit_dcache_range()`/`discard_dcache_range()` into
+no-ops here and caused the shutdown crash and the debug-menu crash:
+`usb_dw_target_dma_discard()` (the override of a weak hook in `usb-designware.c`, whose
+whole purpose is making DWC-written endpoint buffers visible) and the GDMA descriptor
+ring's polled owner bit were both reading stale lines, so the drivers acted on bytes
+that were never transferred.
+
+**The symptom of a stale DMA read is never where you expect it.** Bad MSC payload ->
+FAT/dircache structures parsed from garbage -> a write through a bogus pointer -> a
+smashed thread stack -> a window-refill double exception in `switch_thread` /
+`block_thread_` with a garbage `a5` base-save pointer, on the *next* context switch.
+It looks like a scheduler bug and reproduces at teardown (flush) or on a directory
+walk, not in the driver that mis-bookkept. Check cache maintenance before checking the
+scheduler when the fault PC is in thread code.
+
+**Rockbox's convention for these hooks, verified against other ports.** Declared in a
+target header, implemented in a target `.c`: `cpucache-arm.h` + `cpucache-armv7m.c`,
+`mmu-mips.c`. Semantics are normative, not per-port taste:
+
+| hook | contract |
+|---|---|
+| `commit_dcache_range(b,s)` | write back the range |
+| `discard_dcache_range(b,s)` | invalidate **without** write-back, *except* partial edge lines, whose other bytes are live data |
+| `commit_discard_dcache_range(b,s)` | write back, then remove the lines |
+| `commit_discard_dcache()` | write back **and** discard the whole D-cache |
+| `commit_discard_idcache()` | discard the I-cache, commit+discard the D-cache |
+
+Core callers depend on those: `usb_storage.c:496` wraps SCSI data in
+`commit_discard_dcache()`, `usb-designware.c` uses `discard_dcache_range()`/
+`commit_dcache_range()` for every CPU except the ARM940T, and `lc-rock.c:89`,
+`rolo.c` and `codec_thread.c:588` use `commit_discard_idcache()`. A target that
+substitutes write-back-only for commit+discard is redefining a core contract.
+
+**The race that tempts you to skip maintenance is a locking problem.** Range ops from
+the GDMA interrupt handler interleaving with a whole-cache op in task context is what
+produced `Cache error` at `0x4004e5b7` in the ROM cache module, plus capture stutter.
+IDF's answer is visible in `esp_cache_msync.c`: every `cache_hal_writeback_addr()` /
+`cache_hal_invalidate_addr()` call is bracketed by `esp_os_enter_critical_safe()` on a
+static critical-section lock (`DEFINE_CRIT_SECTION_LOCK_STATIC`, from
+`esp_private/critical_section.h`). `cache-xtensa.c` takes the same lock around its
+range *and* whole-cache entry points, so the two paths are mutually exclusive. Use the
+HAL/ROM ops rather than `esp_cache_msync()`: that API takes a `_lock_t` mutex on the
+C2M path, which aborts when called from an interrupt or a critical section, and Rockbox
+DMA drivers legitimately call from both.
+
+**PSRAM addresses are outside these APIs.** The resolver accepts only IRAM0/DRAM0, so a
+range op on a buffer in the PSRAM window is refused, not deferred — `dma_buf[]` in
+`i2s-esp32s3.c` carries `PSRAM_BSS_ATTR` and gets no maintenance from either route.
+IDF avoids the question by allocating its DMA buffers internal. See "Buffers can be in
+PSRAM; descriptors cannot" above.
+
 ### Interrupts: no INTBASE, but VECBASE works
 
 There is no interrupt vector table in the usual sense. Tested against the esp32s3
@@ -3760,6 +3818,29 @@ fresh `make zip` is the safe move when in doubt. A stale `/.rockbox` is a
 misleading device, and a device that silently cannot load its codec looks exactly
 like a codec bug.
 
+**Card damage outlives every flash, and reads like a firmware bug.** The FAT on
+this port's card was corrupted by mass-storage writes made before the cache-
+coherence fix landed, and the damage is directory metadata - not files the player
+re-reads happily. Rockbox then panics identically on every boot, at the same
+entry number, and reflashing changes nothing. Measured symptom set, all one cause:
+
+- the panic screen says `Updating size on empty dir entry N` (`firmware/common/fat.c:1943`,
+  reached when `cache_direntry()` hands back a slot whose first name byte is `0x00`
+  or `0xe5`);
+- **shutdown crashes reliably**, because `clean_shutdown()` runs `system_flush()`,
+  which writes settings and bookmarks and therefore updates a directory entry;
+- **navigating menus shortly after boot crashes, while waiting a moment is fine**,
+  because the reads that reach the damaged directory happen in that early burst.
+
+The last one looks exactly like a startup-order bug and is not. The remedy is a
+filesystem check on the card (or a reformat) plus a re-extract from the zip. Two
+reading rules follow from it: **a crash that reproduces identically across
+reflashes is card or settings state, suspect it before code**; and read the panic
+*text*, never the reset reason - `reset 5` is `ESP_RST_INT_WDT`, because Rockbox's
+panic path holds with interrupts masked to keep the message on the glass and the
+interrupt watchdog then resets the chip, so the reason names the hold, not the
+fault.
+
 
 ---
 
@@ -5102,6 +5183,39 @@ later exceed.
   and no resume-on-boot, so playback only appears after someone presses play.
   Absence of `codec load` / `DMA:` lines says nothing about health; check
   `SD card up`, `entering root_menu` and the absence of `Guru Meditation`.
+- **Opening the USB-Serial-JTAG node resets the chip.** The kernel's `cdc-acm`
+  driver asserts DTR/RTS on `open()` even through a plain `os.open` (termios raw
+  does not prevent it), which the ROM reads as a USB reset: the log shows
+  `rst:0x15 (USB_UART_CHIP_RESET)`. A USJ reader therefore destroys the state it
+  is watching once the app owns that node — it is a loader-time and boot-time
+  channel only. For anything after attach, read the CDC console (`1234:4002`),
+  and resolve the node by USB id rather than by name: the kernel renumbers
+  `ttyACMn` on every re-enumeration, so a reader holding a pre-reset fd sees
+  nothing at all.
+- **The retained crash record is replayed once, ~3 s after the next boot, and is
+  not buffered.** `paniclog_crash_report_logf()` sends it over CDC; if the cable
+  is out at that moment the report is gone until the following boot. Unplugging
+  can also drop the rails that hold RTC slow and the `.noinit` ring, so replugging
+  "to catch the log" destroys the evidence instead. Correct sequence: reader
+  attached, cable untouched, tap RESET.
+- **A CDC reader must hold the fd open through silence.** `cdc-acm` discards
+  incoming bytes while no process has the tty open, so a reader that closes and
+  re-opens loses anything sent in the gap - and an empty `os.read()` on this tty
+  means "nothing pending", not "device gone", so it must not be treated as a
+  disconnect. Detect re-enumeration by re-resolving the USB id and comparing the
+  node name, never by read results. Two captures were lost to exactly this
+  before it was fixed. Related tooling trap: `strings` skips 3-character
+  literals by default, so a short breadcrumb tag looks absent from an image that
+  contains it (`strings -n 2` to check).
+- **`303a:1001` appears both in the loader and while the app runs**, so the USB id
+  alone does not tell you which state the chip is in. Read the node to check: the
+  loader prints `waiting for download` and stays quiet. A boot-looping app also
+  breaks `esptool`, whose sync bytes arrive interleaved with console output as
+  `Invalid head of packet (0x49)` — the `0x49` is an IDF log line's first
+  character, not bus noise.
+- **`esptool` at 460800 fails handshakes on this USJ link; 115200 works.**
+  `make flash` uses the IDF default, so a failure there is usually the baud or an
+  app talking on the node, not a broken image.
 
 ## Power management requires the non-SMP kernel — do not "upgrade" it
 
