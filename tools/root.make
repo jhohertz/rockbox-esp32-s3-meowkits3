@@ -112,7 +112,12 @@ include $(TOOLSDIR)/tools.make
 # decides which libc implementation to build from a define the SDK domain sets.
 # Hence this include here rather than with the app_type dispatch further down.
 ifneq (,$(findstring esp-idf, $(APP_TYPE)))
-  include $(FIRMDIR)/target/xtensa/espressif_esp32s3/idf.make
+  # Derived from the same path components the linker-script dispatch below uses,
+  # rather than naming one model: any xtensa target whose APP_TYPE carries
+  # esp-idf supplies this makefile at manufacturer level, and hardcoding a model
+  # directory here would make the second such target inherit the first one's SDK
+  # rules instead of its own.
+  include $(FIRMDIR)/target/$(CPU)/$(MANUFACTURER)/idf.make
 endif
 
 ifeq (,$(findstring checkwps,$(APP_TYPE)))
