@@ -1106,33 +1106,42 @@ guards in `firmware/SOURCES` and `firmware/asm/SOURCES`.
 - `firmware/rom.lds` is never read by this target (the SDK owns the link), so its
   xtensa blocks are unexercised. Dead but plausible linker edits do not get submitted.
 
-### What "inert" means, corrected mid-course
+### What "inert" means, measured on clean trees
 
-An earlier version of this section, and the port commit message on
-`e94037d7ec`, attributed a MIPS codegen difference to moving `config.h` above
-`<fcntl.h>` in `file.h`. **That attribution was wrong**, and it was written before it
-was tested. The measurements that replaced it:
+Two claims in earlier drafts of this section were wrong and are retracted.
 
-- Builds are reproducible: upstream built twice gives byte-identical `.text`.
-- `memset16.o` is byte-identical in every build — that change is genuinely inert.
-- A control build that added *two blank comment lines* to `config.h` and changed
-  nothing else produced a **3,077-byte** raw `.text` difference with **zero** functions
-  semantically changed. Address shifts are what any edit to a universally included
-  header causes; they are not behaviour.
-- With `file.h` reverted, `surround.o` still differed by 12 bytes, so the earlier
-  claim that `file.h` caused it was false. The 12 bytes are two spill slots assigned
-  in the opposite order inside the same 168-byte frame — stores *and* their loads move,
-  so the pairing is consistent — plus the debug line table. It appears when a header
-  adds preprocessor conditionals rather than blank lines, and no function's instruction
-  sequence changes.
-- `file.h` is nevertheless out of the series: every shape of its fix that was tried
-  changed existing targets' object bytes, and it is only needed by targets that link a
-  system C library. It lives in the port (`e94037d7ec`), which is the honest place.
+**Claim 1, retracted:** that adding blank lines to `config.h` changes compiled
+output. It does not, and it cannot. The measurement that appeared to show it was
+contaminated: builds were compared from a worktree with uncommitted changes, and a
+dirty tree appends its marker to the version string, `.rodata` grows four bytes,
+and every literal pointer in `.text` shifts by four. That produced "3,077 differing
+bytes with zero functions changed" -- which is exactly the failure mode AGENTS
+already documents for header-hash comparisons, reproduced here by sloppiness. Every
+comparison of this kind must be made from clean, isolated worktrees. Verified
+afterwards in clean worktrees: upstream built twice is byte-identical.
 
-Gate that survives all of this: **compare per-function instruction sequences with
-branch targets and literals normalised out.** Raw `.text` equality is only meaningful
-when nothing shifts, and the 3,077-byte control proves how quickly it becomes noise.
-On that gate, series 3 changes nothing on ARM, MIPS or the hosted simulator.
+**Claim 2, retracted:** that `file.h` caused a codegen change in
+`lib/rbcodec/dsp/surround.c`. Tested: with `file.h` reverted the object still
+differs, and `config.h` is not the cause either, and `memset16.o` is byte-identical
+in every build. What is actually true:
+
+| target, clean trees | result |
+|---|---|
+| `sansae200v2` (ARM) | `.text` byte-identical |
+| `sdlapp` (hosted) | `.text` byte-identical |
+| `erosqnative` (MIPS) | 6 bytes differ, all in `surround_process` |
+
+The six bytes are two spill slots assigned in the opposite order: `sw a2,20(sp)`
+and `sw t0,24(sp)` become `sw a2,24(sp)` and `sw t0,20(sp)`, with the matching
+loads moved so the pairing stays consistent. Frame size and instruction count are
+unchanged, and comparing disassembly function by function with branch targets and
+literals normalised out yields zero new, zero removed, zero changed -- no behaviour
+difference. **The file responsible is not identified**, and the commit message says
+so rather than guessing.
+
+`file.h` is still out of the series, but for a different reason than was claimed:
+it is only needed by targets that link a system C library, and it is the change in
+that group whose benefit to existing targets is nil. It belongs to the port.
 
 ### Branch policy, while the submission order is unknown
 
