@@ -4434,7 +4434,11 @@ fi
    # every existing `tools/configure --target=meowkit-esp32s3` invocation -- including
    # a fresh clone's, which is the one a build container runs.
    133|meowkits3|meowkit-esp32s3)
-    target_id=126
+    # 134, not 126: upstream's hibyr1native port took target_id 126, and two
+    # targets with one id is a silent failure -- rolo, the boot loader and
+    # rbutil read them as one device. Nothing fails to build, which is exactly
+    # why the number has to stay unique after every rebase.
+    target_id=134
     modelname="meowkits3"
     target="MEOWKIT_ESP32S3"
     # memory= is the amount of RAM the target has, and here that is the 8 MB of

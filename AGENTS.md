@@ -5357,7 +5357,7 @@ directly, which needs no firmware at all:
 
 ```sh
 cd build-meowkits3
-perl ../tools/buildzip.pl -m meowkits3 -i 126 -o rockbox-fonts.zip \
+perl ../tools/buildzip.pl -m meowkits3 -i 134 -o rockbox-fonts.zip \
      -r "$PWD/.." --rbdir=/.rockbox -f 1 -DMEOWKIT_ESP32S3 rockbox.esp32s3
 ```
 
