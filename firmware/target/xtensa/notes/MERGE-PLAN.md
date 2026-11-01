@@ -1019,3 +1019,55 @@ Bug 2 had survived every previous check because the simulator directory had only
 ever been rebuilt incrementally. `tools/configure` in a fresh directory is now part
 of the gate for all four simulator builds.
 
+
+## 11. Series 2 cut — done (2026-10-31)
+
+Branch `submit/core-fixes`, five commits on `upstream/master` (`8b5767cb49`), 18
+files, no target token in any added line.
+
+| commit | content |
+|---|---|
+| `41d5724055` | `THREAD_EXTRA_CHECKS` guard, `HAVE_PANIC_CONSOLE`, `HAVE_DBG_BREADCRUMB`, `CLEAN_SHUTDOWN_MESSAGE_HOLD` |
+| `3f279fe585` | overridable `MAX_OPEN_FILES` / `DC_NUM_ENTRIES`, `DIRCACHE_RESERVE` / `MIN` / `LIMIT` |
+| `ed04ddbb43` | `audio_path.c` guarded by `INPUT_SRC_CAPS != 0`; weak `DEFAULT_SPEAKER_MODE` |
+| `b015a5f1bd` | `usb_host_session()`, `USBMODE_DEFAULT`, `USB_SERIAL_DEFAULT_ON`, `I2C_ASYNC_SUBMIT_UNMASKED`, `hex[]` index mask in `usb_core.c` |
+| `305143732a` | `sdmmc_host.c` `HAVE_HOTSWAP` guard, `ft6x06` point clamp, `logf_panic_dump()` pctool stub, `pcm_record.c` short-grant panic, `rolo.c` `ICODE_ATTR` |
+
+**This series is not byte-identical, and the plan has to say so.** Unlike series 1,
+two of these commits add code that is compiled for every target, so `.text` grows and
+addresses shift. `sansae200v2` was built from both refs in fresh directories
+(`.text` 581,952 -> 582,016, `.rodata` 452,104 -> 452,144) and the disassembly was
+compared per function with branch targets and literal addresses normalised out, which
+is the only comparison that survives the shift. The entire semantic delta is three
+functions:
+
+| function | change | why |
+|---|---|---|
+| `usb_host_session` | new, 7 instructions | never called by this target; it is a predicate other ports can adopt |
+| `audio_recording_handler` | +8 instructions | the `pcm_record.c` short-grant check |
+| `test_stream_exists_internal` | +1 instruction | the same check, inlined |
+
+Everything else is identical. The honest claim for series 2 is therefore *"one dead
+function, and one place where a silent memory overrun becomes a named panic"* -- not
+"no change". The panic is the arguable one in review: it converts a corruption that
+would have hit an unrelated buflib allocation into a stop at the point of failure. The
+remaining 13 files produce no code difference at all on this target.
+
+Also closed while cutting it, both found by the re-scan rather than by inspection:
+
+- **`hibyr1native` restored to `MODEL_NUMBER 126`** (`ed3d1add68` on the port
+  branch). Upstream moved it in `3b226dd23e` so `hidizsap80max` could take 125; our
+  branch took the new target and not the move, so both were 125. `git diff
+  upstream/master...HEAD` shows nothing for that file -- we never edited it -- which is
+  why the identity scan has to compare value sets against the upstream tip and diff
+  two-dot, not audit only our own diff. See the rebase section in `AGENTS.md`.
+- **`root.make` derives the SDK makefile path from `$(CPU)/$(MANUFACTURER)`**
+  (`3ad27b1f1d`), matching how it resolves the linker script 200 lines later, instead
+  of naming one model directory in a generic file.
+- **Stray `/ */` comment terminators removed** (`3a4bfef6ab`), 24 places in files this
+  port owns; upstream's own ` * */` lines and legitimate trailing slashes were left.
+
+**Still open in Phase E:** the `disk_buf.c` `pgcount == 0` divide-by-zero guard was
+planned for this series and is not in the tree -- `git diff` on that file is empty. The
+DWC weak hook (`usb_dw_target_dma_discard`) belongs to the arch/DWC series rather than
+this one, as does the `audiohw.h` codec-header include and every keymap branch.
