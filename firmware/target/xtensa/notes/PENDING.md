@@ -63,6 +63,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   recoverable by reboot and does not corrupt anything, but a thread slot that
   survives a plugin unload is a slow leak in a table that cannot grow.
 
+  **Retested 2026-10-31 on `e4dc52a5` and not reproduced, in the ordering that
+  makes it hardest:** doom launched first (the largest single arena request the
+  port can make, and the one whose shortfall used to panic), then a long chain of
+  codec switches, then mpegplayer, which started without a reboot and played to
+  the end of the sequence. The claim is therefore "seen once, not reproducible in
+  the ordering that should trigger it", which is weaker than the original note
+  implied. If it returns, the distinguishing measurement above is still the way
+  to settle which of the two claims it is.
+
 - **Power-key shutdown during a USB host session is refused, and the refusal is
   correct but incomplete.** `usb_host_session()` gates it because in MSC mode the
   host owns the card. What is missing is the way to *end* the session cleanly and
