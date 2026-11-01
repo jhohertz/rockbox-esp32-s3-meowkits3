@@ -3812,6 +3812,7 @@ Card contents that need re-copying, and what triggers each:
 | `/.rockbox/themes/`, `/.rockbox/wps/` | a `.wps`/`.theme` we edit, or a skin-engine field the shipped WPS uses changes |
 | `/.rockbox/lang/` | `lang.h` regeneration changed a string id used by a WPS or plugin |
 | `/.rockbox/rolo/` | only relevant to a rolo upgrade, not to an `esptool` flash |
+| embedded `target_id` | **changing `target_id` in `tools/configure` is a firmware *and* card change together.** `apps/codecs.c:195` and `apps/plugin.c:976` reject any image whose header id differs from `TARGET_ID`, so a codec/plugin set packaged with the old number plays nothing (silently, for audio) and reports "incompatible model" for plugins. Happened on the 2026-10-31 rebase, when upstream's hibyr1native took the `126` we had been using and ours moved to `134`. Say so before flashing.
 
 `make zip` assembles all of the above; copying the whole `/.rockbox` tree from a
 fresh `make zip` is the safe move when in doubt. A stale `/.rockbox` is a
