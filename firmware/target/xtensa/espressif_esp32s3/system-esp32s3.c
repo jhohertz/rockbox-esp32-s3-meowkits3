@@ -16,12 +16,13 @@
  *     from a guest's position; it uninstalls FreeRTOS's tick, the GDMA
  *     completions the audio path depends on, and the gptimer alarm that drives
  *     the Rockbox tick itself.
- *   - `cpu_clock_up()`, which wrote CPUPERIOD_SEL, SYSCLK_CONF and the LDO slave
- *     count. IDF owns the clock tree, and the analog bias (dbias) that has to move
- *     with it comes from the ROM's PVT calibration through REGI2C, which Rockbox
- *     cannot reproduce. Writing the LDO slaves by hand is the sort of change that
- *     browns out the SoC rather than failing visibly. `set_cpu_frequency()` does
- *     exist -- see below -- but it asks IDF for the frequency instead of setting it.
+ *   - `cpu_clock_up()`, which wrote CPUPERIOD_SEL, SYSCLK_CONF and the LDO
+ *     slave count. IDF owns the clock tree, and the analog bias (dbias) that
+ *     has to move with it comes from the ROM's PVT calibration through REGI2C,
+ *     which Rockbox cannot reproduce. Writing the LDO slaves by hand is the
+ *     sort of change that browns out the SoC rather than failing visibly.
+ *     `set_cpu_frequency()` does exist -- see below -- but it asks IDF for the
+ *     frequency instead of setting it.
  *   - peripheral clock gating written into SYSTEM_PERIPHS_CLK_EN by address.
  *     IDF's drivers enable their own clocks; a blanket write from here can
  *     only duplicate or undo that.
@@ -29,20 +30,21 @@
  * Rockbox's adjustable-CPU-FREQ machinery is switched on in the target config
  * (HAVE_ADJUSTABLE_CPU_FREQ). The core side already does all the bookkeeping --
  * firmware/system.c keeps the boost counter and calls set_cpu_frequency() with
- * CPUFREQ_MAX on the first boost, CPUFREQ_NORMAL when it drops, and CPUFREQ_DEFAULT
- * when cpu_idle_mode() has marked the machine idle -- so this file only has to turn
- * one of those three numbers into a clock change, and it does that through IDF.
+ * CPUFREQ_MAX on the first boost, CPUFREQ_NORMAL when it drops, and
+ * CPUFREQ_DEFAULT when cpu_idle_mode() has marked the machine idle -- so this
+ * file only has to turn one of those three numbers into a clock change, and it
+ * does that through IDF.
  ****************************************************************************/
 
 #include "config.h"
 #include <stdio.h>
 
 #include "system.h"
-#include "debug.h"        /* dbg_breadcrumb_retained() -- frequency-switch stamp */
+#include "debug.h"     /* dbg_breadcrumb_retained() -- frequency stamp */
 #include "paniclog.h"
 #include "xtensa.h"         /* XT_LOADADDRESS_ADDR -- needs config.h first */
 #include "button-target.h"   /* button_hw_any_pressed() -- the panic hold */
-#include "lcd.h"             /* the panic screen is already drawn; this adds the hint */
+#include "lcd.h"         /* the panic screen is drawn; this adds the hint */
 #include "font.h"            /* FONT_SYSFIXED, FONT_HEIGHT */
 
 #include "sdkconfig.h"
@@ -59,7 +61,8 @@
  * thing to chase, so it is a compile error instead. */
 _Static_assert(CPU_FREQ ==
                (long)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000000L,
-               "CPU_FREQ in meowkits3.h disagrees with CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ");
+               "CPU_FREQ in meowkits3.h disagrees with"
+               " CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ");
 
 void system_init(void)
 {
@@ -92,27 +95,26 @@ void system_init(void)
         extern char _ext_ram_bss_end[];
 
         /* rb_ext_ram_end alone was the blind spot. It is a label in
-         * memory-esp32s3-syms.S sitting right after audiobufend, so it marks the
-         * end of what THAT file puts in PSRAM -- not the end of the section.
-         * IDF places its own .ext_ram.bss content around and after it, and the
-         * linker's real section end is _ext_ram_bss_end. Measured on this
-         * build: rb_ext_ram_end 0x3c55d2c0 against _ext_ram_bss_end 0x3c579d3c,
-         * so 117,372 bytes of the section were invisible to the one check whose
-         * entire job is to watch that section. It would have reported a clean
-         * layout while .ext_ram.bss was already growing toward the pinned codec
-         * image.
-         *
-         * Take the larger of the two. Both symbols stay meaningful: one is our
-         * contribution, the other the whole section, and the guard cares about
-         * whichever reaches further. */
+         * memory-esp32s3-syms.S sitting right after audiobufend, so it marks
+         * the end of what THAT file puts in PSRAM -- not the end of the
+         * section. IDF places its own .ext_ram.bss content around and after
+         * it, and the linker's real section end is _ext_ram_bss_end. Measured
+         * on this build: rb_ext_ram_end 0x3c55d2c0 against _ext_ram_bss_end
+         * 0x3c579d3c, so 117,372 bytes of the section were invisible to the one
+         * check whose entire job is to watch that section. It would have
+         * reported a clean layout while .ext_ram.bss was already growing toward
+         * the pinned codec image.  Take the larger of the two. Both symbols
+         * stay meaningful: one is our contribution, the other the whole
+         * section, and the guard cares about whichever reaches further. */
         unsigned long ours = (unsigned long)rb_ext_ram_end;
         unsigned long sect = (unsigned long)_ext_ram_bss_end;
         unsigned long end = sect > ours ? sect : ours;
         unsigned long first_reserved = (unsigned long)XT_PLUGIN_TEXT_ADDR;
 
         if (end > first_reserved)
-            printf("MEMORY: .ext_ram.bss ends %p, %lu bytes into the plugin/codec "
-                   "text reservations at %p -- plugins load into zeroed memory\n",
+            printf("MEMORY: .ext_ram.bss ends %p, %lu bytes into the "
+                   "plugin/codec text reservations at %p -- plugins load "
+                   "into zeroed memory\n",
                    (void *)end, end - first_reserved, (void *)first_reserved);
         else
             printf("MEMORY: .ext_ram.bss ends %p, %lu bytes clear of %p\n",
@@ -205,11 +207,12 @@ void system_init(void)
  * in it too.
  * Observed once, twice: IllegalInstruction panics whose captured bytes at the
  * faulting address matched the linked image exactly, at two different
- * addresses. That is a fetch that did not return the image's bytes, and the MSPI
- * freeze is the only window on this build that could do it. Those captures
- * predate a repaired SD card, so they may have been downstream of the same
- * metadata damage that produced the FAT panics; this stays here as the thing to
- * suspect first if such a panic returns on a healthy card, and the candidate
+ * addresses. That is a fetch that did not return the image's bytes, and the
+ * MSPI freeze is the only window on this build that could do it. Those
+ * captures predate a repaired SD card, so they may have been downstream of the
+ * same metadata damage that produced the FAT panics; this stays here as the
+ * thing to suspect first if such a panic returns on a healthy card, and the
+ * candidate
  * fix is IDF stalling the secondary core on parts that execute from PSRAM.
  */
 void set_cpu_frequency(long frequency)

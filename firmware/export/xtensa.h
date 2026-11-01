@@ -11,11 +11,11 @@
 /* Peripherals. Only the ones Rockbox uses are listed. */
 #define XT_SYSTEM_BASE          0x600C0000      /* peripheral clock gating */
 #define XT_INTERRUPT_CORE0_BASE 0x600C2000      /* interrupt matrix, core 0 */
-#define XT_RTCCNTL_BASE         0x60008000      /* RTC, incl. the RTC watchdog */
+#define XT_RTCCNTL_BASE         0x60008000  /* RTC, incl. RTC watchdog */
 #define XT_TIMERGROUP0_BASE     0x6001F000
 #define XT_TIMERGROUP1_BASE     0x60020000
 #define XT_SDMMC_BASE           0x60028000      /* SDHOST (DesignWare MMC) */
-#define XT_LEDC_BASE            0x60019000      /* LEDC PWM (8 low-speed channels) */
+#define XT_LEDC_BASE            0x60019000  /* LEDC PWM (8 LS channels) */
 
 /*
  * Interrupt matrix: one 5-bit register per peripheral interrupt source,
@@ -34,7 +34,7 @@
 #define XT_SRC_GDMA_OUT_CH0     71   /* base + 0x11C */
 #define XT_SRC_GDMA_IN_CH0      66   /* base + 0x108 */
 #define XT_SRC_SDIO_HOST        30   /* base + 0x078 */
-#define XT_SRC_I2C0             42   /* base + 0x0A8; ETS_I2C_EXT0_INTR_SOURCE */
+#define XT_SRC_I2C0             42   /* base + 0x0A8; ETS_I2C_EXT0 source */
 
 /*
  * Levels cannot be programmed on this core config: there are no level or
@@ -96,8 +96,10 @@
 #define XT_USB_DM_PULLDOWN        (1u << 16)
 #define XT_USB_PULLUP_VALUE       (1u << 17)
 #define XT_USB_PAD_ENABLE       (1u << 18)
-#define XT_USB_SESSEND_OVERRIDE   (1u << 0)      /* 1 = software drives session end */
-#define XT_USB_SESSEND_VALUE      (1u << 1)      /* 1 = VBus < 0.2V, 0 = VBus > 0.8V */
+/* 1 = software drives session end */
+#define XT_USB_SESSEND_OVERRIDE   (1u << 0)
+/* 1 = VBus < 0.2V, 0 = VBus > 0.8V */
+#define XT_USB_SESSEND_VALUE      (1u << 1)
 #define XT_USB_WRAP_CLK_EN      (1u << 31)     /* the wrap block's own gate */
 #define XT_USB_PHY_CLK_FORCE    (1u << 20)
 #define XT_USB_AHB_CLK_FORCE    (1u << 19)
@@ -106,7 +108,7 @@
 
 #define XT_RTC_USB_CONF         (XT_RTCCNTL_BASE + 0x120)
 #define XT_SW_HW_USB_PHY_SEL    (1u << 20)     /* software overrides the mux */
-#define XT_SW_USB_PHY_SEL       (1u << 19)     /* 1 = FSLS PHY to the USB wrap */
+#define XT_SW_USB_PHY_SEL       (1u << 19)  /* 1 = FSLS PHY to USB wrap */
 
 #define XT_PERIP_CLK_EN0        (XT_SYSTEM_BASE + 0x18)
 #define XT_USB_CLK_EN           (1u << 23)     /* wrap / PHY domain */
@@ -156,7 +158,7 @@
 
 /* tnconfig bit positions */
 #define XT_TN_USE_XTAL          (1 << 9)
-#define XT_TN_ALARM_EN          (1 << 10)     /* self-clearing when the alarm fires */
+#define XT_TN_ALARM_EN          (1 << 10)   /* self-clear on alarm */
 #define XT_TN_DIVCNT_RST        (1 << 12)
 #define XT_TN_DIVIDER_SHIFT     13            /* 16 bits */
 #define XT_TN_AUTORELOAD        (1 << 29)
@@ -176,7 +178,7 @@
  * components/hal/esp32s3/include/hal/clk_tree_ll.h.
  */
 #define XT_SYS_CLK_CONF         (XT_SYSTEM_BASE + 0x60)
-#define XT_SYS_PRE_DIV_MASK     0x3FF           /* bits [9:0], stores divider - 1 */
+#define XT_SYS_PRE_DIV_MASK     0x3FF       /* bits [9:0], stores divider - 1 */
 #define XT_SYS_CLK_SEL_SHIFT    10              /* bits [11:10] */
 #define XT_SYS_CLK_SEL_XTAL     0
 #define XT_SYS_CLK_SEL_PLL      1
@@ -281,7 +283,8 @@
  * no Rockbox linker script, so the constants are restated here, identically:
  *
  *   plugin.lds:  DRAMORIG 0x3C000020
- *                DRAMSIZE (MEMORYSIZE * 0x100000) - PLUGIN_BUFFER_SIZE - CODEC_SIZE
+ *                DRAMSIZE (MEMORYSIZE * 0x100000)
+ *                       - PLUGIN_BUFFER_SIZE - CODEC_SIZE
  *                CODEC_ORIGIN   (DRAMORIG + DRAMSIZE)
  *                PLUGIN_ORIGIN  (CODEC_ORIGIN + CODEC_SIZE)
  *

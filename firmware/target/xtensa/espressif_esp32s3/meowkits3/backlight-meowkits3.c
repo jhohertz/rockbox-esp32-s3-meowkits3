@@ -1,38 +1,39 @@
 /***************************************************************************
  * MeowKit ESP32-S3 backlight.
  *
- * The panel's backlight is driven from GPIO 42 and is active low: the LED is on
- * when the line is low. LEDC PWMs that pin, so brightness is a duty cycle rather
- * than a binary switch.
+ * The panel's backlight is driven from GPIO 42 and is active low: the LED is
+ * on when the line is low. LEDC PWMs that pin, so brightness is a duty cycle
+ * rather than a binary switch.
  *
- * This goes through IDF's LEDC driver (ledc_timer_config / ledc_channel_config /
- * ledc_set_duty / ledc_update_duty) rather than poking the registers directly.
- * That is a deliberate choice, not a convenience: the hand-rolled version of this
- * file wrote the correct addresses with the correct bit fields -- every offset and
- * mask was checked against esp32s3's ledc_reg.h and ledc_struct.h -- and not one
- * write ever reached the register file. LEDC_CONF read back 0 immediately after
- * BIT(31) was written to it, and every other LEDC register read back exactly its
- * reset value, while the SYSTEM gate (PERIP_CLK_EN0 bit 11) was confirmed set and
- * staying set. The first version of this file also omitted the
- * conf0.low_speed_update latch that ledc_update_duty() performs, so it was wrong
- * twice over. IDF owns the gate, the slow-clock selection, and the latch.
+ * This goes through IDF's LEDC driver (ledc_timer_config /
+ * ledc_channel_config / ledc_set_duty / ledc_update_duty) rather than poking
+ * the registers directly. That is a deliberate choice, not a convenience: the
+ * hand-rolled version of this file wrote the correct addresses with the correct
+ * bit fields -- every offset and mask was checked against esp32s3's
+ * ledc_reg.h and ledc_struct.h -- and not one write ever reached the register
+ * file. LEDC_CONF read back 0 immediately after BIT(31) was written to it, and
+ * every other LEDC register read back exactly its reset value, while the SYSTEM
+ * gate (PERIP_CLK_EN0 bit 11) was confirmed set and staying set. The first
+ * version of this file also omitted the conf0.low_speed_update latch that
+ * ledc_update_duty() performs, so it was wrong twice over. IDF owns the gate,
+ * the slow-clock selection, and the latch.
  *
- * LEDC does not drive the pad itself - the signal is routed to the pin through the
- * GPIO matrix, which ledc_channel_config() arranges; the pin is not simply
+ * LEDC does not drive the pad itself - the signal is routed to the pin through
+ * the GPIO matrix, which ledc_channel_config() arranges; the pin is not simply
  * written.
  *
- * ESP32-S3 has eight low-speed channels and four low-speed timers only; there is
- * no high-speed group. The timer counts 0..hpoint-1 and the signal is high while
- * the counter is below duty, so at 9-bit resolution a duty of 512 is "always
- * high", which for an active-low LED means off. That is the same convention the
- * reference firmware uses (ledcWrite(7, 512) = off), and the same reason
- * backlight_hw_brightness() inverts before handing the value over.
+ * ESP32-S3 has eight low-speed channels and four low-speed timers only; there
+ * is no high-speed group. The timer counts 0..hpoint-1 and the signal is high
+ * while the counter is below duty, so at 9-bit resolution a duty of 512 is
+ * "always high", which for an active-low LED means off. That is the same
+ * convention the reference firmware uses (ledcWrite(7, 512) = off), and the
+ * same reason backlight_hw_brightness() inverts before handing the value over.
  ****************************************************************************/
 #include "config.h"
 
 #include "system.h"
 #include "lcd.h"
-#include "backlight.h"        /* backlight_brightness: the level to restore on */
+#include "backlight.h"  /* backlight_brightness: level to restore on */
 #include "backlight-target.h"
 #include "xtensa.h"
 
@@ -48,7 +49,7 @@
 #define BL_TIMER      0
 
 #define BL_RES_BITS   9
-#define BL_FULL_DUTY  (1u << BL_RES_BITS)   /* 512: the counter never reaches it */
+#define BL_FULL_DUTY  (1u << BL_RES_BITS)  /* 512: counter never reaches it */
 
 /* 5 kHz matches the reference firmware's default and is far above anything the
  * eye can resolve on a display backlight. */
@@ -60,7 +61,8 @@ static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
  * smallest duty, and Rockbox's zero is a duty the counter can never reach. */
 static void set_duty(unsigned duty)
 {
-    if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, BL_FULL_DUTY - duty) != ESP_OK)
+    if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7,
+                      BL_FULL_DUTY - duty) != ESP_OK)
         printf("BL ledc_set_duty failed\n");
     /* This call is the latch. The duty and hpoint registers sit in the APB
      * domain and the channel only samples them into its own clock domain
@@ -154,7 +156,8 @@ void backlight_hw_brightness(int brightness)
 
     /* Scale 0..MAX to 0..512 with rounding. The general form keeps it
      * correct if the target changes MAX_BRIGHTNESS_SETTING. */
-    unsigned duty = (unsigned)((brightness * BL_FULL_DUTY + MAX_BRIGHTNESS_SETTING / 2)
+    unsigned duty = (unsigned)((brightness * BL_FULL_DUTY
+                                + MAX_BRIGHTNESS_SETTING / 2)
                                / MAX_BRIGHTNESS_SETTING);
 
     set_duty(duty);

@@ -32,7 +32,7 @@
 #include <stdio.h>
 
 #include "esp_pm.h"      /* esp_pm_config_t, esp_pm_get_configuration() */
-#include "esp_timer.h"   /* esp_timer_get_time() -- wall clock, runs through sleep */
+#include "esp_timer.h"  /* esp_timer_get_time() -- wall clock, runs in sleep */
 #include "esp_cpu.h"     /* esp_cpu_get_cycle_count() -- core clock, does not */
 
 static inline uint32_t rd(uint32_t reg)
@@ -226,17 +226,18 @@ enum
      * (CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP); esp_timer_get_time() is wall
      * time and keeps running.
      *
-     * The first version of this row divided one by the other and printed an average
-     * MHz. It read zero on every visit -- not "the core slept forever" but the
-     * numerator never moving, because a local declaration of the accumulator shadowed
-     * the file-scope one that pm_cycle_tick() increments. A derived ratio that can
-     * silently be zero is worse than no number, so the row now prints its inputs and
-     * nothing else: the sample count, the cycles accumulated since the previous read,
-     * and the wall microseconds since it. Those three also separate the ways this can
-     * fail, which a single ratio could not:
+     * The first version of this row divided one by the other and printed an
+     * average MHz. It read zero on every visit -- not "the core slept forever"
+     * but the numerator never moving, because a local declaration of the
+     * accumulator shadowed the file-scope one that pm_cycle_tick() increments.
+     * A derived ratio that can silently be zero is worse than no number, so the
+     * row now prints its inputs and nothing else: the sample count, the cycles
+     * accumulated since the previous read, and the wall microseconds since it.
+     * Those three also separate the ways this can fail, which a single ratio
+     * could not:
      *
-     *   samples advancing, cycles zero -> the cycle counter itself reads zero, i.e. a
-     *                                     sleep does not put it back
+     *   samples advancing, cycles zero -> the cycle counter itself reads zero,
+     *                                     i.e. a sleep does not put it back
      *   samples stuck at zero           -> the tick task is not running
      *
      * The first read arms the sampling and reports no interval; the next
@@ -267,10 +268,11 @@ enum
      * lbeg, lend -- so these six rows carry the fault's own pc and PS, the
      * return-address chain (a0, window-encoded: decode with
      * (v & 0x3fffffff) | 0x40000000), and the cause plus refused address. The
-     * CSR rows above cannot show any of that: on an abort they are all zero, and
-     * the only pc in them is panic_abort's break. Printed raw rather than
+     * CSR rows above cannot show any of that: on an abort they are all zero,
+     * and the only pc in them is panic_abort's break. Printed raw rather than
      * interpreted, because the handler cannot tell whether it was given an
-     * XtExcFrame or an XtDbFrame -- the host decode is where that is settled. */
+     * XtExcFrame or an XtDbFrame -- the host decode is where that is settled.
+     * */
     INFO_REGS_FRM0,
     INFO_REGS_FRM1,
     INFO_REGS_FRM2,
@@ -495,7 +497,8 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         }
 
         if (esp_pm_get_configuration(&cfg) == ESP_OK)
-            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, %u samples %lu cyc / %lu us",
+            snprintf(buf, bufsz, "PM %u/%u MHz sleep %s, %u samples "
+                     "%lu cyc / %lu us",
                      cfg.min_freq_mhz, cfg.max_freq_mhz,
                      cfg.light_sleep_enable ? "on" : "off", n_samp,
                      (unsigned long)d_cyc, (unsigned long)d_us);

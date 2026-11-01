@@ -246,15 +246,15 @@ int i2c_async_queue(int busnr, int timeout, int q_mode,
     /* Start the first descriptor if the bus is idle.
      *
      * A target whose __i2c_async_submit() runs the transaction to completion
-     * before returning (program the command list, then poll the controller) holds
-     * the region above open for the whole transfer, and disable_irq_save() there
-     * keeps every other interrupt off the core while it polls -- on a 100 kHz bus
-     * that is milliseconds, and anything the audio path needs loses. Such a target
-     * defines I2C_ASYNC_SUBMIT_UNMASKED and the submit is deferred until the mask
-     * is dropped. Exclusivity is unaffected: only the idle-bus path starts work,
-     * and enqueueing this node has already made the bus non-idle, so no other
-     * caller can submit concurrently. Default behaviour is unchanged -- submit
-     * inline, under the mask.
+     * before returning (program the command list, then poll the controller)
+     * holds the region above open for the whole transfer, and
+     * disable_irq_save() there keeps every other interrupt off the core while
+     * it polls -- on a 100 kHz bus that is milliseconds, and anything the audio
+     * path needs loses. Such a target defines I2C_ASYNC_SUBMIT_UNMASKED and the
+     * submit is deferred until the mask is dropped. Exclusivity is unaffected:
+     * only the idle-bus path starts work, and enqueueing this node has already
+     * made the bus non-idle, so no other caller can submit concurrently.
+     * Default behaviour is unchanged -- submit inline, under the mask.
      */
     if(node == bus->head) {
 #ifdef I2C_ASYNC_SUBMIT_UNMASKED

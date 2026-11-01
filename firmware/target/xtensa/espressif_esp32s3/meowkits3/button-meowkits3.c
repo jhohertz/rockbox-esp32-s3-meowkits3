@@ -13,13 +13,13 @@
 #include "paniclog.h"
 #include "debug.h"        /* dbg_breadcrumb_retained() */
 #include "button.h"
-#include "tick.h"     /* current_tick and HZ: the report below is timed in ticks */
+#include "tick.h"  /* current_tick and HZ: the report below is in ticks */
 #include "gpio-esp32s3.h"
 #ifdef HAVE_AXP173
 #include "axp173.h"
 #include "powermgmt.h"
 #ifdef HAVE_USBSTACK
-#include "usb.h"           /* usb_host_session(): Rockbox declines a poweroff in a session */
+#include "usb.h"   /* usb_host_session(): poweroff declined in a session */
 #endif
 #endif
 #ifdef HAVE_TOUCHSCREEN
@@ -99,9 +99,10 @@ void touchscreen_enable_device(bool en)
 
 int button_hw_any_pressed(void)
 {
-    /* Deliberately narrower than button_read_device(): the panic path runs with
-     * interrupts masked, so it cannot use the tick, the debounce state or the
-     * touchscreen read (which goes through I2C). Any active-low level counts. */
+    /* Deliberately narrower than button_read_device(): the panic path runs
+     * with interrupts masked, so it cannot use the tick, the debounce state or
+     * the touchscreen read (which goes through I2C). Any active-low level
+     * counts. */
     static const int pins[] = { PIN_BTN_A, PIN_BTN_B, PIN_JOY_UP,
                                 PIN_JOY_DOWN, PIN_JOY_LEFT, PIN_JOY_RIGHT };
     int i;
@@ -316,13 +317,13 @@ int button_read_device(int *data)
     if (shutdown_requested)
     {
         /* clean_shutdown() can refuse: if tagcache_prepare_shutdown() fails
-         * while the
-           database is committing, apps/misc.c calls cancel_shutdown() and returns false.
-           Nothing announces that -- cancel_shutdown() only clears the power thread's
-           force-off timer -- so stopping permanently here would leave the key dead until
-           reboot. A shutdown that really runs reaches power_off() within a couple of
-           seconds; still running half a minute later means it was refused, so arm the key
-           again. */
+         * while the database is committing, apps/misc.c calls
+         * cancel_shutdown() and returns false. Nothing announces that --
+         * cancel_shutdown() only clears the power thread's force-off timer --
+         * so stopping permanently here would leave the key dead until reboot.
+         * A shutdown that really runs reaches power_off() within a couple of
+         * seconds; still running half a minute later means it was refused, so
+         * arm the key again. */
         if (TIME_AFTER(current_tick, shutdown_request_tick + 30 * HZ))
             shutdown_requested = false;
         else

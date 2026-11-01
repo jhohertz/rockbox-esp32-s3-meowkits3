@@ -10,9 +10,9 @@
  *
  *     adc_clk = MCLK * 2^doubler / adc_div
  *
- * which the chip wants to see as 512 * rate below 64 kHz and 256 * rate above it
- * (double-speed mode). Checking that against the coefficient table the reference
- * firmware ships:
+ * which the chip wants to see as 512 * rate below 64 kHz and 256 * rate above
+ * it (double-speed mode). Checking that against the coefficient table the
+ * reference firmware ships:
  *
  *   44100 Hz  MCLK 11289600 div 1 doubler 1 -> 22579200 = 512 * 44100
  *   16000 Hz  MCLK  4096000 div 1 doubler 1 ->  8192000 = 512 * 16000
@@ -129,8 +129,8 @@ static unsigned char digital_code(int db)
 }
 
 /*
- * REG43..REG46: bit 4 is SELMICn and must be 1 or MICnP/MICnN is not the input at
- * all. Bits 3:0 are the PGA gain, and the ladder is NOT linear past 30 dB:
+ * REG43..REG46: bit 4 is SELMICn and must be 1 or MICnP/MICnN is not the input
+ * at all. Bits 3:0 are the PGA gain, and the ladder is NOT linear past 30 dB:
  *
  *   0..10 -> 0..30 dB in 3 dB steps
  *   11    -> 33 dB

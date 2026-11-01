@@ -63,8 +63,8 @@ static void spi_apply_config(void)
  * therefore land in reserved bits and do nothing -- so the intended
  * "80/(pre+1)/(n+1)" division never happened, and worse, SPI_CLK_20M decoded to
  * N=1 H=0 L=1. The hardware requires N >= H >= L >= 1; H < L yields a malformed
- * clock waveform rather than a slow one, which on the glass is banding and noise
- * over a solid fill, not a geometry error.
+ * clock waveform rather than a slow one, which on the glass is banding and
+ * noise over a solid fill, not a geometry error.
  *
  * Period is N+1 source cycles, the high phase H+1 and the low phase L+1, so
  * 80 MHz / 4 = 20 MHz is N=3, H=1, L=1.

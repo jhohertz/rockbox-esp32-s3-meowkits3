@@ -19,10 +19,10 @@
 #define AXP_REG_CHARGESTATUS    0x01
 #define AXP_REG_OUTPUTCTRL      0x12
 #define AXP_REG_VOFF            0x31
-#define AXP_REG_SHUTDOWN        0x32   /* bit 7 = software shutdown: drops every output
-                                         except LDO1. DCDC1 feeds this SoC, so writing
-                                         it takes the app with it (datasheet section 9.2,
-                                         which expects the write from the PEK handler). */
+/* REG 32H bit 7 = software shutdown: drops every output except LDO1. DCDC1
+ * feeds this SoC, so writing it takes the app with it (datasheet section 9.2,
+ * which expects the write from the PEK handler). */
+#define AXP_REG_SHUTDOWN        0x32
 #define AXP_REG_CHARGECTRL      0x33
 #define AXP_REG_TIMING          0x36
 #define AXP_REG_ADCENABLE1      0x82
@@ -33,20 +33,20 @@
 #define AXP_REG_CC_CTRL         0xb8
 
 /* CC_CTRL (0xb8), datasheet REG B8H, default 00H. The counters themselves are
- * two
-   32-bit big-endian values: charge at 0xb0-0xb3, discharge at 0xb4-0xb7.
-
-   Bit 7 enables counting. Bit 6 pauses one count and is self-clearing -- the vendor
-   driver for this board spells the enum COULOMETER_RESET/PAUSE/ENABLE at bits 5/6/7, and
-   the datasheet agrees. It is *not* a calibration base, which is what this define used to
-   claim; that name came from an assumption, and writing 1 to the bit pauses counting.
-   Bit 5 clears both counters and is also self-clearing, so a write of it is a pulse.
-
-   The pulse is the trap: writing the bare clear value to this register also zeroes the
-   enable bit, which stops the counters accumulating for the rest of the boot. That is
-   why CC read 0/0 on every visit -- not a dead chip, not a failed read, our own init
-   turning the counter off one write after enabling it. Clearing therefore has to be a
-   read-modify-write that keeps bit 7. */
+ * two 32-bit big-endian values: charge at 0xb0-0xb3, discharge at 0xb4-0xb7.
+ *
+ * Bit 7 enables counting. Bit 6 pauses one count and is self-clearing -- the
+ * vendor driver for this board spells the enum COULOMETER_RESET/PAUSE/ENABLE
+ * at bits 5/6/7, and the datasheet agrees. It is *not* a calibration base,
+ * which is what this define used to claim; that name came from an assumption,
+ * and writing 1 to the bit pauses counting. Bit 5 clears both counters and is
+ * also self-clearing, so a write of it is a pulse.
+ *
+ * The pulse is the trap: writing the bare clear value to this register also
+ * zeroes the enable bit, which stops the counters accumulating for the rest of
+ * the boot. That is why CC read 0/0 on every visit -- not a dead chip, not a
+ * failed read, our own init turning the counter off one write after enabling
+ * it. Clearing therefore has to be a read-modify-write that keeps bit 7. */
 #define AXP_CC_ENABLE           (1u << 7)
 #define AXP_CC_PAUSE            (1u << 6)
 #define AXP_CC_CLEAR            (1u << 5)
@@ -85,10 +85,12 @@
 #define AXP_CHG_TARGET_4V15    (1u << AXP_CHG_TARGET_SHIFT)
 #define AXP_CHG_TARGET_4V20    (2u << AXP_CHG_TARGET_SHIFT)
 #define AXP_CHG_TARGET_4V36    (3u << AXP_CHG_TARGET_SHIFT)
-#define AXP_CHG_TERM_15PCT     (1u << 4)   /* 0: stop at 10% of set current, 1: 15% */
+/* 0: stop at 10% of set current, 1: 15% */
+#define AXP_CHG_TERM_15PCT     (1u << 4)
 #define AXP_CHG_CURRENT_SHIFT  0
-#define AXP_CHG_CURRENT_450MA  4u          /* 0000:100, 0001:190, 0010:280, 0011:360,
-                                             0100:450, 0101:550, ... 1111:1320 mA */
+/* 0000:100, 0001:190, 0010:280, 0011:360, 0100:450, 0101:550,
+ * ... 1111:1320 mA */
+#define AXP_CHG_CURRENT_450MA  4u
 
 /* OUTPUTCTRL (0x12) */
 #define AXP_OUT_DCDC1 (1u << 0)
@@ -111,15 +113,15 @@
 #define AXP_ADC_TEMP    (1u << 7)   /* ADCENABLE2 */
 
 /* IRQ enables live in five registers (0x40-0x43 and 0x4A) and the matching
-   status registers are 0x44-0x47 and 0x4D. The PEK key is not in the first pair:
-   its bits are in IRQEN3/IRQST3. The datasheet's status table is explicit -
-   REG46H[1] is the short press and REG46H[0] the long press - and every status
-   bit latches until written back as 1. The IRQ pin is pulled high only when no
-   status bit is set at all, so an event nobody acts on holds the line low.
-
-   Note that the reference firmware on this board reads 0x44 for the PEK status.
-   That register holds the ACIN/VBUS events; the PEK bits are in 0x46.
-*/
+ * status registers are 0x44-0x47 and 0x4D. The PEK key is not in the first
+ * pair: its bits are in IRQEN3/IRQST3. The datasheet's status table is
+ * explicit - REG46H[1] is the short press and REG46H[0] the long press - and
+ * every status bit latches until written back as 1. The IRQ pin is pulled high
+ * only when no status bit is set at all, so an event nobody acts on holds the
+ * line low.
+ *
+ * Note that the reference firmware on this board reads 0x44 for the PEK status.
+ * That register holds the ACIN/VBUS events; the PEK bits are in 0x46. */
 #define AXP_REG_IRQEN1      0x40
 #define AXP_REG_IRQEN2      0x41
 #define AXP_REG_IRQEN3      0x42
@@ -139,10 +141,10 @@
 #define AXP_IRQ_PEK_SHORT   (1u << 1)
 
 /* REG 36H bit 3: the PEK auto-off function itself. The datasheet calls it
-   "按键时长大于关机时长时自动关机功能设置", 0 = off, 1 = on, and it resets to 1. Clearing it
-   disables the OFFLEVEL hard cut wholesale; it is a different mechanism from
-   the software shutdown in REG 32H bit 7, so axp173_power_off() still works
-   with it off. */
+ * "按键时长大于关机时长时自动关机功能设置", 0 = off, 1 = on, and it resets to 1.
+ * Clearing it disables the OFFLEVEL hard cut wholesale; it is a different
+ * mechanism from the software shutdown in REG 32H bit 7, so axp173_power_off()
+ * still works with it off. */
 #define AXP_TIMING_AUTOOFF  (1u << 3)
 #define AXP_IRQ_LDO4_LOW    (1u << 3)
 #define AXP_IRQ_DCDC2_LOW   (1u << 4)
@@ -151,17 +153,17 @@
 #define AXP_IRQ_OVERTEMP    (1u << 7)
 
 /* TIMING (0x36, default 0x5D): bits 7:6 ONLEVEL the press that powers the chip
- * on,
-   bits 5:4 IRQLEVEL the long-press threshold, bit 3 "auto power off when the press
-   outlasts OFFLEVEL", bit 2 the PWROK delay, bits 1:0 OFFLEVEL -- the press duration
-   beyond which the chip cuts its own outputs (4/6/8/10 s; 3 is the longest, 10 s).
- * OFFLEVEL is a duration the user must outlast, not a countdown that
- * survives release. */
+ * on, bits 5:4 IRQLEVEL the long-press threshold, bit 3 "auto power off when
+ * the press outlasts OFFLEVEL", bit 2 the PWROK delay, bits 1:0 OFFLEVEL -- the
+ * press duration beyond which the chip cuts its own outputs (4/6/8/10 s; 3 is
+ * the longest, 10 s). OFFLEVEL is a duration the user must outlast, not a
+ * countdown that survives release. */
 #define AXP_PEK_ON_SHIFT    6
 #define AXP_PEK_LONG_SHIFT  4
 #define AXP_PEK_OFF_SHIFT   0
 #define AXP_PEK_AUTOOFF     (1u << 3)
-#define AXP_PEK_PWROK       (1u << 2)   /* PWROK pin delay: 0 = 32 ms, 1 = 64 ms */
+/* PWROK pin delay: 0 = 32 ms, 1 = 64 ms */
+#define AXP_PEK_PWROK       (1u << 2)
 
 #define AXP_ADC_RATE_25HZ  0
 #define AXP_ADC_RATE_50HZ  1

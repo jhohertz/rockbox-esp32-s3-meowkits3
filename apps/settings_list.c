@@ -110,12 +110,12 @@
 
 #ifdef HAVE_SPEAKER
 /* audio_enable_speaker() treats any nonzero value as enable
- * (apps/audio_path.c:188-191), so the choice values are 0 = Off and 1 = On, which
- * is also how the jack-detection variant labels them (ID2P(LANG_OFF),
+ * (apps/audio_path.c:188-191), so the choice values are 0 = Off and 1 = On,
+ * which is also how the jack-detection variant labels them (ID2P(LANG_OFF),
  * ID2P(LANG_ON)). The cfg token strings are a separate list and do not decide
  * that. A target whose primary output is the on-board amplifier needs On as the
- * default or its first boot is silent; every other target keeps upstream's 0.
- * A weak seam rather than a target name in here, so the default stays with the
+ * default or its first boot is silent; every other target keeps upstream's 0. A
+ * weak seam rather than a target name in here, so the default stays with the
  * target that needs it. */
 #ifndef DEFAULT_SPEAKER_MODE
 #define DEFAULT_SPEAKER_MODE 0

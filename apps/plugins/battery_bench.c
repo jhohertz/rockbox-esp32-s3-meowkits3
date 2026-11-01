@@ -394,25 +394,26 @@ static unsigned int charge_state(void)
 #endif
 
 
-/* Cumulative charge and discharge, integrated from the sampled current rather than
- * read from the PMU's coulomb counters. Two things it is for:
+/* Cumulative charge and discharge, integrated from the sampled current rather
+ * than read from the PMU's coulomb counters. Two things it is for:
  *
- *  - It is the independent measurement the counter scale has to be checked against.
- *    axp173.h documents 180,000 LSB per mAh at the 25 Hz ADC rate axp173_init()
- *    selects, but that figure is an arithmetic consequence of the sample rate, not
- *    something anyone measured. A total built from the REG 0x28/0x29 mA samples over
- *    a known time is the only way to find out whether it is right.
- *  - Each interval is attributed to the sample that begins it, so the switch from
- *    charger to battery lands on the row where it happened instead of being smeared
- *    across it. Reading the direction out of the log afterwards is what removes the
- *    need to catch that switch while it is happening.
+ *  - It is the independent measurement the counter scale has to be checked
+ *    against. axp173.h documents 180,000 LSB per mAh at the 25 Hz ADC rate
+ *    axp173_init() selects, but that figure is an arithmetic consequence of the
+ *    sample rate, not something anyone measured. A total built from the REG
+ *    0x28/0x29 mA samples over a known time is the only way to find out whether
+ *    it is right.
+ *  - Each interval is attributed to the sample that begins it, so the switch
+ *    from charger to battery lands on the row where it happened instead of
+ *    being smeared across it. Reading the direction out of the log afterwards
+ *    is what removes the need to catch that switch while it is happening.
  *
- * Units are mA-seconds, so no interval is rounded: 3600 of them is a mAh, and the
- * columns print one decimal. 1000 mA over the full 16-hour buffer is 57.6 million,
- * so an unsigned int is ample. The totals and the previous sample are file-scope
- * because they belong to the run, not to the batch being written.
+ * Units are mA-seconds, so no interval is rounded: 3600 of them is a mAh, and
+ * the columns print one decimal. 1000 mA over the full 16-hour buffer is 57.6
+ * million, so an unsigned int is ample. The totals and the previous sample are
+ * file-scope because they belong to the run, not to the batch being written.
  */
-static int last_secs;        /* stamp of the previously flushed sample, -1 for none */
+static int last_secs;   /* stamp of the previously flushed sample, -1 = none */
 static int last_current;     /* its mA */
 static bool last_charging;
 static unsigned int chg_ms, dis_ms;

@@ -5,8 +5,8 @@
  * (components/soc/esp32s3/register/soc/gpio_reg.h), not guessed.
  *
  * GPIO 32-53 are a second group with their own OUT/ENABLE/IN registers, so a
- * driver that only uses the low group silently ignores pins 40 and 41, which are
- * exactly the LCD MOSI and SCLK pins.
+ * driver that only uses the low group silently ignores pins 40 and 41, which
+ * are exactly the LCD MOSI and SCLK pins.
  ****************************************************************************/
 #ifndef GPIO_XTENSA_H
 #define GPIO_XTENSA_H
@@ -36,12 +36,14 @@
 #define GPIO_STATUS1_W1TC (DR_REG_GPIO_BASE + 0x58)
 
 /* GPIO matrix: one 32-bit slot per pin.
- *   [8:0]   func_sel  - signal index. 256 (SIG_GPIO_OUT_IDX) is the reset value and
- *                       means "the pad is driven by GPIO_OUT_REG[n]", so a plain
- *                       gpio_write_pin() needs no routing at all. Anything else
- *                       routes that peripheral signal's output to the pad.
+ *   [8:0]   func_sel  - signal index. 256 (SIG_GPIO_OUT_IDX) is the reset
+ *                       value and means "the pad is driven by
+ *                       GPIO_OUT_REG[n]", so a plain gpio_write_pin() needs no
+ *                       routing at all. Anything else routes that peripheral
+ *                       signal's output to the pad.
  *   [9]     inv_sel
- *   [10]    oen_sel   - 1: output enable comes from the GPIO_ENABLE bit for this pin
+ *   [10]    oen_sel   - 1: output enable comes from the GPIO_ENABLE bit for
+ *                       this pin
  *   [11]    oen_inv_sel
  * func_sel is 9 bits, not 6: the GPSPI signals are 101-103, which a 6-bit mask
  * turns into 5-7. See components/soc/esp32s3/register/soc/gpio_struct.h.
@@ -61,7 +63,7 @@
  * (push-pull), 1 = open drain. The I2C master needs this set on SCL/SDA.
  */
 #define GPIO_PIN_REG(n)      (DR_REG_GPIO_BASE + 0x0074 + 4u * (n))
-#define GPIO_PIN_PAD_DRIVER  (1u << 2)   /* open-drain: the pad can only pull low */
+#define GPIO_PIN_PAD_DRIVER  (1u << 2)  /* open-drain: pulls low only */
 #define GPIO_IN_FROM_MATRIX (1u << 7)
 
 /* IO MUX: MCU_SEL is bits 14:12 and picks the pad function. GPIO1 and GPIO2
@@ -139,7 +141,8 @@ static inline void io_mux_select_gpio(int pin)
         return;
 
     uint32_t r = IO_MUX_PIN(pin);
-    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL) | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
+    gpio_write(r, (gpio_read(r) & ~IO_MUX_MCU_SEL)
+                  | IO_MUX_FUNC_GPIO | IO_MUX_FUN_IE);
 }
 
 /* GPIO_ENABLE only controls the output driver. A pad whose input enable is
@@ -181,7 +184,8 @@ static inline void gpio_set_direction(int pin, int output)
     if (pin < 32) {
         gpio_write(output ? GPIO_ENABLE_W1TS : GPIO_ENABLE_W1TC, 1u << pin);
     } else {
-        gpio_write(output ? GPIO_ENABLE1_W1TS : GPIO_ENABLE1_W1TC, 1u << (pin - 32));
+        gpio_write(output ? GPIO_ENABLE1_W1TS : GPIO_ENABLE1_W1TC,
+                   1u << (pin - 32));
     }
 }
 
@@ -226,7 +230,8 @@ static inline void gpio_matrix_out(int pin, int signal)
 /* Route a pin's input to a peripheral signal. The slot is indexed by signal. */
 static inline void gpio_matrix_in(int pin, int signal)
 {
-    gpio_write(GPIO_FUNC_IN_SEL(signal), ((uint32_t)pin & 0x3F) | GPIO_IN_FROM_MATRIX);
+    gpio_write(GPIO_FUNC_IN_SEL(signal),
+               ((uint32_t)pin & 0x3F) | GPIO_IN_FROM_MATRIX);
 }
 
 #endif /* GPIO_XTENSA_H */

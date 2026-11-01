@@ -97,7 +97,8 @@ struct breadcrumb
     char     tag[24];
 };
 
-static struct breadcrumb bc[BC_SLOTS] __attribute__((section(".noinit"), aligned(4)));
+static struct breadcrumb bc[BC_SLOTS]
+    __attribute__((section(".noinit"), aligned(4)));
 static uint32_t bc_magic __attribute__((section(".noinit")));
 static uint32_t bc_next  __attribute__((section(".noinit")));
 
@@ -248,9 +249,10 @@ void paniclog_set_reset(unsigned reason)
  * steps that can end in a hang: the USB teardown.
  */
 #define XT_RTC_SLOW_BASE   0x50001000u
-#define XT_RTC_SLOW_MAGIC  0x43525455u   /* "CRTU": bumped from "CRTT", whose slots were the
-                             * old 16-byte char-tag layout. Anything under the old magic is stale and is
-                             * ignored rather than printed as nonsense. */
+/* "CRTU": bumped from "CRTT", whose slots were the old 16-byte char-tag
+ * layout. Anything under the old magic is stale and is ignored rather than
+ * printed as nonsense. */
+#define XT_RTC_SLOW_MAGIC  0x43525455u
 #define XT_RTC_SLOTS       24
 
 /* RTC slow memory on this chip only accepts 32-bit accesses: the first
@@ -302,11 +304,12 @@ struct panic_rtc
  * The third RTC-slow region; the teardown ring ends at 0x50001128 and the panic
  * record at 0x5000126c. IDF's own RTC-slow objects (.rtc.force_slow, three in
  * sleep_modes.c) are placed at the start of the bank, and RTC fast is what this
- * build uses as heap, so 0x50001400 is unclaimed. Word stores only, as above. */
+ * build uses as heap, so 0x50001400 is unclaimed. Word stores only, as above.
+ * */
 #define XT_FRAME_RTC_BASE   0x50001400u
-#define XT_FRAME_RTC_MAGIC  0x47463252u   /* "R2FG": bumped from "R2GR", whose struct had no
-                             * fault-bytes slots. Stale records under the old magic read as
-                             * nothing rather than as shifted words. */
+/* "R2FG": bumped from "R2GR", whose struct had no fault-bytes slots. Stale
+ * records under the old magic read as nothing rather than as shifted words. */
+#define XT_FRAME_RTC_MAGIC  0x47463252u
 #define XT_FRAME_WORDS      32
 
 struct frame_rtc
@@ -413,7 +416,8 @@ static int rtc_slot_line(char *buf, int bufsize,
  * the SRAM trail cannot. Returns 0 when nothing was retained. */
 int paniclog_text(char *buf, int bufsize)
 {
-    volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+    volatile struct panic_rtc *pr =
+        (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
     int len = 0;
 
     if (buf == NULL || bufsize <= 0)
@@ -487,7 +491,8 @@ void panic_console_write(const char *msg)
      * padded. This is the only record that outlives the reset this panic is
      * about to cause. */
     {
-        volatile struct panic_rtc *pr = (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
+        volatile struct panic_rtc *pr =
+            (volatile struct panic_rtc *)XT_PANIC_RTC_BASE;
         int i;
 
         pr->magic = XT_PANIC_RTC_MAGIC;
@@ -677,7 +682,8 @@ int paniclog_frame_regs_text(char *buf, int bufsize)
         return 0;
 
     return snprintf(buf, bufsize,
-                    "hnd-ps %08lx frm-sp %08lx epc1 %08lx epc2 %08lx epc3 %08lx epc4 %08lx depc %08lx",
+                    "hnd-ps %08lx frm-sp %08lx epc1 %08lx epc2 %08lx "
+                    "epc3 %08lx epc4 %08lx depc %08lx",
                     (unsigned long)fr->ps,
                     /* Word 4 of the frame is XtExcFrame.a1, the stack pointer
                      * of
@@ -734,10 +740,10 @@ int paniclog_frame_regs_part(char *buf, int bufsize, int part)
     {
         case 0:
             /* hnd- is the handler's own state, read from CSRs at level 4: it
-             * always reads INTLEVEL 4 because the panic path *is* the exception,
-             * so it says nothing about the fault and must not be read as the
-             * interrupted PS. frm- is the interrupted context, taken from the
-             * frame IDF built at fault time. */
+             * always reads INTLEVEL 4 because the panic path *is* the
+             * exception, so it says nothing about the fault and must not be
+             * read as the interrupted PS. frm- is the interrupted context,
+             * taken from the frame IDF built at fault time. */
             return snprintf(buf, bufsize, "hnd-ps %08lx frm-sp %08lx",
                             (unsigned long)fr->ps,
                             (unsigned long)fr->word[4]);
@@ -748,7 +754,8 @@ int paniclog_frame_regs_part(char *buf, int bufsize, int part)
             return snprintf(buf, bufsize, "epc3 %08lx epc4 %08lx",
                             (unsigned long)fr->epc3, (unsigned long)fr->epc4);
         case 3:
-            return snprintf(buf, bufsize, "depc %08lx", (unsigned long)fr->depc);
+            return snprintf(buf, bufsize, "depc %08lx",
+                            (unsigned long)fr->depc);
         default:
             return 0;
     }
@@ -759,13 +766,14 @@ int paniclog_frame_regs_part(char *buf, int bufsize, int part)
  * Called from the panic handler, which runs after IDF re-armed the flash cache,
  * so an ordinary load works here. The point is to answer a question no register
  * can: when the exception says IllegalInstruction at an address that decodes to
- * a legal opcode in the linked image, the core did not fetch those bytes. Either
- * the cache returned something else, or the page behind that virtual address is
- * not the page the image was linked against. The captured words decide it -- and
- * their value names the mechanism, because the sentinel for an unmapped Ext_RAM
- * page, a remapped page of another image's data, and an empty cache line look
- * different. */
-void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1, uint32_t cause)
+ * a legal opcode in the linked image, the core did not fetch those bytes.
+ * Either the cache returned something else, or the page behind that virtual
+ * address is not the page the image was linked against. The captured words
+ * decide it -- and their value names the mechanism, because the sentinel for an
+ * unmapped Ext_RAM page, a remapped page of another image's data, and an empty
+ * cache line look different. */
+void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1,
+                          uint32_t cause)
 {
     volatile struct frame_rtc *fr =
         (volatile struct frame_rtc *)XT_FRAME_RTC_BASE;
@@ -823,12 +831,14 @@ int paniclog_frame_fault_text(char *buf, int bufsize)
  * below. It is compile-time on purpose: the failure mode is one record writing
  * through another, which shows up as a crash report that prints the wrong build
  * id, and that is indistinguishable from a stale image.
- * --------------------------------------------------------------------------- */
+ * ---------------------------------------------------------------------------
+ * */
 #define XT_BT_RTC_BASE   0x50001600u
 typedef char rb_frame_rtc_fits[
-    (sizeof(struct frame_rtc) <= (XT_BT_RTC_BASE - XT_FRAME_RTC_BASE)) ? 1 : -1];
+    (sizeof(struct frame_rtc)
+     <= (XT_BT_RTC_BASE - XT_FRAME_RTC_BASE)) ? 1 : -1];
 #define XT_BT_RTC_MAGIC  0x43544252u   /* "RBTC" */
-#define XT_BT_ID_WORDS   8             /* 32 characters of build id, including NUL */
+#define XT_BT_ID_WORDS   8   /* 32 characters of build id, including NUL */
 
 struct crash_rtc
 {

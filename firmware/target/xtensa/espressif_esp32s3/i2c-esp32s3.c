@@ -4,34 +4,35 @@
  *
  * The reference firmware uses this peripheral rather than bit-banging, and the
  * schematic has 10K pull-ups on both lines (R30/R31 to EXP_3V3), so the
- * peripheral is the right choice. ESP32-S3 does have internal pull-ups, but they
- * live in the IO MUX (FUN_PU, bit 8 of the per-pad register), not in the GPIO
- * block - searching gpio_reg.h or gpio_struct.h finds nothing, which is how it
- * is easy to conclude the chip has none.
+ * peripheral is the right choice. ESP32-S3 does have internal pull-ups, but
+ * they live in the IO MUX (FUN_PU, bit 8 of the per-pad register), not in the
+ * GPIO block - searching gpio_reg.h or gpio_struct.h finds nothing, which is
+ * how it is easy to conclude the chip has none.
  *
- * The peripheral is a command-list machine. The CMD_Controller reads up to eight
- * command registers, executes them in order, and stops at STOP or END. Data to
- * send lives in TX RAM (32 x 8 bits) and received data lands in RX RAM. In
- * master mode the slave address and the R/W bit are part of TX RAM rather than a
- * separate register, so byte_num counts them. Each WRITE command consumes
- * byte_num bytes from the current TX RAM pointer, so a transaction that writes a
- * register address and then restarts to read lays out the address bytes
- * consecutively and lets the pointer advance.
+ * The peripheral is a command-list machine. The CMD_Controller reads up to
+ * eight command registers, executes them in order, and stops at STOP or END.
+ * Data to send lives in TX RAM (32 x 8 bits) and received data lands in RX
+ * RAM. In master mode the slave address and the R/W bit are part of TX RAM
+ * rather than a separate register, so byte_num counts them. Each WRITE
+ * command consumes byte_num bytes from the current TX RAM pointer, so a
+ * transaction that writes a register address and then restarts to read lays
+ * out the address bytes consecutively and lets the pointer advance.
  *
  * That shape is why the byte-at-a-time half of i2c.h is not implemented here. A
  * single command cannot be executed on its own, so i2c_inb() cannot return a
  * byte and i2c_getack() cannot report an ACK until the whole list has run.
  *
- * Everything this target needs is transaction-level, and a transaction is atomic:
- * the controller either runs the whole list or it does not. The synchronous entry
- * points therefore program the list, start it and poll for TRANS_COMPLETE. There
- * is one path to the peripheral and one in-flight transaction, which is what makes
- * it safe for the touchscreen to poll the bus while the codec or the PMU is doing
- * something else.
+ * Everything this target needs is transaction-level, and a transaction is
+ * atomic: the controller either runs the whole list or it does not. The
+ * synchronous entry points therefore program the list, start it and poll for
+ * TRANS_COMPLETE. There is one path to the peripheral and one in-flight
+ * transaction, which is what makes it safe for the touchscreen to poll the
+ * bus while the codec or the PMU is doing something else.
  *
  * The one bit that decides whether a transaction ACKs at all is the GPIO pad
- * driver. TRM 27.4.6 requires an open-drain master to have both I2C_SDA_FORCE_OUT /
- * I2C_SCL_FORCE_OUT set *and* the pad configured for open drain; with a push-pull
+ * driver. TRM 27.4.6 requires an open-drain master to have both
+ * I2C_SDA_FORCE_OUT / I2C_SCL_FORCE_OUT set *and* the pad configured for open
+ * drain; with a push-pull
  * pad the master holds SDA high through the acknowledge slot and every device
  * reports NACK.
  ****************************************************************************/
@@ -78,9 +79,9 @@
 #define CTR_SCL_FORCE_OUT (1u << 1)
 #define CTR_MS_MODE       (1u << 4)
 #define CTR_TRANS_START   (1u << 5)
-#define CTR_ARB_EN        (1u << 9)     /* default 1; ESP-IDF clears it for master */
+#define CTR_ARB_EN        (1u << 9)  /* default 1; ESP-IDF clears for master */
 #define CTR_FSM_RST       (1u << 10)     /* reset the command FSM */
-#define CTR_CONF_UPGATE   (1u << 11)     /* copy config into the I2C_SCLK domain */
+#define CTR_CONF_UPGATE   (1u << 11)    /* copy config to I2C_SCLK domain */
 
 /* INT_RAW_REG */
 #define INT_RXFIFO_WM  (1u << 0)
@@ -92,7 +93,8 @@
 #define INT_NACK       (1u << 10)
 
 /* Interrupts that mean something to a master transaction. */
-#define INT_MASTER_MASK (INT_TRANS_DONE | INT_TIME_OUT | INT_NACK | INT_ARB_LOST)
+#define INT_MASTER_MASK (INT_TRANS_DONE | INT_TIME_OUT | INT_NACK \
+                        | INT_ARB_LOST)
 
 /* op_code */
 #define OP_WRITE  1
@@ -133,13 +135,15 @@ static void begin_list(void)
 /* Writing a command clears its DONE bit, which is what the controller looks
  * for. */
 static bool add_cmd(unsigned opcode, unsigned nbytes,
-                    unsigned ack_check, unsigned ack_expected, unsigned ack_value)
+                    unsigned ack_check, unsigned ack_expected,
+                    unsigned ack_value)
 {
     if (ncmd >= CMD_SLOTS)
         return false;
 
-    gpio_write(I2C_COMD(ncmd), (nbytes & 0xFF) | (ack_check << 8) | (ack_expected << 9)
-                               | (ack_value << 10) | (opcode << 11));
+    gpio_write(I2C_COMD(ncmd),
+               (nbytes & 0xFF) | (ack_check << 8) | (ack_expected << 9)
+               | (ack_value << 10) | (opcode << 11));
     ncmd++;
     return true;
 }
@@ -193,7 +197,8 @@ static bool add_read(int count)
     return add_cmd(OP_READ, 1, 0, 0, NACK);
 }
 
-static bool build_read(int device, const unsigned char *pre, int npre, int count)
+static bool build_read(int device, const unsigned char *pre, int npre,
+                       int count)
 {
     begin_list();
 
@@ -230,8 +235,10 @@ static bool build_read(int device, const unsigned char *pre, int npre, int count
  */
 static void reset_fifos(void)
 {
-    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) | (1u << 12) | (1u << 13));
-    gpio_write(I2C_FIFO_CONF, gpio_read(I2C_FIFO_CONF) & ~((1u << 12) | (1u << 13)));
+    gpio_write(I2C_FIFO_CONF,
+               gpio_read(I2C_FIFO_CONF) | (1u << 12) | (1u << 13));
+    gpio_write(I2C_FIFO_CONF,
+               gpio_read(I2C_FIFO_CONF) & ~((1u << 12) | (1u << 13)));
 }
 
 /* Latch the programmed list and trigger the controller. The registers live
@@ -254,11 +261,17 @@ static void start_list(void)
      * via i2c_ll_enable_arbitration(hw, false): with arbitration on, the
      * controller compares the driven SDA against the sampled line and aborts
      * the list on any slave stretch. */
-    gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_FSM_RST);
+    gpio_write(I2C_CTR,
+               CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT |
+               CTR_MS_MODE | CTR_FSM_RST);
     gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE);
 
-    gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_CONF_UPGATE);
-    gpio_write(I2C_CTR, CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT | CTR_MS_MODE | CTR_CONF_UPGATE | CTR_TRANS_START);
+    gpio_write(I2C_CTR,
+               CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT |
+               CTR_MS_MODE | CTR_CONF_UPGATE);
+    gpio_write(I2C_CTR,
+               CTR_SDA_FORCE_OUT | CTR_SCL_FORCE_OUT |
+               CTR_MS_MODE | CTR_CONF_UPGATE | CTR_TRANS_START);
 }
 
 /* The CMD_Controller is a one-shot machine: it reads the eight command
@@ -291,7 +304,8 @@ static int wait_complete(void)
 
         if (raw & INT_TRANS_DONE) {
             gpio_write(I2C_INT_CLR, raw);
-            return (raw & (INT_NACK | INT_ARB_LOST)) ? I2C_STATUS_ERROR : forced_status;
+            return (raw & (INT_NACK | INT_ARB_LOST)) ? I2C_STATUS_ERROR
+                                                     : forced_status;
         }
         udelay(10);
     }
@@ -311,7 +325,8 @@ void __i2c_async_submit(int bus, i2c_descriptor *desc)
         ok = build_write(desc->slave_addr, desc->buffer[0], desc->count[0],
                          desc->buffer[1], desc->count[1]);
     else
-        ok = build_read(desc->slave_addr, desc->count[0] ? desc->buffer[0] : NULL,
+        ok = build_read(desc->slave_addr,
+                        desc->count[0] ? desc->buffer[0] : NULL,
                         desc->count[0], desc->count[1]);
 
     if (!ok) {
@@ -321,7 +336,8 @@ void __i2c_async_submit(int bus, i2c_descriptor *desc)
         start_list();
         status = I2C_STATUS_ERROR;
     } else {
-        if (!add_cmd((desc->bus_cond & I2C_STOP) ? OP_STOP : OP_END, 0, 0, 0, 0)) {
+        if (!add_cmd((desc->bus_cond & I2C_STOP) ? OP_STOP : OP_END,
+                     0, 0, 0, 0)) {
             forced_status = I2C_STATUS_ERROR;
             status = I2C_STATUS_ERROR;
         } else {
@@ -408,7 +424,8 @@ static void set_timing(unsigned freq)
      * the register without it turns the peripheral off and no transaction ever
      * runs.
      */
-    gpio_write(I2C_CLK_CONF, (clkm_div - 1) | (1u << 21));            /* SCLK_SEL = 0: XTAL */
+    /* SCLK_SEL = 0: XTAL */
+    gpio_write(I2C_CLK_CONF, (clkm_div - 1) | (1u << 21));
     gpio_write(I2C_SCL_LOW_PERIOD, half - 1);
     gpio_write(I2C_SCL_HIGH_PERIOD, scl_high | (wait_high << 9));
     gpio_write(I2C_SDA_HOLD, half / 4 - 1);
@@ -424,10 +441,13 @@ void i2c_init(void)
 {
     static bool async_ready;
 
-    gpio_write(SYSTEM_PERIP_CLK_EN0, gpio_read(SYSTEM_PERIP_CLK_EN0) | I2C_EXT0_CLK_EN);
+    gpio_write(SYSTEM_PERIP_CLK_EN0,
+               gpio_read(SYSTEM_PERIP_CLK_EN0) | I2C_EXT0_CLK_EN);
     /* ESP-IDF resets the peripheral before configuring it. */
-    gpio_write(SYSTEM_PERIP_RST_EN0, gpio_read(SYSTEM_PERIP_RST_EN0) | I2C_EXT0_RST);
-    gpio_write(SYSTEM_PERIP_RST_EN0, gpio_read(SYSTEM_PERIP_RST_EN0) & ~I2C_EXT0_RST);
+    gpio_write(SYSTEM_PERIP_RST_EN0,
+               gpio_read(SYSTEM_PERIP_RST_EN0) | I2C_EXT0_RST);
+    gpio_write(SYSTEM_PERIP_RST_EN0,
+               gpio_read(SYSTEM_PERIP_RST_EN0) & ~I2C_EXT0_RST);
 
     /* GPIO1 and GPIO2 default to UART0 RX and TX, so the pad function has to be
      * changed before the matrix can use them as plain GPIO. */
@@ -452,8 +472,10 @@ void i2c_init(void)
                gpio_read(GPIO_PIN_REG(I2C_SDA_PIN)) | GPIO_PIN_PAD_DRIVER);
     gpio_write(GPIO_PIN_REG(I2C_SCL_PIN),
                gpio_read(GPIO_PIN_REG(I2C_SCL_PIN)) | GPIO_PIN_PAD_DRIVER);
-    gpio_write(IO_MUX_PIN(I2C_SDA_PIN), gpio_read(IO_MUX_PIN(I2C_SDA_PIN)) | (1u << 8));
-    gpio_write(IO_MUX_PIN(I2C_SCL_PIN), gpio_read(IO_MUX_PIN(I2C_SCL_PIN)) | (1u << 8));
+    gpio_write(IO_MUX_PIN(I2C_SDA_PIN),
+               gpio_read(IO_MUX_PIN(I2C_SDA_PIN)) | (1u << 8));
+    gpio_write(IO_MUX_PIN(I2C_SCL_PIN),
+               gpio_read(IO_MUX_PIN(I2C_SCL_PIN)) | (1u << 8));
 
     /* Output: the controller does not drive pads directly, signals have to
      * be routed through the matrix. oen_sel = 1 makes the GPIO_ENABLE bit

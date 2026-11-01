@@ -53,16 +53,18 @@
 
 /* Width of the transfer-size field in an endpoint's EPTSIZ register.
  *
- * The ESP32-S3's DWC configuration packs EP0 differently from the per-endpoint
- * registers. Its own SVD (IDF's soc/esp32s3/include/soc/usb_dwc_struct.h) says
- * doeptsiz0 / diep0tsiz carry xfersize as 7 bits with pktcnt at bit 19 and supcnt at
- * bit 29, while the generic dieptsiz / doeptsiz carry the usual 19-bit xfersize and a
- * 10-bit pktcnt. Reading EP0 with the wide mask therefore returns pktcnt's bit as part
- * of the size: 0x20080040 & 0x7ffff is 524352, not 64, so every control stage computes
- * a nonsense transferred count and the driver hands the host a malformed transaction --
- * which from the inside is what "device descriptor read/64, error -71" looks like. The
- * core's own DOEPTSIZ(0) write (STUPCNT(1) | PKTCNT(1) | 64) is correct for this
- * layout; only the read back was wrong. Other cores keep the 19-bit mask.
+ * The ESP32-S3's DWC configuration packs EP0 differently from the
+ * per-endpoint registers. Its own SVD
+ * (IDF's soc/esp32s3/include/soc/usb_dwc_struct.h) says doeptsiz0 / diep0tsiz
+ * carry xfersize as 7 bits with pktcnt at bit 19 and supcnt at bit 29, while
+ * the generic dieptsiz / doeptsiz carry the usual 19-bit xfersize and a 10-bit
+ * pktcnt. Reading EP0 with the wide mask therefore returns pktcnt's bit as
+ * part of the size: 0x20080040 & 0x7ffff is 524352, not 64, so every control
+ * stage computes a nonsense transferred count and the driver hands the host a
+ * malformed transaction -- which from the inside is what "device descriptor
+ * read/64, error -71" looks like. The core's own DOEPTSIZ(0) write
+ * (STUPCNT(1) | PKTCNT(1) | 64) is correct for this layout; only the read back
+ * was wrong. Other cores keep the 19-bit mask.
  */
 #if defined(CPU_XTENSA)
 #define EPTSIZ_XFERSZ(epnum)      ((epnum) == 0 ? 0x7fu : 0x7ffffu)
@@ -358,7 +360,8 @@ static void usb_dw_try_push(int epnum)
     if (epmis_msk & (1 << epnum))
         return;
 
-    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
+    uint32_t wordsleft =
+        ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
     if (!wordsleft) return;
 
     /* Get fifo space for NPTXFIFO or PTXFIFO */
@@ -397,7 +400,8 @@ static void usb_dw_handle_dtxfifo(int epnum)
     if (!dw_ep->busy)
         return;
 
-    uint32_t wordsleft = ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
+    uint32_t wordsleft =
+        ((DWC_DIEPTSIZ(epnum) & EPTSIZ_XFERSZ(epnum)) + 3) >> 2;
 
     while (wordsleft)
     {
@@ -841,7 +845,8 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
      * goes quiet. Clearing it on the way to arming is what a gadget function
      * does when a new request arrives. Other endpoints keep their stall --
      * there it is a real signal to the host. */
-    if (epnum == 0 && epdir == USB_DW_EPDIR_IN && (DWC_EPCTL(0, USB_DW_EPDIR_IN) & STALL))
+    if (epnum == 0 && epdir == USB_DW_EPDIR_IN &&
+        (DWC_EPCTL(0, USB_DW_EPDIR_IN) & STALL))
         DWC_EPCTL(0, USB_DW_EPDIR_IN) &= ~STALL;
 
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
@@ -937,7 +942,8 @@ static void usb_dw_abort_endpoint(int epnum, enum usb_dw_epdir epdir)
 /* Target-side cache maintenance for DMA-written receive buffers. Empty by
  * default: architectures without a D-cache (or whose DMA bypasses it) need
  * nothing. */
-__attribute__((weak)) void usb_dw_target_dma_discard(void *buf, unsigned int len)
+__attribute__((weak)) void usb_dw_target_dma_discard(void *buf,
+                                                     unsigned int len)
 {
     (void)buf;
     (void)len;
@@ -1015,16 +1021,18 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
             DISCARD_DCACHE_RANGE(dw_ep->req_addr, dw_ep->req_size);
 #endif
 #if defined(CPU_XTENSA)
-        /* The esp32s3 D-cache covers internal SRAM, which is where every DMA buffer
-         * lives, and the core writes those bytes without going through it. Without
-         * this the consumer reads cache lines that predate the transfer -- for the
-         * isochronous OUT endpoint that is audible as noise on the DAC. dw_ep->addr is
-         * the destination of this packet (it is advanced for the next one only after
-         * this point), so the range is one packet, not the whole request buffer.
+        /* The esp32s3 D-cache covers internal SRAM, which is where every DMA
+         * buffer lives, and the core writes those bytes without going through
+         * it. Without this the consumer reads cache lines that predate the
+         * transfer -- for the isochronous OUT endpoint that is audible as noise
+         * on the DAC. dw_ep->addr is the destination of this packet (it is
+         * advanced for the next one only after this point), so the range is one
+         * packet, not the whole request buffer.
          *
-         * A weak hook rather than DISCARD_DCACHE_RANGE: that macro is not defined for
-         * this arch, and its users also require NO_UNCACHED_ADDR, which esp32s3 has no
-         * equivalent of -- there is no uncached alias for DRAM0.
+         * A weak hook rather than DISCARD_DCACHE_RANGE: that macro is not
+         * defined for this arch, and its users also require NO_UNCACHED_ADDR,
+         * which esp32s3 has no equivalent of -- there is no uncached alias for
+         * DRAM0.
          */
         if (!is_ep0out && epdir == USB_DW_EPDIR_OUT)
             usb_dw_target_dma_discard(dw_ep->addr, transferred);
@@ -1048,8 +1056,10 @@ static void usb_dw_handle_setup_received(void)
     DISCARD_DCACHE_RANGE(ep0_buffer, 64);
 #endif
     struct usb_ctrlrequest req;
-    memcpy(&req, ep0_buffer, sizeof(struct usb_ctrlrequest));    /* Abort both old data/status directions before delivering the new SETUP.
+
+    /* Abort both old data/status directions before delivering the new SETUP.
      * Flush does not report completions, so notify the core explicitly once. */
+    memcpy(&req, ep0_buffer, sizeof(struct usb_ctrlrequest));
     usb_dw_flush_endpoint(0, USB_DW_EPDIR_IN);
     usb_dw_flush_endpoint(0, USB_DW_EPDIR_OUT);
     usb_core_control_cancelled();

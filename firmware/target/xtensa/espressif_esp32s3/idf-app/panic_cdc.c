@@ -204,13 +204,13 @@ void esp_panic_handler(panic_info_t *info)
      * leaves epc2 zero, so epc1 is the one to read there.
      *
      * This is the measurement that separates two very different bugs with the
-     * same report: an IllegalInstruction at an address whose bytes in the linked
-     * image are a perfectly legal opcode can only mean the core was handed
-     * something else, i.e. a fetch problem (cache line, remapped page, a page
-     * nobody mapped). Reading the words is guarded by esp_ptr_executable because
-     * a fault inside this handler would promote to a double exception and
-     * destroy the state being recorded -- which is the whole reason this recorder
-     * exists. */
+     * same report: an IllegalInstruction at an address whose bytes in the
+     * linked image are a perfectly legal opcode can only mean the core was
+     * handed something else, i.e. a fetch problem (cache line, remapped page, a
+     * page nobody mapped). Reading the words is guarded by esp_ptr_executable
+     * because a fault inside this handler would promote to a double exception
+     * and destroy the state being recorded -- which is the whole reason this
+     * recorder exists. */
     {
         unsigned long fault = regs[2] != 0 ? regs[2] : regs[1];
         unsigned long w0 = 0, w1 = 0, excc = 0;

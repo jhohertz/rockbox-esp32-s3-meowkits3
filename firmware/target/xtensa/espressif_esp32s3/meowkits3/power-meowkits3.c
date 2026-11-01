@@ -56,8 +56,8 @@ unsigned short percent_to_volt_charge[11] =
 #define RWDT_EN_BIT    (1u << 31)
 #define RWDT_FEED_BIT  (1u << 31)
 #define RWDT_KEY       0x50D83AA1u       /* RWDT_LL_WDT_WKEY_VALUE: writing this to
-                                         * WPROTECT unlocks the WDT registers; writing
-                                         * 0 locks them again. */
+                                         * WPROTECT unlocks the WDT registers;
+                                         * writing 0 locks them again. */
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
 static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
@@ -190,7 +190,8 @@ int _battery_current(void)
  * accuracy, not protection.
  */
 #define CC_UPDATE_TICKS      (5 * HZ)   /* the counters integrate over minutes; polling
-                                        * them twice a second only burns the shared bus */
+                                        * them twice a second only burns the
+                                        * shared bus */
 #define CC_TAPER_FLOOR_MA    10
 
 static int cc_percent = -1;

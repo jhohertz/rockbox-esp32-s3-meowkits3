@@ -5,15 +5,15 @@
  * GDMA ring in internal SRAM, the descriptor words and their owner bits, the
  * cache write-back and invalidate that go around them, the rx_conf and
  * GDMA_IN_LINK programming, the interrupt allocation, and the rx_update strobe
- * that latches the configuration into the sampling domain. Every one of those is
- * something IDF's i2s_channel_* API does, and every one of them was a place this
- * target silently failed -- the last of them being rx_update, whose absence made
- * a correctly configured master receiver capture nothing at all.
+ * that latches the configuration into the sampling domain. Every one of those
+ * is something IDF's i2s_channel_* API does, and every one of them was a place
+ * this target silently failed -- the last of them being rx_update, whose
+ * absence made a correctly configured master receiver capture nothing at all.
  *
  * So the hand-rolled path is gone. What is left here is the part that is
  * genuinely Rockbox's: turning a blocking i2s_channel_read() into the
- * pcm_rec_dma_* contract, which is a callback-driven "fill this buffer, then ask
- * for the next one".
+ * pcm_rec_dma_* contract, which is a callback-driven "fill this buffer, then
+ * ask for the next one".
  *
  * The receiver is the MASTER of the I2S bus while recording (the reference
  * firmware for this board does the same: I2S_MODE_MASTER | I2S_MODE_RX). It has
@@ -23,10 +23,10 @@
  * duration and given back to the transmitter afterwards -- see
  * i2s_rx_pads_take() / i2s_rx_pads_release() in i2s-esp32s3.c.
  *
- * The pins are deliberately NOT handed to IDF's channel configuration: IDF would
- * claim MCLK/BCLK/WS for I2S0 permanently at init, and the transmitter needs them
- * whenever we are not recording. Only the ADC's data line, which nothing else
- * uses, is given over.
+ * The pins are deliberately NOT handed to IDF's channel configuration: IDF
+ * would claim MCLK/BCLK/WS for I2S0 permanently at init, and the transmitter
+ * needs them whenever we are not recording. Only the ADC's data line, which
+ * nothing else uses, is given over.
  ****************************************************************************/
 #include "config.h"
 

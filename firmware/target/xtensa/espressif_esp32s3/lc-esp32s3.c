@@ -226,7 +226,8 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
     unsigned char *header;
     unsigned char *data_lo = NULL, *data_hi = NULL;   /* data-window extent */
     unsigned char *code_lo = NULL, *code_hi = NULL;   /* text, written through
-                                                       * its data-window alias */
+                                                       * its data-window alias
+                                                       * */
     unsigned int exec_lo = 0, exec_hi = 0;            /* instruction window */
     int wb_ok;
     unsigned int lines;
@@ -393,8 +394,9 @@ void *lc_open(const char *filename, unsigned char *buf, size_t buf_size)
      * This is not hygiene, it is correctness. codecbuf is a pinned absolute
      * address declared with .set, so it belongs to no section and nothing ever
      * zeroes it -- unlike .ext_ram.bss, which IDF's startup clears. Rockbox's
-     * codec allocator (lib/tlsf) keeps its pool state *in that very memory*, and
-     * init_memory_pool() short-circuits when it finds its own signature there:
+     * codec allocator (lib/tlsf) keeps its pool state *in that very memory*,
+     * and init_memory_pool() short-circuits when it finds its own signature
+     * there:
      *
      *     if (tlsf->tlsf_signature == TLSF_SIGNATURE) { mp = mem_pool;
      *         return b->size & BLOCK_SIZE; }    -- returns without re-initialising

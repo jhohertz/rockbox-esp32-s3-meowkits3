@@ -97,13 +97,14 @@ unsigned int cache_invalidate_icache_range(unsigned int addr, unsigned int size)
  * On esp32s3 the only operations that reach the caches are the ROM ones.
  * The core config has no cache instructions (probeD, flushD, lockD, wttag,
  * rinvalidate and binvalidate are all invalid opcodes), so the Tensilica HAL
- * entry points that other archs call are compiled away: xthal_dcache_all_writeback,
- * xthal_dcache_all_writeback_inv and xthal_icache_all_invalidate exist in the
- * esp32s3 toolchain as `entry a1, 16; retw.n` and nothing else, verified by
- * disassembly of a linked image. A commit_discard_idcache() built on them does
- * nothing at all, silently, and the symptom is the core fetching instructions
- * that were never written back -- an IllegalInstruction or a mid-instruction
- * PC in freshly loaded plugin or codec code.
+ * entry points that other archs call are compiled away:
+ * xthal_dcache_all_writeback, xthal_dcache_all_writeback_inv and
+ * xthal_icache_all_invalidate exist in the esp32s3 toolchain as `entry a1, 16;
+ * retw.n` and nothing else, verified by disassembly of a linked image. A
+ * commit_discard_idcache() built on them does nothing at all, silently, and the
+ * symptom is the core fetching instructions that were never written back -- an
+ * IllegalInstruction or a mid-instruction PC in freshly loaded plugin or codec
+ * code.
  *
  * Range operations are no substitute here. cache_hal_writeback_addr() and
  * cache_hal_invalidate_addr() resolve the address through

@@ -3,24 +3,26 @@
  *
  * Two things shape this driver:
  *
- * 1. DMA completion is signalled by the GDMA OUT_DONE interrupt. OUT_DONE fires when
- *    the last data of a descriptor has actually been transmitted to the peripheral,
- *    which is the point at which the buffer is safe to overwrite. OUT_EOF fires
- *    earlier, when the data has only been read from memory and is still sitting in the
- *    FIFO, so using EOF would let the CPU overwrite audio that is still being played.
+ * 1. DMA completion is signalled by the GDMA OUT_DONE interrupt. OUT_DONE
+ *    fires when the last data of a descriptor has actually been transmitted to
+ *    the peripheral, which is the point at which the buffer is safe to
+ *    overwrite. OUT_EOF fires earlier, when the data has only been read from
+ *    memory and is still sitting in the FIFO, so using EOF would let the CPU
+ *    overwrite audio that is still being played.
  *
- *    The mixer's completion callback is called from the handler, which is the same
- *    arrangement every other Rockbox audio target uses. sink_lock/sink_unlock mask the
- *    interrupt so the callback is never entered while the mixer is busy elsewhere.
+ *    The mixer's completion callback is called from the handler, which is the
+ *    same arrangement every other Rockbox audio target uses.
+ *    sink_lock/sink_unlock mask the interrupt so the callback is never entered
+ *    while the mixer is busy elsewhere.
  *
  * 2. GDMA's descriptor address register is 20 bits wide, so descriptors have to
  *    sit inside the 0x3FC00000 window. That is where .bss is placed, so the
  *    descriptor ring and the DMA buffers are plain .bss.
  *
- *    Internal SRAM is served by the L1 D-cache, and GDMA does not go through it.
- *    Everything the DMA reads has to be written back first, and anything the DMA
- *    writes has to be invalidated before the CPU reads it back. ESP-IDF does the
- *    same thing on every descriptor it hands to a DMA engine.
+ *    Internal SRAM is served by the L1 D-cache, and GDMA does not go through
+ *    it. Everything the DMA reads has to be written back first, and anything
+ *    the DMA writes has to be invalidated before the CPU reads it back.
+ *    ESP-IDF does the same thing on every descriptor it hands to a DMA engine.
  ****************************************************************************/
 #include "config.h"
 #include "cache-xtensa.h"
@@ -113,7 +115,10 @@
 #define MAX_INTEG 256
 
 static inline uint32_t rd(uint32_t reg) { return *(volatile uint32_t *)reg; }
-static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = val; }
+static inline void wr(uint32_t reg, uint32_t val)
+{
+    *(volatile uint32_t *)reg = val;
+}
 
 /* Ring of two descriptors, one per half of the ping-pong pair. */
 /* GDMA takes the descriptor address from a 20-bit register based at
@@ -268,12 +273,14 @@ static volatile unsigned long tx_frame_len = MIX_FRAME_SAMPLES * 4;
  * interrupt-watchdog panic measured at first play with a free-running ring. */
 static volatile int dscr_streak;
 
-/* Cumulative housekeeping, always counted rather than behind a probe. The failure
- * mode being chased lasts milliseconds, so a sampler cannot catch it; these are
- * read after the fact, from the debug screen or from the session line below.
+/* Cumulative housekeeping, always counted rather than behind a probe. The
+ * failure mode being chased lasts milliseconds, so a sampler cannot catch it;
+ * these are read after the fact, from the debug screen or from the session line
+ * below.
  *   sessions  transmit sessions started
  *   err       OUT_DSCR_ERR entries (the engine reached a slot the CPU owns)
- *   recover   tx_recover() calls, each of which repeats one frame and then silence
+ *   recover   tx_recover() calls, each of which repeats one frame and then
+ *             silence
  *   silence   slots armed with silence instead of audio
  */
 static volatile unsigned int stat_sessions;
@@ -320,11 +327,12 @@ static i2s_hal_context_t tx_hal;
 /* Two separate pieces of state, because the two directions of this bus are not
  * the same question:
  *
- *   tx_rate     what pcm.c last asked the sink for. Written by i2s_program_clock(),
- *               which is also where it is written for the capture path's benefit,
- *               so it is declared ahead of the receive section of this file.
- *   rx_bus_rate what the receiver is actually clocking the codecs at, valid only
- *               while rx_owns_bus.
+ *   tx_rate     what pcm.c last asked the sink for. Written by
+ *               i2s_program_clock(), which is also where it is written for the
+ *               capture path's benefit, so it is declared ahead of the receive
+ *               section of this file.
+ *   rx_bus_rate what the receiver is actually clocking the codecs at, valid
+ *               only while rx_owns_bus.
  *
  * They used to be one variable, which meant a capture session could only
  * ever run at whatever rate playback last set, and a playback rate change
@@ -637,7 +645,7 @@ static void fill(int i, const void *src, unsigned long len)
      */
     arm_len = tx_frame_len;
     if (len > arm_len)
-        arm_len = len;    /* cannot happen while tx_frame_len tracks the mixer */
+        arm_len = len;   /* cannot happen while tx_frame_len tracks the mixer */
 
     if (len < arm_len)
         memset((unsigned char *)dma_buf[i] + len, 0, arm_len - len);
@@ -669,7 +677,7 @@ static void fill(int i, const void *src, unsigned long len)
     unsigned int link = rd(GDMA_TX_LINK);
 
     if (link & (1u << 23))
-        wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));   /* restart | start */
+        wr(GDMA_TX_LINK, link | (1u << 22) | (1u << 21));  /* restart | start */
 }
 
 
@@ -706,7 +714,8 @@ static void gdma_init(void)
      * the refill race winnable: the engine takes three more descriptors
      * (17ms) between a slot's DONE and the moment it needs that slot again.
      * next = 0 with either setting is the combination that cannot work. */
-    wr(GDMA_TX_CONF0, (1u << 4) | (1u << 2));   /* outdscr_burst_en | out_auto_wrback */
+    /* outdscr_burst_en | out_auto_wrback */
+    wr(GDMA_TX_CONF0, (1u << 4) | (1u << 2));
     /* conf1: check the owner bit when mounting buffers */
     wr(GDMA_TX_CONF1, (1u << 12));               /* out_check_owner */
 
@@ -776,10 +785,14 @@ void i2s_init(void)
 
     /* Route the signals through the GPIO matrix using the same ROM helper the
      * IDF driver uses, so the pad configuration matches what IDF expects. */
-    esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK, SIG_I2S1_MCLK_OUT, false, false);
-    esp_rom_gpio_connect_out_signal(PIN_I2S_BCLK, SIG_I2S1O_BCK_OUT, false, false);
-    esp_rom_gpio_connect_out_signal(PIN_I2S_WS,   SIG_I2S1O_WS_OUT, false, false);
-    esp_rom_gpio_connect_out_signal(PIN_I2S_DOUT, SIG_I2S1O_SD_OUT, false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK, SIG_I2S1_MCLK_OUT,
+                                    false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_BCLK, SIG_I2S1O_BCK_OUT,
+                                    false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_WS,   SIG_I2S1O_WS_OUT,
+                                    false, false);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_DOUT, SIG_I2S1O_SD_OUT,
+                                    false, false);
 
     gpio_set_direction(PIN_I2S_MCLK, 1);
     gpio_set_direction(PIN_I2S_BCLK, 1);
@@ -804,7 +817,8 @@ void i2s_init(void)
 
 unsigned long i2s_rx_default_rate(void)
 {
-    return tx_rate ? tx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+    return tx_rate ? tx_rate
+                   : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
 unsigned long i2s_rx_bus_rate(void)
@@ -819,7 +833,8 @@ bool i2s_rx_owns_bus(void)
 
 unsigned long i2s_tx_sample_rate(void)
 {
-    return tx_rate ? tx_rate : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
+    return tx_rate ? tx_rate
+                   : hw_freq_sampr[builtin_pcm_sink.caps.default_freq];
 }
 
 void i2s_tx_stats(unsigned int *sessions, unsigned int *err,
@@ -862,7 +877,8 @@ bool i2s_rx_take_bus(unsigned long rate)
 
     es7210_start();
 
-    i2s_route_clock_pads(SIG_I2S0_MCLK_OUT, SIG_I2S0I_BCK_OUT, SIG_I2S0I_WS_OUT);
+    i2s_route_clock_pads(SIG_I2S0_MCLK_OUT, SIG_I2S0I_BCK_OUT,
+                         SIG_I2S0I_WS_OUT);
 
     rx_bus_rate = rate;
     rx_owns_bus = true;
@@ -871,7 +887,8 @@ bool i2s_rx_take_bus(unsigned long rate)
 
 void i2s_rx_release_bus(void)
 {
-    i2s_route_clock_pads(SIG_I2S1_MCLK_OUT, SIG_I2S1O_BCK_OUT, SIG_I2S1O_WS_OUT);
+    i2s_route_clock_pads(SIG_I2S1_MCLK_OUT, SIG_I2S1O_BCK_OUT,
+                         SIG_I2S1O_WS_OUT);
 
     rx_owns_bus = false;
     rx_bus_rate = 0;
@@ -966,7 +983,8 @@ static void idle_tx(void)
     wr(GDMA_TX_INT_CLR, GDMA_INT_DONE | GDMA_INT_DSCR_ERR | GDMA_INT_TOTAL_EOF);
     /* DONE is what keeps the idle ring fed, so this primitive enables both
      * events rather than relying on gdma_init() having left DONE set. */
-    wr(GDMA_TX_INT_ENA, rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE | GDMA_INT_DSCR_ERR);
+    wr(GDMA_TX_INT_ENA,
+       rd(GDMA_TX_INT_ENA) | GDMA_INT_DONE | GDMA_INT_DSCR_ERR);
 
     i2s_ll_tx_start(tx_hal.dev);
 
@@ -1451,7 +1469,8 @@ static void sink_init(void)
     audiohw_preinit();      /* reset and power-up, with clocks present */
 
     es8311_set_clock(hw_freq_sampr[builtin_pcm_sink.caps.default_freq],
-                     hw_freq_sampr[builtin_pcm_sink.caps.default_freq] * MCLK_MULTIPLE);
+                     hw_freq_sampr[builtin_pcm_sink.caps.default_freq]
+                     * MCLK_MULTIPLE);
 
     /* The ADC is deliberately not brought up here. This is the playback sink:
      * resetting the ES7210 and programming its dividers on every boot -- and on

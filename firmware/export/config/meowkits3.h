@@ -271,8 +271,8 @@
  * as a negative code while the caller only tests for zero, that surfaced three
  * frames later as a NULL write.
  *
- * 2 MB was still too generous, and that was measured rather than judged. Walking
- * the allocator at the moment playback sizes its file buffer:
+ * 2 MB was still too generous, and that was measured rather than judged.
+ * Walking the allocator at the moment playback sizes its file buffer:
  *
  *   ARENA at playback start: used=4095 KiB in 22 allocs, free=0 KiB in 0 runs
  *     +2228228 B  dircache          <- 53% of the arena
@@ -301,18 +301,19 @@
  * wins and the cache still claims 1 MB. Both are #ifndef-guarded, so a target
  * can set them.
  *
- * 256 KB is chosen from what the arena has to carry afterwards. Doom's zone comes
- * from core_alloc_maximum(), i.e. everything left at that moment, and measured on
- * hardware its peak demand at a screen wipe is four full panels (307,200 bytes at
- * 320x240) plus ~1.2 MB of pre-cached sound effects and ~300 KB of level data:
+ * 256 KB is chosen from what the arena has to carry afterwards. Doom's zone
+ * comes from core_alloc_maximum(), i.e. everything left at that moment, and
+ * measured on hardware its peak demand at a screen wipe is four full panels
+ * (307,200 bytes at 320x240) plus ~1.2 MB of pre-cached sound effects and
+ * ~300 KB of level data:
  *
  *   dircache 1 MB   -> doom zone 1,757,376 bytes -> Z_Malloc fails
  *   dircache off    -> doom zone 2,805,984 bytes -> plays
  *
  * 256 KB sits between those, and the playback file buffer only gets more
  * room than the 1 MB case above already needed. */
-#define DIRCACHE_MIN     (1024*1024/4) /* 256 KB: must not exceed DIRCACHE_LIMIT */
-#define DIRCACHE_LIMIT   (1024*1024/4) /* 256 KB: leaves ~3.75 MB of the arena free */
+#define DIRCACHE_MIN     (1024*1024/4) /* 256 KB: must not exceed LIMIT */
+#define DIRCACHE_LIMIT   (1024*1024/4) /* 256 KB: ~3.75 MB of arena left free */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
  * allocated with core_alloc_maximum(), which grants whatever is left in the
@@ -445,7 +446,8 @@
  * cannot know the cell's state), it is the fallback whenever a coulomb read
  * fails, and the shutoff and disksafe thresholds are compared against
  * voltage either way. See power-meowkits3.c. */
-#define CONFIG_BATTERY_MEASURE (VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)
+#define CONFIG_BATTERY_MEASURE \
+    (VOLTAGE_MEASURE | CURRENT_MEASURE | PERCENTAGE_MEASURE)
 #define HAVE_AXP173
 
 /* The AXP173 owns the rails and the charge path independently of the SoC, so
@@ -508,7 +510,8 @@
  * 320x240. The reference firmware uses display x = 320 - raw_y, display y =
  * raw_x.
  */
-#define DEFAULT_TOUCHSCREEN_CALIBRATION { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
+#define DEFAULT_TOUCHSCREEN_CALIBRATION \
+    { .A=0, .B=-1, .C=LCD_WIDTH, .D=1, .E=0, .F=0, .divider=1 }
 
 /* HAVE_KBD_POINT_MODE is deliberately not set, and the reason is worth keeping
  * here because it looks like a flag we should want.
@@ -631,20 +634,21 @@
 /* The isochronous packet size this target arms per frame, which is also the OUT
  * endpoint's declared wMaxPacketSize.
  *
- * The ceiling here is the device's shared data FIFO, not the wire. The core reports
- * 200 words of FIFO RAM in GHWCFG3[31:16] (hwcfg3=0x00c804b5, measured at boot), and
- * after NPTX 16 and four 16-word dedicated IN FIFOs the RX side is 120 words =
- * 480 bytes. Synopsys' allocation rule, quoted in TinyUSB's dcd_dwc2.c, is that the
- * shared RX FIFO holds *two* packets of the largest endpoint size plus 14 words of
- * setup/control and 2 words per OUT endpoint:
+ * The ceiling here is the device's shared data FIFO, not the wire. The core
+ * reports 200 words of FIFO RAM in GHWCFG3[31:16] (hwcfg3=0x00c804b5, measured
+ * at boot), and after NPTX 16 and four 16-word dedicated IN FIFOs the RX side
+ * is 120 words = 480 bytes. Synopsys' allocation rule, quoted in TinyUSB's
+ * dcd_dwc2.c, is that the shared RX FIFO holds *two* packets of the largest
+ * endpoint size plus 14 words of setup/control and 2 words per OUT endpoint:
  *
  *     GRXFSIZ = 13 + 1 + 2 * (largest_ep/4 + 1) + 2 * ep_out_count
  *
- * Two consecutive full-speed frames plus one 64-byte control packet is the test:
+ * Two consecutive full-speed frames plus one 64-byte control packet is the
+ * test:
  *
  *   192 B (48 kHz)   96 words + 16 = 112  fits in 120
  *   256 B (64 kHz)  128 words + 16 = 144  no
- *   384 B (96 kHz)  192 words + 16 = 208  no -- more than the entire 200-word SPRAM
+ *   384 B (96 kHz)  192 words + 16 = 208  no -- over the whole 200-word SPRAM
  *
  * So 48 kHz is the ceiling for USB device mode on this silicon, at any endpoint
  * count, and adding OUT endpoints makes it worse at 2 words each. Full-speed
@@ -730,7 +734,7 @@
  * section 3), NOT the PSRAM window. ALLOC FAILED! on the USB Audio debug page
  * is the live check that the request was satisfied.
  */
-#define NR_BUFFERS               48  /* 48 slots: ~48 ms at 48 kHz, one packet per slot */
+#define NR_BUFFERS        48   /* ~48 ms at 48 kHz, one packet per slot */
 
 /* This gate is also the feedback controller's setpoint. usb_audio.c forms
  * the command as
@@ -791,7 +795,7 @@
  * -- here 0.875, i.e. ~875 frames/s, which agrees with the ~950/s derived
  * independently from the host's hw_ptr against the measured DAC consumption.
  */
-#define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
+#define MINIMUM_BUFFERS_QUEUED 22   /* restart gate, mute length, setpoint */
 
 /* Re-arm the isochronous OUT endpoint before copying the completed packet,
  * using two alternating receive buffers (usb_audio.c's USB_AUDIO_RX_PINGPONG).
@@ -853,7 +857,7 @@
 #define USB_DW_TOUTCAL            (7u << 26)
 
 #define USB_VENDOR_ID  0x1234       /* Rockbox */
-#define USB_PRODUCT_ID 0x4002       /* distinct from the USB-Serial-JTAG device */
+#define USB_PRODUCT_ID 0x4002  /* not the USB-Serial-JTAG id */
 /* DMA buffers must start on a cache line: committing or invalidating a range
  * would otherwise drag lines belonging to other objects along. */
 #define USB_DEVBSS_ATTR __attribute__((aligned(32)))

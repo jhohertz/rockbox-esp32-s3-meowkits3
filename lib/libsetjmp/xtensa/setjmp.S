@@ -24,10 +24,10 @@
  * setjmp/longjmp for Xtensa under the windowed ABI.
  *
  * This follows the algorithm in the toolchain's own picolibc object
- * (libc_machine_xtensa_setjmp.S.o in picolibc/.../lib/esp32s3/libc.a), which was
- * read off the disassembly because the source is not in the IDF tree. It is not
- * a stylistic preference. The previous version here rotated WINDOWBASE, restored
- * PS and finished with `jx a0`, and that approach cannot be repaired:
+ * (libc_machine_xtensa_setjmp.S.o in picolibc/.../lib/esp32s3/libc.a), which
+ * was read off the disassembly because the source is not in the IDF tree. It is
+ * not a stylistic preference. The previous version here rotated WINDOWBASE,
+ * restored PS and finished with `jx a0`, and that approach cannot be repaired:
  *
  *   after `wsr WINDOWBASE` the names a0..a15 denote different physical
  *   registers, so there is no way to name the target window's registers from

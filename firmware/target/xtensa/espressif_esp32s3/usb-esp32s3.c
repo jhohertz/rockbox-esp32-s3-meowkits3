@@ -2,29 +2,32 @@
  * ESP32-S3 USB target glue.
  *
  * The SoC has a Synopsys DWC2 OTG core at 0x60080000 (see the hardware map in
- * firmware/include/xtensa.h): full speed only, internal FS PHY, six endpoints of
- * which five can be IN, and 256 words of device FIFO RAM. Rockbox's
- * firmware/drivers/usb-designware.c implements the usb_drv.h contract for that
- * register layout, and this file supplies the five hooks it declares plus the
- * device configuration.
+ * firmware/include/xtensa.h): full speed only, internal FS PHY, six endpoints
+ * of which five can be IN, and 200 words of device FIFO RAM -- measured from
+ * GHWCFG3, because IDF's OTG_DFIFO_DEPTH of 256 is wrong for this part.
+ * Rockbox's firmware/drivers/usb-designware.c implements the usb_drv.h
+ * contract for that register layout, and this file supplies the five hooks it
+ * declares plus the device configuration.
  *
- * STATUS: operational. Rockbox's firmware/drivers/usb-designware.c drives the DWC
- * core through the hooks in this file, and the CDC console, mass storage and the DAC
- * class all enumerate on this board. The hardware check that used to abort bring-up
- * (usb_dw_check_hw() comparing GUSBCFG back after writing the PHY field, failing as
- * "PHY type not supported") no longer fires -- the PHYSEL override that made it pass
- * was later deleted as dead code, not worked around. IDF's USB-Serial-JTAG keeps the
- * pads until USB mode takes them over, which is why the console and esptool go quiet
- * while a transport is attached; nothing in Rockbox's USB path goes through IDF.
- * See __wrap_usb_enable() below for why the ROM's usb_enable() cannot be borrowed
- * instead of this bring-up.
+ * STATUS: operational. Rockbox's firmware/drivers/usb-designware.c drives the
+ * DWC core through the hooks in this file, and the CDC console, mass storage
+ * and the DAC class all enumerate on this board. The hardware check that used
+ * to abort bring-up (usb_dw_check_hw() comparing GUSBCFG back after writing
+ * the PHY field, failing as "PHY type not supported") no longer fires -- the
+ * PHYSEL override that made it pass was later deleted as dead code, not worked
+ * around. IDF's USB-Serial-JTAG keeps the pads until USB mode takes them over,
+ * which is why the console and esptool go quiet while a transport is attached;
+ * nothing in Rockbox's USB path goes through IDF. See __wrap_usb_enable()
+ * below for why the ROM's usb_enable() cannot be borrowed instead of this
+ * bring-up.
  *
- * The pins are the other half of the story. The DWC does not own them: a USB wrap
- * muxes the internal FSLS PHY between the DWC and the USB-Serial-JTAG block, and
- * the mux only answers to software when the RTC's usb_conf says so. Both have to be
- * set -- usb_dw_target_enable_clocks() does it. Because the console and esptool both
- * live on USB-Serial-JTAG, that handover silences the trace and the flash port, so
- * the pads move only while USB mode is active and return to USJ on reset.
+ * The pins are the other half of the story. The DWC does not own them: a USB
+ * wrap muxes the internal FSLS PHY between the DWC and the USB-Serial-JTAG
+ * block, and the mux only answers to software when the RTC's usb_conf says so.
+ * Both have to be set -- usb_dw_target_enable_clocks() does it. Because the
+ * console and esptool both live on USB-Serial-JTAG, that handover silences the
+ * trace and the flash port, so the pads move only while USB mode is active and
+ * return to USJ on reset.
  ****************************************************************************/
 #include "config.h"
 #include "debug.h"           /* dbg_breadcrumb() */
@@ -32,7 +35,7 @@
 #ifdef USB_ENABLE_SERIAL
 #include <stdio.h>          /* snprintf */
 #include "usbstack/usb_serial.h"
-#include "usb.h"               /* usb_drv_stall(), to recover the control endpoint */
+#include "usb.h"      /* usb_drv_stall(), to recover the control endpoint */
 #endif
 #ifdef USB_ENABLE_AUDIO
 #include "usbstack/usb_audio.h"   /* state getters, for the trace line */
@@ -127,7 +130,8 @@
 _Static_assert(PTX_FIFOSZ >= 64 / 4,
                "a dedicated IN FIFO cannot hold one full-speed packet");
 _Static_assert(RX_FIFOSZ >= (USB_AUDIO_BUFFER_SIZE / 4) + 2 * (64 / 4),
-               "RX FIFO cannot hold an isochronous packet plus the two control packets");
+               "RX FIFO cannot hold an isochronous packet plus the two"
+               " control packets");
 _Static_assert(NPTX_FIFOSZ + PTX_FIFOSZ * XT_PTX_FIFOS + RX_FIFOSZ
                <= XT_FIFO_RAMSZ,
                "device FIFO split exceeds the core's measured FIFO RAM");
@@ -136,7 +140,8 @@ const struct usb_dw_config usb_dw_config = {
     /* The internal full-speed PHY. Two bits, and we were only setting one:
      *
      *   fsintf (bit 5) -- the full-speed *interface*
-     *   physel (bit 6) -- selects the embedded FS/LS PHY over the embedded HS PHY
+     *   physel (bit 6) -- selects the embedded FS/LS PHY over the embedded
+     *   HS PHY
      *
      * PHYSEL (bit 6) is not something this core can be talked out of: GHWCFG2
      * reports no high-speed PHY, so there is nothing for the bit to choose
@@ -156,13 +161,13 @@ const struct usb_dw_config usb_dw_config = {
     .rx_fifosz     = RX_FIFOSZ,
     .nptx_fifosz   = NPTX_FIFOSZ,
     .ptx_fifosz    = PTX_FIFOSZ,
-    /* AHB burst length. Every other DWC2 target in the tree programs a burst --
-     * s5l8700 INCR4, as3525 and s5l8702 INCR8, stm32h7 INCR8, x1000 INCR16 -- and
-     * TinyUSB's dwc2 common init, which is what actually drives this core in production
-     * ESP32 code, sets GAHBCFG_DMAEN | GAHBCFG_HBSTLEN_2 (dwc2_common.c:238), where
-     * HBSTLEN_2 is field value 3, the same encoding as HBSTLEN_INCR4 here. So INCR4 is
-     * both the Rockbox convention and the value the vendor's own USB stack uses on this
-     * silicon.
+    /* AHB burst length. Every other DWC2 target in the tree programs a burst
+     * -- s5l8700 INCR4, as3525 and s5l8702 INCR8, stm32h7 INCR8, x1000 INCR16
+     * -- and TinyUSB's dwc2 common init, which is what actually drives this
+     * core in production ESP32 code, sets GAHBCFG_DMAEN | GAHBCFG_HBSTLEN_2
+     * (dwc2_common.c:238), where HBSTLEN_2 is field value 3, the same encoding
+     * as HBSTLEN_INCR4 here. So INCR4 is both the Rockbox convention and the
+     * value the vendor's own USB stack uses on this silicon.
      *
      * ESP-IDF's bare HAL leaves it at Single (usb_dwc_hal.c:92) and only raises
      * it to INCR for esp32-s2 below revision 1.00, to dodge an AHB arbiter
@@ -378,8 +383,9 @@ void usb_dw_target_enable_clocks(void)
 void usb_dw_target_disable_clocks(void)
 {
     /*
-     * Order matters here, and the previous order is what the crash markers exposed.
-     * Every access has to happen while the block it targets is still clocked:
+     * Order matters here, and the previous order is what the crash markers
+     * exposed. Every access has to happen while the block it targets is still
+     * clocked:
      *
      *   1. core registers, while the OTG clock is on;
      *   2. the pad mux and PHY loads, while the USB wrap clock is on;
@@ -426,7 +432,8 @@ void usb_dw_target_disable_clocks(void)
      * idle task may sleep again. Paired with the acquire in enable_clocks(). */
     xt_light_sleep_block(false);
 
-    dbg_breadcrumb_retained("usbEnd", rd(XT_RTC_USB_CONF), rd(XT_PERIP_CLK_EN0));
+    dbg_breadcrumb_retained("usbEnd", rd(XT_RTC_USB_CONF),
+                            rd(XT_PERIP_CLK_EN0));
 }
 
 void usb_dw_target_enable_irq(void)
@@ -462,12 +469,13 @@ void usb_dw_target_enable_irq(void)
          * failure measured on the board. */
         /* Level 2, not the allocator's default level 1. The audio GDMA
          * interrupt is allocated at ESP_INTR_FLAG_LEVEL1 (gdma_init() in
-         * i2s-esp32s3.c) and runs the mixer pass at that level, so with USB also
-         * at level 1 the two are serialised by IDF's dispatcher and a packet
-         * completion cannot preempt a pass. Measured on the board with the log
-         * path enabled: ~530 accepted 196-byte packets per second against ~1000
-         * on the wire, ~100 kB/s arriving against a proven 192 kB/s consumed. A
-         * full-speed isochronous packet carries exactly one frame and has no
+         * i2s-esp32s3.c) and runs the mixer pass at that level, so with USB
+         * also at level 1 the two are serialised by IDF's dispatcher and a
+         * packet completion cannot preempt a pass. Measured on the board with
+         * the log path enabled: ~530 accepted 196-byte packets per second
+         * against ~1000 on the wire, ~100 kB/s arriving against a proven
+         * 192 kB/s consumed. A full-speed isochronous packet carries exactly
+         * one frame and has no
          * retry, so every millisecond the handler waits is a frame of audio
          * silently gone -- the core discards it and reports nothing. Level 2
          * gives the transport priority over the mixer.
@@ -592,7 +600,7 @@ static unsigned long xt_vbus_err;
 static int vbus_sample(void)
 {
     int last = xt_vbus_present < 0 ? USB_EXTRACTED
-                                   : (xt_vbus_present ? USB_INSERTED : USB_EXTRACTED);
+           : (xt_vbus_present ? USB_INSERTED : USB_EXTRACTED);
     int r = axp173_read_reg(AXP_REG_POWERSTATUS);
 
     if (r < 0)
@@ -818,8 +826,9 @@ void usb_dw_target_dma_discard(void *buf, unsigned int len)
  * the noise keep playing after the host stopped. Measured, not reasoned: the
  * character changed at exactly that commit and reverted at this one. */
 int usb_audio_target_get_more(int play_idx, int filled, int nr_buffers,
-                              const int *slot_sizes, const int16_t *buf, size_t slot_stride,
-                              const void **start, size_t *size)
+                              const int *slot_sizes, const int16_t *buf,
+                              size_t slot_stride, const void **start,
+                              size_t *size)
 {
     /* The common case: this slot has data, let the generic hand-off deal
      * with it. */
@@ -916,8 +925,9 @@ static void usb_vbus_poll(void)
      *   usbDsts a = DSTS (bit 0 suspend, bits 1:2 enum speed), b = DAINT
      * DSTS enum speed is the answer to "did the host finish enumerating us at
      * full speed", and DAINT says which endpoints the core thinks are active.
-     * A count stuck at 0 with DSTS unchanging means the interrupt never arrives;
-     * a growing count means the core sees the bus and the driver is the problem.
+     * A count stuck at 0 with DSTS unchanging means the interrupt never
+     * arrives; a growing count means the core sees the bus and the driver is
+     * the problem.
      */
     /* 10 s, in ticks: HZ is 100 (kernel/include/tick.h), so this block runs
      * ten times a second at most. It used to read "4 * USB_VBUS_POLL_TICKS /
@@ -979,9 +989,11 @@ static void usb_vbus_poll(void)
         if (xt_idle >= idle_int)
         {
             xt_idle = 0;
-            printf("usb idle: cable=%d miss=%d i2c_err=%lu rtc_usb=%08lx clk0=%08lx tick=%lu\n",
+            printf("usb idle: cable=%d miss=%d i2c_err=%lu rtc_usb=%08lx "
+                   "clk0=%08lx tick=%lu\n",
                    xt_vbus_present, xt_vbus_miss, xt_vbus_err,
-                   (unsigned long)rd(XT_RTC_USB_CONF), (unsigned long)rd(XT_PERIP_CLK_EN0),
+                   (unsigned long)rd(XT_RTC_USB_CONF),
+                   (unsigned long)rd(XT_PERIP_CLK_EN0),
                    current_tick);
         }
     }
@@ -1134,13 +1146,13 @@ void __wrap_usb_enable(bool on)
     {
         xt_usb_irqs = 0;
         xt_armed = true;
-        usb_core_init();   /* usb_drv_init(): clocks, pads, device mode, connect */
+        usb_core_init();   /* usb_drv_init(): clocks, pads, mode, connect */
 
     }
     else
     {
         xt_armed = false;
-        usb_core_exit();   /* usb_drv_exit(): soft-disconnect, and the pads back */
+        usb_core_exit();   /* usb_drv_exit(): soft-disconnect, pads back */
     }
 
     if (on)

@@ -82,8 +82,8 @@ int paniclog_frame_cache(char *buf, int bufsize);
 int paniclog_frame_regs_part(char *buf, int bufsize, int part);
 
 /* The bytes resident at the faulting address, plus EXCCAUSE, captured at panic
- * time. An IllegalInstruction whose address holds a legal opcode in the image is
- * a failed fetch, and these two words are the difference between that and a
+ * time. An IllegalInstruction whose address holds a legal opcode in the image
+ * is a failed fetch, and these two words are the difference between that and a
  * genuinely illegal instruction. Returns 0 when nothing was recorded. */
 void paniclog_frame_fault(uint32_t addr, uint32_t w0, uint32_t w1,
                           uint32_t cause);
