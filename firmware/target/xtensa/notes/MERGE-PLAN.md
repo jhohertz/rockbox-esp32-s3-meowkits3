@@ -1212,3 +1212,33 @@ move:
 Cost, and it is the honest blocker: the battery gauge, the charge path and the
 shutdown all have to be re-verified on hardware after the move. That is a
 charge-cycle and a cable-out shutdown, both of which need the board in hand.
+
+### Two things the comparison turned up in the shared driver
+
+Found by holding our register facts against `axp-pmu.c`, not by running it:
+
+1. **`axp_cc_is_enabled()` tests bit 6.** REG B8H bit 7 is the enable, bit 6 is
+   the self-clearing pause pulse, and bit 5 the self-clearing clear pulse --
+   established for this chip from the datasheet's REG B8H field list and from
+   the counter actually running once bit 7 is held. Bit 6 is what the vendor
+   enum calls `PAUSE`. So on any AXP the shared driver reports "not running"
+   whenever the counters are running, and `axp_cc_clear()`'s `setbit1(..., 5, 1)`
+   is fine only because that helper does a read-modify-write and therefore
+   cannot drop bit 7 -- the bug our own driver had was writing the bare value.
+   A one-bit fix, testable by anyone with the debug menu's coulomb row.
+2. **`ADC_TS_INPUT` enables bit 1 of REG 82H.** On the AXP192 that bit is the
+   thermistor; on the AXP173 bit 1 is the *APS voltage* channel and the
+   thermistor is bit 0. A 173 branch has to move that one enable bit, or it
+   samples TS's register while enabling a different channel, which yields a
+   plausible number that is not the thermistor.
+3. Smaller: `axp_adc_read_raw()` reads whatever register the table holds. A
+   channel a chip lacks leaves `reg = 0`, and register 0 is POWERSTATUS -- so a
+   missing channel answers with the power-status byte instead of failing. Worth
+   a guard independent of this fold.
+
+The fold itself is now scoped and it is bigger than the tables: three target
+files (~60 call sites) have to be re-pointed, and the measured knowledge in
+`axp173.h` -- the 180,000 LSB/mAh derivation, REG 84H's TS drive fields, the
+charge-target trap, the PEK latch semantics -- has to move into the files that
+use it rather than be dropped with the header. Verification afterwards is a
+charge cycle and a cable-out shutdown, so it needs the board in hand.
