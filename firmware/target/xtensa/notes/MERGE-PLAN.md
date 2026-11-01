@@ -1159,3 +1159,56 @@ Remaining groups, not cut: **C** shared hardware support (`axp173.c/.h`,
 versus this SoC's memory map), and **D** plugin/UI surface (mechanical keymap branches,
 plugin behaviour fixes, simulator). Their contents and separability are catalogued
 above; cutting them is a submission decision, not an alignment one.
+
+## 13. Does AXP173 belong in `drivers/axp-pmu.c`? (assessment, 2026-10-31)
+
+It does, and more than expected. `firmware/export/axp-pmu.h` already says its
+register listing is "common to AXP173 and AXP192", and the shared driver already
+exports everything this port uses: `axp_adc_read()`, `axp_supply_set_voltage()`,
+`axp_battery_status()`, `axp_input_status()`, `axp_cc_read/clear/enable()`,
+`axp_set_charge_current()`, `axp_power_off()`.
+
+The ADC mapping is **identical** to the existing AXP192 table -- checked
+entry by entry against our driver:
+
+| channel | our `adc_read_pair()` | axp-pmu table |
+|---|---|---|
+| battery voltage | `0x78, 11, 10` | `{0x78, ADCENABLE1, 1<<7, 11, 10}` |
+| charge current | `0x7a, 1, 2` | `{0x7a, ADCENABLE1, 1<<6, 1, 2}` |
+| discharge current | `0x7c, 1, 2` | `{0x7c, ADCENABLE1, 1<<6, 1, 2}` |
+| VBUS voltage | `0x5a, 17, 10` | `{0x5a, ADCENABLE1, 1<<3, 17, 10}` |
+| VBUS current | `0x5c, 3, 8` | `{0x5c, ADCENABLE1, 1<<2, 3, 8}` |
+| TS input | `0x62, 4, 5` | `{0x62, ADCENABLE1, 1<<1, 4, 5}` |
+
+So the fold is configuration, not a rewrite:
+
+- a `HAVE_AXP_PMU == 173` **supply** table -- DCDC1 `0x26`/bit 0 of `0x12`,
+  LDO4 `0x27`/bit 1, LDO2+LDO3 shared `0x28`/bits 2 and 3, DCDC2 `0x23`/bit 4,
+  EXTEN bit 6 of `0x12`. This is where 173 differs from 192: on 192 bit 1 of
+  `0x12` is DCDC3 and DCDC2's enable lives in `0x10`.
+- a 173 branch in `axp_set_charge_current()`: the chip's current is a
+  16-entry ladder in REG 33H bits 3:0 (100, 190, 280, 360, 450, 550, ...),
+  not a linear step, and bits 6:5 of the same register are the charge target.
+- config: `HAVE_AXP173` becomes `HAVE_AXP_PMU 173`; `axp173.c` and `axp173.h`
+  go away (549 + 254 lines); callers re-point to `axp_*`.
+
+Three things stay in the target, and they are the reason this is not a pure
+move:
+
+1. **PEK handling** (IRQEN3/IRQST3 at `0x42`/`0x46`, auto-off at REG 36H bit 3,
+   the cancel-and-rearm logic). The shared driver has no register-access
+   export, so the target would do its own `i2c_readmem()` on those three
+   registers. That is acceptable; adding a generic reg accessor to a shared
+   driver is not.
+2. **`axp_adc_set_rate()` writes only the rate field.** Our init deliberately
+   writes REG 84H as `(25Hz << 6) | (3u << 4) | 2u` because bits 5:4 are the TS
+   pin's output current and bit 2 is the TS function select; a bare rate write
+   switches the thermistor drive off. Folding has to keep that field, which
+   means the shared `axp_adc_set_rate()` needs a read-modify-write -- a real
+   change to shared code, and one that also fixes a latent bug for 192 targets.
+3. **The coulomb LSB scale** (0.5 mA per ADC sample, so 180,000 LSB/mAh at
+   25 Hz) is ours by measurement and lives in the caller, not the driver.
+
+Cost, and it is the honest blocker: the battery gauge, the charge path and the
+shutdown all have to be re-verified on hardware after the move. That is a
+charge-cycle and a cable-out shutdown, both of which need the board in hand.
