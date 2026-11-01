@@ -31,7 +31,7 @@
  * clears the bit rather than assuming the default. - Bit 7 of the seconds
  * register is the voltage-low flag. When it is set the chip says its
  * timekeeping is not guaranteed, which is the only signal we get that the
- * RTC lost power. / */
+ * RTC lost power. */
 
 #include "config.h"
 #include "i2c.h"

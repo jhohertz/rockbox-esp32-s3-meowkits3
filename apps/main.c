@@ -178,7 +178,7 @@ int main(void) INIT_ATTR MAIN_NORETURN_ATTR;
  * (kernel/tick.c) walks tick_funcs[] with no reentrancy guard, and this
  * stack is a single fixed buffer, so a second instance would alias the first
  * thread's frames and run every task twice per tick -- timeout_tick with it,
- * which halves every timeout in Rockbox. / */
+ * which halves every timeout in Rockbox. */
 static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
 
 static void tick_task_thread(void)
@@ -195,7 +195,7 @@ static void tick_task_thread(void)
          * twice a second and an ordinary 40-80 ms press usually fell
          * entirely between two samples. That is the whole of the "have to
          * press several times" complaint, and it is why removing the console
-         * spam from the button path did not fix it. / */
+         * spam from the button path did not fix it. */
         sleep(0);
         run_tick_tasks();
     }
@@ -556,7 +556,7 @@ static void init(void)
      * current_tick advance, so sleep(0) in the loop has something to wait
      * for. Every tick task is registered below this point -- button_init(),
      * usb_init(), powermgmt_init() and the first timeout_add() -- so nothing
-     * is missed. / */
+     * is missed. */
     create_thread(tick_task_thread, tick_thread_stack,
                   sizeof tick_thread_stack, 0,
                   "tick" IF_PRIO(, PRIORITY_BACKGROUND));

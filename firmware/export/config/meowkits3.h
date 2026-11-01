@@ -790,7 +790,7 @@
  * per frame, so on any build a single debug-page glance gives the loss rate
  * -- here 0.875, i.e. ~875 frames/s, which agrees with the ~950/s derived
  * independently from the host's hw_ptr against the measured DAC consumption.
- * / */
+ */
 #define MINIMUM_BUFFERS_QUEUED   22  /* restart gate, mute length, and the controller setpoint */
 
 /* Re-arm the isochronous OUT endpoint before copying the completed packet,

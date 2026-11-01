@@ -425,7 +425,7 @@ static bool clean_shutdown(enum shutdown_type sd_type,
          * for a hold here; the default is no delay, as every target has
          * always had. This is a hold on the message Rockbox already shows,
          * not an extra screen, and the flush work below runs while it is up.
-         * / */
+     */
 #ifdef CLEAN_SHUTDOWN_MESSAGE_HOLD
         sleep(CLEAN_SHUTDOWN_MESSAGE_HOLD);
 #endif

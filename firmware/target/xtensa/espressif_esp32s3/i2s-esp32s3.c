@@ -228,7 +228,7 @@ static volatile struct gdma_desc desc[XT_TX_RING] __attribute__((aligned(32)));
  * accesses external RAM is very limited, especially when the core is trying
  * to access the external RAM at the same time", and this target reads PSRAM
  * constantly (codec images, dircache, tagcache). 4096 bytes leaves internal
- * DRAM, which is the point -- that region had 1,020 bytes free. / */
+ * DRAM, which is the point -- that region had 1,020 bytes free. */
 static unsigned char dma_buf[XT_TX_RING][XT_TX_SLOT]
     PSRAM_BSS_ATTR __attribute__((aligned(4)));
 

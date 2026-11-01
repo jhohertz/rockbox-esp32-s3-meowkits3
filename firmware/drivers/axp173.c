@@ -123,7 +123,7 @@ void axp173_init(void)
      * read 83 % -- the chip was never asked to fill the cell. The reference
      * firmware sidesteps it by setting bit 7 and bits 3:0 through two
      * separate read-modify-writes; naming the target explicitly is shorter
-     * and shows intent. / */
+     * and shows intent. */
     axp173_write_reg(AXP_REG_CHARGECTRL,
                      AXP_CHG_ENABLE | AXP_CHG_TARGET_4V20 | AXP_CHG_CURRENT_450MA);
 

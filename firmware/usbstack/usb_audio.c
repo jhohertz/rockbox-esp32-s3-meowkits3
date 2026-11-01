@@ -337,7 +337,7 @@ static int as_playback_freq_idx = HW_FREQ_DEFAULT;
  * the sample rates a target can offer: frames larger than the declared
  * packet size are dropped.
  *
- * Declared above the endpoint allocation table because that table uses it. / */
+ * Declared above the endpoint allocation table because that table uses it. */
 #ifdef USB_AUDIO_BUFFER_SIZE
 #define BUFFER_SIZE     USB_AUDIO_BUFFER_SIZE
 #else
@@ -1140,7 +1140,7 @@ static bool usb_audio_endpoint_request(struct usb_ctrlrequest* req, uint8_t* req
      * for endpoint-targeted requests, and UAC1 addresses the streaming
      * endpoint's sampling-frequency control with the interface recipient and
      * the same split. Try the high byte first, then the low byte, so either
-     * convention reaches us; the count above says which one the host used. / */
+     * convention reaches us; the count above says which one the host used. */
     int ep = (req->wIndex >> 8) & 0xff;
 
     if (ep != EP_ISO_OUT)
@@ -1409,7 +1409,7 @@ static bool usb_audio_interface_request(struct usb_ctrlrequest* req, uint8_t* re
          * takes. Falling through here stalled the request, which
          * snd-usb-audio reports as "cannot get freq at ep 0x2" and then
          * never starts the isochronous stream: the endpoint stays armed and
-         * XFERCNT never moves. / */
+         * XFERCNT never moves. */
         return usb_audio_endpoint_request(req, reqdata, reqdata_size);
     }
     else

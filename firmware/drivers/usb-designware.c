@@ -245,7 +245,7 @@ static void usb_dw_set_address(uint8_t address)
  * moment a spin loop would matter. An unbounded spin then means a silent
  * board and a power cycle with no diagnosis left behind. Bounding them turns
  * that into a panic, which the LCD shows and which the breadcrumb trail
- * records for the next boot. / */
+ * records for the next boot. */
 #if defined(CPU_XTENSA)
 #define XT_USB_SPIN_LIMIT 2000000u
 
@@ -451,7 +451,7 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
      * a failed flush on a device that is being torn down or has lost its
      * host is not worth killing the player for, and panicf() here would only
      * be visible on a console nobody is reading. The note goes to RTC slow
-     * memory so the next boot can say whether this is what was hanging. / */
+     * memory so the next boot can say whether this is what was hanging. */
     {
         uint32_t n = XT_USB_SPIN_LIMIT;
 
@@ -840,7 +840,7 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
      * get freq at ep 0x2" for the rest of the session and the CDC console
      * goes quiet. Clearing it on the way to arming is what a gadget function
      * does when a new request arrives. Other endpoints keep their stall --
-     * there it is a real signal to the host. / */
+     * there it is a real signal to the host. */
     if (epnum == 0 && epdir == USB_DW_EPDIR_IN && (DWC_EPCTL(0, USB_DW_EPDIR_IN) & STALL))
         DWC_EPCTL(0, USB_DW_EPDIR_IN) &= ~STALL;
 
@@ -862,7 +862,7 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
          * the core carries none across transfers. TinyUSB can omit the
          * per-arm write because it programs the PID once at edpt_open
          * (dcd_dwc2.c:325-327) and leaves it alone afterwards; here every
-         * arm is a new transfer. / */
+         * arm is a new transfer. */
         if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
         else
@@ -1522,7 +1522,7 @@ static void usb_dw_exit(void)
      * always active, the soft disconnect never completes, and the core then
      * stops answering register reads.
      *
-     * Guarded so no other target's teardown changes. / */
+     * Guarded so no other target's teardown changes. */
     for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
         for (int dir = 0; dir < USB_DW_NUM_DIRS; dir++)
             if (usb_endpoints & (1 << (ep + USB_DW_DIR_OFF(dir))))
@@ -1553,7 +1553,7 @@ static void usb_dw_exit(void)
      *
      * Leaving it clocked costs a little power while USB mode is down. The
      * pad release that follows reads core registers, so the core has to stay
-     * reachable. / */
+     * reachable. */
 #else
     DWC_PCGCCTL = 1; /* Stop Phy clock */
 #endif

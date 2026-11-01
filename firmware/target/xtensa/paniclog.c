@@ -22,7 +22,7 @@
  *
  * The record is one deep and prints once. Panics are rare enough that a ring
  * would be speculative, and printing the same panic on every subsequent boot
- * would be worse than not printing it at all. / */
+ * would be worse than not printing it at all. */
 
 #include <stdint.h>
 #include <string.h>
@@ -960,7 +960,7 @@ void paniclog_dump(void)
  * - .noinit internal SRAM does survive panic_restart() (RTC_SW_CPU_RST), so
  * a write-while-healthy trail is a usable crash record on this target; - the
  * fault is at or after codec image placement, not inside the loader -- both
- * segments were placed and the load returned. / */
+ * segments were placed and the load returned. */
 
 /* What the trail found, first try after widening it to cover backlight, volume
  * and transport stop: a crash reproduced by rapid file cycling and by

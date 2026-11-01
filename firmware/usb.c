@@ -122,7 +122,7 @@ static bool usb_hid = true;
  * USB_SERIAL_DEFAULT_ON. The reason a target may need to: the only switch
  * Rockbox offers for this class is the "USB Serial driver (logf)" entry in
  * the debug menu, so on a target that does not build the debug menu a false
- * default makes the driver unreachable rather than merely off. / */
+ * default makes the driver unreachable rather than merely off. */
 #ifdef USB_SERIAL_DEFAULT_ON
 static bool usb_serial = true;
 #else
