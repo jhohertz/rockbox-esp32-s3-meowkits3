@@ -3493,11 +3493,66 @@ That ceiling is not a law. libmpeg2's pool demand scales with the *coded* frame,
 and this panel codes 320x240 (~0.65 MB of demand), so the reservation is now
 overridden to 1 MiB for this target and the floor drops to ~1,394,668 bytes --
 which is why 384 KB of directory cache and mpegplayer now coexist, verified on
-hardware. The override is only legitimate because libmpeg2 gained the allocation
+hardware.
+
+The override needs a seam to exist at all. `apps/plugins/mpegplayer/mpegplayer.h`
+defined `LIBMPEG2_ALLOC_SIZE` unconditionally *after* `config.h`, so a target
+define was silently shadowed back to 2 MiB -- the only signal was a `-Wmacro-
+redefined` warning in the plugin build, which the plugin link then ignored. The
+header now guards it with `#ifndef`, the way `apps/plugins/lua/llimits.h` guards
+`MINSTRTABSIZE` and `LUA_MINBUFFER`. Verify such an override by the *absence* of
+that warning in a clean `make rocks`, not by the presence of the define. The override is only legitimate because libmpeg2 gained the allocation
 guard described under "mpegplayer's memory floor"; without it a tight
 reservation is a write through NULL, not an error. Doom is *not* the constraint:
 it plays with a 2 MB cache, so the earlier 1 MB figure was stale. Handle went
 from -2 to 4.
+
+### What actually occupies the arena at boot
+
+The buflib pool is walked and aggregated by owner on `Debug -> View HW info`
+(the arena rows in `espressif_esp32s3/debug-esp32s3.c` read `core_ctx` block
+headers directly and group by each block's `ops` pointer, which names the code
+that allocated it -- including owners whose callbacks are static or, like
+dircache's, are a *field* inside a larger struct and so have no symbol of their
+own). Measured on hardware at boot, before any playback:
+
+| owner | held | blocks |
+|---|---|---|
+| `font.c` | **611 KB** | 4 |
+| dircache | 384 KB | 1 |
+| `tree.c` | 195 KB | 1 |
+| six smaller owners | 360 KB | 28 |
+
+Total held 1,660 KB of a 4,325,376-byte pool, 2,563 KB free. There is no leak and
+no mystery claimer; it is ordinary Rockbox startup allocation. The interesting
+line is the first one: **fonts are the pool's largest consumer, ahead of the
+directory cache**. `firmware/font.c` enables `FONT_HARD_LIMIT` only for
+`MEMORYSIZE < 4`, and this target's `MEMORYSIZE` is 8 because configure was given
+the PSRAM window rather than DMA-capable RAM -- so the cap is off, and a skin
+requesting a glyph subset gets an uncapped allocation. Defining `FONT_HARD_LIMIT`
+in the target config restores it, which forces any font larger than
+`MAX_FONT_SIZE` (60,000 here) into cached mode: glyphs come off the card on
+demand instead of occupying the pool.
+
+The debug screen's row switch ends in a `default:` that handles the per-I2C-
+device rows, and it only bounds-checks the upper end: an enum entry placed
+*below* `INFO_I2C_BASE` with no matching case falls into that default and reads
+`i2c_devices` at a negative index, which faults when the row is drawn. Adding a
+conditional row therefore means wrapping the enum entry in the same `#ifdef` as
+its case, not just the case; the default branch now also rejects `i < 0`.
+
+Two things the walk itself teaches: a block's stored length *includes*
+`BUFLIB_NUM_FIELDS` of metadata, so footprints read larger than the requested
+size; and buflib tags free space only before `alloc_end` -- the pool's tail is
+implicit, so the walk shows allocated blocks only and `held + core_available()`
+is the pool. `last_handle - buf_start` is already bytes; multiplying it by
+`sizeof(union buflib_data)` again is a 4x error that looks like a 16 MB arena.
+
+The walk deliberately does **not** use `BUFLIB_DEBUG_PRINT`. That flag looks
+innocuous -- it adds two functions and makes `core_alloc.c` allocate a 112-byte
+test block at startup -- but enabling it made codec playback go silent on this
+hardware, and disabling it restored audio with everything else unchanged. Reading
+`core_ctx` directly needs no flag and allocates nothing.
 
 ### Rockbox threads must be pinned to core 0
 

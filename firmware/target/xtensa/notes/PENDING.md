@@ -526,14 +526,35 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   "The fs_defines.h override is load-bearing" and "The placement fragment is a
   private mechanism"), and the inert `buffering` entry is removed. What the audit
   left open:
-  - **~1.6 MB of the arena is claimed at boot and never released.** The arena is
-    4,325,376 B and `core_alloc_maximum()` grants 2.4-2.6 MB from the moment the
-    first plugin launches, whatever browsing, database or dircache state the
-    machine is in. Something at startup holds it permanently and nothing prints
-    what. `core_alloc.c` has `BUFLIB_DEBUG_PRINT` for exactly this; the cheap
-    instrument is a debug row that walks the buflib allocation list and prints
-    owner/size, not another arena total. Until that exists, every plugin-size
-    decision here is being made against an unknown deduction.
+  - **The ~1.6 MB the arena loses at boot is now accounted for, and it is not a
+    leak.** The debug screen aggregates the pool by owner (see MEMORY.md's "What
+    actually occupies the arena at boot"): at boot, before playback, fonts hold
+    611 KB in 4 blocks, dircache 384 KB, `tree.c` 195 KB, and six smaller owners
+    360 KB -- 1,660 KB held, 2,563 KB free of a 4,325,376-byte pool. The
+    actionable half of that is fonts being the single largest consumer:
+    `firmware/font.c` turns `FONT_HARD_LIMIT` on only for `MEMORYSIZE < 4`, and
+    this target's `MEMORYSIZE` is the 8 MB PSRAM window rather than DMA RAM, so
+    the cap is off and glyph-subset allocations are unbounded. `meowkits3.h` now
+    defines `FONT_HARD_LIMIT`, and **that is verified on hardware**: codecs play
+    with the cap on and the UI still draws normally. What has not been
+    re-measured is the resulting font footprint -- the cap should pull each
+    oversized font to <=60 KB, so a boot-time read of the arena owner rows is
+    still worth taking to confirm the 611 KB actually fell.
+
+  - **`BUFLIB_DEBUG_PRINT` silences codec playback on this target, and the
+    mechanism is unexplained.** Enabled, playback engages and produces no audio;
+    disabled, with every other change held in place, playback is audible. Two
+    builds had it on and were silent, and two had it off and played -- the flag
+    is the only thing that differs. Its documented runtime effect is one line in
+    `core_alloc.c`: `test_alloc = core_alloc(112)` at `core_allocator_init()`,
+    which nothing frees. So the candidate is that 112-byte block sitting in the
+    pool ahead of everything else, but nothing about it obviously prevents the
+    DAC from producing sound, and `pcm_play_dma_start` evidently still runs (the
+    TX row counted a session). The arena rows now walk `core_ctx` directly and
+    need neither the flag nor the test allocation, so this target has no reason
+    to define it -- but if anyone reintroduces `BUFLIB_DEBUG_PRINT` here, codecs
+    going silent is the symptom to recognise. Note the shape of the bug: it is
+    silent, not an error, and metadata, art and browsing all still work.
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the
     PSRAM arena and the database builds -- but `SOC_SDMMC_PSRAM_DMA_CAPABLE` is
