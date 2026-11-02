@@ -20,6 +20,27 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **A fresh, never-flashed board boots correctly -- nothing in the port depends on
+  retained state.** A second MeowKit unit that had never run our firmware was
+  flashed with the tag build and reached the screen (it drew the battery warning),
+  and a probe build marked each init step into the RTC trail (`xtensa_breadcrumb_rtc`,
+  24 slots, survives resets). The trail came back in order:
+  `pLcd -> pFon -> pSet -> pLan -> pBl -> pPm`, with `SD card up` after it. So
+  LCD, fonts, settings, language, backlight, buttons and power management all run
+  on a cold device, and the earlier idea that a working display might be an
+  artefact of the PCA9557 keeping CS/reset from previous firmware is disproved for
+  this build. Its dark screen was an empty cell: power management measures, and
+  shuts down. That unit is now the charge-curve and battery-capacity rig (see the
+  capacity item below), and it needs charging before anything else is concluded
+  from it.
+  Two measurement traps hit while doing this, both already known and worth
+  restating: the `.noinit` breadcrumb ring is *not* cleared between boots, so its
+  40 slots showed the previous build's `sdWr`/`sdRd` traffic and read as progress
+  in this one -- which is exactly why the RTC channel exists; and a host-driven
+  reset on a unit whose IO0 strap samples low leaves `RTC_CNTL.FORCE_DOWNLOAD_BOOT`
+  set, which a reset does not clear, so the board appeared dead until the cable
+  was re-seated and power cycled.
+
 - **Ogg load is slow, and it is not the Ogg codec.** Measured by phase on
   `45549562`/`3c018a80`/`1f595459` (gated counter probes, read through
   `Debug -> View HW info`, since removed from the tree): pressing play to
