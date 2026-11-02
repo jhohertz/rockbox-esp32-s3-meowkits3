@@ -192,13 +192,22 @@ CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
 # CONFIG_FREERTOS_CHECK_STACKOVERFLOW_PTRVAL is not set
 # CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY is not set
 
-# Execute-in-place from PSRAM. Rockbox loads codec and plugin images into the
-# PSRAM window (codecbuf/pluginbuf) and calls their entry points, which faults
-# with InstructionFetchError unless the range is mapped for instruction fetch.
-# CONFIG_SPIRAM_XIP_FROM_PSRAM is the helper for FETCH_INSTRUCTIONS + RODATA.
-CONFIG_SPIRAM_XIP_FROM_PSRAM=y
-CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
-CONFIG_SPIRAM_RODATA=y
+# Firmware .text and .rodata execute from flash XIP, not PSRAM.
+#
+# These two options do NOT make codec/plugin images executable from PSRAM:
+# cpu_start.c arms Cache_Set_IDROM_MMU_Info() unconditionally, and the options
+# only supply the flash->PSRAM offsets used to relocate the firmware's own
+# segments. Codec and plugin images live in codecbuf/pluginbuf (.ext_ram.bss)
+# and are executed through the instruction-window alias of the same MMU entry
+# (XT_IROM_OFF), which works without them -- verified on hardware.
+#
+# Nor do they free PSRAM: sections.ld.in reserves .ext_ram.dummy for the flash
+# rodata either way, because extern_ram_seg and drom0_0_seg share one bus. So
+# the only effects of enabling them are a 1.15 MB copy at boot and instruction
+# fetches competing with audio data on the MSPI bus.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# CONFIG_SPIRAM_FETCH_INSTRUCTIONS is not set
+# CONFIG_SPIRAM_RODATA is not set
 
 # Crash reporting. Both of these were the default, and together they made every
 # fault this target hit unobservable: the panic handler itself lives in flash, so
