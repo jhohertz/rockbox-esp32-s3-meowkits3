@@ -51,26 +51,83 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   table; FLAC and mp3 read forward from a chain start, which is why only Ogg
   shows it. Card-independent: reproduced on a second card.
 
+  **Ogg is not special: FLAC does the same thing.** On the `esp32-s3-idf-20261029`
+  tag with a counters-only probe (`rd` = SD reads since `audio_start_playback()`,
+  `re` = reads of a sector seen in the last 256, `span`/`bkt` = sector range and
+  count of distinct 1 GB regions touched):
+
+  | | rd | re | span | bkt |
+  |---|---|---|---|---|
+  | Ogg open | 80,453 | 1,260 | 0-36,203 MB | 16 |
+  | FLAC open | 83,944 | 1,560 | same | 18 |
+  | FLAC, +1 min later | 84,913 | 1,756 | -- | -- |
+
+  So ~41 MB is read per playback start, scattered across 36 GB of a 64 GB card,
+  and **only ~1,000 reads happen during a further minute of playback** -- the
+  file is buffered once and then the bus is quiet. Chain walking is measured and
+  ruled out: `get_next_cluster32()` is called 1,378 times per open, which is
+  under a second. Short-distance re-reads are ruled out the same way (100 of
+  78,724).
+
+  What that points at is a **background card-wide scan competing with playback**,
+  not the decoder: a scan of every directory on the card reads tens of megabytes
+  of directory and FAT sectors, and at ~520 us per one-sector command that is tens
+  of seconds of bus time. Ogg is the victim because Vorbis must parse tags and
+  open the stream before it can produce sound, so it queues behind that traffic;
+  mp3 and flac put samples on the bus first and look unaffected. The database on
+  this card was also failing to populate, which is the same suspect.
+
+  Two claims I made and then disproved, recorded so they are not repeated:
+
+  - *Reads past the end of the volume.* Wrong. `fat_size()` returns **KB**
+    (`factor = bytes_per_cluster / 1024`, fat.c:3038) and my debug row divided it
+    by 2048 and labelled the result MB, so a 64 GB card printed as `vol 30445MB`.
+    `farmax 52400MB` was inside the volume all along.
+  - *`dircache_wait()` deadlocks when dircache is disabled.* Wrong. It calls
+    `thread_wait(dircache_runinfo.thread_id)`, and with no thread that id is 0,
+    but thread ids are seeded `THREAD_ID_INIT(slot) = 256 + slot`
+    (thread-common.c:90), so thread 0's id is 256, the `thread->id == thread_id`
+    guard fails, and `thread_wait(0)` returns without blocking. The apparent
+    freeze at "Building database, 0 found" was `get_progress()` returning 0 while
+    `dcinfo.status == DIRCACHE_IDLE` and `entry_count == 0` (tagcache.c:5402-5418)
+    -- a scan running with no progress to report, not a hang. Enabling dircache
+    made the database populate, which is consistent with that.
+
+  `MAX_VIRT_SECTOR_SIZE` is **not** a lever here: `fat_mount()` takes the logical
+  sector size from `disk_get_log_sector_size()` (fat.c:2955), so the trick only
+  helps devices that present large sectors themselves (ipod6g, ipodnano3g). An SD
+  card presents 512 and the multiplier stays 1.
+
   Hypotheses tested and **retracted**: disk-cache thrash (`rr:7` out of 38,912
   re-reads), whole-cache maintenance added by `59a7794acc` (`full=0`, none ran),
   CPU frequency and MSPI retime (pinned at 240 MHz, unchanged), dircache boot
-  scan (`dc idle ent=0`, cache disabled), tagcache scan (none running), and my
-  own `logf()` probes (clean HEAD reproduced both symptoms, so they were innocent
-  -- though `LOGF_ENABLE` in `apps/codec_thread.c` does turn `PLAYBACK_LOGQUEUES`
-  into per-event logging, which is worth avoiding in future probes). Also note
-  `DC_CACHE_BUFSIZE` is one sector for *every* target (`fs_defines.h:127`), so
-  single-sector misses are normal Rockbox behaviour; it is our per-command cost
-  (~520 us) that turns a high request count into tens of seconds.
+  scan (`dc idle ent=0`, cache disabled), and my own `logf()` probes (clean HEAD
+  reproduced both symptoms, so they were innocent -- though `LOGF_ENABLE` in
+  `apps/codec_thread.c` does turn `PLAYBACK_LOGQUEUES` into per-event logging,
+  which is worth avoiding in future probes). Also note `DC_CACHE_BUFSIZE` is one
+  sector for *every* target (`fs_defines.h:127`), so single-sector misses are
+  normal Rockbox behaviour; it is our per-command cost (~520 us) that turns a
+  high request count into tens of seconds.
 
-  **Next step, and it is a regression test rather than more instrumentation.**
-  Both release tags predate the rebase and use `target_id=126`, while HEAD uses
-  **134** (`tools/configure:4441`), and `apps/codecs.c` / `apps/plugin.c` reject
-  images whose embedded id differs -- so testing an old build needs its **own**
-  firmware *and* its own card payload, both from that build's `make zip`. Build
-  `esp32-s3-idf-20261029` in a separate worktree, populate the card from its zip,
-  flash, and time an Ogg open. Fast there: bisect forward across the rebase for
-  the FAT/cluster arithmetic. Slow there too: the premise that Ogg ever worked on
-  this port is wrong and the chase moves to fat.c's geometry for a 30 GB card.
+  **The regression test was run and came back negative.** `esp32-s3-idf-20261029`
+  was built in a worktree (`/home/jhohertz/co/rb-bisect`), the card populated from
+  its own zip, and flashed: Ogg is just as slow there. Note the ABI coupling that
+  makes this expensive -- that tag is `target_id=126` / `PLUGIN_API_VERSION 285`
+  while HEAD is **134** / **286**, and `apps/codecs.c` and `apps/plugin.c` reject
+  images whose embedded values differ, so a build on either side of the rebase
+  needs its own card payload, not just its own image. `CODEC_API_VERSION` is 50 on
+  both and `CODEC_SIZE` / `PLUGIN_BUFFER_SIZE` are unchanged.
+
+  The user's recollection is that Ogg and the database did work at some point on
+  this port, so the search is for whatever changed the *background* I/O cost --
+  the arena/dircache sizing knobs (`DIRCACHE_RESERVE/MIN/LIMIT`, Oct 28), the
+  sector cache sizing (`DC_NUM_ENTRIES`, `MAX_OPEN_FILES`), and the buflib arena
+  placement under the IDF link -- rather than the decoder or the FAT arithmetic.
+
+  **Card payload while this is open:** the board currently runs the tag probe
+  build (`100cc74a`), so the card carries the tag's payload and cannot load HEAD's
+  codecs or plugins. Moving back to HEAD means a card refresh and a database
+  rebuild.
 
 - **Fetch-class panic, unresolved, and now without a repro.** Two captures on
   the pre-repair card reported `IllegalInstruction` whose captured bytes at the
