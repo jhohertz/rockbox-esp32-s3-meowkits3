@@ -555,19 +555,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     to define it -- but if anyone reintroduces `BUFLIB_DEBUG_PRINT` here, codecs
     going silent is the symptom to recognise. Note the shape of the bug: it is
     silent, not an error, and metadata, art and browsing all still work.
-  - **Bisect results in this area are contaminated by boot state, and must be
-    redone.** Codec playback went silent on the first boot after a flash and
-    worked after a subsequent reset -- same firmware, same card. That applies to
-    every "silent" observation attributed to `DIRCACHE_LIMIT` 512 KB / 1 MB and
-    to `BUFLIB_DEBUG_PRINT`, so none of those attributions is sound. The
-    mechanism is visible in the tree: `apps/tagcache.c:789` allocates the arena
-    remainder with `core_alloc_maximum(..., &buflib_ops_locked)` and holds it
-    until `free_tempbuf()` after a database commit, while `apps/playback.c:1083`
-    requests that same remainder -- a boot that is building or committing the
-    database leaves playback unable to allocate, and a boot that isn't does not.
-    Protocol for retesting: flash, reset once so the database and directory cache
-    are built, then test codecs; read the arena owner rows during a failed
-    attempt, since the `buflib_ops_locked` group shows the temp buffer directly.
+  - **First-boot codec silence is unexplained, and the earlier attributions were
+    invalid.** 512 KB and 1 MB `DIRCACHE_LIMIT`, and `BUFLIB_DEBUG_PRINT`, were
+    each declared guilty of silencing codecs on single-boot comparisons. The same
+    firmware played after a later reset, so boot state -- not the variable being
+    tested -- is the uncontrolled factor. Measured since: a *live* database
+    rebuild does not starve playback at 384 KB; codecs play, track switching is
+    slower while the scan runs, which is the tagcache temp buffer
+    (`apps/tagcache.c:789`, `core_alloc_maximum` with `buflib_ops_locked`) leaving
+    playback a smaller grant rather than none. So why a fresh-boot playback
+    attempt failed is still open, and the retest protocol is flash, reset once so
+    the database and directory cache settle, then test -- with the owner rows read
+    during any failure, since the `buflib_ops_locked` group is that buffer. The
+    font cap's ~413 KB therefore remains unspent rather than refused.
 
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the

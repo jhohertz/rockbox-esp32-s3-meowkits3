@@ -360,28 +360,31 @@
 #define FONT_HARD_LIMIT   /* bisect: on alone */
 
 #define DIRCACHE_MIN     (1024*1024/4) /* 256 KB provision floor */
-/* 384 KB: the value verified to play, and the only one that is.
+/* 384 KB: the value verified to play, and the only value verified at all.
 
- * Established: at 256 KB a file open on a card with thousands of directories
- * costs ~80,000 single-sector reads (~40 s on this 1-bit bus) because the cache
- * all.
- * 4,169 reads. That is why the value is raised above the default provision at
- * all.
- *
- * What is NOT established: whether larger values are allowed. 512 KB and 1 MB
- * made on the *first* boot after a flash, and the same firmware played after a
- * made on the *first* boot after a flash, and the same firmware played after a
- * subsequent reset. Boot state is therefore an uncontrolled variable in that
- * result, and it has a real mechanism: apps/tagcache.c:789 takes the arena
- * building the database leaves playback with nothing.
- * unrelocatable -- and holds it until free_tempbuf() after a database commit,
- * while apps/playback.c:1083 asks for that same remainder. A boot that is
- * building the database leaves playback with nothing.
- *
- * Retest any value above 384 KB only after boot state has settled: flash, reset
- * once so the database and directory cache are built, then test codecs. The
- * arena owner rows on Debug -> View HW info identify the holder directly -- the
- * buflib_ops_locked group is the tagcache temp buffer. */
+ * Established by measurement: at 256 KB a file open on a card with thousands of
+ * directories costs ~80,000 single-sector reads, about 40 s on this 1-bit bus,
+ * because the cache cannot hold a path's worth of directory entries. 384 KB
+ * takes the same open to 4,169 reads, and a database rebuild -- which walks
+ * those same directories -- completes quickly rather than crawling. That is
+ * why the value sits above the default provision.
+
+ * Not established: whether larger values are allowed. 512 KB and 1 MB each
+ * produced no audio from any codec, but every one of those observations came
+ * from the first boot after a flash, and the same firmware played after a
+ * later reset. Boot state was never controlled, so cache size was never
+ * isolated. The attributions are withdrawn rather than softened.
+
+ * The candidate is the database. apps/tagcache.c:789 takes the arena remainder
+ * through core_alloc_maximum() with buflib_ops_locked and holds it until
+ * free_tempbuf(), while apps/playback.c:1083 wants that same remainder. A live
+ * rebuild measured here does not starve playback: codecs play, with slower
+ * switching while the scan runs. So the hold is per-commit and partial, and
+ * fresh-boot silence has no explanation yet.
+
+ * Retest anything above 384 KB only after boot state settles: flash, reset once
+ * so the database and directory cache are built, then test codecs, and read the
+ * owner rows during any failure. */
 #define DIRCACHE_LIMIT   (384*1024)    /* measured: 80,000 reads -> 4,169 */
 
 /* The recording PCM ring is sized at compile time from these two, but it is

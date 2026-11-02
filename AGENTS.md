@@ -3568,28 +3568,29 @@ flag played. Both were single boots, and single boots are not comparable -- see
 the boot-state note below -- so the flag is excluded on the "no reason to take
 it" argument rather than because it was shown to break playback.
 
-### Boot state is a variable, and codec silence is its symptom
+### Boot state is a variable in every arena measurement
 
-**A boot that is building the database cannot play, and reflashing does not
-change that.** `apps/tagcache.c:789` takes the arena remainder through
-`core_alloc_maximum(&size, &buflib_ops_locked)` and holds it until
-`free_tempbuf()` after the database commit; locked ops mean buflib cannot shrink
-or relocate it. `apps/playback.c:1083` asks for that same remainder, so on
-such a
-boot playback has nothing to buffer with. The database builds when it is missing
-or stale -- which is why a card freshly populated from `make zip` behaves
-differently from the same card one boot later.
+**A first boot after a flash and a later boot are not comparable, and comparing
+them produces false attributions.** Every "silent codecs" observation this
+session was made on the first boot after a flash, and the same firmware played
+after a subsequent reset. That is what happened when `DIRCACHE_LIMIT` above
+384 KB and `BUFLIB_DEBUG_PRINT` were each declared guilty of silencing playback:
+one boot against one boot, with boot state uncontrolled. Neither attribution
+survives that, so neither is recorded as a finding.
 
-Consequence for any measurement involving the arena: **a first boot after a
-flash
-and a later boot are not comparable**, and comparing them produces false
-attributions. This is exactly what happened when `DIRCACHE_LIMIT` above 384 KB
-and `BUFLIB_DEBUG_PRINT` were each declared guilty of silencing codecs. The
-protocol is: flash, reset once so the database and directory cache are built,
-then test playback. The arena owner rows identify the holder directly -- the
-`buflib_ops_locked` group *is* the tagcache temp buffer -- so a silent boot
-can be
-diagnosed rather than guessed at.
+The candidate mechanism is `apps/tagcache.c:789`, which takes the arena
+remainder through `core_alloc_maximum(&size, &buflib_ops_locked)` -- unshrinkable
+and unrelocatable -- until `free_tempbuf()` after a database commit, while
+`apps/playback.c:1083` asks for that same remainder. Measured on hardware, a
+*live* rebuild does **not** starve playback: codecs keep playing, with slower
+track switching while the scan runs. So the temp buffer is a per-commit hold that
+leaves playback a smaller grant, not a boot-long hold that leaves it none, and
+why a fresh-boot playback attempt failed is still unexplained.
+
+Protocol for anything arena-shaped: flash, reset once so the database and
+directory cache have settled, then test codecs. The owner rows name the holder
+directly, because the `buflib_ops_locked` group is the tagcache temp buffer, so a
+failed attempt can be read rather than reasoned about.
 
 ### Rockbox threads must be pinned to core 0
 
