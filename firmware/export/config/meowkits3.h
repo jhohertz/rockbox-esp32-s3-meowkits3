@@ -301,19 +301,33 @@
  * wins and the cache still claims 1 MB. Both are #ifndef-guarded, so a target
  * can set them.
  *
- * 256 KB is chosen from what the arena has to carry afterwards. Doom's zone
- * comes from core_alloc_maximum(), i.e. everything left at that moment, and
- * measured on hardware its peak demand at a screen wipe is four full panels
- * (307,200 bytes at 320x240) plus ~1.2 MB of pre-cached sound effects and
- * ~300 KB of level data:
+ * 384 KB is where the two constraints meet, measured on hardware with a
+ * healthy card rather than inferred. The cache is a directory lookup cache,
+ * and on a card with thousands of directories 256 KB cannot hold a path's
+ * worth of entries, so every file open re-reads directory sectors one at a
+ * time: an Ogg open cost ~80,000 storage_read_sectors() calls, which at
+ * ~520 us per command on this 1-bit bus is ~40 s. Raising the limit to
+ * 384 KB took the same open to 4,169 reads and it starts promptly.
  *
- *   dircache 1 MB   -> doom zone 1,757,376 bytes -> Z_Malloc fails
- *   dircache off    -> doom zone 2,805,984 bytes -> plays
+ * The ceiling on that is mpegplayer. It takes `plugin_get_audio_buffer()`,
+ * which is core_alloc_maximum() -- whatever the arena has left at that moment
+ * -- and its floor is LIBMPEG2_ALLOC_SIZE plus PCM, the audio queue, the disk
+ * guard buffer and one page. With upstream's 2 MiB reservation that floor is
+ * 2,443,244 bytes, and 1 MB and 2 MB caches both left mpegplayer failing with
+ * "Out of memory in stream_init"; 384 KB left it zero disk-buffer pages.
  *
- * 256 KB sits between those, and the playback file buffer only gets more
- * room than the 1 MB case above already needed. */
-#define DIRCACHE_MIN     (1024*1024/4) /* 256 KB: must not exceed LIMIT */
-#define DIRCACHE_LIMIT   (1024*1024/4) /* 256 KB: ~3.75 MB of arena left free */
+ * The reservation is therefore the lever, and this file overrides it to 1 MiB
+ * below. That is only safe because libmpeg2 now stops on a failed allocation
+ * rather than writing through the NULL it got; see the note there. Doom is not
+ * the binding constraint: it played with a 2 MB cache, so the earlier 1 MB
+ * figure was stale.
+ *
+ * CODEC_SIZE and PLUGIN_BUFFER_SIZE cannot fund this instead: apps/codecs.c
+ * hands the codec `CODEC_SIZE - codec_size` as its heap, and FLAC's .bss alone
+ * is ~358 KB, while PLUGIN_BUFFER_SIZE has to carry the largest plugin's code
+ * and bss (220 KB shipped, 512 KB reserved). */
+#define DIRCACHE_MIN     (1024*1024/4) /* 256 KB provision floor */
+#define DIRCACHE_LIMIT   (384*1024)    /* measured: 80,000 reads -> 4,169 */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
  * allocated with core_alloc_maximum(), which grants whatever is left in the
@@ -403,21 +417,21 @@
 #define HAVE_PANIC_CONSOLE
 #endif
 
-/* mpegplayer.h's LIBMPEG2_ALLOC_SIZE is deliberately left at upstream's 2 MiB.
- * The reasoning is worth keeping because the obvious override is wrong.
- * mpegplayer reserves this much of the buflib arena up front and libmpeg2 then
- * asks for YUV and converted frame buffers sized by the *coded* resolution;
- * mpegplayer only clips at blit time (`mpegplayer.c:818`, `:851`) and never
- * rejects a stream whose coded frame is larger than the panel. alloc.c returns
- * NULL when the reservation runs out, and libmpeg2/header.c assigns those
- * results straight into mpeg2dec->yuv_buf[][] with no NULL check -- so an
- * under-sized reservation is not a clean failure, it is a write through a NULL
- * pointer and a watchdog reset. 2 MiB is what covers 352x288 coded frames; it
- * is still short of 720x576, which is a mpegplayer-wide fragility rather than
- * something this target can fix by tuning the number. Our encode recipe
- * (manual/plugins/mpegplayer.tex) keeps coded size at 320x240, which needs far
- * less than the reservation, so the number is never the constraint. Raising it
- * is safe if the arena ever grows; lowering it is not. */
+/* mpegplayer's libmpeg2 reservation. Upstream's 2 MiB is sized for 352x288
+ * coded frames; libmpeg2's pool demand scales with the *coded* frame, and this
+ * panel is 320x240, whose measured demand is ~0.65 MB. So 1 MiB covers
+ * everything this device can display, with headroom.
+ *
+ * Lowering it used to be unsafe rather than merely tight. mpegplayer reserves
+ * this much of the buflib arena up front, alloc.c returns NULL when the
+ * reservation runs out, and libmpeg2's header.c assigned those results straight
+ * into mpeg2dec->yuv_buf[][] and fbuf->buf[] with no check -- from a void
+ * function -- so an exhausted reservation was a write through NULL and a
+ * watchdog reset, not a clean failure. libmpeg2 now stops on a failed
+ * allocation (header.c sets STATE_INVALID, decode.c returns it before any slice
+ * decode), which is what makes this override legitimate. A stream coded larger
+ * than the reservation now ends as an error; without that guard, keep 2 MiB. */
+#define LIBMPEG2_ALLOC_SIZE (1024*1024)
 
 /* Don't ship the three sgt puzzles that live in
  * apps/plugins/puzzles/src/unfinished/: group, slide and sokoban. All three
