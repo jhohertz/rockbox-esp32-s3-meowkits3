@@ -20,6 +20,58 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## 1. Open
 
+- **Ogg load is slow, and it is not the Ogg codec.** Measured by phase on
+  `45549562`/`3c018a80`/`1f595459` (gated counter probes, read through
+  `Debug -> View HW info`, since removed from the tree): pressing play to
+  `audio_init_codec()` is **2246 ticks = 22.5 s**, that to codec run is 58 ticks,
+  and codec run to first PCM is **6 ticks**. Loading `vorbis.codec` itself is
+  `read 50 ms, heap 30 ms`, tag parsing is **8 ticks (80 ms)**, and the audio
+  thread picks up `Q_AUDIO_PLAY` with **`wait 0`**. So everything is downstream
+  of the codec, and the codec, DSP, PCM buffer (`pcm=512KB`), file buffer
+  (`file=2017KB`) and arena (`2.8MB` allocatable, mpegplayer still fits) are all
+  healthy. The `wait=925` seen in `codec_pcmbuf_insert_callback` is ordinary
+  backpressure over a multi-minute session, not a stall.
+
+  What phase A contains is I/O: **42,376 `storage_read_sectors()` calls /
+  45,861 sectors before tag parsing even starts**, essentially all of them one
+  sector each (`1:76557` against `64+:70` in a longer capture), and
+  **38,532 of them above sector 2,000,000**. The dominant caller resolves to
+  `.text.transfer$constprop$0` in `fat.o` -- fat.c's data mover, reached one
+  level below `storage_read_sectors`. Reads are deterministic (the same
+  `42376/45861` in three separate runs, including one with two minutes of
+  playback afterwards), and `wr=0` means playback writes nothing, so this is not
+  FAT corruption by us.
+
+  **The hard fact: `vol 30445MB` with `farmax 52400MB`.** This card is ~30 GB
+  (62.4M sectors) and reads were requested at sector ~107,000,000 -- past the end
+  of the volume. The observed offender values (`107376004`, `107374272`,
+  `0x666666`-shaped) look like ASCII `fff` bytes interpreted as a cluster
+  number, and with `clus 32768B` one bogus cluster index maps ~32 GB out. Vorbis
+  walks cluster chains from arbitrary offsets because it seeks to build its seek
+  table; FLAC and mp3 read forward from a chain start, which is why only Ogg
+  shows it. Card-independent: reproduced on a second card.
+
+  Hypotheses tested and **retracted**: disk-cache thrash (`rr:7` out of 38,912
+  re-reads), whole-cache maintenance added by `59a7794acc` (`full=0`, none ran),
+  CPU frequency and MSPI retime (pinned at 240 MHz, unchanged), dircache boot
+  scan (`dc idle ent=0`, cache disabled), tagcache scan (none running), and my
+  own `logf()` probes (clean HEAD reproduced both symptoms, so they were innocent
+  -- though `LOGF_ENABLE` in `apps/codec_thread.c` does turn `PLAYBACK_LOGQUEUES`
+  into per-event logging, which is worth avoiding in future probes). Also note
+  `DC_CACHE_BUFSIZE` is one sector for *every* target (`fs_defines.h:127`), so
+  single-sector misses are normal Rockbox behaviour; it is our per-command cost
+  (~520 us) that turns a high request count into tens of seconds.
+
+  **Next step, and it is a regression test rather than more instrumentation.**
+  Both release tags predate the rebase and use `target_id=126`, while HEAD uses
+  **134** (`tools/configure:4441`), and `apps/codecs.c` / `apps/plugin.c` reject
+  images whose embedded id differs -- so testing an old build needs its **own**
+  firmware *and* its own card payload, both from that build's `make zip`. Build
+  `esp32-s3-idf-20261029` in a separate worktree, populate the card from its zip,
+  flash, and time an Ogg open. Fast there: bisect forward across the rebase for
+  the FAT/cluster arithmetic. Slow there too: the premise that Ogg ever worked on
+  this port is wrong and the chase moves to fat.c's geometry for a 30 GB card.
+
 - **Fetch-class panic, unresolved, and now without a repro.** Two captures on
   the pre-repair card reported `IllegalInstruction` whose captured bytes at the
   faulting address matched the linked image exactly, at two different addresses
