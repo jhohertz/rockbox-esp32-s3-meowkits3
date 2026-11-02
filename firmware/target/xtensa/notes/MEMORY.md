@@ -227,6 +227,48 @@ executes from the flash window at `0x4200xxxx`. Codecs and plugins still load an
 which is the hardware proof that these options were never what made PSRAM execution
 possible.
 
+### The fs_defines.h override is load-bearing, and here is the measurement
+
+Upstream's `fs_defines.h` picks `DC_NUM_ENTRIES` 64 / `MAX_OPEN_FILES` 31 for
+`MEMORYSIZE >= 8`, which is what this target gets -- so the obvious alignment
+move is to delete our override and take upstream's numbers. It was tried, and the
+link **fails**:
+
+```
+ld: rockbox.elf section `.dram0.bss' will not fit in region `dram0_0_seg'
+ld: region `dram0_0_seg' overflowed by 15,904 bytes
+```
+
+`cache_buffer` is `DC_NUM_ENTRIES x DC_CACHE_BUFSIZE` (64 x 512 = 32 KB vs the
+16 KB we ship), and the map bitarrays grow with it. So the override is not drift,
+it is the only value that fits, and the internal DRAM region has no slack of the
+kind a heap figure might suggest. Re-running the experiment costs one config edit
+and one link, so check it again before "aligning" it.
+
+### The placement fragment is a private mechanism, and it can silently do nothing
+
+`rockbox_memory.lf` is the **only** `.lf` file in the tree and the only consumer
+of `LDFRAGMENTS`, which appears nowhere in `tools/root.make`, `tools/configure` or
+`tools/functions.make` -- the fragment is read by IDF's CMake, not by Rockbox's
+build system. That is forced (IDF owns the linker script), but it has a sharp
+edge: an entry names an object inside `archive: <name>`, and if the object is not
+in that archive the entry matches nothing and does nothing, silently, while the
+comments claim a placement that never happened. `buffering (rb_psram)` under
+`librbcodec.a` was exactly that -- `apps/buffering.c` is in `lib/librockbox.a`.
+It is gone, because the object also owns `buffering_stack` and a thread stack must
+not move to cache-backed memory.
+
+Check membership with the toolchain rather than by reading the file:
+
+```sh
+xtensa-esp32s3-elf-ar t build-meowkits3/lib/librockbox.a | grep buffering
+xtensa-esp32s3-elf-nm -S build-meowkits3/rockbox.elf | grep -w cache_buffer
+```
+
+`PSRAM_BSS_ATTR` is the opposite case: `MERGE-PLAN.md` lists it as an invented
+core macro, but its shape in `config.h` -- a weak empty default, redefined by the
+target -- is the existing `IRAM_LCDFRAMEBUFFER` precedent, so it belongs there.
+
 `codecbuf` and `pluginbuf` are **pinned absolute symbols**, not section contents.
 `apps/codecs.c` and `apps/plugin.c` reject any image whose declared `load_addr`
 is not exactly `&codecbuf` / `&pluginbuf`, and the codec/plugin images are linked

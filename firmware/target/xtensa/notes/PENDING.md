@@ -521,6 +521,35 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   - ~~The dircache change needs a flash~~ -- done: `90224de484` is in the flashed image, and
     the run above used it.
 
+- **Memory audit: two things still unexplained, one still unverified.** The
+  placement/size sweep against upstream conventions is done (see MEMORY.md's
+  "The fs_defines.h override is load-bearing" and "The placement fragment is a
+  private mechanism"), and the inert `buffering` entry is removed. What the audit
+  left open:
+  - **~1.6 MB of the arena is claimed at boot and never released.** The arena is
+    4,325,376 B and `core_alloc_maximum()` grants 2.4-2.6 MB from the moment the
+    first plugin launches, whatever browsing, database or dircache state the
+    machine is in. Something at startup holds it permanently and nothing prints
+    what. `core_alloc.c` has `BUFLIB_DEBUG_PRINT` for exactly this; the cheap
+    instrument is a debug row that walks the buflib allocation list and prints
+    owner/size, not another arena total. Until that exists, every plugin-size
+    decision here is being made against an unknown deduction.
+  - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
+    is in PSRAM".** Behaviourally that is true -- dircache populates from the
+    PSRAM arena and the database builds -- but `SOC_SDMMC_PSRAM_DMA_CAPABLE` is
+    undefined for esp32s3 and the SD host's IDMAC does not go through the
+    Ext_RAM MMU, so either IDF bounces internally or Rockbox's read destination
+    is never actually the PSRAM buffer. The comment states a mechanism nobody has
+    read. Settle it from IDF's `sdmmc_transaction.c` allocation caps, not from
+    the fact that it works.
+  - **Deliberate, not drift, and worth stating in review:** `MEMORYSIZE=8` here is
+    the PSRAM window handed to `tools/configure` as `memory=8`, whereas peers get
+    8/16/32/64 for RAM. Upstream heuristics that read `MEMORYSIZE` as RAM
+    (`fs_defines.h`, `pcm_record.c`) therefore misread this target, which is why
+    the overrides exist. `CODEC_SIZE 0x100000` is *not* a deviation -- 11 targets
+    use it and `hibyr1native` pairs it with `PLUGIN_BUFFER_SIZE 0x200000`; ours is
+    the smaller 0x80000, which the measured largest plugin (220 KB) supports.
+
 ## 2. Verified on hardware — closed
 
 - **The recurring shutdown and menu-navigation panics were damaged FAT metadata
@@ -1210,7 +1239,7 @@ Not being submitted now. Kept so the work can be split for a merge.
 | new | `manual/plugins/xworld.tex` | Four rows gated on `\opt{HAVE_TOUCHSCREEN}` retyped to `\opt{touchscreen}`, and `\ButtonBottomLeft` to `\TouchBottomLeft` | `HAVE_TOUCHSCREEN` is not a token in the manual's opt list (`touchscreen` is, and is what every other file uses), so xworld's touch rows silently never appeared; `\ButtonBottomLeft` is defined only by a few non-touch keymaps, so one of those rows would also have failed to build wherever it did render. Documentation bug, any touchscreen target. |
 | new | `firmware/usbstack/usb_audio.c` | `as_playback_freq_idx` initialised to `HW_FREQ_DEFAULT` instead of 0 | `hw_freq_sampr` is in descending order, so index 0 is the *highest* rate the target declares, and `usb_audio_start_playback()` calls `mixer_set_frequency()` with it before the host's `SET_CUR` arrives. Audible as stretched playback until the request lands — milliseconds on most targets, seconds on a composite device where mass-storage enumeration shares the control endpoint. Any target. |
 | new | `firmware/usbstack/usb_audio.c` | `USB_AUDIO_BUFFER_SIZE` override also sets the descriptor's `wMaxPacketSize` and the endpoint's `mps` | The driver's endpoint default is the USB maximum (1023), which a tight device-FIFO budget cannot pay for; overriding only the buffer left the descriptor promising a packet the endpoint refused to allocate. Generic shape fix, default unchanged for targets that override nothing. |
-
+| `c3c4f0cdcb` | `apps/plugins/mpegplayer/libmpeg2/header.c`, `decode.c` | Stop on a failed `mpeg2_malloc()` instead of storing NULL | `mpeg2_header_picture_finalize()` is `void` and assigns every allocation result into `decoder.convert_id`, `yuv_buf[][]` and `fbuf->buf[]` unchecked, so any target whose arena cannot satisfy `LIBMPEG2_ALLOC_SIZE` gets a write through NULL and a crash several frames later rather than a report. It now sets `STATE_INVALID`, which `decode.c` returns before the slice decode. Core hardening, and what makes a target-tuned reservation safe. |
 | new | `apps/plugins/bitmaps/remote_native/SOURCES`, plugin sources testing `CONFIG_LCD` | Two upstream `#if`s that assume a macro always exists | Found by narrowing `-Wno-undef` to the target directory, which puts `-Wundef` back on for the rest of the tree. `#if LCD_REMOTE_DEPTH == 1` appears in a `SOURCES` file that only dual-LCD targets define that for, and `#if CONFIG_LCD == LCD_SSD1815` in cube.c, clock_draw_analog.c, mandelbrot_set.c and doom/i_video.c assumes every target names its LCD controller — agptekrocker, aigoerosq, hibyr1, hidizsap80max and sansae200r define neither, so those targets emit 17 warnings today. Benign (undefined evaluates to 0 and the branch is the right one), but `defined()`-guarding them or defaulting `CONFIG_LCD` to 0 in `config.h` is a clean upstream patch. Not done here: it is upstream text and unrelated to this port. |
 | new | `manual/getting_started/installation.tex`, `manual/configure_rockbox/system_options.tex`, `manual/appendix/config_file_options.tex` | Three LaTeX errors in generic manual text when built for this target | `make manual-pdf` reports "Something's wrong--perhaps a missing \item" twice in `system_options.tex` and once in `installation.tex`, plus "Float(s) lost" in `config_file_options.tex`. They survive removing this target's own `meowkits3_install.tex` section, so they are not ours; the PDF builds (3.05 MB) and the MeowKit chapters render correctly. Worth pinning down before the manual chapter is offered upstream, because a reviewer building the manual for this target sees errors. |
 
