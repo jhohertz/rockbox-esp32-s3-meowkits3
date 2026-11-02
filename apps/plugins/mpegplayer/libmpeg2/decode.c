@@ -336,6 +336,11 @@ mpeg2_state_t mpeg2_parse_header (mpeg2dec_t * mpeg2dec)
     	case RECEIVED (0x01, STATE_PICTURE):
     	case RECEIVED (0x01, STATE_PICTURE_2ND):
     	    mpeg2_header_picture_finalize (mpeg2dec);
+    	    if (mpeg2dec->state == STATE_INVALID)
+    	        /* frame buffers could not be allocated: stop here
+    	         * rather than decode slices into pointers that were
+    	         * never filled */
+    	        return STATE_INVALID;
     	    mpeg2dec->action = mpeg2_header_slice_start;
     	    break;
 

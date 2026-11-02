@@ -960,6 +960,15 @@ void mpeg2_header_picture_finalize (mpeg2dec_t * mpeg2dec)
                 mpeg2dec->decoder.convert_id =
                     mpeg2_malloc (mpeg2dec->convert_id_size,
                                   MPEG2_ALLOC_CONVERT_ID);
+                if (mpeg2dec->decoder.convert_id == NULL)
+                {
+                    /* Allocation is the caller's failure to report: this
+                     * function is void, and every result below is assigned
+                     * straight into a buffer pointer that decode.c then
+                     * writes through. Stop instead of storing NULL. */
+                    mpeg2dec->state = STATE_INVALID;
+                    return;
+                }
 
                 mpeg2dec->convert (MPEG2_CONVERT_START,
                                    mpeg2dec->decoder.convert_id,
@@ -1003,6 +1012,20 @@ void mpeg2_header_picture_finalize (mpeg2dec_t * mpeg2dec)
                 mpeg2dec->yuv_buf[2][2] =
                     (uint8_t *) mpeg2_malloc(uv_size, MPEG2_ALLOC_YUV);
 #endif
+
+                if (mpeg2dec->yuv_buf[0][0] == NULL ||
+                    mpeg2dec->yuv_buf[1][0] == NULL ||
+                    mpeg2dec->yuv_buf[2][0] == NULL
+#if MPEG2_COLOR
+                    || mpeg2dec->yuv_buf[0][1] == NULL
+                    || mpeg2dec->yuv_buf[1][1] == NULL
+                    || mpeg2dec->yuv_buf[2][1] == NULL
+#endif
+                    )
+                {
+                    mpeg2dec->state = STATE_INVALID;
+                    return;
+                }
             }
 
             if (!mpeg2dec->custom_fbuf)
@@ -1025,6 +1048,16 @@ void mpeg2_header_picture_finalize (mpeg2dec_t * mpeg2dec)
                         (uint8_t *) mpeg2_malloc (convert_init.buf_size[2],
                                                   MPEG2_ALLOC_CONVERTED);
 #endif
+                    if (fbuf->buf[0] == NULL
+#if MPEG2_COLOR
+                        || fbuf->buf[1] == NULL
+                        || fbuf->buf[2] == NULL
+#endif
+                        )
+                    {
+                        mpeg2dec->state = STATE_INVALID;
+                        return;
+                    }
                 }
 
                 mpeg2_set_fbuf (mpeg2dec, (decoder->coding_type == B_TYPE));
@@ -1052,6 +1085,16 @@ void mpeg2_header_picture_finalize (mpeg2dec_t * mpeg2dec)
                 fbuf->buf[2] = (uint8_t *) mpeg2_malloc (uv_size,
                                                          MPEG2_ALLOC_YUV);
 #endif
+                if (fbuf->buf[0] == NULL
+#if MPEG2_COLOR
+                    || fbuf->buf[1] == NULL
+                    || fbuf->buf[2] == NULL
+#endif
+                    )
+                {
+                    mpeg2dec->state = STATE_INVALID;
+                    return;
+                }
             }
 
             mpeg2_set_fbuf (mpeg2dec, (decoder->coding_type == B_TYPE));
