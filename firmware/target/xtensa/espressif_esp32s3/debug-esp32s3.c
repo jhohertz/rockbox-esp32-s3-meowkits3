@@ -30,6 +30,25 @@
 #include "tick.h"
 #include "core_alloc.h"
 #include <stdio.h>
+#include <string.h>
+
+/* The arena rows below read buflib's block map directly, which means taking the
+ * mempool backend's internal layout. buflib_mempool.h refuses to be included
+ * except through buflib.h, and this is only meaningful for that backend, so the
+ * whole instrument is gated on both. core_ctx is the single context core_alloc()
+ * uses; core_alloc.h deliberately does not expose it. Going through
+ * buflib_get_num_blocks()/core_print_block_at() would require BUFLIB_DEBUG_PRINT,
+ * which also makes core_alloc.c allocate a 112-byte test block at startup -- and
+ * enabling that flag silenced codec playback on this hardware. Walking the
+ * context directly needs no flag and no extra allocation, and the block header
+ * carries the ops pointer, which is what names an owner. */
+#include "buflib.h"
+#if CONFIG_BUFLIB_BACKEND == BUFLIB_BACKEND_MEMPOOL
+#include "buflib_mempool.h"
+extern struct buflib_context core_ctx;
+#define ARENA_MAP_AVAILABLE 1
+#endif
+
 
 #include "esp_pm.h"      /* esp_pm_config_t, esp_pm_get_configuration() */
 #include "esp_timer.h"  /* esp_timer_get_time() -- wall clock, runs in sleep */
@@ -74,6 +93,101 @@ static unsigned int mmu_mapped_pages(void)
  * one register is enough to know whether the chip is there: the command-list
  * controller reports a NACK as a failed transaction rather than hanging.
  */
+#ifdef ARENA_MAP_AVAILABLE
+/* Aggregate the arena by owner. A block's BUFLIB_IDX_OPS word is the address of
+ * the struct buflib_callbacks it was allocated with, so grouping blocks by that
+ * address groups them by the code that holds them -- including owners whose
+ * callbacks are static, or (like dircache) are a field inside a larger struct
+ * and therefore not a named symbol at all. NULL is the group for core_alloc(),
+ * which registers no callbacks. Resolve an address against the build's symbol
+ * table with nm and the link map; for a struct field, subtract the symbol's
+ * base to get the offset.
+ *
+ * buflib stores each block's length in its first word, in units of
+ * union buflib_data, including BUFLIB_NUM_FIELDS of per-block metadata. Free
+ * space is tagged only where it precedes alloc_end; the pool's tail beyond
+ * alloc_end is untagged and simply absent from the walk, so held +
+ * core_available() is the pool -- do not expect the walk to show free bytes. */
+#define ARENA_OWNERS 12
+
+struct arena_owner
+{
+    unsigned long ops;
+    long held_kb;
+    int blocks;
+};
+
+struct arena_stats
+{
+    long held_kb;
+    long pool_kb;
+    int blocks;
+    int owners;
+    struct arena_owner owner[ARENA_OWNERS];
+};
+
+static void arena_stats(struct arena_stats *st)
+{
+    union buflib_data *b = core_ctx.buf_start;
+    memset(st, 0, sizeof(*st));
+    /* buf_start..last_handle is the whole pool, in bytes */
+    st->pool_kb = ((char *)core_ctx.last_handle - (char *)core_ctx.buf_start)
+                  / 1024;
+
+    while (b < core_ctx.alloc_end)
+    {
+        long val = b[BUFLIB_IDX_LEN].val;
+        long units = val < 0 ? -val : val;
+
+        if (units <= 0)
+            break;                    /* a zero-length block means damage */
+
+        st->blocks++;
+        if (val > 0)
+        {
+            long foot = val * (long)sizeof(union buflib_data);
+            unsigned long ops = (unsigned long)(uintptr_t)b[BUFLIB_IDX_OPS].ops;
+            long kb = foot / 1024;
+            int slot = -1;
+
+            st->held_kb += kb;
+            for (int i = 0; i < st->owners; i++)
+            {
+                if (st->owner[i].ops == ops)
+                {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0 && st->owners < ARENA_OWNERS)
+            {
+                slot = st->owners++;
+                st->owner[slot].ops = ops;
+            }
+            if (slot >= 0)
+            {
+                st->owner[slot].held_kb += kb;
+                st->owner[slot].blocks++;
+            }
+        }
+
+        b += units;
+    }
+
+    for (int i = 0; i < st->owners; i++)
+        for (int j = i + 1; j < st->owners; j++)
+        {
+            if (st->owner[j].held_kb > st->owner[i].held_kb)
+            {
+                struct arena_owner t = st->owner[i];
+                st->owner[i] = st->owner[j];
+                st->owner[j] = t;
+            }
+        }
+}
+#endif /* ARENA_MAP_AVAILABLE */
+
+
 struct i2c_device {
     unsigned char addr;
     unsigned char reg;
@@ -147,6 +261,36 @@ enum
      * is lower still after a plugin ran is that plugin's own allocations
      * still outstanding. */
     INFO_ARENA,
+/* These rows exist only when the block walk they call is compiled in.
+ * Keeping them in the enum without their cases would be a crash: the
+ * switch's default branch handles the per-I2C-device rows, and these
+ * entries sit *below* INFO_I2C_BASE, so an unmatched item indexes
+ * i2c_devices with a negative number. */
+#ifdef ARENA_MAP_AVAILABLE
+    /* Where the arena's bytes actually are. core_allocatable() says how much is
+     * left; it cannot say who holds the rest, and on this target roughly 1.6 MB
+     * of the 4.25 MB arena is gone from the moment the player starts, which is
+     * too much to be the directory cache alone. The mempool backend lays the
+     * arena out as blocks whose first word is a signed length in units of
+     * union buflib_data (positive = allocated, negative = free), and
+     * core_print_block_at() exposes exactly that, so the map can be read without
+     * reaching into buflib internals. Costs one O(n) walk per block; n is tens,
+     * and it runs when the row is drawn, not continuously. */
+    INFO_ARENA_MAP,
+    /* The three largest allocated blocks. Sizes identify owners well enough to
+     * act on: the directory cache reserves DIRCACHE_LIMIT, the playlist fileref
+     * table is max_files_in_playlist * sizeof(entry), and playback's file buffer
+     * is the block audio_reset_buffer() parks. A block that matches none of those
+     * is the unknown one, and its size is what narrows the search. */
+    INFO_ARENA_TOP,
+    /* One row per large block, largest first: its data size, the address of the
+     * buflib_callbacks it was allocated with, and its pin count. The callbacks
+     * address is the identifier -- it resolves through the build's symbol table
+     * to the exact struct, and therefore to the file that owns the allocation. */
+    INFO_ARENA_TOP1,
+    INFO_ARENA_TOP2,
+    INFO_ARENA_TOP3,
+#endif /* arena rows */
     INFO_I2C_BASE,          /* one entry per device in i2c_devices */
     INFO_USB = INFO_I2C_BASE + ARRAYLEN(i2c_devices),
     INFO_PANIC,
@@ -303,6 +447,7 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         return buf;
     }
 
+
     switch (item) {
     case INFO_CPU:
         snprintf(buf, bufsz, "CPU frequency: %ld Hz", cpu_frequency);
@@ -325,6 +470,51 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
         snprintf(buf, bufsz, "arena: %u free, %u allocatable",
                  (unsigned)core_available(), (unsigned)core_allocatable());
         break;
+#ifdef ARENA_MAP_AVAILABLE
+    case INFO_ARENA_MAP: {
+        struct arena_stats st;
+        arena_stats(&st);
+        snprintf(buf, bufsz, "arena: %ld KB held of %ld KB, %d blocks",
+                 st.held_kb, st.pool_kb, st.blocks);
+        break;
+    }
+    case INFO_ARENA_TOP: {
+        struct arena_stats st;
+        arena_stats(&st);
+        long named = 0;
+        for (int i = 3; i < st.owners; i++)
+            named += st.owner[i].held_kb;
+        snprintf(buf, bufsz, "%d owners, %ld KB free, %ld KB in the rest",
+                 st.owners, (long)core_available() / 1024, named);
+        break;
+    }
+    /* One row per owner, largest first: the callbacks address, the total that
+     * owner holds across all its blocks, and how many blocks that is. */
+    case INFO_ARENA_TOP1: {
+        struct arena_stats st;
+        arena_stats(&st);
+        if (st.owners > 0)
+            snprintf(buf, bufsz, "owner %08lx: %ld KB in %d blk",
+                     st.owner[0].ops, st.owner[0].held_kb, st.owner[0].blocks);
+        break;
+    }
+    case INFO_ARENA_TOP2: {
+        struct arena_stats st;
+        arena_stats(&st);
+        if (st.owners > 1)
+            snprintf(buf, bufsz, "owner %08lx: %ld KB in %d blk",
+                     st.owner[1].ops, st.owner[1].held_kb, st.owner[1].blocks);
+        break;
+    }
+    case INFO_ARENA_TOP3: {
+        struct arena_stats st;
+        arena_stats(&st);
+        if (st.owners > 2)
+            snprintf(buf, bufsz, "owner %08lx: %ld KB in %d blk",
+                     st.owner[2].ops, st.owner[2].held_kb, st.owner[2].blocks);
+        break;
+    }
+#endif
     case INFO_USB:
         /* The DWC is clock-gated until usb_enable() runs, and a gated
          * peripheral reads as zero, so the gate has to be reported separately
@@ -509,7 +699,10 @@ static const char *info_get_name(int item, void *data, char *buf, size_t bufsz)
     default: {
         int i = item - INFO_I2C_BASE;
 
-        if (i >= (int)ARRAYLEN(i2c_devices)) {
+        /* Items below INFO_I2C_BASE have no case here only if a row was added
+         * to the enum without its case -- which is out of range in the other
+         * direction, and reading i2c_devices at a negative index faults. */
+        if (i < 0 || i >= (int)ARRAYLEN(i2c_devices)) {
             buf[0] = '\0';
             break;
         }

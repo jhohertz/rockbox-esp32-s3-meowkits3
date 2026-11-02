@@ -327,7 +327,50 @@
  * hands the codec `CODEC_SIZE - codec_size` as its heap, and FLAC's .bss alone
  * is ~358 KB, while PLUGIN_BUFFER_SIZE has to carry the largest plugin's code
  * and bss (220 KB shipped, 512 KB reserved). */
+/* Two optional knobs for memory investigation, currently OFF. Enabling either
+ * is a deliberate experiment, not a default.
+ *
+ * BUFLIB_DEBUG_PRINT is NOT used and must stay off. It looks harmless -- two
+ * functions in buflib_mempool.c plus core_alloc.c's `test_alloc =
+ * core_alloc(112)` at startup -- but enabling it made codec playback go silent
+ * on hardware: two
+ * builds with it on produced no audio (sink engaging, nothing heard), and
+ * playback returned with it off while every other change stayed in place. The
+ * arena rows now walk core_ctx directly, so they need neither the flag nor the
+ * test allocation. Untested whether the cause is that 112-byte block or
+ * something else about the flag; either way this target must not define it.
+ *
+ * FONT_HARD_LIMIT caps font buffers at MAX_FONT_SIZE (60,000 here). firmware/
+ * font.c enables it only for MEMORYSIZE < 4, and our MEMORYSIZE is the 8 MB
+ * PSRAM window rather than DMA RAM, so the cap is off by default and a skin
+ * requesting a glyph subset gets an uncapped allocation -- measured at 611 KB
+ * across four font blocks. With the cap on, oversized fonts load in cached
+ * mode, and every glyph miss costs three lseeks and up to three reads under
+ * lock_font_handle, which on a 1-bit SD bus at ~520 us per command is ~2 ms of
+ * exclusive bus time per miss. That starves the buffering thread, which is the
+ * suspected cause of "loads but never plays": codecs load, metadata and art
+ * load, and the sink never engages.
+ *
+ * Both were on in every build where playback went silent, so neither is
+ * exonerated yet. Established: codecs play with both off, and the sink engages
+ * (Debug -> View HW info shows TX sessions = 1), so the silence is downstream
+ * of pcm_play_dma_start -- codec mute, amp gating, or the clock pads being
+ * owned by the receiver. Re-enable one at a time and test codecs.
+ */
+#define FONT_HARD_LIMIT   /* bisect: on alone */
+
 #define DIRCACHE_MIN     (1024*1024/4) /* 256 KB provision floor */
+/* 384 KB. This is the value that was verified on hardware: at 256 KB a file
+ * open on a card with thousands of directories cost ~80,000 single-sector
+ * reads (~40 s on this 1-bit bus) because the cache cannot hold a path's worth
+ * of entries, and 384 KB took the same open to 4,169 reads.
+ *
+ * Raising it to 1 MB coincided with codecs no longer playing, but that is not
+ * proof: the same builds also enabled FONT_HARD_LIMIT and BUFLIB_DEBUG_PRINT,
+ * and codec playback returned with those off while the cache stayed at 384 KB.
+ * The 1 MB value is therefore untested rather than refuted -- retest it on its
+ * own before changing this number again. See "What actually occupies the arena
+ * at boot" in AGENTS.md for the owner breakdown. */
 #define DIRCACHE_LIMIT   (384*1024)    /* measured: 80,000 reads -> 4,169 */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
