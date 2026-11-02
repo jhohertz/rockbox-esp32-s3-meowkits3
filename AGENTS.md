@@ -795,13 +795,16 @@ Four related facts, all measured rather than read:
   PSRAM.** `firmware/export/config.h` defines it as
   `__attribute__((section(".icode")))`, and nothing in `espressif_esp32s3/idf-app/main/rockbox_memory.lf`
   or any xtensa linker script provides a `.icode` region -- `readelf -S` on the built
-  ELF shows no such section, so it is absorbed into `.flash.text` at `0x42000020`,
-  which is PSRAM-backed because `CONFIG_SPIRAM_XIP_FROM_PSRAM`,
-  `SPIRAM_FETCH_INSTRUCTIONS` and `SPIRAM_RODATA` are all enabled. Verified from the
-  symbol table: `gdma_irq` `0x420578fc`, `gdma_tx_isr` `0x42057ad0`, `arm`
-  `0x42056864`, `fill` `0x42056aa0`, `start_tx` `0x42056cf4` -- every one in the PSRAM
-  instruction window. `.iram0.text` contains only IDF's code, ending at
-  `0x40387017`. `iram0_0_seg` is `0x40374000 + 0x57700` (358 KB), so IRAM address
+  ELF shows no such section, so it is absorbed into `.flash.text` at `0x42000020` --
+  which is the **flash** instruction window, not PSRAM: all three PSRAM-XIP options
+  are off (see "Codecs, plugins and the image format" below). The addresses recorded
+  when they were on were `gdma_irq` `0x420578fc`, `gdma_tx_isr` `0x42057ad0`, `arm`
+  `0x42056864`, `fill` `0x42056aa0`, `start_tx` `0x42056cf4`; the current build places
+  the same call tree at `arm` `0x420562cc`, `i2s_program_clock` `0x42056338`,
+  `fill_silence` `0x420563cc`, `refill` `0x4205646c`, `fill` `0x420564b0`,
+  `idle_tx` `0x42056710`, `gdma_irq` `0x42056bc8`, `gdma_tx_isr` `0x42056d7c`, inside
+  `_stext` `0x42000020` .. `_etext` `0x4208a54a`. `.iram0.text` contains only IDF's
+  code, ending at `0x40387768`. `iram0_0_seg` is `0x40374000 + 0x57700` (358 KB), so IRAM address
   space is not scarce -- but only `0x40374000..0x40378000` is instruction-only, and
   above `0x40378000` those addresses are the `0x6F0000` alias of `dram0_0_seg`.
   `sections.ld` starts `.dram0.data` at
@@ -811,15 +814,18 @@ Four related facts, all measured rather than read:
   remains. The TX ISR call tree is immaterial against that (measured with `nm -S`):
   `gdma_irq` 468 B, `fill` 327 B, `tx_recover` 160 B, `fill_silence` 78 B, `arm` 66 B,
   `gdma_tx_isr` 8 B -- 1107 B total; `refill` is 123 B of its own and the mixer it
-  calls stays in PSRAM either way. Cache maintenance is not the PSRAM-fetch problem
+  calls stays in flash XIP either way. Cache maintenance is not the PSRAM-fetch problem
   either: `cache_hal_invalidate_addr` and `cache_hal_writeback_addr` are already
   IRAM-resident at `0x40380208`/`0x40380230`, and `memcpy`/`memset` resolve to ROM at
   `0x400011xx`. It is the handler's own body and its Rockbox callees that fetch from
-  PSRAM.
+  outside IRAM -- now from flash rather than PSRAM.
   This is also why the GDMA interrupt is allocated *without* `ESP_INTR_FLAG_IRAM`.
-  Consequence beyond the err counter: any PSRAM-heavy operation can delay the
-  completion handler, because the handler's own instruction fetches contend with the
-  operation on the same MSPI bus. Codec loads are the case that shows up --
+  Consequence beyond the err counter: any MSPI-heavy operation can delay the
+  completion handler, because the handler's own instruction fetches contend with it.
+  The contention survives the XIP change: flash and PSRAM share one MSPI timing
+  domain (`SPI_MEM_CORE_CLK_SEL_REG` is common to SPI0 and SPI1, and IDF's
+  `mspi_timing_enter_low_speed_mode()` deliberately slows both), so a PSRAM write and
+  a flash instruction refill still race on the same bus. Codec loads are the case that shows up --
   a ~700 KB `memset` of the codec heap plus a `commit_discard_idcache()` that
   invalidates every instruction line, so the ISR re-fills its cache while the bus is
   saturated. That is the mechanism proposed for the 115 ms of rearm delay behind the
@@ -3473,8 +3479,25 @@ zero -- `if (!playlist->dcfrefs_handle)` passes a failure straight through to
 `core_get_data()`. When a Rockbox allocation "succeeds" and then dereferences
 NULL, check for that pattern before believing the handle.
 
-`DIRCACHE_RESERVE/MIN/LIMIT` are now overridable and `meowkits3.h` caps the
-cache at 2 MB. Handle went from -2 to 4.
+`DIRCACHE_RESERVE/MIN/LIMIT` are now overridable. `meowkits3.h` caps the cache
+at **384 KB**, and that number is a measured trade rather than a guess: at
+256 KB an Ogg open cost ~80,000 one-sector reads (~40 s of this 1-bit bus)
+because the cache cannot hold a path's worth of directory entries, while 384 KB
+took the same open to 4,169 reads. The ceiling on that was mpegplayer, whose
+`plugin_get_audio_buffer()` grant -- `core_alloc_maximum()`, i.e. the arena
+remainder -- had to reach 2,443,244 bytes with upstream's 2 MiB
+`LIBMPEG2_ALLOC_SIZE`; 1 MB and 2 MB caches both left it failing with "Out of
+memory in stream_init", and 384 KB left it zero disk-buffer pages.
+
+That ceiling is not a law. libmpeg2's pool demand scales with the *coded* frame,
+and this panel codes 320x240 (~0.65 MB of demand), so the reservation is now
+overridden to 1 MiB for this target and the floor drops to ~1,394,668 bytes --
+which is why 384 KB of directory cache and mpegplayer now coexist, verified on
+hardware. The override is only legitimate because libmpeg2 gained the allocation
+guard described under "mpegplayer's memory floor"; without it a tight
+reservation is a write through NULL, not an error. Doom is *not* the constraint:
+it plays with a 2 MB cache, so the earlier 1 MB figure was stale. Handle went
+from -2 to 4.
 
 ### Rockbox threads must be pinned to core 0
 
@@ -4734,11 +4757,23 @@ goes through the data-window alias of the same physical page, i.e. the same MMU
 entry seen from the other bus. `XT_IROM_OFF` is that offset. Codecs play audio and
 160 plugins run.
 
-`CONFIG_SPIRAM_XIP_FROM_PSRAM` / `FETCH_INSTRUCTIONS` / `RODATA` are enabled and
-do work -- the firmware's own `.text` now runs from `0x4202xxxx` on PSRAM, and
-there are no regressions -- but they do not by themselves make a freshly loaded
-image fetchable, because IDF only re-maps ranges that were in the image at link
-time.
+All three PSRAM-XIP options are now **off**, and nothing depended on them:
+
+- They never made a freshly loaded image fetchable. IDF only re-maps ranges that were
+  in the image at link time; images loaded at runtime fetch through the
+  instruction-window alias (`XT_IROM_OFF`) of the MMU entry they already occupy, which
+  works without them. Verified on hardware with codecs and plugins both running.
+- They never reserved address space. `esp32s3/sections.ld.in:460` places
+  `.ext_ram.dummy` unconditionally, sized `_rodata_reserved_end -
+  _flash_rodata_dummy_start`, because `extern_ram_seg` and `drom0_0_seg` share one bus
+  and one linear range. Turning them off left the layout **byte-identical**, so the
+  1.125 MB is a link-time consequence of the shared window, not a config choice.
+- Their only real effects were a ~1.15 MB flash->PSRAM copy at boot and instruction
+  fetches competing with audio data on MSPI. The firmware's `.text` runs from the flash
+  window at `0x4200xxxx` instead.
+
+The sdkconfig comment that claimed these were required for codec execution was wrong
+and is corrected in place.
 
 ### Two silent-failure traps worth knowing
 
@@ -5023,8 +5058,21 @@ That splash text is itself a trap worth knowing: `stream_mgr.c:1128` reports
 plugin buffer too small, not a scheduler problem — which is the same arithmetic as the
 paragraph below, arriving from the other side of `MIN_MEMMARGIN`.
 
-The floor is a grant of ~2,443,244 bytes: 2,097,152 libmpeg2 reservation + 176,400 PCM +
-67,284 audio queue + 4,096 margin + 65,544 disk guard + 32,768 one page. `buflib_alloc_
+The floor is a grant of ~2,443,244 bytes with upstream's reservation: 2,097,152
+libmpeg2 reservation + 176,400 PCM + 67,284 audio queue + 4,096 margin + 65,544 disk
+guard + 32,768 one page. With this target's 1 MiB `LIBMPEG2_ALLOC_SIZE` the same sum is
+~1,394,668 bytes.
+
+**libmpeg2 silently converted an allocation failure into a memory corruption.**
+`mpeg2_header_picture_finalize()` is `void`, and it assigned every `mpeg2_malloc()`
+result straight into `mpeg2dec->yuv_buf[][]`, `fbuf->buf[]` and `decoder.convert_id`
+with no check; `alloc.c` returns NULL when its reservation runs out, so an exhausted
+pool produced writes through NULL several frames later -- on this target a
+`StoreProhibited` and a watchdog reset with no message. It now sets `STATE_INVALID`
+when any of those allocations fails, and `decode.c` returns it immediately after the
+finalize call, before any slice decode can touch the pointers. That is a shared-code
+fix, not a target tuning: any target whose arena is tight enough to exhaust the
+reservation was crashing rather than reporting. `buflib_alloc_
 maximum()` takes exactly `buflib_allocatable()`, which is the second number the target's
 `INFO_ARENA` debug row prints — so that row *is* the plugin's grant, and reading it before
 launching tells you whether the plugin will start. Measured: cold boot 2,456,452 (13 KB of
@@ -5185,7 +5233,7 @@ later exceed.
   looks like a missing source. `make idf-clean` is the goal that resets IDF state
   and re-establishes the generated headers.
 - `make clean` also deletes `rockbox.zip`. Verify packaging with `make zip`
-  afterwards: 411 entries, `.rockbox/rockbox.esp32s3`, 160 `.rock`, 43 `.codec`.
+  afterwards: 420 entries, `.rockbox/rockbox.esp32s3`, 157 `.rock`, 44 `.codec`.
 - Dependency tracking is *not* the problem: `make.dep` already lists
   `config/meowkits3.h` for 5,320 objects. Staleness came from the archive and
   directory semantics above, and from deleting the wrong object path

@@ -139,16 +139,27 @@ Board access: **hold BOOT, tap RESET** for download mode, then
   needs its own card payload, not just its own image. `CODEC_API_VERSION` is 50 on
   both and `CODEC_SIZE` / `PLUGIN_BUFFER_SIZE` are unchanged.
 
-  The user's recollection is that Ogg and the database did work at some point on
-  this port, so the search is for whatever changed the *background* I/O cost --
-  the arena/dircache sizing knobs (`DIRCACHE_RESERVE/MIN/LIMIT`, Oct 28), the
-  sector cache sizing (`DC_NUM_ENTRIES`, `MAX_OPEN_FILES`), and the buflib arena
-  placement under the IDF link -- rather than the decoder or the FAT arithmetic.
+  **RESOLVED -- it was the directory cache size, not a regression.** On a clean
+  card with nothing else changed: 256 KB cache gives ~80,000 single-sector reads
+  per open (~40 s of this 1-bit bus), 384 KB gives 4,169. The cache cannot hold a
+  path's worth of directory entries on a card with thousands of directories, so
+  every open re-walks them through `fat.c`'s `transfer()`.
 
-  **Card payload while this is open:** the board currently runs the tag probe
-  build (`100cc74a`), so the card carries the tag's payload and cannot load HEAD's
-  codecs or plugins. Moving back to HEAD means a card refresh and a database
-  rebuild.
+  Raising the cap was blocked by mpegplayer, and that block is gone too: the
+  2 MiB `LIBMPEG2_ALLOC_SIZE` was the whole constraint, and libmpeg2's pool demand
+  scales with the *coded* frame, which here is 320x240 (~0.65 MB of demand). The
+  reservation is now overridden to 1 MiB for this target -- legitimate only
+  because libmpeg2 gained the allocation guard it never had (`header.c` was
+  assigning `mpeg2_malloc()` results into `yuv_buf[][]` and `fbuf->buf[]` from a
+  `void` function with no NULL check, so an exhausted pool was a write through
+  NULL; it now sets `STATE_INVALID` and `decode.c` returns it before any slice
+  decode). Verified on hardware on `b18c39eb`: Ogg opens quickly, mpegplayer plays,
+  Doom plays, recording works. This is the best-performing build of the port so
+  far by user assessment.
+
+  **Card payload:** the board runs HEAD (`b18c39eb`, `target_id` 134, API 286) with
+  HEAD's zip, so the earlier tag-payload caveat no longer applies. A database
+  rebuild is needed after any card re-population.
 
 - **Fetch-class panic, unresolved, and now without a repro.** Two captures on
   the pre-repair card reported `IllegalInstruction` whose captured bytes at the

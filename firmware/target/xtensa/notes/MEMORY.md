@@ -102,13 +102,16 @@ went.
 
 `core_allocator_init()` maps the core context over `audiobuffer..audiobufend`, and
 those two linker symbols measure exactly what they say in the linked image:
-`0x3c1612e0` and `0x3c5612e0`, i.e. **4 MiB**, in the PSRAM part of the Ext_RAM
-window.
+`0x3c145800` and `0x3c565800`, i.e. **4,325,376 B (4.125 MiB)**, in the PSRAM part
+of the Ext_RAM window -- `XT_AUDIOBUF_SIZE` exactly: `(MEMORYSIZE * 0x80000) +
+0x20000` = 8 x 512 KB + 128 KB.
 
 `init_rec_buffers()` (`apps/recorder/pcm_record.c`) carves one maximum allocation
 into `|PCMBUF|STREAMBUF|FILENAME|ENCBUF|`. The sizes for this target are not the
 ones an earlier revision of this file claimed. `tools/configure` gives meowkits3
-`MEMORYSIZE = 16`, so `pcm_record.c` takes the `#elif MEMORYSIZE <= 16` branch,
+`MEMORYSIZE = 8` (`Makefile: `export MEMORYSIZE=8``, reaching C through
+`root.make`'s `-DMEMORYSIZE=$(MEMORYSIZE)`), so `pcm_record.c` takes the
+`#elif MEMORYSIZE <= 16` branch,
 which defines **only** `PANIC_SECONDS` and `FLUSH_SECONDS` -- no chunk sizing --
 and everything else falls to the defaults:
 
@@ -217,7 +220,12 @@ layout came out **byte-identical**: `.ext_ram.dummy` is sized
 sized `SIZEOF(.flash.text)` regardless of those configs. The reservation exists
 because `extern_ram_seg` and `drom0_0_seg` share one bus and one linear range,
 so the firmware's own text and rodata must hold address space whether or not
-they are also copied to PSRAM. The configs were reverted.
+they are also copied to PSRAM. The options are **off** in the shipped
+`sdkconfig.defaults` and the layout is unchanged by that, so what actually went away
+was the 1.15 MB flash->PSRAM copy at boot and the MSPI fetch contention; `.text`
+executes from the flash window at `0x4200xxxx`. Codecs and plugins still load and run,
+which is the hardware proof that these options were never what made PSRAM execution
+possible.
 
 `codecbuf` and `pluginbuf` are **pinned absolute symbols**, not section contents.
 `apps/codecs.c` and `apps/plugin.c` reject any image whose declared `load_addr`
@@ -313,7 +321,10 @@ Three things this settles:
 
    A card large enough to stuff the cache therefore hits the grab path on every
    rebuild. The upstream default `DIRCACHE_LIMIT` is 6 MB, bigger than this whole
-   window, so it must be lowered here. It is set to 1 MB (`DIRCACHE_MIN`).
+   window, so it must be lowered here. It was 1 MB, then 2 MB, and is now
+   **384 KB**: the value that both keeps mpegplayer's grant above its floor and
+   takes a directory open from ~80,000 sector reads to ~4,000. The EOM panic
+   below is what the 2 MB cap caused -- history, not the current setting.
 
 3. **That is what fixed the EOM panic.** With the cap at 2 MB, dircache held
    2,228,228 B and playback's file buffer came back at 932,184 B -- less than
@@ -346,7 +357,8 @@ Largest DRAM objects in the linked image:
 | 17,024 | `usb_stack` (`usb.c`) | thread stack | **No** -- `DEFAULT_STACK_SIZE*4` plus `DUMP_BMP_LINESIZE`; the USB thread runs the GUI |
 | 8,192 | `_transfer_buffer` (`usb_storage.c`) | DWC DMA | **No** -- the core's AHB master cannot reach PSRAM, hence `USB_STATIC_ALLOC` for ESP32S3 in `usb_storage.c:450`. 2 x 4 KB; the default 64 KB per direction overflowed the region by 152,968 B |
 | 1,024 | `send_buffer` / `receive_buffer` (`usb_serial.c`) | DWC DMA | **No** -- same master |
-| 4,096 | `cache_buffer` | SDHOST IDMAC destination | **No**, and it was halved: `fs_defines.h` sizes it from `MEMORYSIZE` (16 = flash size, not DMA-capable RAM), so 64 entries became 32. esp32s3 declares no `SOC_SDMMC_PSRAM_DMA_CAPABLE` |
+| 4,096 | `cache_buffer` | SDHOST IDMAC destination | **No**, and it was halved: `fs_defines.h` sizes it from `MEMORYSIZE` (here 8 = the PSRAM window, not the
+DMA-capable 341 KB region), so 64 entries became 32. esp32s3 declares no `SOC_SDMMC_PSRAM_DMA_CAPABLE` |
 | 8,192 | `dma_buf` | **moved to PSRAM** | TX DMA staging, 4 slots x 2048 B. The slot is `MIX_FRAME_SAMPLES * 4` times the mixer's rate multiplier keyed on `HW_SAMPR_MAX`, so it holds a 96 kHz frame; arm length is the frame size for the rate in effect, 1024 B at <=48 kHz. GDMA can reach PSRAM for buffers (`SOC_AHB_GDMA_SUPPORT_PSRAM`, and the 20-bit window applies only to the descriptor address register), so this one moved; `desc[]` stayed, 128 B, because descriptors cannot |
 | 8,192 | `storage_thread_stack` | default | Thread stack |
 | 8,192 | `audio_stack` | default | Thread stack |
@@ -391,8 +403,10 @@ and now `file` are the ones that have moved.
    a board cannot be reached without passing it. A link-time `ASSERT()` is not available:
    ESP-IDF owns the linker script, and the only thing we feed the link
    (`idf-app/main/rockbox_memory.lf`) is an ldgen fragment that routes archives to memory
-   regions and carries no section layout. Current build: section ends 0x3c572e8c against
-   plugin text reserved at 0x3c580000 -- 53,620 bytes clear.
+   regions and carries no section layout. Current build (`b18c39eb`):
+   `_ext_ram_bss_start` `0x3c120000`, section ends `0x3c5a3640` against plugin text
+   reserved at `0x3c5c0000` -- **117,184 bytes clear**, with 253,504 between
+   `audiobufend` and the section end.
 
 3. **`MEMORYSIZE` drives three unrelated things at once** -- the audiobuffer
    size, the external window span, and the codec/plugin origins. Changing it is
