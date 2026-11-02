@@ -395,9 +395,13 @@
  * two capture changes separately: moving es7210_init() out of the playback sink
  * is innocent, this resize is what killed the signal.
  *
- * 64 * 2048 * 4 = 512 KiB, about 2.9 seconds of stereo 44.1 kHz, which fits the
- * grant with room left for the stream and encode buffers that follow it. */
-#define PCM_NUM_CHUNKS   64
+ * 128 * 2048 * 4 = 1 MiB, about 5.9 seconds of stereo 44.1 kHz. Upstream's
+ * default is 256 (2 MiB), which this arena could not carry alongside the cache
+ * and the fonts. The extra seconds are worth having on this card: the flush path
+ * writes through a 1-bit SD bus, so a longer ring absorbs a slow write instead
+ * of dropping samples. NOTE this value is under test, not established -- 64 is
+ * the figure verified on hardware. */
+#define PCM_NUM_CHUNKS   128
 
 /* The tagcache is what Rockbox calls the database: it indexes the ID3/Vorbis
  * tags on the card so the Tree can offer Artist / Album / Genre / Critter
