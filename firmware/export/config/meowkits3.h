@@ -214,12 +214,13 @@
 #define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".ext_ram.bss")))
 #endif
 
-/* The sector cache is sized by fs_defines.h from MEMORYSIZE, which on this
- * board is 16 -- the flash size. That is the wrong input here: cache_buffer[]
- * is a DMA destination, and DMA-visible memory is the one class of object this
- * platform cannot move to PSRAM, because esp32s3 declares no
- * SOC_SDMMC_PSRAM_DMA_CAPABLE. Its budget is therefore the 337 KB internal
- * DRAM region, which is full to 1,020 bytes.
+/* The sector cache is sized by fs_defines.h from MEMORYSIZE, which for this
+ * target is 8 -- the octal PSRAM window `tools/configure` was handed as
+ * `memory=8`, not the 337 KB of internal DRAM that the tier is meant to
+ * describe. That is the wrong input here: cache_buffer[] is a DMA destination,
+ * and DMA-visible memory is the one class of object this platform cannot move
+ * to PSRAM, because esp32s3 declares no SOC_SDMMC_PSRAM_DMA_CAPABLE. Its budget
+ * is therefore the internal DRAM region, which is nearly exhausted.
  *
  * 64 entries is 32 KB of that region. Taking it to the small-memory figure
  * (32 entries, one sector each = 16 KB) halves the number of distinct sectors

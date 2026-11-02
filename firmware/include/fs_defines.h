@@ -38,10 +38,11 @@
    certain that the disk cache has enough available buffers */
 
 #ifndef MAX_OPEN_FILES
-/* MEMORYSIZE describes the storage size, so this picks a generous set of handle
- * limits whenever the player has a lot of flash. A target whose DMA-capable RAM
- * is tighter than its flash can override the pair -- both halves, since the
- * comment above requires the disk cache to cover the handles. */
+/* MEMORYSIZE is the RAM figure tools/configure was given, so this picks a
+ * generous set of handle limits whenever the player has a lot of RAM. A target
+ * whose DMA-capable RAM is tighter than that figure can override the pair --
+ * both halves, since the comment above requires the disk cache to cover the
+ * handles. */
 #if MEMORYSIZE < 8
 #define MAX_OPEN_FILES  11
 #define MAX_OPEN_DIRS   12

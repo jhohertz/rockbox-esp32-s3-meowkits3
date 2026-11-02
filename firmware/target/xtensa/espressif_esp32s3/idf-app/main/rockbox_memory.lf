@@ -42,7 +42,14 @@
 # looks 150 KB in a per-object census.
 #
 # What is moved is the large, CPU-only data: language and unicode tables,
-# bidi, the rbcodec buffering, lang_core's markup and resample's history buffers.
+# bidi, lang_core's markup and resample's history buffers.
+#
+# `buffering` is deliberately absent. apps/buffering.c holds
+# `static long buffering_stack[...]`, and it lives in lib/librockbox.a --
+# an earlier revision of this file listed it under librbcodec.a, where no
+# such member exists, so the entry matched nothing and silently did nothing
+# while claiming 13 KB of PSRAM. Routing it now would move that stack into
+# cache-backed memory, which is the one placement this file may not make.
 # These are read and written by the core and never handed to a DMA engine.
 #
 # scroll_engine.o and playlist.o were on this list and came off it. Both look
@@ -196,7 +203,6 @@ entries:
 [mapping:rb_rbcodec]
 archive: librbcodec.a
 entries:
-    buffering (rb_psram)
     # resample.o -- resample_data (152) and resample_out_bufs (2304), the
     # resampler's history and staging buffers. Written by the codec thread, never
     # by the GDMA completion path, and no stack. Same purpose as lang_core above.
