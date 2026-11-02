@@ -35,7 +35,13 @@
 #define MIN_MEMMARGIN (4*1024)
 
 /** Video thread **/
+/* libmpeg2's pool reservation. Sized for 352x288 coded frames; the pool demand
+ * scales with the *coded* frame, so a target whose panel codes smaller can lower
+ * it -- but only because libmpeg2 now stops on a failed mpeg2_malloc() rather
+ * than assigning NULL into yuv_buf[][] and fbuf->buf[]. See header.c. */
+#ifndef LIBMPEG2_ALLOC_SIZE
 #define LIBMPEG2_ALLOC_SIZE (2*1024*1024)
+#endif
 
 /** MPEG audio buffer **/
 #define AUDIOBUF_GUARD_SIZE (MPA_MAX_FRAME_SIZE + 2*MAD_BUFFER_GUARD)
