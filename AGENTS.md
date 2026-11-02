@@ -3516,12 +3516,12 @@ that allocated it -- including owners whose callbacks are static or, like
 dircache's, are a *field* inside a larger struct and so have no symbol of their
 own). Measured on hardware at boot, before any playback:
 
-| owner | held | blocks |
-|---|---|---|
-| `font.c` | **611 KB** | 4 |
-| dircache | 384 KB | 1 |
-| `tree.c` | 195 KB | 1 |
-| six smaller owners | 360 KB | 28 |
+| owner | held, cap off | held, cap on | blocks |
+|---|---|---|---|
+| `font.c` | **611 KB** | **198 KB** | 4 |
+| dircache | 384 KB | 384 KB | 1 |
+| `tree.c` | 195 KB | 195 KB | 1 |
+| six smaller owners | 360 KB | ~360 KB | 28 |
 
 Total held 1,660 KB of a 4,325,376-byte pool, 2,563 KB free. There is no leak and
 no mystery claimer; it is ordinary Rockbox startup allocation. The interesting
@@ -3532,7 +3532,16 @@ the PSRAM window rather than DMA-capable RAM -- so the cap is off, and a skin
 requesting a glyph subset gets an uncapped allocation. Defining `FONT_HARD_LIMIT`
 in the target config restores it, which forces any font larger than
 `MAX_FONT_SIZE` (60,000 here) into cached mode: glyphs come off the card on
-demand instead of occupying the pool.
+demand instead of occupying the pool. **The cap works, measured** -- with it on,
+the font owner is 198 KB rather than 611 KB. Whether that ~413 KB can be spent
+on a larger directory cache is **open**, not answered: 512 KB and 1 MB each
+looked silent, but only on the first boot after a flash, and the same firmware
+played after a reset (see the boot-state note below). The cost to watch is
+that a cached glyph miss is
+three `lseek`s plus up to three `read`s under `lock_font_handle`, roughly
+2 ms of
+exclusive bus time at ~520 us per command on this 1-bit card, so confirm the UI
+still draws promptly whenever this changes.
 
 The debug screen's row switch ends in a `default:` that handles the per-I2C-
 device rows, and it only bounds-checks the upper end: an enum entry placed
@@ -3548,11 +3557,39 @@ implicit, so the walk shows allocated blocks only and `held + core_available()`
 is the pool. `last_handle - buf_start` is already bytes; multiplying it by
 `sizeof(union buflib_data)` again is a 4x error that looks like a 16 MB arena.
 
-The walk deliberately does **not** use `BUFLIB_DEBUG_PRINT`. That flag looks
-innocuous -- it adds two functions and makes `core_alloc.c` allocate a 112-byte
-test block at startup -- but enabling it made codec playback go silent on this
-hardware, and disabling it restored audio with everything else unchanged. Reading
-`core_ctx` directly needs no flag and allocates nothing.
+The walk deliberately does **not** use `BUFLIB_DEBUG_PRINT`. It adds two
+functions and makes `core_alloc.c` allocate a 112-byte test block at startup;
+reading `core_ctx` directly needs no flag and allocates nothing, so there is no
+reason to take it.
+
+There is an observation attached to it that is **not** a finding: one build with
+the flag on produced no audio from any codec, and a build differing only in that
+flag played. Both were single boots, and single boots are not comparable -- see
+the boot-state note below -- so the flag is excluded on the "no reason to take
+it" argument rather than because it was shown to break playback.
+
+### Boot state is a variable, and codec silence is its symptom
+
+**A boot that is building the database cannot play, and reflashing does not
+change that.** `apps/tagcache.c:789` takes the arena remainder through
+`core_alloc_maximum(&size, &buflib_ops_locked)` and holds it until
+`free_tempbuf()` after the database commit; locked ops mean buflib cannot shrink
+or relocate it. `apps/playback.c:1083` asks for that same remainder, so on
+such a
+boot playback has nothing to buffer with. The database builds when it is missing
+or stale -- which is why a card freshly populated from `make zip` behaves
+differently from the same card one boot later.
+
+Consequence for any measurement involving the arena: **a first boot after a
+flash
+and a later boot are not comparable**, and comparing them produces false
+attributions. This is exactly what happened when `DIRCACHE_LIMIT` above 384 KB
+and `BUFLIB_DEBUG_PRINT` were each declared guilty of silencing codecs. The
+protocol is: flash, reset once so the database and directory cache are built,
+then test playback. The arena owner rows identify the holder directly -- the
+`buflib_ops_locked` group *is* the tagcache temp buffer -- so a silent boot
+can be
+diagnosed rather than guessed at.
 
 ### Rockbox threads must be pinned to core 0
 

@@ -360,17 +360,28 @@
 #define FONT_HARD_LIMIT   /* bisect: on alone */
 
 #define DIRCACHE_MIN     (1024*1024/4) /* 256 KB provision floor */
-/* 384 KB. This is the value that was verified on hardware: at 256 KB a file
- * open on a card with thousands of directories cost ~80,000 single-sector
- * reads (~40 s on this 1-bit bus) because the cache cannot hold a path's worth
- * of entries, and 384 KB took the same open to 4,169 reads.
+/* 384 KB: the value verified to play, and the only one that is.
+
+ * Established: at 256 KB a file open on a card with thousands of directories
+ * costs ~80,000 single-sector reads (~40 s on this 1-bit bus) because the cache
+ * all.
+ * 4,169 reads. That is why the value is raised above the default provision at
+ * all.
  *
- * Raising it to 1 MB coincided with codecs no longer playing, but that is not
- * proof: the same builds also enabled FONT_HARD_LIMIT and BUFLIB_DEBUG_PRINT,
- * and codec playback returned with those off while the cache stayed at 384 KB.
- * The 1 MB value is therefore untested rather than refuted -- retest it on its
- * own before changing this number again. See "What actually occupies the arena
- * at boot" in AGENTS.md for the owner breakdown. */
+ * What is NOT established: whether larger values are allowed. 512 KB and 1 MB
+ * made on the *first* boot after a flash, and the same firmware played after a
+ * made on the *first* boot after a flash, and the same firmware played after a
+ * subsequent reset. Boot state is therefore an uncontrolled variable in that
+ * result, and it has a real mechanism: apps/tagcache.c:789 takes the arena
+ * building the database leaves playback with nothing.
+ * unrelocatable -- and holds it until free_tempbuf() after a database commit,
+ * while apps/playback.c:1083 asks for that same remainder. A boot that is
+ * building the database leaves playback with nothing.
+ *
+ * Retest any value above 384 KB only after boot state has settled: flash, reset
+ * once so the database and directory cache are built, then test codecs. The
+ * arena owner rows on Debug -> View HW info identify the holder directly -- the
+ * buflib_ops_locked group is the tagcache temp buffer. */
 #define DIRCACHE_LIMIT   (384*1024)    /* measured: 80,000 reads -> 4,169 */
 
 /* The recording PCM ring is sized at compile time from these two, but it is
@@ -397,10 +408,11 @@
  *
  * 128 * 2048 * 4 = 1 MiB, about 5.9 seconds of stereo 44.1 kHz. Upstream's
  * default is 256 (2 MiB), which this arena could not carry alongside the cache
- * and the fonts. The extra seconds are worth having on this card: the flush path
- * writes through a 1-bit SD bus, so a longer ring absorbs a slow write instead
- * of dropping samples. NOTE this value is under test, not established -- 64 is
- * the figure verified on hardware. */
+ * and the fonts. The extra seconds are worth having on this card: the flush
+ * path writes through a 1-bit SD bus, so a longer ring absorbs a slow write
+ * rather than dropping samples. Verified on hardware: recording runs, the
+ * capture is complete and intelligible on playback, and file playback and
+ * speaker output are unaffected. */
 #define PCM_NUM_CHUNKS   128
 
 /* The tagcache is what Rockbox calls the database: it indexes the ID3/Vorbis

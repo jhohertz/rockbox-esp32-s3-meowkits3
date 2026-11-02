@@ -555,6 +555,20 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     to define it -- but if anyone reintroduces `BUFLIB_DEBUG_PRINT` here, codecs
     going silent is the symptom to recognise. Note the shape of the bug: it is
     silent, not an error, and metadata, art and browsing all still work.
+  - **Bisect results in this area are contaminated by boot state, and must be
+    redone.** Codec playback went silent on the first boot after a flash and
+    worked after a subsequent reset -- same firmware, same card. That applies to
+    every "silent" observation attributed to `DIRCACHE_LIMIT` 512 KB / 1 MB and
+    to `BUFLIB_DEBUG_PRINT`, so none of those attributions is sound. The
+    mechanism is visible in the tree: `apps/tagcache.c:789` allocates the arena
+    remainder with `core_alloc_maximum(..., &buflib_ops_locked)` and holds it
+    until `free_tempbuf()` after a database commit, while `apps/playback.c:1083`
+    requests that same remainder -- a boot that is building or committing the
+    database leaves playback unable to allocate, and a boot that isn't does not.
+    Protocol for retesting: flash, reset once so the database and directory cache
+    are built, then test codecs; read the arena owner rows during a failed
+    attempt, since the `buflib_ops_locked` group shows the temp buffer directly.
+
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the
     PSRAM arena and the database builds -- but `SOC_SDMMC_PSRAM_DMA_CAPABLE` is
