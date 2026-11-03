@@ -2325,17 +2325,25 @@ call returning `ESP_OK`, black glass. All three had to be fixed before the panel
 displayed anything. None of them is visible from the SoC side — every transfer
 completes and reports success throughout.
 
-1. **The LCD pads are JTAG pads.** GPIO 39/40/41 are `MTCK`/`MTDO`/`MTDI` and
-   come out of reset with `MCU_SEL = 0`, which connects them to the JTAG block
-   rather than to the GPIO matrix. Routing `FSPICLK`/`FSPID` into the matrix and
-   enabling the output driver accomplishes nothing while that is true: the pad is
-   owned by something else. `gpio_set_direction()` writes only the enable bits,
-   and `gpio_reset_pin()` restores the pad's *default* function, which here is
-   JTAG. `esp_rom_gpio_pad_select_gpio()` is the call that actually moves the
-   pad. Verified by reading bits 14:12 of `IO_MUX_BASE + 0x04 + 4*pin`: `0 -> 1`.
-   The pad registers for 39/40/41 are named `PERIPHS_IO_MUX_MTCK/MTDO/MTDI_U` at
-   0xa0/0xa4/0xa8, which coincides with the usual `0x04 + 4*pin` formula, so the
-   formula is safe for these three.
+1. **The LCD pads are the JTAG-function pads.** GPIO 39/40/41 are
+   `MTCK`/`MTDO`/`MTDI` and come out of reset with `MCU_SEL = 0`, which is the
+   pad's dedicated peripheral function rather than the GPIO matrix.
+   `esp_rom_gpio_pad_select_gpio()` -- reached by `gpio_set_direction()` -- moves
+   them to `MCU_SEL = 1`, verified by reading bits 14:12 of
+   `IO_MUX_BASE + 0x04 + 4*pin`: `0 -> 1`. The pad registers for 39/40/41 are
+   named `PERIPHS_IO_MUX_MTCK/MTDO/MTDI_U` at 0xa0/0xa4/0xa8, which coincides
+   with the usual `0x04 + 4*pin` formula, so the formula is safe for these three.
+
+   What was previously claimed here -- that the JTAG block can hold these pads
+   independently of `MCU_SEL`, and that `USB_SERIAL_JTAG.conf0` bit 16 selects
+   the pads -- is **wrong, and was never measured.** `conf0` per
+   `soc/usb_serial_jtag_struct.h`: bit 14 is `usb_pad_enable` ("enable USB pad
+   function", i.e. the USJ peripheral owning pads 19/20), bit 16 is
+   `usb_jtag_bridge_en` (whether USB carries the JTAG state machine or serial
+   data). Neither routes anything to pads 39-42. Measured on both boards:
+   `conf0 = 0x00004200`, i.e. bit 9 `dp_pullup` and bit 14 `usb_pad_enable` set,
+   bit 16 clear. Pad 19/20 ownership is separately controlled by
+   `USB_WRAP.pad_enable` (bit 18), which is what our USB init moves.
 2. **CS must be de-selected across the panel reset pulse.** Both the reference
    BSP and our bare-metal driver drive CS high, pulse reset, wait, and only then
    assert CS. Holding CS asserted while `/RES` is low lets the interface latch
@@ -4699,42 +4707,19 @@ firmware/kernel/thread.o` in the build dir -- never from
 Until that is resolved, the hand-rolled switch stays. It works; it is just the
 wrong thing to own.
 
-## GPIO 39/40/41 are JTAG pads, and MCU_SEL=1 may not be enough
+## GPIO 39/40/41 are the JTAG-function pads; MCU_SEL=1 is enough, measured
 
-The panel's DC, MOSI and SCLK are GPIO 39, 40 and 41 -- MTCK, MTDO and MTDI.
-`gpio_set_direction()` calls `io_mux_select_gpio()`, and measured all three read
-`mcu=1` (GPIO function) in the IO MUX, with `func_out_sel_cfg` routing them
-correctly and `oen_sel` set. So the pads are *nominally* released.
+The section here previously said the pads might remain held by the JTAG block
+even with `MCU_SEL = 1`, and proposed releasing JTAG as the next step. That was
+a hypothesis written into the file as if it were established, and it has since
+been refuted twice: `USB_SERIAL_JTAG.conf0` bit 16 is `usb_jtag_bridge_en`, not
+a pad mux (see `soc/usb_serial_jtag_struct.h`), and both boards read it clear.
+A hand-toggle test on pads 39/40/41 drives them high and low as plain GPIO on
+both units. The pad is ours; nothing holds it.
 
-They may not be *effectively* released. The JTAG block can hold those pads
-independently of the per-pad MCU_SEL mux, which is why the display still shows
-nothing while every register on the path reads correct. The user recalls this
-from earlier work on the board, and recalls the cost correctly: releasing JTAG
-from the pads takes away the JTAG path, after which reflashing needs the
-boot button. Since the console and flashing here both ride USB-Serial-JTAG
-(`CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED=y`, and the host enumerates
-`303a:1001 USB JTAG/serial debug unit`), the two are entangled and this is not
-a change to make casually.
-
-What is known for certain, measured this session:
-
-- CS and RST are fine. The PCA9557 answers on INPUT, OUTPUT and CONFIG (`rd=7`),
-  zero write failures, `cfg=0xb0` leaves bits 0/1/2/3/6 as outputs, `out=0x41`
-  holds RST released and CS asserted, and `in=0x41` confirms the pins are
-  electrically at those levels.
-- The SPI controller completes every transfer: 2405 for a full 320x240 flush,
-  zero with USR stuck.
-- DC's `oen_sel` was clear (pad tri-stated) and has been fixed -- `func=256
-  oen=1 en1=1` now, matching SCLK and MOSI. That was a real bug and is worth
-  keeping, but it did not by itself bring pixels up.
-
-All three of those candidates are now settled, and the display works: JTAG does
-not hold pads 39-41 (measured, see below), GPSPI2 needed `spi_bus_initialize()` to
-route its clock rather than only the gate bit (see below), and the panel needed the
-expander-driven reset timing in "The display works -- what it actually took". The
-edge-counting probe that distinguished them lived in the ESP-IDF bring-up spike,
-which has been deleted; the measurements it produced are recorded inline here, so
-nothing below depends on that artifact.
+The second board's dark panel is therefore **not** explained by pad ownership.
+See `firmware/target/xtensa/notes/DISPLAY-BOARD2.md` for what has been ruled
+out by measurement and what has not.
 
 ## GPSPI2 needs spi_bus_initialize() for clock routing, not just the gate bit
 
