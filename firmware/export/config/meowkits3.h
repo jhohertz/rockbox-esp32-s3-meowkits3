@@ -209,6 +209,18 @@
  * The simulator has no PSRAM, so there the attribute stays empty.
  */
 #ifndef SIMULATOR
+/* Bound the DWC2 driver's GRSTCTL waits. A hang in one of them is the likeliest
+ * failure of a first attach on this board: the core only answers once both
+ * clock gates are enabled and both reset bits are cleared, and the pad handover
+ * that makes the core usable also takes GPIO19/20 away from USB-Serial-JTAG, so
+ * the console and esptool are both gone at exactly the moment a spin loop would
+ * matter. An unbounded wait then means a silent board and a power cycle with no
+ * diagnosis left behind; bounded, the driver panics, which the LCD shows and
+ * the breadcrumb trail records for the next boot. The count is 2e6 iterations
+ * of a register read and a decrement -- comfortably longer than any legitimate
+ * wait at this AHB clock, and comfortably shorter than a watchdog. */
+#define USB_DW_SPIN_LIMIT     2000000u
+
 #define PSRAM_BSS_ATTR      __attribute__ ((section(".ext_ram.bss")))
 
 #define IRAM_LCDFRAMEBUFFER __attribute__ ((section(".ext_ram.bss")))

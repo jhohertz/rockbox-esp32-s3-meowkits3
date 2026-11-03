@@ -239,48 +239,39 @@ static void usb_dw_set_address(uint8_t address)
     DWC_DCFG = (DWC_DCFG & ~(0x7f0)) | DAD(address);
 }
 
-/* Both waits below are unbounded on every other target. On ESP32-S3 a hang
- * here is the likeliest failure of a first attach: the core only answers
- * once both clock gates are enabled and both reset bits are cleared, and the
- * pad handover that makes the core usable also takes GPIO19/20 away from
- * USB-Serial-JTAG -- so the console and esptool are both gone at exactly the
- * moment a spin loop would matter. An unbounded spin then means a silent
- * board and a power cycle with no diagnosis left behind. Bounding them turns
- * that into a panic, which the LCD shows and which the breadcrumb trail
- * records for the next boot. */
-#if defined(CPU_XTENSA)
-#define XT_USB_SPIN_LIMIT 2000000u
-
+/* AHB idle and the core soft reset are both signalled by a self-clearing bit
+ * in GRSTCTL, so the generic wait is a bare spin. A target can bound it by
+ * defining USB_DW_SPIN_LIMIT as a loop count; a core that cannot reach either
+ * state then produces a panic instead of a silent hang, which is worth having
+ * on a target whose console is gone by the time this can bite. Targets that
+ * define nothing keep the unbounded wait, exactly as before. */
 static void usb_dw_wait_for_ahb_idle(void)
 {
-    uint32_t n = XT_USB_SPIN_LIMIT;
+#ifdef USB_DW_SPIN_LIMIT
+    uint32_t n = USB_DW_SPIN_LIMIT;
 
     while (!(DWC_GRSTCTL & AHBIDL))
         if (--n == 0)
             panicf("usb: AHB never went idle (grstctl=%08lx)",
                    (unsigned long)DWC_GRSTCTL);
+#else
+    while (!(DWC_GRSTCTL & AHBIDL));
+#endif
 }
 
 static void usb_dw_wait_for_soft_reset(void)
 {
-    uint32_t n = XT_USB_SPIN_LIMIT;
+#ifdef USB_DW_SPIN_LIMIT
+    uint32_t n = USB_DW_SPIN_LIMIT;
 
     while (DWC_GRSTCTL & CSRST)
         if (--n == 0)
             panicf("usb: core soft reset never completed (grstctl=%08lx)",
                    (unsigned long)DWC_GRSTCTL);
-}
 #else
-static void usb_dw_wait_for_ahb_idle(void)
-{
-    while (!(DWC_GRSTCTL & AHBIDL));
-}
-
-static void usb_dw_wait_for_soft_reset(void)
-{
     while (DWC_GRSTCTL & CSRST);
-}
 #endif
+}
 
 #ifdef USB_DW_SHARED_FIFO
 static unsigned usb_dw_bytes_in_txfifo(int epnum, uint32_t *sentbytes)
@@ -457,7 +448,7 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
      * be visible on a console nobody is reading. The note goes to RTC slow
      * memory so the next boot can say whether this is what was hanging. */
     {
-        uint32_t n = XT_USB_SPIN_LIMIT;
+        uint32_t n = USB_DW_SPIN_LIMIT;
 
         while (DWC_GRSTCTL & fflsh)
         {
