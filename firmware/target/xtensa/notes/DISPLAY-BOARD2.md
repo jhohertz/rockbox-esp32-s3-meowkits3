@@ -70,6 +70,41 @@ it is either a probe on the panel flex itself, or the vendor firmware's actual
 SPI byte stream diffed against ours. Further flashing cycles are not producing
 information.
 
+## Resolved: the boot-time init was aimed at devices that were not listening yet
+
+A third board, never flashed by this port, was captured in full first
+(`tools/meowkits3/rb-board-preserve`, artifacts under `$HOME/forensics/`). Its
+shipped firmware cold-boots with a clean UI, working touch and a normal battery
+reading. The HEAD firmware on that same virgin unit showed a flicker and then
+black.
+
+The change that fixed it was not a change to the init sequence at all. A probe
+that re-ran `st7789_init()` five seconds after boot made the panel come up, which
+identified the boot-time init as the thing that failed rather than anything about
+timing of pixels, byte order or the controller rules. The fix is a one-second
+settle delay between raising the PMU rails and addressing the PCA9557 and the
+panel, in `lcd_init_device()`.
+
+Why this survived two releases and every board-1 observation: a chip reset does
+not reset the panel. Its bias, gamma, `COLMOD`, `MADCTL`, `INVON` and `DISPON`
+survive, so on any warm boot the previous run's configuration is still in force
+and only the pixel writes matter. A cold power-on is the only moment our init has
+to actually work, and it did not. Reads back clean either way -- every register,
+the expander latch, the transfer counts -- because writing to a device whose
+power-on ramp has not finished produces no error.
+
+The delay is unconditional on purpose. Keying it on the expander's configuration
+register looks attractive, since a cold PCA9557 resets to all-inputs while a warm
+one still carries our setup, but a unit that ran the vendor firmware first has that
+register already programmed and is exactly the cold case that fails.
+
+Board 2 is a separate matter. Under the vendor firmware it glitches on display
+during boot and has lost touch again; the panel reset, panel chip select and touch
+reset are all outputs of the same PCA9557, so two subsystems on one net misbehaving
+with firmware we did not write makes it a suspect unit. It was not a valid
+comparison subject, and the conclusion drawn from it -- that the vendor firmware
+succeeds where ours fails -- was measured on hardware that is itself unwell.
+
 ## Replacing the hand-rolled SPI path with esp_lcd fixed nothing
 
 `st7789.c` was rewritten on ESP-IDF's `esp_lcd` -- `esp_lcd_new_panel_io_spi`

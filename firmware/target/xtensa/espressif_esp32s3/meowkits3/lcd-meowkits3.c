@@ -244,6 +244,24 @@ void lcd_init_device(void)
      * lcd_init() in apps/main.c. So the rails come up here rather than
      * relying on something that has already run. */
     meowkit3_board_init();
+
+    /* The rails raised immediately above feed the PCA9557 (LDO4) and the panel
+     * itself, and neither device acknowledges a command while its power-on ramp
+     * is still running -- writes to it are simply lost, with no error anywhere.
+     * Measured on a unit that had never run this firmware: the init sequence at
+     * this point produced a dark panel on a cold power-on, while the identical
+     * sequence five seconds later produced a correct image. A warm chip reset
+     * hides this completely, because the panel keeps its configuration across a
+     * reset and only the pixel writes matter; that is why the defect survived two
+     * releases and every board-1 observation.
+     *
+     * The delay is deliberately generous and unconditional. It is not keyed on
+     * the expander's configuration register, tempting as that is: a unit that ran
+     * the vendor firmware before ours has that register already programmed, which
+     * is precisely the cold case that fails.
+     */
+    udelay(1000 * 1000);
+
     pca9557_init();
     st7789_init();
 

@@ -18,6 +18,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ---
 
+## Cold-boot dark panel: fixed by a settle delay
+
+`lcd_init_device()` now waits a second after bringing up the PMU rails before it
+addresses the PCA9557 and pulses the panel reset. Verified on a virgin unit whose
+shipped state was captured first: dark on cold power-on before, correct UI after,
+with no probe and no repeated init. `DISPLAY-BOARD2.md` has the measurement and
+the reason warm boots hid it. Consequences to close:
+
+- [ ] Board 1 has never been tested on a rails-off power-on. It runs a release
+      build, and both releases carry this defect, so it needs the same check.
+- [ ] Board 2 needs the fixed build on it. It is a suspect unit (display glitch and
+      touch loss under the vendor firmware), so treat whatever it does as noise.
+- [ ] The two published releases are affected. A customer's first plug-in is a cold
+      power-on, which is the only case that fails.
+- [ ] Third release cut is unblocked once board 1 is verified cold.
+
+
 ## esp_lcd display migration tried and reverted
 
 Replacing the hand-rolled GPSPI2 driver with ESP-IDF's `esp_lcd` did not fix the

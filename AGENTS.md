@@ -611,6 +611,27 @@ Mapping the board against what Rockbox already has:
 | Light sleep | `CONFIG_PM_ENABLE`, `CONFIG_FREERTOS_USE_TICKLESS_IDLE` | done: peripheral domain deliberately retained, `ESP_PM_NO_LIGHT_SLEEP` held while USB is armed, worth 2 mA |
 | Sleep and boost telemetry | `Debug -> View HW info` PM row | done: prints the configured min/max MHz, whether sleep is enabled, and the raw cycle/wall counters it measures from |
 
+### A cold power-on is the only test of panel init, and it needs a settle delay
+
+A chip reset does not reset the ST7789. Bias, gamma, `COLMOD`, `MADCTL`, `INVON`
+and `DISPON` all survive it, so on a warm boot the previous run's configuration is
+still in force and only the pixel writes matter. Every symptom that depends on the
+init sequence having landed is therefore invisible after a reset, and reads back
+clean as well: writing to the PCA9557 or the panel while its power-on ramp is still
+running produces no error, no NACK and no register change. The only condition that
+exercises init is a rails-off power-on -- unplug, hold the power key, plug back in.
+
+`lcd_init_device()` raises the PMU rails through `meowkit3_board_init()` because
+`apps/main.c` reaches `lcd_init()` before `power_init()`, and then waits a second
+before it touches the expander. Both the expander (LDO4) and the panel hang off
+rails that were just commanded up. Do not replace that delay with a check of the
+expander's configuration register: a unit that previously ran the vendor firmware
+has that register already programmed, which is exactly the cold case that fails.
+
+If a display is dark only on a cold boot, suspect init timing before controller
+programming. This cost five experiments and one full board capture to establish, and
+the reverse-engineered SPI rules were never the problem.
+
 ### Display power states
 
 Rockbox asks a target for three levels, and they are not interchangeable:
