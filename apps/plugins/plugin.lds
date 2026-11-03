@@ -194,9 +194,10 @@ OUTPUT_FORMAT(elf32-xtensa-le)
  * Because the windows alias, the two halves must occupy *different* physical
  * pages, so the text halves are carved from the gap below codecbuf rather than
  * placed at the same offset as their data. Sizes come from xtensa.h: the
- * largest codec .text+.literal+.rodata measured is 182 KB against a 256 KB codec
- * half, and the largest .rock is 482,560 B against a 512 KB plugin half. THIS_TEXT_LENGTH
- * below is what makes an oversized image fail at link time rather than at load.
+ * largest codec .text+.literal+.rodata measured is 182 KB against a 256 KB
+ * codec half, and the largest .rock is 482,560 B against a 512 KB plugin half.
+ * THIS_TEXT_LENGTH below is what makes an oversized image fail at link time
+ * rather than at load.
  * This file is preprocessed into a cached .link, so xtensa.h is a declared
  * dependency of the codec and plugin link rules -- without it a size change
  * silently links images at the stale origin.
