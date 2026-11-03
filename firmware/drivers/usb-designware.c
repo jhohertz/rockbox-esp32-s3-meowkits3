@@ -1360,6 +1360,21 @@ panic:
     panicf("%s: %s", __func__, err);
 }
 
+/* What a target records while the core is being brought up. Empty by default.
+ * A crash trail is a target facility -- it needs no console, no lock and no
+ * working panic handler, which is only worth having on a board whose console is
+ * gone by the time an init stall can happen -- so the driver hands over the
+ * register values it cares about rather than reaching for a diagnostic of its
+ * own. */
+__attribute__((weak)) void usb_dw_target_init_note(const char *stage,
+                                                   unsigned long a,
+                                                   unsigned long b)
+{
+    (void)stage;
+    (void)a;
+    (void)b;
+}
+
 static void usb_dw_init(void)
 {
     static bool initialized = false;
@@ -1391,12 +1406,8 @@ static void usb_dw_init(void)
     DWC_PCGCCTL = 0;
 
     usb_dw_check_hw();
-#ifdef HAVE_DBG_BREADCRUMB
-    /* Console-less bring-up: if what follows ever stalls, the trail says where.
-     * dbg_breadcrumb() is a .noinit store; it needs no console, no lock, no
-     * stack and no working panic handler. */
-    dbg_breadcrumb("usbPhy", DWC_GUSBCFG, DWC_GSNPSID);
-#endif /* HAVE_DBG_BREADCRUMB */
+    /* If what follows ever stalls, the target's note says where. */
+    usb_dw_target_init_note("usbPhy", DWC_GUSBCFG, DWC_GSNPSID);
 
     /* Configure PHY type (must be done before reset) */
 #ifndef USB_DW_TURNAROUND
@@ -1419,9 +1430,7 @@ static void usb_dw_init(void)
     usb_dw_wait_for_ahb_idle();
 
     /* Configure FIFOs */
-#ifdef HAVE_DBG_BREADCRUMB
-    dbg_breadcrumb("usbRst", DWC_GRSTCTL, DWC_GHWCFG3);
-#endif /* HAVE_DBG_BREADCRUMB */
+    usb_dw_target_init_note("usbRst", DWC_GRSTCTL, DWC_GHWCFG3);
     DWC_GRXFSIZ = c->rx_fifosz;
 #ifdef USB_DW_SHARED_FIFO
     DWC_GNPTXFSIZ = (c->nptx_fifosz << 16) | c->rx_fifosz;
@@ -1436,9 +1445,7 @@ static void usb_dw_init(void)
      * fifos are flushed before continuing.
      */
     usb_dw_flush_fifo(TXFFLSH|RXFFLSH, 0x10);
-#ifdef HAVE_DBG_BREADCRUMB
-    dbg_breadcrumb("usbFifo", DWC_GRXFSIZ, n_ptxfifos);
-#endif /* HAVE_DBG_BREADCRUMB */
+    usb_dw_target_init_note("usbFifo", DWC_GRXFSIZ, n_ptxfifos);
 
     /* Configure the core */
     DWC_GUSBCFG = gusbcfg;

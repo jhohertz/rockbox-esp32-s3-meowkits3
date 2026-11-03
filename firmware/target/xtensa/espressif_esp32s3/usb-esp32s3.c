@@ -739,6 +739,18 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
 
 #endif /* USB_ENABLE_AUDIO */
 
+/* The board has no console once the app owns the OTG pads, so an init stall in
+ * the DWC core leaves nothing behind unless it is written to memory that
+ * outlives the reset. This is the only place the shared driver reaches for
+ * that: it hands over the registers it cares about and the target decides what
+ * to keep.
+ */
+void usb_dw_target_init_note(const char *stage, unsigned long a,
+                             unsigned long b)
+{
+    dbg_breadcrumb(stage, a, b);
+}
+
 /* This core must keep its PHY clock running through teardown. Measured: the
  * soft disconnect completes, the delay after it returns, and the very next
  * core register access after PCGCCTL=1 stalls the bus, so the watchdog resets
