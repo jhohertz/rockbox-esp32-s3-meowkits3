@@ -662,6 +662,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         `debug.h` is now byte-identical to upstream. Verified on hardware with a
         repeated attach/eject/unplug torture test across MSC, CDC and DAC.
 
+  - **`-Os` is upstream's global default and this target matches it; nothing
+    to change.** `CCOPTS` in `tools/configure` carries `-Os` for every native
+    target and no target anywhere switches to `-O2`. That is why `memset16`
+    compiles to the counted short-store loop here -- `__OPTIMIZE_SIZE__`
+    selects upstream's own size-optimised arm, so screen fills use the same
+    code every other native target gets. There is a textual precedent for
+    overriding it: `rgnanocc`, `devkitarmcc`, `pspsdkcc` and the hosted setup
+    each sed `-Os` to `-Og` when `use_debug` is set -- but **all of those are
+    dead code**: every toolchain function is called (lines 3334, 4170, 4267
+    upstream) before `whichadvanced` sets `use_debug` (line 4423). Verified
+    rather than assumed: `--type=AD` gives `-DDEBUG -Os` for meowkits3 and for
+    `sansafuze`, identically. Note `--type=D` alone does nothing -- the
+    developer letters are only parsed on the Advanced path, exactly as voice
+    requires `--type=AV`. An earlier attempt to mirror those seds in
+    `xtensacc` was reverted: it would have copied unreachable code.
+
+
   - **Shared-code flag sweep found nothing else to move.** `IMAGE_LINK` is a
   configure-exported make variable beside upstream's `APP_TYPE`, which is where
   build-system decisions live. `HAVE_PANIC_CONSOLE` declares a hook the core
