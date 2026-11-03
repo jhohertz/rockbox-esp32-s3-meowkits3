@@ -596,11 +596,12 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     that image loads need an external data write-back this platform does not
     expose.
 
-  - **`usb-designware.c` carries five behaviour fixes in a `CPU_XTENSA` branch
-    where the driver already has a seam for them.** Four register-variant
-    branches are legitimate and stay (EP0 transfer-size field width, the DMA
-    address/cache mode, the PHY field encoding). The rest are being moved, one
-    at a time, each verified on hardware before the next:
+  - **`usb-designware.c` carried five behaviour fixes in `CPU_XTENSA`
+    branches where the driver already had a seam for them.** Three
+    register-variant branches legitimately stay and are untouched: the EP0
+    transfer-size field width, the DMA address and cache mode, and the PHY
+    field encoding. The other four were moved one at a time, each verified on
+    hardware before the next:
       * **done and hardware-verified** -- leaving the PHY clock running at
         teardown. Now a weak `usb_dw_target_may_stop_phy_clock()`, defaulting
         true so no other target changes, overridden to return false in
@@ -611,7 +612,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         card verified by sha256 after a remount to drop the host's buffer cache;
         then a host-side eject, a cable pull, and playback resumed on the device
         with no watchdog reset, and the PM row showing sleep unblocked again.
-      * **moved, hardware check pending** -- the flush-request spin. It was a
+      * **moved and hardware-verified** -- the flush-request spin. It was a
         CPU branch whose timeout called a target diagnostic directly from the
         shared driver. Now the wait is bounded under the same
         `USB_DW_SPIN_LIMIT` knob and the timeout calls a weak
@@ -631,7 +632,8 @@ Board access: **hold BOOT, tap RESET** for download mode, then
       * **open** -- bounding the wait on the self-clearing flush-request bit.
         The unbounded spin is a latent hang for every DWC2 target, so the fix
         belongs in the generic path rather than in our branch.
-      * **removed** -- the cache-maintenance branch. It invalidated
+      * **removed and hardware-verified** -- the cache-maintenance branch. It
+        invalidated
         `dw_ep->addr + transferred` through a weak hook this port had invented
         (`usb_dw_target_dma_discard`, zero upstream hits) whose body was the
         same call the driver's own `DISCARD_DCACHE_RANGE` already makes at the
@@ -643,9 +645,21 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         the same reason, which also makes the two endpoint-0 discard sites
         live. ELF after removal: no `usb_dw_target_dma_discard` symbol, and
         `discard_dcache_range` reached from the driver's own macro path.
-      * **open** -- aborting armed endpoints before soft disconnect. Nothing on
-        the generic teardown path calls `usb_drv_cancel_all_transfers()`; only
-        three ARM drivers do. That gap is a driver defect, not a target quirk.
+      * **deduplicated, hardware check pending** -- aborting armed endpoints
+        before soft disconnect. The branch was a verbatim copy of
+        `usb_drv_cancel_all_transfers()`'s body, which is public API in
+        `usb_drv.h`. Now the per-CPU chain defines `USB_DW_CANCEL_ON_EXIT` and
+        the exit path calls that entry -- which also adds the mask/unmask pair
+        the copy lacked. Nothing on the generic teardown path cancels transfers
+        for anyone else, and `usb_core.c` only calls it on `SET_CONFIGURATION`,
+        so the gap in the generic path is real and remains a submission
+        candidate once these placements are settled.
+      * **open** -- three `dbg_breadcrumb()` calls sit in this driver behind
+        `HAVE_DBG_BREADCRUMB`, and both names have zero upstream hits: an
+        invented core diagnostic referenced from shared code. They are bring-up
+        aids for exactly the stalls the bounded waits now cover, so the fix is a
+        weak `usb_dw_target_init_note()` rather than a flag the core has never
+        heard of.
 
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the

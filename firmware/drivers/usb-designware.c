@@ -110,6 +110,12 @@
 # define USB_DW_PHYSADDR(x)     x
 # define NO_UNCACHED_ADDR
 # define POST_DMA_FLUSH
+/* A DWC2 soft disconnect does not complete while an endpoint is armed. This
+ * core always has one at extraction: the CDC OUT endpoint re-arms itself and
+ * re-delivers its stale byte indefinitely, so the generic teardown leaves the
+ * core half-disconnected and it stops answering register reads. Cancel first,
+ * using the driver's own public entry rather than a copy of it. */
+# define USB_DW_CANCEL_ON_EXIT
 #elif !defined(USB_DW_ARCH_SLAVE)
 # error "Must define USB_DW_PHYSADDR / USB_DW_UNCACHEDADDR!"
 #endif
@@ -1503,25 +1509,12 @@ __attribute__((weak)) bool usb_dw_target_may_stop_phy_clock(void)
 
 static void usb_dw_exit(void)
 {
-#if defined(CPU_XTENSA)
-    /* Abort every armed endpoint before asking the core to disconnect.
-     *
-     * usb_drv_cancel_all_transfers() exists in this driver, but nothing on
-     * the generic teardown path calls it -- only three ARM drivers invoke it
-     * from their own code. On esp32s3 that is fatal: the CDC OUT endpoint
-     * re-arms itself indefinitely, so at extraction at least one endpoint is
-     * always active, the soft disconnect never completes, and the core then
-     * stops answering register reads.
-     *
-     * Guarded so no other target's teardown changes. */
-    for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
-        for (int dir = 0; dir < USB_DW_NUM_DIRS; dir++)
-            if (usb_endpoints & (1 << (ep + USB_DW_DIR_OFF(dir))))
-                if (usb_dw_get_ep(ep, dir)->active)
-                {
-                    usb_dw_abort_endpoint(ep, dir);
-                    DWC_EPCTL(ep, dir) |= SETD0PIDEF;
-                }
+    /* Nothing on the generic teardown path cancels transfers -- only three ARM
+     * drivers call it from their own exit code -- so a target that cannot
+     * disconnect with an endpoint armed asks for it via USB_DW_CANCEL_ON_EXIT.
+     * That entry wraps the same loop in a mask/unmask pair. */
+#ifdef USB_DW_CANCEL_ON_EXIT
+    usb_drv_cancel_all_transfers();
 #endif
     /* Soft disconnect */
     DWC_DCTL = SDIS;
