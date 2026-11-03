@@ -753,6 +753,25 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
  * OTG to our firmware about a second after boot, so the Serial-JTAG console
  * that would carry the dump is gone before anything can listen.
  */
+/* This core must keep its PHY clock running through teardown. Measured: the
+ * soft disconnect completes, the delay after it returns, and the very next
+ * core register access after PCGCCTL=1 stalls the bus, so the watchdog resets
+ * the board before the extraction finishes. It is not a fair test of whether
+ * the write or the read is what wedges -- either way the core is unreachable
+ * once the PHY clock is gone.
+ *
+ * DWC2 also must not gate the PHY clock while an endpoint is still active, and
+ * on this board one always is: the CDC OUT endpoint re-arms itself and
+ * re-delivers its stale byte indefinitely, which is a separate defect in this
+ * driver's OUT handling. So gating here is a bus hang waiting for an
+ * extraction, and the driver's pad release right after this reads core
+ * registers.
+ */
+bool usb_dw_target_may_stop_phy_clock(void)
+{
+    return false;
+}
+
 void usb_dw_target_dma_discard(void *buf, unsigned int len)
 {
     discard_dcache_range(buf, len);

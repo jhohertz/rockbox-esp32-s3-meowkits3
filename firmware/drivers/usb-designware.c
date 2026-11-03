@@ -1520,6 +1520,16 @@ static void usb_dw_init(void)
     DWC_DCTL &= ~SDIS;
 }
 
+/* Whether the PHY clock may be gated when the device stack shuts down. The
+ * generic path stops it. A core that stops answering register accesses once
+ * the PHY clock is gone returns false from its target override, and pays a
+ * little power while USB is down instead; the pad release that follows this
+ * still reads core registers, so the core has to stay reachable. */
+__attribute__((weak)) bool usb_dw_target_may_stop_phy_clock(void)
+{
+    return true;
+}
+
 static void usb_dw_exit(void)
 {
 #if defined(CPU_XTENSA)
@@ -1546,27 +1556,8 @@ static void usb_dw_exit(void)
     DWC_DCTL = SDIS;
     udelay(10);
 
-#if defined(CPU_XTENSA)
-    /* The PHY clock is deliberately left running on esp32s3. Measured,
-     * gating it is where the extraction dies: the soft disconnect completes
-     * and the delay after it returns, and the very next core register access
-     * after PCGCCTL=1 stalls the bus, so the watchdog resets the board
-     * before the teardown finishes. It is not a fair test of whether the
-     * write or the read wedges: either way the core is unreachable once the
-     * PHY clock is gone.
-     *
-     * DWC2 must not have its PHY clock gated while an endpoint is still
-     * active, and on this board one always is: the CDC OUT endpoint re-arms
-     * itself and re-delivers its stale byte indefinitely, which is a
-     * separate bug in this driver's OUT handling. So gating here is a bus
-     * hang waiting for an extraction.
-     *
-     * Leaving it clocked costs a little power while USB mode is down. The
-     * pad release that follows reads core registers, so the core has to stay
-     * reachable. */
-#else
-    DWC_PCGCCTL = 1; /* Stop Phy clock */
-#endif
+    if (usb_dw_target_may_stop_phy_clock())
+        DWC_PCGCCTL = 1; /* Stop Phy clock */
 
     /* Disable IRQs */
     usb_dw_target_disable_irq();

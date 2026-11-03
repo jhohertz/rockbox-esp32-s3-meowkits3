@@ -596,6 +596,28 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     that image loads need an external data write-back this platform does not
     expose.
 
+  - **`usb-designware.c` carries five behaviour fixes in a `CPU_XTENSA` branch
+    where the driver already has a seam for them.** Four register-variant
+    branches are legitimate and stay (EP0 transfer-size field width, the DMA
+    address/cache mode, the PHY field encoding). The rest are being moved, one
+    at a time, each verified on hardware before the next:
+      * **done** -- leaving the PHY clock running at teardown. Now a weak
+        `usb_dw_target_may_stop_phy_clock()`, defaulting true so no other target
+        changes, overridden to return false in `usb-esp32s3.c` where the
+        measurement belongs. Verified in the ELF: `call8` the hook, `beqz`
+        around the `PCGCCTL=1` store.
+      * **open** -- `usb_dw_wait_for_ahb_idle()` and its spin limit are defined
+        whole inside the CPU branch; that is a target hook, not a driver fork.
+      * **open** -- bounding the wait on the self-clearing flush-request bit.
+        The unbounded spin is a latent hang for every DWC2 target, so the fix
+        belongs in the generic path rather than in our branch.
+      * **open** -- cache maintenance on DMA buffers. The driver already has
+        `POST_DMA_FLUSH` and `COMMIT_DCACHE_RANGE` knobs; the branch should use
+        them instead of adding a new path.
+      * **open** -- aborting armed endpoints before soft disconnect. Nothing on
+        the generic teardown path calls `usb_drv_cancel_all_transfers()`; only
+        three ARM drivers do. That gap is a driver defect, not a target quirk.
+
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the
     PSRAM arena and the database builds -- but `SOC_SDMMC_PSRAM_DMA_CAPABLE` is
