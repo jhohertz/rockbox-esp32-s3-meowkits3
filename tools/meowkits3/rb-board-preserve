@@ -1,0 +1,131 @@
+#!/bin/sh
+# rb-board-preserve -- capture the complete state of an ESP32-S3 board that has
+# never been written by this port, before anything is flashed onto it.
+#
+# The point is that a virgin board is a one-time observation: once an image is
+# written, "what did this unit ship with" is unrecoverable. This reads the whole
+# flash, the eFuse table, the chip identity and the partition layout, and writes
+# an observation template for the things no tool can read (what the screen did,
+# what the battery said, whether a card was present).
+#
+# Nothing here writes to the board. Every operation is a read, so the capture is
+# reversible by construction and the image it produces can be written back later
+# with rb-board-restore.
+#
+#   usage: rb-board-preserve [label] [port]
+#     label   names the artifact directory (default board)
+#     port    serial port (default /dev/ttyACM0)
+#
+# The board must be in download mode: hold BOOT, tap RESET, keep holding BOOT.
+# The host must not be holding the port, or esptool's replies are split.
+
+label=${1:-board}
+port=${2:-/dev/ttyACM0}
+
+# A board already running firmware owns the USB-Serial-JTAG node, so the host can
+# reach the loader with its own reset instead of requiring the BOOT button: the ROM
+# reads a host-driven reset over USJ as a download request. Use RB_BEFORE=no_reset
+# when the board is already in the loader, because a reset there would be harmless
+# but unnecessary.
+before=${RB_BEFORE:-default_reset}
+
+ESPTOOL=$(command -v esptool.py || command -v esptool)
+[ -n "$ESPTOOL" ] || { echo "rb-board-preserve: no esptool on PATH" >&2; exit 1; }
+
+out=$HOME/forensics/$label-$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$out" || exit 1
+flash_size=16777216
+
+# A reader on the same node steals esptool's bytes; the symptom is a write or
+# read timeout that looks like a bad cable.
+for p in /proc/[0-9]*; do
+    if ls -l "$p/fd" 2>/dev/null | grep -q "$(basename "$port")"; then
+        echo "rb-board-preserve: killing ${p##*/}, which holds $port" >&2
+        kill "${p##*/}" 2>/dev/null
+    fi
+done
+sleep 1
+
+common="--chip esp32s3 --port $port --before $before --after no_reset"
+
+# Identity and configuration that lives in silicon, not in flash. The eFuse dump
+# matters here because it is the only per-unit state that cannot be restored, and
+# because a difference between two boards that otherwise look identical has to be
+# ruled out by reading it rather than by guessing at it.
+"$ESPTOOL" $common -b 921600 chip_id          > "$out/chip_id.txt"       2>&1
+"$ESPTOOL" $common -b 921600 read_mac         > "$out/mac.txt"           2>&1
+"$ESPTOOL" $common -b 921600 flash_id         > "$out/flash_id.txt"      2>&1
+"$ESPTOOL" $common -b 921600 flash_read 0x8000 4096 "$out/partition_table.bin" > "$out/pt_read.txt" 2>&1
+"$ESPTOOL" $common -b 921600 read_efuse       > "$out/efuse_raw.txt"     2>&1
+
+# The whole flash, in one file. Partial captures are how a restore goes wrong:
+# bootloader, partition table, otadata, NVS and app partition contents all
+# interact, and otadata in particular decides which app slot boots.
+"$ESPTOOL" $common -b 921600 read_flash 0x0 $flash_size "$out/full-flash.bin" > "$out/flash_read.txt" 2>&1
+
+if [ ! -s "$out/full-flash.bin" ]; then
+    echo "rb-board-preserve: flash read produced no data. Is the board in download mode" >&2
+    echo "  (hold BOOT, tap RESET, keep holding) and is nothing else holding $port?" >&2
+    exit 1
+fi
+
+# Decode the partition table with ESP-IDF's own tool. The table at 0x8000 starts with a
+# header whose magic is 0xAA50; the 32-byte entries carry 0xEBEB and begin at an offset
+# the header dictates, so parsing from 0x8000 by hand finds no entries at all.
+gen=$HOME/esp/esp-idf/components/partition_table/gen_esp32part.py
+python3 - "$out/full-flash.bin" "$out/pt-0x8000.bin" <<'PY'
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+pathlib.Path(sys.argv[2]).write_bytes(raw[0x8000:0x9000])
+PY
+if [ -f "$gen" ] && python3 "$gen" "$out/pt-0x8000.bin" "$out/partitions.csv" > "$out/pt-decode.txt" 2>&1; then
+    echo "partition table decoded to $out/partitions.csv"
+else
+    echo "rb-board-preserve: partition decode failed; the raw bytes are still captured" >&2
+fi
+
+# Pull the pieces out of the whole-flash image so they can be analysed later
+# without the board, and identify the ESP-IDF version the shipped firmware was
+# built with -- that is the version whose behaviour we are comparing against.
+python3 - "$out/full-flash.bin" "$out" <<'PY'
+import pathlib, subprocess, sys
+out_dir = pathlib.Path(sys.argv[2])
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+# bootloader: from 0 to the partition table
+pathlib.Path(out_dir / 'bootloader.bin').write_bytes(raw[:0x8000])
+PY
+for f in bootloader.bin; do
+    [ -s "$out/$f" ] && "$ESPTOOL" image_info "$out/$f" > "$out/${f%.bin}-info.txt" 2>&1
+done
+grep -hoE 'ESP-IDF v[0-9.]+[^ )]*' "$out"/*.txt 2>/dev/null | sort -u > "$out/idf-version.txt"
+
+# Checksums, so a later restore can be proven byte-exact rather than assumed.
+( cd "$out" && md5sum * > MD5SUMS.md5 && sha256sum full-flash.bin > full-flash.sha256 )
+
+# Environment provenance: tool version and what the kernel said about the device.
+"$ESPTOOL" version > "$out/esptool-version.txt" 2>&1
+dmesg 2>/dev/null | tail -40 > "$out/dmesg-tail.txt" 2>&1
+lsusb > "$out/lsusb.txt" 2>&1
+
+# Everything a tool cannot read. Fill this in while the board is still untouched.
+cat > "$out/OBSERVATIONS.md" <<EOF
+# Board $label -- observations, taken $(date -u +%Y%m%dT%H%M%SZ)
+
+Fill this in before flashing anything. These are the facts no capture can recover.
+
+- [ ] Was an SD card present? Size/label, and did the vendor UI show it?
+- [ ] On a cold power-on (plug in with no button held): does the display show the UI?
+- [ ] Does the backlight come up, and at what brightness?
+- [ ] Battery percentage shown, and is it charging or discharging?
+- [ ] Any sound from the speaker during boot?
+- [ ] Touch response on the cold boot?
+- [ ] Physical markings, and how this unit differs visibly from the others.
+- [ ] What the vendor firmware reports if it has a device-info screen
+      (firmware version, PSRAM, flash size, MAC).
+
+Notes:
+
+EOF
+
+echo "captured to $out"
+ls -l "$out" | awk 'NR>1 {printf "  %-22s %s\n", $9, $5}'

@@ -1,0 +1,40 @@
+#!/bin/sh
+# rb-board-restore -- write a whole-flash capture back to a board, byte for byte.
+#
+# The counterpart of rb-board-preserve. It restores what a virgin unit shipped
+# with, which is the only way to put a board back into a state we can compare
+# against. Requires the capture directory produced by that script.
+#
+#   usage: rb-board-restore <capture-dir> [port]
+#
+# This DOES write. Verify the capture's checksum first; the script refuses to run
+# if MD5SUMS.md5 does not match the file it is about to send.
+
+dir=${1:?usage: rb-board-restore <capture-dir> [port]}
+port=${2:-/dev/ttyACM0}
+ESPTOOL=$(command -v esptool.py || command -v esptool)
+[ -n "$ESPTOOL" ] || { echo "rb-board-restore: no esptool on PATH" >&2; exit 1; }
+[ -s "$dir/full-flash.bin" ] || { echo "rb-board-restore: $dir/full-flash.bin missing" >&2; exit 1; }
+
+if [ -f "$dir/MD5SUMS.md5" ]; then
+    ( cd "$dir" && md5sum -c MD5SUMS.md5 >/dev/null 2>&1 ) || {
+        echo "rb-board-restore: capture checksums do not match; refusing to write" >&2
+        exit 1
+    }
+fi
+
+for p in /proc/[0-9]*; do
+    if ls -l "$p/fd" 2>/dev/null | grep -q "$(basename "$port")"; then
+        echo "rb-board-restore: killing ${p##*/}, which holds $port" >&2
+        kill "${p##*/}" 2>/dev/null
+    fi
+done
+sleep 1
+
+echo "restoring $(md5sum "$dir/full-flash.bin")"
+timeout 900 "$ESPTOOL" --chip esp32s3 --port "$port" --before no_reset --after no_reset \
+    -b 921600 write_flash 0x0 "$dir/full-flash.bin" || exit 1
+
+# The write leaves the download latch set, so the chip will not boot from a reset
+# until it is cleared; a power cycle is what clears it.
+echo "written. Unplug USB, hold the power key ~4 s, plug back in to boot."
