@@ -193,7 +193,7 @@ static void dc_init_filerefs(struct playlist_info *playlist,
                              int start, int count)
 {
 #ifdef HAVE_DIRCACHE
-    if (!playlist->dcfrefs_handle)
+    if (playlist->dcfrefs_handle <= 0)
         return;
 
     struct dircache_fileref *dcfrefs = core_get_data(playlist->dcfrefs_handle);
@@ -1072,7 +1072,7 @@ static int get_track_filename(struct playlist_info* playlist, int index,
     unsigned long seek = playlist->indices[index] & PLAYLIST_SEEK_MASK;
 
 #ifdef HAVE_DIRCACHE
-    if (playlist->dcfrefs_handle)
+    if (playlist->dcfrefs_handle > 0)
     {
         struct dircache_fileref *dcfrefs = core_get_data_pinned(playlist->dcfrefs_handle);
         max = dircache_get_fileref_path(&dcfrefs[index],
@@ -1212,7 +1212,7 @@ static int remove_all_tracks_unlocked(struct playlist_info *playlist)
     /* Move current track down to position 0 */
     playlist->indices[0] = playlist->indices[playlist->index];
 #ifdef HAVE_DIRCACHE
-    if (playlist->dcfrefs_handle)
+    if (playlist->dcfrefs_handle > 0)
     {
         struct dircache_fileref *dcfrefs =
             core_get_data(playlist->dcfrefs_handle);
@@ -1369,7 +1369,7 @@ static int add_track_to_playlist_unlocked(struct playlist_info* playlist,
 
 #ifdef HAVE_DIRCACHE
     struct dircache_fileref *dcfrefs = NULL;
-    if (playlist->dcfrefs_handle)
+    if (playlist->dcfrefs_handle > 0)
         dcfrefs = core_get_data(playlist->dcfrefs_handle);
 #else
     int *dcfrefs = NULL;
@@ -1464,7 +1464,7 @@ static int remove_track_unlocked(struct playlist_info* playlist,
 
 #ifdef HAVE_DIRCACHE
     struct dircache_fileref *dcfrefs = NULL;
-    if (playlist->dcfrefs_handle)
+    if (playlist->dcfrefs_handle > 0)
         dcfrefs = core_get_data(playlist->dcfrefs_handle);
 #else
     int *dcfrefs = NULL;
@@ -1559,7 +1559,7 @@ static int randomise_playlist_unlocked(struct playlist_info* playlist,
         playlist->indices[candidate] = playlist->indices[count];
         playlist->indices[count] = indextmp;
 #ifdef HAVE_DIRCACHE
-        if (playlist->dcfrefs_handle)
+        if (playlist->dcfrefs_handle > 0)
         {
             struct dircache_fileref *dcfrefs = core_get_data(playlist->dcfrefs_handle);
             struct dircache_fileref dcftmp = dcfrefs[candidate];
@@ -1986,13 +1986,12 @@ void playlist_init(void)
     playlist->dcfrefs_handle = core_alloc(
         playlist->max_playlist_size * sizeof(struct dircache_fileref));
 
-    /* core_alloc() reports failure as a negative buflib error code rather than
-       zero, so the if (!handle) guard in dc_init_filerefs() does not catch it
-       and core_get_data() then returns NULL. On this target the allocation did
-       fail, because a synchronous dircache build claims
-       audio_buffer_available() outright -- the whole arena -- leaving nothing
-       for this table. Fixed by DIRCACHE_LIMIT in the target config; see
-       meowkits3.h. */
+    /* buflib treats a zero or negative return as failure (see buflib.h), so a
+       failed allocation here leaves every dcfrefs user dereferencing NULL. On
+       this target the allocation did fail at one point, because a synchronous
+       dircache build claims audio_buffer_available() outright -- the whole arena
+       -- leaving nothing for this table. The guards now test the handle
+       numerically; the size is capped by DIRCACHE_LIMIT in meowkits3.h. */
     dc_init_filerefs(playlist, 0, playlist->max_playlist_size);
 
     unsigned int playlist_thread_id =
@@ -3953,7 +3952,7 @@ static void pl_reverse(struct playlist_info *playlist, int start, int end)
         playlist->indices[end]   = index_swap;
 
 #ifdef HAVE_DIRCACHE
-        if (playlist->dcfrefs_handle)
+        if (playlist->dcfrefs_handle > 0)
         {
             struct dircache_fileref *dcfrefs = core_get_data(playlist->dcfrefs_handle);
             struct dircache_fileref dcf_swap = dcfrefs[start];

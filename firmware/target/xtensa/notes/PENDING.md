@@ -569,6 +569,18 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     during any failure, since the `buflib_ops_locked` group is that buffer. The
     font cap's ~413 KB therefore remains unspent rather than refused.
 
+  - **`playlist_init()` dereferences NULL if the *indices* allocation fails, and
+    that is upstream behaviour we have not changed.** Two lines above the
+    dcfrefs allocation, `handle = core_alloc_ex(...)` is followed immediately by
+    `playlist->indices = core_get_data(handle)` with no validity test, and
+    `empty_playlist_unlocked()` then writes through it. The same contract the
+    dcfrefs guards now honour -- buflib.h says to treat zero or negative as
+    failure -- is simply not checked here. Left alone deliberately: the fix is a
+    one-line test, but what the player should *do* on arena exhaustion at boot
+    (panic, splash, disable playlists) is a product decision that would apply to
+    every target, not something a port should decide unilaterally. Worth raising
+    with the seven dcfrefs fixes as one upstream submission.
+
   - **The external PSRAM cache's store policy is unknown, and the TX ring rests
     on it.** `dma_buf[]` in `i2s-esp32s3.c` sits in PSRAM and GDMA reads it
     without going through the cache, while `cache_ll_vaddr_to_cache_level_id()`
