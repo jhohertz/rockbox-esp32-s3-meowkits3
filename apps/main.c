@@ -557,6 +557,7 @@ static void init(void)
 #endif
 
     backlight_init();
+
     button_init();
 
     /* Don't initialize power management here if it could incorrectly
@@ -567,7 +568,6 @@ static void init(void)
 #endif
 
 #if CONFIG_TUNER
-
     radio_init();
 #endif
     prng_init();  /* After RTC */
@@ -649,7 +649,6 @@ static void init(void)
         CHART(">disk_mount_all");
         rc = disk_mount_all();
         CHART("<disk_mount_all");
-
         if (rc<=0)
         {
             int line=0;
@@ -711,13 +710,11 @@ static void init(void)
     }
 
     pcm_init();
-
     dsp_init();
 
     CHART(">settings_load");
     settings_load();
     CHART("<settings_load");
-
 
 #if defined(BUTTON_REC) || \
     (CONFIG_KEYPAD == GIGABEAT_PAD) || \
@@ -740,12 +737,10 @@ static void init(void)
     CHART(">init_battery_tables");
     init_battery_tables();
     CHART("<init_battery_tables");
-
 #ifdef HAVE_DIRCACHE
     CHART(">init_dircache(true)");
     rc = init_dircache(true);
     CHART("<init_dircache(true)");
-
 #ifdef HAVE_TAGCACHE
     if (rc < 0)
         tagcache_remove_statefile();
@@ -755,7 +750,6 @@ static void init(void)
     CHART(">settings_apply(true)");
     settings_apply(true);
     CHART("<settings_apply(true)");
-
 #ifdef HAVE_DIRCACHE
     CHART(">init_dircache(false)");
     init_dircache(false);

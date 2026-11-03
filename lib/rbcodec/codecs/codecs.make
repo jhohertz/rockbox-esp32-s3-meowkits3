@@ -17,7 +17,7 @@ CODECS := $(subst $(RBCODECLIB_DIR),$(RBCODEC_BLD),$(CODECS))
 include $(RBCODECLIB_DIR)/codecs/lib/libcodec.make
 OTHER_INC += -I$(RBCODECLIB_DIR)/codecs/lib
 
-# extra libraries. libarm_support has the division routines, which are much
+# extra libraries.  libarm_support has the division routines, which are much
 # faster than what libgcc may supply; it is empty when not building for ARM.
 # Codecs link -lgcc explicitly below, and since xtensa now builds with the
 # toolchain's default windowed ABI, that libgcc is the right one.
