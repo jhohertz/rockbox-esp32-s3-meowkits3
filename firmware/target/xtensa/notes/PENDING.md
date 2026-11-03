@@ -569,6 +569,21 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     during any failure, since the `buflib_ops_locked` group is that buffer. The
     font cap's ~413 KB therefore remains unspent rather than refused.
 
+  - **The external PSRAM cache's store policy is unknown, and the TX ring rests
+    on it.** `dma_buf[]` in `i2s-esp32s3.c` sits in PSRAM and GDMA reads it
+    without going through the cache, while `cache_ll_vaddr_to_cache_level_id()`
+    accepts only IRAM0/DRAM0 -- so `commit_dcache_range()` on that buffer is a
+    guaranteed no-op. Two facts say stores nevertheless reach PSRAM: audio plays
+    correctly, and codec and plugin images copied through the data window
+    execute after `commit_discard_idcache()`, which invalidates only the
+    external *instruction* cache. That is evidence, not a measurement. The test
+    that settles it: write a pattern to a PSRAM address, invalidate the external
+    data cache without write-back, read it back. Survives means stores are
+    write-through or write-no-allocate and PSRAM DMA buffers are safe by
+    construction. Reverts means `dma_buf[]` must move to internal memory, and
+    that image loads need an external data write-back this platform does not
+    expose.
+
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the
     PSRAM arena and the database builds -- but `SOC_SDMMC_PSRAM_DMA_CAPABLE` is

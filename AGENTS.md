@@ -897,12 +897,25 @@ explicit cache maintenance around each transfer and the descriptor ring in inter
 Rockbox has no hook for that today — cache maintenance is a no-op in the TAL header, which is
 correct for CPU access but not for a DMA that bypasses the cache.
 
-**Design decision:** keep the descriptor ring and the DMA buffers in internal SRAM. That is what
-ESP-IDF does, and it keeps the 20-bit register happy, but it does **not** sidestep cache
-maintenance: DRAM0 (`0x3FC88000-0x3FD00000`) is exactly the D-cache address room, and the DMA
-reads through it rather than around it. The cost is a copy from the audiobuffer into a ping-pong
-pair — a step no existing Rockbox audio backend needs. A 2 × 4096-sample pair is about 32 KB,
-which fits inside the 337 KB static region alongside .bss.
+**What this target actually does:** the descriptor ring is in internal SRAM
+(`desc[]`, `volatile`, 32-byte aligned), but the four TX buffers are in PSRAM
+(`dma_buf[]` carries `PSRAM_BSS_ATTR`, 4 × 2 KB). That is a choice, not an
+oversight. GDMA is PSRAM-capable on esp32s3 (`SOC_PSRAM_DMA_CAPABLE`,
+`GDMA_LL_AHB_PSRAM_CAPABLE`), and internal SRAM has about 1 KB of static margin,
+so 8 KB of DMA buffer cannot go there without displacing something else.
+ESP-IDF's own I2S driver keeps its buffers internal, but that is IDF's practice
+rather than a Rockbox contract: the core imposes nothing about where a target's
+DMA buffers live, and no upstream port is required to allocate them from
+internal memory.
+
+The consequence is that the `commit_dcache_range()` calls around the TX ring are
+no-ops for PSRAM — `cache_ll_vaddr_to_cache_level_id()` accepts only IRAM0 and
+DRAM0, so the external cache exposes no range operation on this part and there
+is no route to write back a PSRAM range. Playback is nonetheless correct on
+hardware, which means stores reach PSRAM without an explicit write-back. That is
+observed rather than explained; the store policy is an open question in
+`notes/PENDING.md`. Do not "correct" the placement by moving the ring into DRAM
+without first deciding where 8 KB comes from.
 
 ESP-IDF's SDHOST code calls `esp_cache_msync()` on every descriptor it arms and on every
 buffer it hands over (`components/sdmmc/sdmmc_transaction.c`), with the descriptor calls

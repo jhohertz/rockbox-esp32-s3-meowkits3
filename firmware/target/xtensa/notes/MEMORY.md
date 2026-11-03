@@ -89,7 +89,8 @@ not the heap.
 enlargeable: `DRAM0_0_SEG_LEN` is capped at `I_D_SRAM_SIZE`, which this build
 already sits on, and the cache size configs feed IRAM rather than DRAM. Most of
 what is left is thread stacks (a PSRAM stack faults) and DMA destinations (the
-DWC and SDHOST masters cannot reach the PSRAM window).
+DWC and SDHOST masters cannot reach the PSRAM window; GDMA can, which is why the
+I2S TX buffers live there -- see the store-policy question in `PENDING.md`).
 
 **There is no spare PSRAM.** An earlier revision of this file claimed ~1 MiB of
 PSRAM was idle, and decisions were made against that claim. It was wrong: it
