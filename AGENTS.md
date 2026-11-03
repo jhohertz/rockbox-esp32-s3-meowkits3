@@ -953,10 +953,13 @@ for esp32p4 in this IDF — as "internal memory is not cached"; it is a statemen
 that part's L1 strictness, which is why IDF guards only its *descriptor* maintenance
 with it. That misreading turned `commit_dcache_range()`/`discard_dcache_range()` into
 no-ops here and caused the shutdown crash and the debug-menu crash:
-`usb_dw_target_dma_discard()` (the override of a weak hook in `usb-designware.c`, whose
-whole purpose is making DWC-written endpoint buffers visible) and the GDMA descriptor
-ring's polled owner bit were both reading stale lines, so the drivers acted on bytes
-that were never transferred.
+`usb_dw_target_dma_discard()` (an override of a weak hook this port had added to
+`usb-designware.c`, whose whole purpose was making DWC-written endpoint buffers
+visible) and the GDMA descriptor ring's polled owner bit were both reading stale
+lines, so the drivers acted on bytes that were never transferred. That hook is
+gone: the driver's own `DISCARD_DCACHE_RANGE` under `POST_DMA_FLUSH` covers the
+same range, and this target defines `NO_UNCACHED_ADDR` so the endpoint-0 sites
+are live too.
 
 **The symptom of a stale DMA read is never where you expect it.** Bad MSC payload ->
 FAT/dircache structures parsed from garbage -> a write through a bogus pointer -> a

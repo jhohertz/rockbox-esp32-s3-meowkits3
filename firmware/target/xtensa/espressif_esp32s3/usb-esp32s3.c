@@ -739,20 +739,6 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
 
 #endif /* USB_ENABLE_AUDIO */
 
-/* Strong implementation of the driver's weak DMA hook. The esp32s3 D-cache
- * covers internal SRAM -- where every DMA buffer has to live -- and the DWC
- * core writes those bytes without going through it, so a receiver that reads
- * the cached address sees whatever was there before the transfer.
- * cache_hal_invalidate_addr() takes no lock and is safe from the interrupt
- * context this is called in.
- *
- * No counters here. This hook is a convenient place to sample DOEPTSIZ and
- * DOEPCTL at receive completion, and did briefly carry four such counters; they
- * were removed because the display is the only console on this board and the
- * RTC breadcrumb ring cannot be read in the audio profile -- the cable gives
- * OTG to our firmware about a second after boot, so the Serial-JTAG console
- * that would carry the dump is gone before anything can listen.
- */
 /* This core must keep its PHY clock running through teardown. Measured: the
  * soft disconnect completes, the delay after it returns, and the very next
  * core register access after PCGCCTL=1 stalls the bus, so the watchdog resets
@@ -767,6 +753,11 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
  * extraction, and the driver's pad release right after this reads core
  * registers.
  */
+bool usb_dw_target_may_stop_phy_clock(void)
+{
+    return false;
+}
+
 /* A bounded FIFO flush that never completed is the signature of the unplug
  * crash on this board: reset reason 6 (task watchdog) with no panic record,
  * i.e. a silent spin in the caller's context. The note goes to RTC slow memory
@@ -777,16 +768,6 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
 void usb_dw_target_flush_timeout(uint32_t fflsh, uint32_t grstctl)
 {
     dbg_breadcrumb_retained("flshTO", fflsh, grstctl);
-}
-
-bool usb_dw_target_may_stop_phy_clock(void)
-{
-    return false;
-}
-
-void usb_dw_target_dma_discard(void *buf, unsigned int len)
-{
-    discard_dcache_range(buf, len);
 }
 
 /* No usb_dw_target_frame_number() override: the driver's generic full-speed

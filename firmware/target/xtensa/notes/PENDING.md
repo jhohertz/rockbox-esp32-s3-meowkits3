@@ -631,16 +631,18 @@ Board access: **hold BOOT, tap RESET** for download mode, then
       * **open** -- bounding the wait on the self-clearing flush-request bit.
         The unbounded spin is a latent hang for every DWC2 target, so the fix
         belongs in the generic path rather than in our branch.
-      * **open** -- cache maintenance on DMA buffers. The driver already has
-        `POST_DMA_FLUSH` and `COMMIT_DCACHE_RANGE` knobs; the branch should use
-        them instead of adding a new path.
-      * **open, and newly found** -- three `dbg_breadcrumb()` calls sit in this
-        driver behind `HAVE_DBG_BREADCRUMB`, and both names have zero upstream
-        hits: an invented core diagnostic, referenced from shared code. They are
-        bring-up aids for exactly the stalls the bounded waits now cover, so the
-        fix is a weak `usb_dw_target_init_note()` rather than a flag the core
-        has never heard of.
-
+      * **removed** -- the cache-maintenance branch. It invalidated
+        `dw_ep->addr + transferred` through a weak hook this port had invented
+        (`usb_dw_target_dma_discard`, zero upstream hits) whose body was the
+        same call the driver's own `DISCARD_DCACHE_RANGE` already makes at the
+        same point in the same function, over `dw_ep->req_addr` and
+        `dw_ep->req_size` -- a strict superset, because `epstart` records the
+        whole request. So the branch added nothing, and the hook existed only
+        to be called from it. Both are gone. The target defines
+        `NO_UNCACHED_ADDR` and `POST_DMA_FLUSH`, the shape `STM32H743` uses for
+        the same reason, which also makes the two endpoint-0 discard sites
+        live. ELF after removal: no `usb_dw_target_dma_discard` symbol, and
+        `discard_dcache_range` reached from the driver's own macro path.
       * **open** -- aborting armed endpoints before soft disconnect. Nothing on
         the generic teardown path calls `usb_drv_cancel_all_transfers()`; only
         three ARM drivers do. That gap is a driver defect, not a target quirk.
