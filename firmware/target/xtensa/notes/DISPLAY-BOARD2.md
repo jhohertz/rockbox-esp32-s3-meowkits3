@@ -25,6 +25,51 @@ time that happened it cost a whole session (see the corrected JTAG claim in
 | Protocol or sequence | `lcd-meowkits3.c` sends `CASET`, `RASET` then `RAMWR` before pixel data, and `st7789_init()` runs the documented order: CS deselect, reset asserted 20 ms, released, 120 ms recovery, `SLPOUT` + 130 ms, the bias/gamma block, `COLMOD 0x55`, `MADCTL 0xA8`, `INVON`, `DISPON`. Unit 1 renders correctly with exactly this. |
 | Panel supply or reset | The expander latch reads `0x41` on both, which mirrors the actual pin level, so LCD reset is released and CS is asserted in hardware, not merely in the output register. Backlight is on, which requires the rails and LEDC to be working. |
 
+## Measured since: the clock pad does toggle
+
+A slow-clock probe (~78 kHz from the 80 MHz PLL, `FUN_IE` open for the whole
+transfer, clock restored afterwards) counted **128 level changes on GPIO41 for an
+8-byte transfer** -- exactly the 64 clock periods expected, rising and falling.
+The same value was recorded on a dark power-on boot through the retained trail,
+and again on a host-triggered boot:
+
+    ppbe a=00000080 b=00000f37      (edges=128, from the dark boot's trail)
+    padprobe: edges=128 spins=3895  (this boot)
+
+So the controller drives the clock pad, on the boot that shows nothing. Every
+register-level explanation is now excluded, and the fault is downstream of the
+pad. Drive strength is *not* the difference: IDF's SPI driver never calls
+`gpio_set_drive_capability`, so the stock firmware uses the same pad default we
+do -- that API is only used by SDIO-slave and the MSPI flash-pad tuning.
+
+The probe has since been extended to count the MOSI pad (GPIO40) as well,
+because "clock moves, data does not" produces exactly the observed symptom.
+
+## The pad probe was too coarse, and two more theories are dead
+
+The probe's own resolution check reads `per=2..23` -- as few as two loop
+iterations between observed clock edges. The pad input goes through a two-stage
+APB synchroniser, so the loop follows the synchroniser rather than the pin and
+cannot resolve every bit period. Therefore `sclk=128, mosi=56` does **not**
+mean the data line is losing edges; the shortfall is the instrument. Do not
+build on that number.
+
+`usb_jtag_bridge_en` (conf0 bit 16) was written and verified -- the trail shows
+`ppcf a=00004200 b=00014200` -- and produced no change in the MOSI count and no
+picture. The MTDO-contention theory is dead.
+
+What the dark boot's retained trail does say: 40 entries, all SD read/write
+records, i.e. that boot mounted the card and did normal storage work. It is
+not hanging before the display, not crashing, and not skipping init. The app is
+healthy and the glass is dark.
+
+Five candidate explanations have now come back identical: image bytes, eFuse
+fields, peripheral register inventories, SPI clock rate, and JTAG pad ownership.
+The next thing with a chance of answering this is not a register read at all --
+it is either a probe on the panel flex itself, or the vendor firmware's actual
+SPI byte stream diffed against ours. Further flashing cycles are not producing
+information.
+
 ## What has NOT been measured validly
 
 Whether the clock pad physically toggles during a real transfer. Every attempt
