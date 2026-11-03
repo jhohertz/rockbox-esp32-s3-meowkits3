@@ -27,18 +27,7 @@
 
 void memset16(void *dst, int val, size_t len)
 {
-#if defined(CPU_XTENSA)
-    /* The generic LBLOCKSIZE version above is built around a zero-overhead
-     * loop. On the esp32s3 core config that loop state (LBEG/LEND/LCOUNT) is
-     * not preserved across the level-1 tick interrupt, so a memset that spans
-     * a tick never terminates. A plain counted store loop is not affected.
-     */
-    unsigned short *p = (unsigned short *)dst;
-    unsigned short v = (unsigned short)(val & 0xffff);
-
-    while (len--)
-        *p++ = v;
-#elif defined(PREFER_SIZE_OVER_SPEED) || defined(__OPTIMIZE_SIZE__)
+#if defined(PREFER_SIZE_OVER_SPEED) || defined(__OPTIMIZE_SIZE__)
     unsigned short *p = (unsigned short *)dst;
 
     while (len--)
@@ -85,5 +74,5 @@ void memset16(void *dst, int val, size_t len)
 
     while (len--)
         *p++ = val;
-#endif /* CPU_XTENSA / PREFER_SIZE_OVER_SPEED */
+#endif /* not PREFER_SIZE_OVER_SPEED */
 }
