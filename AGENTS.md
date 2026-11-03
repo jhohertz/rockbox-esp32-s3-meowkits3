@@ -3923,8 +3923,10 @@ Useful configure/build variables: `RBDEV_PREFIX`, `RBDEV_DOWNLOAD`,
 `RBDEV_BUILD`, `RBDEV_RESTART` (restart a toolchain build at a given step),
 `RBDEV_TARGET`, `RBDEV_ESP_TOOLCHAIN` (Espressif release tag).
 
-`tools/builds.pm` drives the build farm and `tools/list_targets.pl` prints the
-target status list; a new target must be added there too. `target_id` is a
+`tools/builds.pm` drives the build farm and is the single registry for a new
+target: `tools/list_targets.pl` reads `builds.pm` (`require "./builds.pm"`)
+and categorises by the `status` key, so there is nothing separate to add
+there. `target_id` is a
 unique number (currently max 126 in `configure`, max `MODEL_NUMBER` 132 in
 `config/*.h`) — use the next free one.
 

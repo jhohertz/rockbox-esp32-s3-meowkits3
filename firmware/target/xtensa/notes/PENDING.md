@@ -662,6 +662,19 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         `debug.h` is now byte-identical to upstream. Verified on hardware with a
         repeated attach/eject/unplug torture test across MSC, CDC and DAC.
 
+  - **Shared-code flag sweep found nothing else to move.** `IMAGE_LINK` is a
+  configure-exported make variable beside upstream's `APP_TYPE`, which is where
+  build-system decisions live. `HAVE_PANIC_CONSOLE` declares a hook the core
+  genuinely calls, so it belongs in `panic.h`. `PSRAM_BSS_ATTR`,
+  `DEFAULT_SPEAKER_MODE` and `CLEAN_SHUTDOWN_MESSAGE_HOLD` are weak defaults
+  with the value coming from the target config, and `USB_AUDIO_LOGF_DISABLE`
+  defaults to upstream's behaviour while letting a target whose log transport
+  is USB itself opt out. `HAVE_SYSTEM_LIBC` is the one genuinely new concept:
+  it marks which compilation domain links a C library, and no upstream target
+  has two domains, so it is a new idea to discuss rather than a leak to fix.
+  `apps/main.c` and `firmware/export/debug.h` now differ from upstream by
+  nothing at all.
+
   - **`HAVE_TARGET_TICK_THREAD` was an invented core flag and is gone.** It
   existed so `apps/main.c` could create a thread running `run_tick_tasks()` --
   a target need, since this core cannot run tick tasks from an interrupt frame.
