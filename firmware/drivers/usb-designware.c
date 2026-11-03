@@ -421,6 +421,16 @@ static void usb_dw_handle_dtxfifo(int epnum)
 #endif /* !USB_DW_SHARED_FIFO */
 #endif /* USB_DW_ARCH_SLAVE */
 
+/* What a target does when a bounded FIFO flush did not complete. Empty by
+ * default: a target that leaves its waits unbounded never reaches here, and one
+ * that bounds them may have nothing to record. */
+__attribute__((weak)) void usb_dw_target_flush_timeout(uint32_t fflsh,
+                                                       uint32_t grstctl)
+{
+    (void)fflsh;
+    (void)grstctl;
+}
+
 static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
 {
 #ifdef USB_DW_ARCH_SLAVE
@@ -433,20 +443,17 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
     usb_dw_wait_for_ahb_idle();
 #endif
     DWC_GRSTCTL = TXFNUM(fnum) | fflsh;
-#if defined(CPU_XTENSA)
-    /* The flush request bit is self-clearing, and this wait was
-     * unconditional: on a core that cannot complete a flush -- PHY clock
-     * stopped, or an endpoint holding FIFO data for a host that has gone
-     * away -- it spins forever in the caller's context, which starves the
-     * idle task and ends in a task-watchdog reset rather than anything the
-     * driver could report. Measured on the esp32s3 unplug crash: reset
-     * reason 6 (task watchdog) with no panic record, i.e. a silent spin.
-     *
-     * Bounded, and on timeout it records and returns rather than panicking:
-     * a failed flush on a device that is being torn down or has lost its
-     * host is not worth killing the player for, and panicf() here would only
-     * be visible on a console nobody is reading. The note goes to RTC slow
-     * memory so the next boot can say whether this is what was hanging. */
+    /* The flush request bit is self-clearing, so the generic wait below is a
+     * bare spin. A core that cannot complete a flush -- PHY clock stopped, or
+     * an endpoint holding FIFO data for a host that has gone away -- then hangs
+     * in the caller's context, which starves the idle task and ends in a
+     * hardware watchdog reset rather than anything the driver could report. A
+     * target that bounds its GRSTCTL waits bounds this one too, and on timeout
+     * returns without completing the flush: a failed flush during teardown, or
+     * after the host went away, is not worth killing the player for, and a
+     * panic here would only be visible on a console nobody is reading. What the
+     * target records is its own business. */
+#ifdef USB_DW_SPIN_LIMIT
     {
         uint32_t n = USB_DW_SPIN_LIMIT;
 
@@ -454,7 +461,7 @@ static void usb_dw_flush_fifo(uint32_t fflsh, int fnum)
         {
             if (--n == 0)
             {
-                dbg_breadcrumb_retained("flshTO", fflsh, DWC_GRSTCTL);
+                usb_dw_target_flush_timeout(fflsh, DWC_GRSTCTL);
                 return;
             }
         }

@@ -611,7 +611,15 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         card verified by sha256 after a remount to drop the host's buffer cache;
         then a host-side eject, a cable pull, and playback resumed on the device
         with no watchdog reset, and the PM row showing sleep unblocked again.
-      * **moved, awaiting the same hardware check** -- the two GRSTCTL waits
+      * **moved, hardware check pending** -- the flush-request spin. It was a
+        CPU branch whose timeout called a target diagnostic directly from the
+        shared driver. Now the wait is bounded under the same
+        `USB_DW_SPIN_LIMIT` knob and the timeout calls a weak
+        `usb_dw_target_flush_timeout(fflsh,
+        grstctl)`, empty by default; `usb-esp32s3.c` records the breadcrumb,
+        which is the only reason that branch existed. ELF proof: driver `W`,
+        target `T`, and `call8 <usb_dw_target_flush_timeout>` at the timeout.
+      * **moved, then hardware-verified** -- the two GRSTCTL waits
         (`AHBIDL`, `CSRST`) were duplicated per CPU, differing only by a bound
         and a `panicf`. They are now one definition each, bounded when a target
         defines `USB_DW_SPIN_LIMIT`, which is the knob shape the driver
@@ -626,6 +634,13 @@ Board access: **hold BOOT, tap RESET** for download mode, then
       * **open** -- cache maintenance on DMA buffers. The driver already has
         `POST_DMA_FLUSH` and `COMMIT_DCACHE_RANGE` knobs; the branch should use
         them instead of adding a new path.
+      * **open, and newly found** -- three `dbg_breadcrumb()` calls sit in this
+        driver behind `HAVE_DBG_BREADCRUMB`, and both names have zero upstream
+        hits: an invented core diagnostic, referenced from shared code. They are
+        bring-up aids for exactly the stalls the bounded waits now cover, so the
+        fix is a weak `usb_dw_target_init_note()` rather than a flag the core
+        has never heard of.
+
       * **open** -- aborting armed endpoints before soft disconnect. Nothing on
         the generic teardown path calls `usb_drv_cancel_all_transfers()`; only
         three ARM drivers do. That gap is a driver defect, not a target quirk.

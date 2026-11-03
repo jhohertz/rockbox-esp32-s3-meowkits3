@@ -767,6 +767,18 @@ unsigned char *usb_audio_target_rx_buffer(size_t size)
  * extraction, and the driver's pad release right after this reads core
  * registers.
  */
+/* A bounded FIFO flush that never completed is the signature of the unplug
+ * crash on this board: reset reason 6 (task watchdog) with no panic record,
+ * i.e. a silent spin in the caller's context. The note goes to RTC slow memory
+ * because nothing else survives long enough to report it -- the CDC console is
+ * gone by the time this can fire, since the cable that would carry it is what
+ * caused it. The next boot's report says whether a stuck flush is what hung.
+ */
+void usb_dw_target_flush_timeout(uint32_t fflsh, uint32_t grstctl)
+{
+    dbg_breadcrumb_retained("flshTO", fflsh, grstctl);
+}
+
 bool usb_dw_target_may_stop_phy_clock(void)
 {
     return false;
