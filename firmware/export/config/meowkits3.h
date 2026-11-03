@@ -470,12 +470,6 @@
  * second gate. */
 #define THREAD_EXTRA_CHECKS 0
 
-/* The core timer on this SoC cannot be programmed from Rockbox --
- * wsr.intlevel is not a valid opcode on the esp32s3 core config and there is
- * no per-level interrupt base -- so the tick tasks run in a thread that
- * polls instead of from the tick interrupt. apps/main.c creates that thread
- * only when a target asks for it. */
-#define HAVE_TARGET_TICK_THREAD
 
 /* Serial-over-USB on by default: this build does not include the debug menu,
  * which is the only place Rockbox exposes the switch, so a false default

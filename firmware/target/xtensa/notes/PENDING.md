@@ -645,7 +645,7 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         the same reason, which also makes the two endpoint-0 discard sites
         live. ELF after removal: no `usb_dw_target_dma_discard` symbol, and
         `discard_dcache_range` reached from the driver's own macro path.
-      * **deduplicated, hardware check pending** -- aborting armed endpoints
+      * **deduplicated and hardware-verified** -- aborting armed endpoints
         before soft disconnect. The branch was a verbatim copy of
         `usb_drv_cancel_all_transfers()`'s body, which is public API in
         `usb_drv.h`. Now the per-CPU chain defines `USB_DW_CANCEL_ON_EXIT` and
@@ -654,12 +654,23 @@ Board access: **hold BOOT, tap RESET** for download mode, then
         for anyone else, and `usb_core.c` only calls it on `SET_CONFIGURATION`,
         so the gap in the generic path is real and remains a submission
         candidate once these placements are settled.
-      * **open** -- three `dbg_breadcrumb()` calls sit in this driver behind
-        `HAVE_DBG_BREADCRUMB`, and both names have zero upstream hits: an
-        invented core diagnostic referenced from shared code. They are bring-up
-        aids for exactly the stalls the bounded waits now cover, so the fix is a
-        weak `usb_dw_target_init_note()` rather than a flag the core has never
-        heard of.
+      * **removed** -- the three `dbg_breadcrumb()` calls, replaced by a weak
+        `usb_dw_target_init_note(stage, a, b)`. `dbg_breadcrumb` and
+        `HAVE_DBG_BREADCRUMB` have zero upstream hits, and every remaining user
+        is a target file, so the declarations also moved from
+        `firmware/export/debug.h` to `firmware/target/xtensa/paniclog.h` --
+        `debug.h` is now byte-identical to upstream. Verified on hardware with a
+        repeated attach/eject/unplug torture test across MSC, CDC and DAC.
+
+  - **`HAVE_TARGET_TICK_THREAD` was an invented core flag and is gone.** It
+  existed so `apps/main.c` could create a thread running `run_tick_tasks()` --
+  a target need, since this core cannot run tick tasks from an interrupt frame.
+  Upstream has the mechanism for that already: `tick_start()` is target code
+  (`kernel/tick.c` says so in a comment), so the thread now lives in
+  `timer-esp32s3.c` and `apps/main.c` has no xtensa-specific branch.
+  `run_tick_tasks()` stays in the kernel because `tick_funcs[]` is
+  kernel-static and a target cannot walk it; that is a kernel API the target
+  uses, not a flag the core branches on.
 
   - **`sd-esp32s3.c` asserts IDF handles cache maintenance "when the destination
     is in PSRAM".** Behaviourally that is true -- dircache populates from the

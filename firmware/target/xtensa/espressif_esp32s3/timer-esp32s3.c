@@ -28,6 +28,7 @@
 #include "system.h"
 #include "tick.h"
 #include "timer.h"
+#include "thread.h"
 
 /* FreeRTOS.h has to precede task.h, and both come after the Rockbox headers so
  * that config.h is what decides the target's types. */
@@ -81,6 +82,29 @@ static const char TAG[] = "rbtick";
  * regenerate. */
 extern const unsigned int rb_kernel_tick_hz;
 
+/* Tick tasks run here rather than in the tick source itself. Registered tasks
+ * are ordinary C -- button polling does I2C, which ends in a semaphore wait --
+ * and a semaphore wait switches threads, which cannot happen on this core from
+ * an interrupt frame. Exactly one instance: run_tick_tasks() walks tick_funcs[]
+ * with no reentrancy guard, so a second copy would alias this thread's frames
+ * and run every task twice per tick, timeout_tick with it, halving every
+ * timeout in Rockbox.
+ *
+ * sleep() takes ticks, not milliseconds: sleep(0) waits for the next tick, so
+ * the loop runs at HZ, the rate every tick consumer assumes. An earlier
+ * sleep(HZ/2) sampled the stick twice a second, which is where the "have to
+ * press several times" complaint came from. */
+static long tick_thread_stack[DEFAULT_STACK_SIZE / sizeof(long)];
+
+static void tick_task_thread(void)
+{
+    while (true)
+    {
+        sleep(0);
+        run_tick_tasks();
+    }
+}
+
 void tick_start(unsigned int interval_in_ms)
 {
     /* The seam has to divide an exact number of times or Rockbox's clock drifts
@@ -97,7 +121,15 @@ void tick_start(unsigned int interval_in_ms)
 
     ESP_LOGI(TAG, "tick: kernel %u Hz -> rockbox %d Hz (divide by %u, %u ms)",
              rb_kernel_tick_hz, HZ, rb_kernel_tick_hz / HZ, interval_in_ms);
+    /* Started here rather than earlier so the loop has a clock to wait on.
+     * Every tick task is registered later in init() -- button_init(),
+     * usb_init(), powermgmt_init() and the first timeout_add() -- so nothing
+     * is missed by starting before them. */
+    create_thread(tick_task_thread, tick_thread_stack,
+                  sizeof tick_thread_stack, 0,
+                  "tick" IF_PRIO(, PRIORITY_BACKGROUND));
 }
+
 
 /* The kernel tick is the only clock this target has; Rockbox mirrors it rather
  * than arming its own timer. */
