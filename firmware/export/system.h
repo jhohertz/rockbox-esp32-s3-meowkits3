@@ -349,5 +349,4 @@ bool dbg_ports(void);
 bool dbg_hw_info(void);
 #endif
 
-
 #endif /* __SYSTEM_H__ */
