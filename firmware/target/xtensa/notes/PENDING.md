@@ -26,13 +26,20 @@ shipped state was captured first: dark on cold power-on before, correct UI after
 with no probe and no repeated init. `DISPLAY-BOARD2.md` has the measurement and
 the reason warm boots hid it. Consequences to close:
 
-- [ ] Board 1 has never been tested on a rails-off power-on. It runs a release
-      build, and both releases carry this defect, so it needs the same check.
-- [ ] Board 2 needs the fixed build on it. It is a suspect unit (display glitch and
-      touch loss under the vendor firmware), so treat whatever it does as noise.
-- [ ] The two published releases are affected. A customer's first plug-in is a cold
-      power-on, which is the only case that fails.
-- [ ] Third release cut is unblocked once board 1 is verified cold.
+Verified on hardware: a virgin unit captured before any write, and board 1, both
+show the UI on a rails-off power-on with the settle delay in place. The two
+published releases carry the defect, so a third release is not optional -- it is
+the fix going out.
+
+- [ ] Board 2 is deliberately excluded. It glitches on display and has lost touch
+      under the vendor firmware, so its owner is looking at the hardware. Its
+      result under the fixed build is noise either way.
+- [ ] Packaging still to produce for the tag: `make espfull` (no rockbox-flash.bin
+      exists, and that single-file image is what the web flasher needs), the fonts
+      artifact, the themes pack, the manual PDF, `espverify`, a build manifest and
+      SHA256SUMS. Only rockbox.zip is current.
+- [ ] Release notes must state the cold-boot defect, since users of the two
+      published builds hit it on their first plug-in.
 
 
 ## esp_lcd display migration tried and reverted
@@ -47,7 +54,12 @@ conclusion is that our SPI programming is not the fault.
 
 ## Second board: display dark on a power-on reset, working on a host reset
 
-Open. Two units of the same design, same batch, byte-identical firmware
+**Superseded.** The dark panel was this port's fault and is fixed by the settle
+delay above; the investigation below ran on a unit that is also physically
+unwell, which is why none of its register-level findings located the cause. Kept
+as a record of what was eliminated and how.
+
+Two units of the same design, same batch, byte-identical firmware
 (app image read out of board 1's flash and written to board 2), and the second
 unit shows only backlight after a RESET-button boot while showing the menu after
 a reset triggered by the host attaching to USB-Serial-JTAG.

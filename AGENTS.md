@@ -2171,12 +2171,20 @@ appears unbootable until a genuine power-on (rails off, then back on). A
 `dtr=False` + RTS pulse does not help: while the ROM owns the chip that pulse
 re-enters the downloader.
 
-**Multi-byte `i2c_readmem()` is not trustworthy on this bus.** Reading several
-registers in one transaction returns the first byte correctly and `0xFF` for the
-rest, on the PMU, the expander and both codecs (measured). A register inventory
-has to issue one transaction per register. Anything that genuinely needs a burst
-read -- the touchscreen's 14-byte status block -- must be verified against the
-device rather than assumed to work.
+**Burst reads work, but verify each device rather than trusting the API.**
+`i2c_readmem()` programs a single START, write-register, RSTART, read-N, STOP
+transaction and returns `count` on success, and the bursts this port depends on
+are measured working: the AXP173 voltage and current pairs at 0x78-0x7C, the
+eight-byte coulomb counter blocks at 0xB0-0xB7, whose values integrated correctly
+against an independent `battery_current()` sum, and the FT6336's 14-byte status
+block. An earlier note here claimed multi-byte reads return the first byte and
+then `0xFF` on every device; that was recorded from one register-dump session
+whose cause was never established, and it contradicts the coulometer and
+touchscreen measurements above. It is wrong as a blanket statement. The
+surviving rule is narrower and still worth obeying: a register inventory on an
+unknown device should be checked against a single-byte read of the same register,
+because a device that NACKs or returns stale contents looks identical to a broken
+burst.
 
 The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557,
 0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
