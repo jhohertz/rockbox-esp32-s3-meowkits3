@@ -32,6 +32,7 @@
 #include "tick.h"
 #include "logf.h"
 #include "axp173.h"
+#include "board.h"
 #include "i2c.h"
 #include "xtensa.h"
 
@@ -65,21 +66,21 @@ static inline void wr(uint32_t reg, uint32_t val) { *(volatile uint32_t *)reg = 
 
 void ICODE_ATTR feed_rwdt(void);
 
-void power_init(void)
+void meowkit3_board_init(void)
 {
-    /* The bootloader enables the RTC watchdog with a timeout sized for
-     * itself. Keeping it and feeding it from the tick is the only freeze
-     * protection this target has. */
-    if (rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & RWDT_EN_BIT)
-        tick_add_task(feed_rwdt);
+    static bool done;
 
-    /* The PMU is the power supply, so this is not a monitoring call that can be
-     * skipped: cold, the chip leaves LDO4 at 1.2 V, and LDO4 feeds the PCA9557
-     * that holds the LCD reset and chip select -- below about 2 V the expander
-     * does not answer on the bus at all, so every display and touch operation
-     * that follows fails in a way that looks like a display problem. DCDC1
-     * feeds the SoC and LDO2/LDO3 the rest of the board, including the card
-     * slot.
+    if (done)
+        return;
+    done = true;
+
+    /* The PMU is the power supply, so this is not a monitoring call that can
+     * be skipped: cold, the chip leaves LDO4 at 1.2 V, and LDO4 feeds the
+     * PCA9557 that holds the LCD reset and chip select -- below about 2 V the
+     * expander does not answer on the bus at all, so every display and touch
+     * operation that follows fails in a way that looks like a display problem.
+     * DCDC1 feeds the SoC and LDO2/LDO3 the rest of the board, including the
+     * card slot.
      *
      * This call was commented out during bare-metal fault isolation and never
      * put back. The trace line below is why nobody noticed: it printed 'W'
@@ -93,6 +94,20 @@ void power_init(void)
     i2c_init();
     axp173_init();
 
+}
+
+void power_init(void)
+{
+    /* The bootloader enables the RTC watchdog with a timeout sized for
+     * itself. Keeping it and feeding it from the tick is the only freeze
+     * protection this target has. */
+    if (rd(XT_RTCCNTL_BASE + RWDT_CONFIG0) & RWDT_EN_BIT)
+        tick_add_task(feed_rwdt);
+
+    /* Rails and master may already be up: lcd_init_device() calls this
+     * first, because the panel depends on LDO4 and lcd_init() precedes
+     * power_init(). */
+    meowkit3_board_init();
 
 }
 

@@ -30,6 +30,7 @@
 #include "backlight.h"          /* lcd_awake() is prototyped there */
 #include "backlight-target.h"
 #include "pca9557.h"
+#include "board.h"
 #include "spi-esp32s3.h"
 #include "gpio-esp32s3.h"
 #include "esp_heap_caps.h"
@@ -237,7 +238,12 @@ void lcd_blit_yuv(unsigned char * const src[3], int src_x, int src_y, int stride
 void lcd_init_device(void)
 {
     /* Forced by the hardware: CS and RST are expander outputs, so the expander
-     * has to be reachable before the panel can be reset or selected. */
+     * has to be reachable before the panel can be reset or selected. On a unit
+     * whose PMU is at its reset defaults it is not reachable at all until
+     * LDO4 is raised, and power_init() -- which does that -- runs *after*
+     * lcd_init() in apps/main.c. So the rails come up here rather than
+     * relying on something that has already run. */
+    meowkit3_board_init();
     pca9557_init();
     st7789_init();
 

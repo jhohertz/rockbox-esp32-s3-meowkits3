@@ -1,9 +1,13 @@
 #include "config.h"
 #include "system.h"
 #include "pca9557.h"
+#include "i2c.h"        /* latch read-back */
 #include "spi-esp32s3.h"
 #include "gpio-esp32s3.h"
 #include "st7789.h"
+
+/* Counted alongside the write failures so the debug screen shows it. */
+extern unsigned pca9557_write_fails;
 
 /* Command values and the init list are taken from the reference firmware's
  * LovyanGFX panel driver, not from memory. */
@@ -104,6 +108,13 @@ void st7789_init(void)
     pca9557_write(IOEXP_LCD_RST, 1);       /* release */
     pca9557_write(IOEXP_TOUCH_RST, 1);
     delay_ms(120);                          /* ST7789 needs ~120 ms after release */
+    {
+        unsigned char latch = 0;
+        if (i2c_readmem(PCA9557_ADDR, PCA9557_REG_INPUT, &latch, 1) >= 0 &&
+            (latch & ((1 << IOEXP_LCD_RST) | (1 << IOEXP_TOUCH_RST))) !=
+            ((1 << IOEXP_LCD_RST) | (1 << IOEXP_TOUCH_RST)))
+            pca9557_write_fails++;
+    }
 
     cs_assert();
 

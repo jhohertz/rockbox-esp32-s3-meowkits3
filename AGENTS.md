@@ -2126,6 +2126,37 @@ Three traps follow from this:
   `esp_err_t`, where **0 means the device was found** - assigning it to a `bool`
   inverts the meaning.
 
+**Init order is part of this.** `apps/main.c` reaches `lcd_init()` long before
+`power_init()`, so on a unit whose PMU is still at its reset defaults the
+expander is unpowered when the display path first asks for it, and nothing in
+the display code can see why it is being ignored. `lcd_init_device()` therefore
+calls `meowkit3_board_init()` (`meowkits3/board.h`), which raises the rails
+before the expander is touched. `power_init()` calls the same function; it is
+idempotent. The as3525 targets do the same thing for the same reason --
+`lcd_init_device()` calls `as3525_dbop_init()`.
+
+This only bites units that have never had their PMU configured. A board that has
+already run firmware looks fine, because the AXP173 keeps its registers across
+an ESP reset and a reflash -- which is exactly how a genuine ordering bug hides
+for as long as one development board has been through the sequence.
+
+**`FORCE_DOWNLOAD_BOOT` is set by every flash, and only our USB init clears it.**
+The bit lives in the RTC block and survives any reset, so after `make flash` or a
+manual `write_flash` every subsequent RESET tap lands in the ROM loader
+(`waiting for download`) rather than booting the app. `usb_init_device()` clears
+it on every boot, which is why the shipping build recovers silently -- but a
+bring-up build that suppresses USB attach never calls it, and the board then
+appears unbootable until a genuine power-on (rails off, then back on). A
+`dtr=False` + RTS pulse does not help: while the ROM owns the chip that pulse
+re-enters the downloader.
+
+**Multi-byte `i2c_readmem()` is not trustworthy on this bus.** Reading several
+registers in one transaction returns the first byte correctly and `0xFF` for the
+rest, on the PMU, the expander and both codecs (measured). A register inventory
+has to issue one transaction per register. Anything that genuinely needs a burst
+read -- the touchscreen's 14-byte status block -- must be verified against the
+device rather than assumed to work.
+
 The full bus, with the rail correct, is seven devices: 0x18 ES8311, 0x19 PCA9557,
 0x34 AXP173, 0x38 FT6336, 0x41 ES7210, 0x51 PCF8563, 0x68 BMI270. 0x44 (SHT30)
 is absent on this board.

@@ -72,7 +72,11 @@ void pca9557_init(void)
     unsigned char v;
     int ok = 0;
 
-    for (int attempt = 0; attempt < 5; attempt++) {
+    /* Ten 100 ms attempts rather than five: right after LDO4 is raised the
+     * expander has only just gained a supply, and the cold boot needs the
+     * extra window. The attempt count is printed because the two failure modes
+     * -- never ACKs, or ACKs only after N tries -- need different fixes. */
+    for (int attempt = 0; attempt < 10; attempt++) {
         if (read_reg(PCA9557_REG_CONFIG, &v)) {
             ok = 1;
             break;

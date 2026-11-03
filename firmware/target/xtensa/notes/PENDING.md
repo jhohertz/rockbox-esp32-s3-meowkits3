@@ -18,6 +18,43 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ---
 
+## Second board: display dark on a power-on reset, working on a host reset
+
+Open. Two units of the same design, same batch, byte-identical firmware
+(app image read out of board 1's flash and written to board 2), and the second
+unit shows only backlight after a RESET-button boot while showing the menu after
+a reset triggered by the host attaching to USB-Serial-JTAG.
+
+Ruled out by measurement, not inference:
+
+- **The image.** Board 1 ran `v4.0-final-2771-g32889435c3-dir`, a dirty build
+  five commits behind HEAD. Its bootloader, partition table, otadata and app
+  were read out of flash and written to board 2: still dark. There is no
+  development-era state on board 1 -- no NVS use, and zero references to
+  eFuse writes or secure boot anywhere in the tree, so no release could have
+  altered a chip.
+- **eFuse.** Read on both units via `esp_efuse_read_field_blob`:
+  `DIS_PAD_JTAG=0 STRAP_JTAG_SEL=0 DIS_USB_JTAG=0 SOFT_DIS_JTAG=0`. Pads
+  39/40/41 are usable as GPIO on both.
+- **Peripheral state.** Full single-byte inventories of AXP173 (0x00-0x47),
+  PCA9557, PCF8563, ES8311 and ES7210 on both boards differ only in
+  time-of-day and charge-status bytes. Expander config `0xb0`, latch `0x41`,
+  identical on both.
+- **Pad routing.** `mcu=1`, `func=256/103/101`, `oen=1`, output enable set,
+  identical on both. The pads are drivable as plain GPIO on both.
+- **SPI clock tolerance.** Running the bus at 20 MHz instead of 80 MHz changed
+  nothing: the host-reset boot still showed content.
+- **The JTAG theory.** Clearing `USB_SERIAL_JTAG.conf0` bit 16 changes nothing;
+  the bit already read 0 on both units. The defensive write is in the tree.
+
+What has *not* been measured is whether the clock pad physically toggles. Every
+edge-count attempt so far read zero on a boot that produced a correct picture,
+which proves the instrument was wrong, not the hardware: the pad's input path
+was not enabled during the transfers, and a polled loop cannot resolve 80 MHz
+through the GPIO synchroniser anyway. A valid test needs `FUN_IE` open for the
+whole transfer and a divider slow enough to sample -- tens of kHz, not 20 MHz.
+
+
 ## 1. Open
 
 - **A fresh, never-flashed board boots correctly -- nothing in the port depends on
