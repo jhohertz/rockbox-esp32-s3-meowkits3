@@ -66,6 +66,7 @@
  */
 
 #include "config.h"
+#include "paniclog.h"
 #include "system.h"
 #include "kernel.h"
 #include "file.h"

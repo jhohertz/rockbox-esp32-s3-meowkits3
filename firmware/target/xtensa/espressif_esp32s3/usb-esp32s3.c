@@ -30,6 +30,7 @@
  * return to USJ on reset.
  ****************************************************************************/
 #include "config.h"
+#include "paniclog.h"
 #include "debug.h"           /* dbg_breadcrumb() */
 #include "system.h"
 #ifdef USB_ENABLE_SERIAL

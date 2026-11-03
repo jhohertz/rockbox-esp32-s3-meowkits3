@@ -21,6 +21,7 @@
  */
 
 #include "config.h"
+#include "paniclog.h"
 #include "debug.h"        /* dbg_breadcrumb_retained() */
 #include <string.h>
 #include "system.h"

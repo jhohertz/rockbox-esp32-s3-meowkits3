@@ -53,6 +53,7 @@
  * comes out unknown. This file uses neither queue API, so it can take whichever
  * one arrives first. */
 #include "driver/sdmmc_host.h"
+#include "paniclog.h"
 #include "sdmmc_cmd.h"
 #include "esp_err.h"
 #include "esp_log.h"

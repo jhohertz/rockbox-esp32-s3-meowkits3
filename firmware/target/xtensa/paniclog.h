@@ -1,19 +1,31 @@
 #ifndef PANICLOG_H
 #define PANICLOG_H
 
+#include "config.h"           /* HAVE_DBG_BREADCRUMB, so the guard below works
+                               * regardless of the includer's order */
 #include <sys/types.h>
 #include <stdint.h>
 
 /*
  * What firmware/target/xtensa/paniclog.c exports to the rest of the target.
  *
- * The two hooks the core calls are declared where the core sees them:
- * panic_console_write() in panic.h under HAVE_PANIC_CONSOLE, and
- * dbg_breadcrumb()/dbg_breadcrumb_retained() in debug.h under
- * HAVE_DBG_BREADCRUMB. Everything here is target-facing: readers for a record
- * that has to be shown by code with no console, and writers called from the
- * IDF-side entry points that cannot include Rockbox headers.
+ * The one hook the core calls is declared where the core sees it:
+ * panic_console_write() in panic.h under HAVE_PANIC_CONSOLE. Everything else
+ * here is target-facing, including the crash trail writers -- no core file
+ * calls them, so nothing about them belongs in a core header. Each caller
+ * reaches them through the driver seams that hand over the values
+ * (usb_dw_target_init_note() and usb_dw_target_flush_timeout() being the two
+ * in the DWC2 driver), or calls them directly from target code.
  */
+
+#ifdef HAVE_DBG_BREADCRUMB
+/* Record a step that might be the last one. Needs no console, no lock, no
+ * stack and no working panic handler, because its whole purpose is to survive
+ * the hang or reset that follows it. The retained variant lives in memory that
+ * outlives that reset; use it for steps that can stall. */
+void dbg_breadcrumb(const char *tag, unsigned long a, unsigned long b);
+void dbg_breadcrumb_retained(const char *tag, unsigned long a, unsigned long b);
+#endif
 
 /* Dump the retained record to whatever console exists. Called before the first
  * screen is drawn, so it must not allocate or take a lock. */

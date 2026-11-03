@@ -22,6 +22,7 @@
 #define LOGF_ENABLE
 
 #include "config.h"
+#include "paniclog.h"
 #include "debug.h"        /* dbg_breadcrumb_retained() */
 
 #include "system.h"
