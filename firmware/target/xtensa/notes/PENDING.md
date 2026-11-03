@@ -601,13 +601,25 @@ Board access: **hold BOOT, tap RESET** for download mode, then
     branches are legitimate and stay (EP0 transfer-size field width, the DMA
     address/cache mode, the PHY field encoding). The rest are being moved, one
     at a time, each verified on hardware before the next:
-      * **done** -- leaving the PHY clock running at teardown. Now a weak
-        `usb_dw_target_may_stop_phy_clock()`, defaulting true so no other target
-        changes, overridden to return false in `usb-esp32s3.c` where the
-        measurement belongs. Verified in the ELF: `call8` the hook, `beqz`
-        around the `PCGCCTL=1` store.
-      * **open** -- `usb_dw_wait_for_ahb_idle()` and its spin limit are defined
-        whole inside the CPU branch; that is a target hook, not a driver fork.
+      * **done and hardware-verified** -- leaving the PHY clock running at
+        teardown. Now a weak `usb_dw_target_may_stop_phy_clock()`, defaulting
+        true so no other target changes, overridden to return false in
+        `usb-esp32s3.c` where the measurement belongs. Static proof: `call8`
+        the hook then `beqz` around the `PCGCCTL=1` store in the linked ELF.
+        Hardware proof, on a DAC stream: continuous playback through a `dd`
+        block-read flood on the MSC LUN, and through a 200 MB DSF copy to the
+        card verified by sha256 after a remount to drop the host's buffer cache;
+        then a host-side eject, a cable pull, and playback resumed on the device
+        with no watchdog reset, and the PM row showing sleep unblocked again.
+      * **moved, awaiting the same hardware check** -- the two GRSTCTL waits
+        (`AHBIDL`, `CSRST`) were duplicated per CPU, differing only by a bound
+        and a `panicf`. They are now one definition each, bounded when a target
+        defines `USB_DW_SPIN_LIMIT`, which is the knob shape the driver
+        already uses (`USB_DW_TURNAROUND`, `USB_DW_ARCH_SLAVE`,
+        `USB_DW_FORCE_DEVICE_MODE`). A target defining nothing gets
+        upstream's unbounded statement verbatim, so no other DWC2 target's
+        code differs. The value and its rationale live in `meowkits3.h`;
+        the flush-request spin reuses the same limit for now.
       * **open** -- bounding the wait on the self-clearing flush-request bit.
         The unbounded spin is a latent hang for every DWC2 target, so the fix
         belongs in the generic path rather than in our branch.
