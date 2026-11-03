@@ -18,6 +18,16 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ---
 
+## esp_lcd display migration tried and reverted
+
+Replacing the hand-rolled GPSPI2 driver with ESP-IDF's `esp_lcd` did not fix the
+cold-boot failure and broke the display on the board that had been working. The
+tree is back at the hand-rolled driver; see `DISPLAY-BOARD2.md` for the design,
+the `PRIV_REQUIRES`/reconfigure/`idf-flags` steps it needed, the
+`SPI_MASTER_ISR_IN_IRAM` DRAM-aliasing trap, and the byte-exact restore. The
+conclusion is that our SPI programming is not the fault.
+
+
 ## Second board: display dark on a power-on reset, working on a host reset
 
 Open. Two units of the same design, same batch, byte-identical firmware

@@ -70,6 +70,32 @@ it is either a probe on the panel flex itself, or the vendor firmware's actual
 SPI byte stream diffed against ours. Further flashing cycles are not producing
 information.
 
+## Replacing the hand-rolled SPI path with esp_lcd fixed nothing
+
+`st7789.c` was rewritten on ESP-IDF's `esp_lcd` -- `esp_lcd_new_panel_io_spi`
+with `cs_gpio_num = -1` (CS is a PCA9557 output) and `dc_gpio_num = 39`, the
+ST7789 device with BGR element order, little-endian data and 16 bpp,
+`swap_xy`/`mirror_y` reproducing the measured `MADCTL = 0xA8`, the bias/gamma
+block pushed through `esp_lcd_panel_io_tx_param`, and pixels passed to
+`esp_lcd_panel_draw_bitmap` verbatim because `RAMCTRL` carries the byte order.
+`spi-esp32s3.c` was deleted. It needed `esp_lcd` in the app's `PRIV_REQUIRES`,
+an `idf.py reconfigure` and a flag re-harvest, and it needed
+`CONFIG_SPI_MASTER_ISR_IN_IRAM=n` because that default pulls the GDMA ISR into
+IRAM, and IRAM aliases DRAM at `0x6F0000`, so 4 KiB of instruction space is
+4 KiB taken from the DRAM region this target does not have.
+
+On the known-good board that build made the display stop working. It was
+reverted and the board restored byte-for-byte from images read out of its flash
+earlier -- bootloader `75f40597`, partition table `9daffb12`, otadata `dde79571`,
+app `07f4b766` -- and verified by reading those regions back.
+
+So the reverse-engineered SPI programming is not the fault. That removes the
+last subsystem we could plausibly have written wrong, and it means the two
+candidate explanations left are: something in the pad or clock configuration
+that esp_lcd shares with our driver and that behaves differently after a cold
+power-on, or something in the expander-driven CS/reset timing that a cold panel
+requires and a warm one does not.
+
 ## What has NOT been measured validly
 
 Whether the clock pad physically toggles during a real transfer. Every attempt
