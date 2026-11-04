@@ -18,6 +18,27 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ---
 
+## Release `esp32-s3-idf-20261104`
+
+Cut at commit `ba7b7c990c`, image md5 `52e0ce90`, merged flash image
+`f80026d1`. Sixteen files in `release/esp32-s3-idf-20261104/`, manifest and SHA256SUMS
+included, `dirty=0`. The release reason is the cold-boot settle delay; it also carries
+the rail-ordering fix, the voice clip set, the upstream rebase, the conformance
+cleanups and the board capture tools. Decisions taken deliberately:
+
+- **Voice ships uncapped.** `english.voice` is 2.52 MB against a ~3.94 MB arena. The
+  `MAX_CLIP_BUFFER_SIZE` knob stays untouched and the interaction with mpegplayer's
+  allocation floor is unmeasured; revisit on a report rather than pre-emptively.
+- **Card repopulation is stated in the notes and the README.** Target id 126 to 134 and
+  API 285 to 286 make an old card unusable, and the failure looks like a broken decoder.
+- **The themes pack does not ship.** It exists for our own testing.
+- **Verified on two units** is the claim in the notes; runtime estimates stay out because
+  there is no capacity run.
+
+- [ ] Flash the release image and cold-boot it, so the shipped bytes are the tested
+      bytes: the boards currently run the same code at an earlier stamp.
+
+
 ## Cold-boot dark panel: fixed by a settle delay
 
 `lcd_init_device()` now waits a second after bringing up the PMU rails before it

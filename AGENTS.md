@@ -5161,7 +5161,8 @@ rm -rf <builddir>/apps/plugins      # drop rocks the current tree cannot build
 make rocks && make zip
 ```
 
-and check the payload count against the tree, not against the last zip you made. The one
+and check the payload count against the tree, not against the last zip you made.
+The current figures for this target are 422 zip entries, 157 `.rock` and 44 `.codec`. The one
 card zip for this port is `build-meowkits3/rockbox.zip`; `tools/autoconf.pl` infers the
 target from the build directory name, so that directory has to keep the `build-` prefix
 plus the model name — a scratch directory with a different spelling cannot be the one the
@@ -5389,7 +5390,7 @@ later exceed.
   looks like a missing source. `make idf-clean` is the goal that resets IDF state
   and re-establishes the generated headers.
 - `make clean` also deletes `rockbox.zip`. Verify packaging with `make zip`
-  afterwards: 420 entries, `.rockbox/rockbox.esp32s3`, 157 `.rock`, 44 `.codec`.
+  afterwards: 422 entries, `.rockbox/rockbox.esp32s3`, 157 `.rock`, 44 `.codec`, plus `english.voice`.
 - Dependency tracking is *not* the problem: `make.dep` already lists
   `config/meowkits3.h` for 5,320 objects. Staleness came from the archive and
   directory semantics above, and from deleting the wrong object path
