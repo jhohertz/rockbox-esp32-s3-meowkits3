@@ -107,11 +107,25 @@ ovl="$BUILD/apps/plugins/imageviewer/jpeg/jpeg.ovl"
 # placement rather than the region origin written in the script.
 textseg() {
     readelf -lW "$1" | awk -v off="$iromoff" '
+        # strtonum() is a gawk extension. The container runs mawk, where it does not
+        # exist, and the resulting awk error leaves the segment list empty -- which
+        # this script then reports as "no executable segment", an entirely different
+        # diagnosis from the real one. Hex conversion is therefore spelled out.
+        function hex(s,   n, i, c, d) {
+            sub(/^0[xX]/, "", s)
+            n = 0
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                d = index("0123456789abcdef", tolower(c)) - 1
+                n = n * 16 + d
+            }
+            return n
+        }
         /^ *LOAD/ {
-            v = strtonum($3);
-            if (v >= 0x40000000) {
-                b = v - strtonum(off);
-                print b, b + strtonum($5);
+            v = hex($3);
+            if (v >= hex("0x40000000")) {
+                b = v - hex(off);
+                print b, b + hex($5);
                 exit
             }
         }'
