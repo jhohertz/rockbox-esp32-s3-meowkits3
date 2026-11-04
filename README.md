@@ -14,7 +14,7 @@ this device specifically.
 ## 1. What this repository is
 
 This is a **working fork, not an official release channel**. The branch
-[`esp32-s3-idf`](https://gitea.max.optiplexus.org/jhohertz/rockbox) carries the port
+[`esp32-s3-idf`](https://github.com/jhohertz/rockbox-esp32-s3-meowkits3) carries the port
 while it gets shaped, and the intention is for it to be **merged upstream** into
 [Rockbox](https://www.rockbox.org). Until then, treat this repo as temporary: expect
 rebases, expect the commit history to move, and expect the file layout to follow
@@ -384,8 +384,8 @@ this is a seed rather than a one-off.
 
 | | |
 |---|---|
-| Branch | `esp32-s3-idf`, at <https://gitea.max.optiplexus.org/jhohertz/rockbox> |
-| Releases | [`esp32-s3-idf-20261029`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261029) — current — with [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261029.md), superseding [`esp32-s3-idf-20261027`](https://gitea.max.optiplexus.org/jhohertz/rockbox/src/tag/esp32-s3-idf-20261027) and [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261027.md). Both were flashed at `0x0` and verified |
+| Branch | `esp32-s3-idf`, at <https://github.com/jhohertz/rockbox-esp32-s3-meowkits3> |
+| Releases | [`esp32-s3-idf-20261104`](https://github.com/jhohertz/rockbox-esp32-s3-meowkits3/tree/esp32-s3-idf-20261104) — current — with [its notes](release/esp32-s3-idf-20261104/release-notes.md), superseding [`esp32-s3-idf-20261029`](https://github.com/jhohertz/rockbox-esp32-s3-meowkits3/tree/esp32-s3-idf-20261029) with [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261029.md), and [`esp32-s3-idf-20261027`](https://github.com/jhohertz/rockbox-esp32-s3-meowkits3/tree/esp32-s3-idf-20261027) with [its notes](firmware/target/xtensa/notes/releases/esp32-s3-idf-20261027.md). All three were flashed at `0x0` and verified |
 | Target name | `meowkits3` (target id 126), `MODEL_NAME "MeowKit ESP32-S3"` |
 | Toolchain | xtensa-esp-elf 14.2.0, ESP-IDF v5.5.5, single-core, windowed ABI with hand-written register-window overflow/underflow handlers |
 | Firmware image | ~1.29 MB app in a 1.5 MB partition; `rockbox-flash.bin` 1,373,376 B at `0x0` |

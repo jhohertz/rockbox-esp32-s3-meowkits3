@@ -135,7 +135,7 @@ RUN apt-get update \
 ###############################################################################
 FROM rb-deps-manual AS rb-src
 
-ARG RB_REPO=https://gitea.max.optiplexus.org/jhohertz/rockbox
+ARG RB_REPO=https://github.com/jhohertz/rockbox-esp32-s3-meowkits3
 ARG RB_BRANCH=esp32-s3-idf
 # BuildKit keys a layer on its command and its ARG values, not on the remote's
 # content -- so a cached clone would silently survive every push. Pass

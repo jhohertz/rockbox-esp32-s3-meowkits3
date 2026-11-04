@@ -91,7 +91,7 @@ reservation fails the run instead of shipping.
 | ARG | Default | Notes |
 |---|---|---|
 | `BASE_IMAGE` | `ubuntu:26.04` | verified to exist as an upstream Docker Hub tag |
-| `RB_REPO` | `https://gitea.max.optiplexus.org/jhohertz/rockbox` | the public URL for now; change it when the port moves upstream |
+| `RB_REPO` | `https://github.com/jhohertz/rockbox-esp32-s3-meowkits3` | the public URL for now; change it when the port moves upstream |
 | `RB_BRANCH` | `esp32-s3-idf` | cloned shallow; `.git` is kept because `tools/version.sh` derives the version string from `git rev-parse` |
 | `RBDEV_PREFIX` | `/opt/rockbox-dev` | single root for the toolchain *and* the IDF checkout |
 | `RBDEV_ESP_TOOLCHAIN` | `esp-14.2.0_20260121` | matches `rockboxdev.sh`'s default pin |
