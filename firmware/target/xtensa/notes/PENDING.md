@@ -20,8 +20,26 @@ Board access: **hold BOOT, tap RESET** for download mode, then
 
 ## Release `esp32-s3-idf-20261104`
 
-Cut at commit `ba7b7c990c`, image md5 `52e0ce90`, merged flash image
-`f80026d1`. Sixteen files in `release/esp32-s3-idf-20261104/`, manifest and SHA256SUMS
+Tag moved to `db4b2fcbd3` so the published tag includes the layout-guard fix; a tag
+that cannot produce a complete artifact set is not worth publishing. Host artifacts:
+image md5 `3f3d36e9` stamped `db4b2fcbd3-261104`, merged flash image `a105a21f`,
+zip `64f88c87` at 422 entries, checksums verified 16 of 16.
+
+- [ ] Flash the release image to a board and cold-boot it. Board 3 still holds the
+      pre-retag image `52e0ce90`, which is the same code at a different stamp; the
+      shipped bytes have not been read back from hardware yet.
+- [ ] **Container build at the identical tag is not byte-identical to the host.** Same
+      entry point, same eight segments, identical `.iram0.text`, `.dram0.data`,
+      `.dram0.bss`, `.ext_ram.bss` and sdkconfig -- but the DROM segment differs by 176
+      bytes and the two BYTE_ACCESSIBLE segments are split differently. Unexplained, and
+      the release notes say so rather than claiming reproducibility.
+- [ ] **The container image bakes its own copy of `rb-build-artifacts.sh` as the
+      entrypoint**, so an old image runs old packaging logic no matter what repo is
+      mounted. This is what made the run look for `idf-app/build` at the repo root --
+      the pre-Phase D path. Run with `--entrypoint
+      /src/rockbox/tools/meowkits3/rb-build-artifacts.sh`, or rebuild the image.
+      Neither is currently documented in `tools/meowkits3/README`.
+ Sixteen files in `release/esp32-s3-idf-20261104/`, manifest and SHA256SUMS
 included, `dirty=0`. The release reason is the cold-boot settle delay; it also carries
 the rail-ordering fix, the voice clip set, the upstream rebase, the conformance
 cleanups and the board capture tools. Decisions taken deliberately:
