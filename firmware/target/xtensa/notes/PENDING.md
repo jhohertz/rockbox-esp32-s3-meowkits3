@@ -34,12 +34,43 @@ the fix going out.
 - [ ] Board 2 is deliberately excluded. It glitches on display and has lost touch
       under the vendor firmware, so its owner is looking at the hardware. Its
       result under the fixed build is noise either way.
-- [ ] Packaging still to produce for the tag: `make espfull` (no rockbox-flash.bin
-      exists, and that single-file image is what the web flasher needs), the fonts
-      artifact, the themes pack, the manual PDF, `espverify`, a build manifest and
-      SHA256SUMS. Only rockbox.zip is current.
-- [ ] Release notes must state the cold-boot defect, since users of the two
-      published builds hit it on their first plug-in.
+Packaging is done. Reconfigured with the canonical voice invocation
+(`--type=AV --language=english --tts=espeak`), which produced `english.voice` at
+2,519,320 bytes and a 422-entry zip carrying 157 plugins and 44 codecs. Note that
+`talk.c` was already compiled at `--type=N` -- `--type=V` governs clip generation
+and packaging, not the firmware -- so the image md5 did not move across the
+reconfigure: enabling voice is a card-content change, not a firmware change.
+Current set: `esp-artifacts/` (bootloader, partition table, flash_args,
+espverify.txt, merged rockbox-flash.bin 1,323,088 bytes, ELF, map), rockbox.zip
+7,611,569, rockbox-fonts.zip 8,480,078, manual PDF 3,057,438 built after deleting
+`manual/features.tex` so the changed feature list actually regenerated.
+
+Rechecked on hardware after the settle-delay fix, by the owner: USB mass storage
+in the composition, the tick tasks (buttons, backlight timeout, sleep countdown)
+after their relocation to the target, and doom launching. All good.
+
+Still to determine before the tag:
+
+- [ ] **Voice against the arena.** `english.voice` is 2.52 MB and the buflib arena
+      is ~3.94 MB, so with `talk_menu` on by default the clip buffer competes with
+      codecs, album art, the dircache and mpegplayer's ~1.39 MB floor. Either prove
+      playback plus a plugin session on a voice-installed card, or cap
+      `MAX_CLIP_BUFFER_SIZE` in `config/meowkits3.h` -- `talk.c` treats a negative
+      cap as "disable voice" and reloads clips from disk otherwise.
+- [ ] **Card repopulation is mandatory, not advisory.** `rockbox-info.txt` reports
+      Target id 134 where release two reported 126, and `apps/codecs.c:195` plus
+      `apps/plugin.c:976` reject a mismatched id; the plugin API also moved 285 to
+      286 and that check is exact, not a range. A user who keeps their old card gets
+      silent codec failure and "incompatible model" plugins. Verify once on a device
+      with an old card, then say it plainly in the notes.
+- [ ] Flash the release-stamped image (`659b3bd76d-261104`) and cold-boot it, so the
+      bytes shipped are the bytes tested rather than the same code at an earlier
+      stamp.
+- [ ] Runtime numbers stay out of the notes: no capacity run, so no "N hours".
+- [ ] Scope the hardware claim. Verified on two units; board 2 is excluded as a
+      suspect unit.
+- [ ] Decide whether the themes pack ships with this release. Neither published
+      release included it.
 
 
 ## esp_lcd display migration tried and reverted
